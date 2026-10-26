@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use crate::Result;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
+use crate::core::state::State;
 use switchyard_protocol::{
     ContentBlock, LlmRequest, Message, Metadata, ModelId, Request, Response, Role,
 };
@@ -30,13 +31,13 @@ use switchyard_protocol::{
 ///
 /// The inner classifier receives a prompt-only request clone. The original request remains
 /// unchanged for the selected child model.
-pub struct SubagentGate<S> {
-    inner: Arc<dyn Classifier<S>>,
+pub struct SubagentGate {
+    inner: Arc<dyn Classifier>,
 }
 
-impl<S> SubagentGate<S> {
+impl SubagentGate {
     /// Wraps `inner` with delegated-work detection.
-    pub fn new(inner: Arc<dyn Classifier<S>>) -> Self {
+    pub fn new(inner: Arc<dyn Classifier>) -> Self {
         Self { inner }
     }
 }
@@ -71,13 +72,10 @@ fn delegated_prompt_request(request: &Request) -> Option<Request> {
 }
 
 #[async_trait]
-impl<S> Classifier<S> for SubagentGate<S>
-where
-    S: Send + 'static,
-{
+impl Classifier for SubagentGate {
     async fn score(
         &self,
-        state: &mut S,
+        state: &mut State,
         request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
@@ -116,13 +114,10 @@ impl SubagentOverride {
 }
 
 #[async_trait]
-impl<S> Classifier<S> for SubagentOverride
-where
-    S: Send + 'static,
-{
+impl Classifier for SubagentOverride {
     async fn score(
         &self,
-        _state: &mut S,
+        _state: &mut State,
         request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
@@ -168,7 +163,7 @@ mod tests {
 
     /// Scores `headers` through the override, returning the winning target if it scored.
     async fn selected(headers: &[(&str, &str)]) -> Result<Option<ModelId>> {
-        let mut state = ();
+        let mut state = State::default();
         let classification = SubagentOverride::new("worker")
             .score(&mut state, &mut request(headers), &empty_driver())
             .await?;
@@ -216,7 +211,7 @@ mod tests {
     async fn delegated_work_is_scored_definitively() -> Result<()> {
         // Confidence 1.0 under `Scores` (never `Ambiguous`), so the cascade stops here
         // rather than consulting later classifiers.
-        let mut state = ();
+        let mut state = State::default();
         let classification = SubagentOverride::new("worker")
             .score(
                 &mut state,

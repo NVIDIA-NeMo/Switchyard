@@ -7,6 +7,7 @@ mod capabilities;
 pub mod config;
 mod metrics;
 mod observability;
+mod observed_translation;
 mod redaction;
 mod response;
 mod routing_log;
@@ -42,7 +43,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use switchyard_llm_client::{AuxiliaryOperation, RunObservation, RunObserver};
-use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
+use switchyard_protocol::{LlmClientError, Metadata, ModelId, ProviderExtensions, Request, Usage};
 use switchyard_runner::{
     CallerAuthKind, DecisionTarget, ModelCapabilities, Route, RunOutput, Runner, RunnerError,
 };
@@ -50,7 +51,7 @@ use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
 use tracing::{Instrument, Level};
 
-use switchyard_translation::{WireFormat, decode_request, encode_aggregated_response};
+use switchyard_translation::WireFormat;
 
 use crate::response::into_http_response;
 use crate::stats::{StatsAccumulator, StatsSnapshot, prefix_probe, tracking_enabled_from_env};
@@ -168,6 +169,7 @@ pub struct ServerState {
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
     track_cache_eligibility: bool,
+    model_catalog: Arc<tokio::sync::Mutex<Option<(Instant, Value)>>>,
 }
 
 #[derive(Clone)]
@@ -225,12 +227,24 @@ impl ServerState {
             stats,
             routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
+            model_catalog: Arc::default(),
         })
     }
 
     /// Enables durable per-request routing records at `path`.
     pub fn with_routing_log(mut self, path: impl Into<PathBuf>) -> ServerResult<Self> {
         self.routing_log = Some(SharedRoutingLog::new(path.into())?);
+        Ok(self)
+    }
+
+    /// This method loads rates in USD per million tokens for saved routing records.
+    pub fn with_pricing_file(self, path: impl AsRef<std::path::Path>) -> ServerResult<Self> {
+        let prices = switchyard_costs::Pricing::load(path.as_ref()).map_err(ServerError::new)?;
+        let log = self
+            .routing_log
+            .as_ref()
+            .ok_or_else(|| ServerError::new("pricing requires a routing log"))?;
+        log.writer.lock().pricing = prices;
         Ok(self)
     }
 
@@ -426,13 +440,11 @@ struct RequestStart(Instant);
 /// Routing-log marker distinguishing classifier and judge calls from answer calls.
 const CLASSIFIER_TIER: &str = "classifier";
 
-/// Maps answer-call observations to backend stats, routing calls to classifier/judge
-/// stats, and records routing overhead once the algorithm run completes.
+/// This observer updates backend stats and records classifier and judge calls.
 ///
-/// Successful classifier/judge calls are also appended to `classifier_log` when one is
-/// configured, so per-session routing snapshots account for judge token overhead. Routed
-/// calls stay off this path: the served call is logged with its terminal usage in
-/// [`usage_metrics::observe`], which would make a second append here a double count.
+/// The routing log also records failed answer calls with unknown cost. Successful
+/// answer calls are recorded by [`usage_metrics::observe`] with their terminal usage;
+/// recording them here would count each answer twice.
 fn stats_observer(
     stats: StatsAccumulator,
     classifier_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
@@ -444,22 +456,28 @@ fn stats_observer(
             if call.is_success {
                 stats.record_success(&call.selected_model, latency_ms);
             } else {
+                if let Some((log, context)) = classifier_log.as_ref() {
+                    log.append(
+                        context.clone(),
+                        &call.selected_model,
+                        None,
+                        &Usage::default(),
+                    );
+                }
                 stats.record_error(&call.selected_model);
             }
         }
         RunObservation::LlmCall(call) | RunObservation::DecisionCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
+            if let Some((log, context)) = classifier_log.as_ref() {
+                log.append(
+                    context.clone(),
+                    &call.selected_model,
+                    Some(CLASSIFIER_TIER),
+                    call.usage.as_ref().unwrap_or(&Usage::default()),
+                );
+            }
             if call.is_success {
-                if let (Some((log, context)), Some(usage)) =
-                    (classifier_log.as_ref(), call.usage.as_ref())
-                {
-                    log.append(
-                        context.clone(),
-                        &call.selected_model,
-                        Some(CLASSIFIER_TIER),
-                        usage,
-                    );
-                }
                 stats.record_classifier_success(
                     call.selected_model,
                     call.usage.as_ref().map(usage_metrics::token_usage),
@@ -758,10 +776,11 @@ async fn decision_inner(
             // The request moved into the decision run, so its namespace mapping
             // is gone by here. A Codex tool call in this preview keeps its
             // qualified name.
-            match encode_aggregated_response(
+            match observed_translation::encode_response(
                 &aggregate,
                 input_format,
                 outcome.selected_model_id().ok().map(ModelId::as_str),
+                &ProviderExtensions::default(),
             ) {
                 Ok(response) => Some(response),
                 Err(error) => return server_error(error.to_string()),
@@ -984,7 +1003,7 @@ fn resolve_route(
     if let Some(metadata) = body.get_mut("metadata").and_then(Value::as_object_mut) {
         metadata.remove(switchyard_translation::util::SWITCHYARD_METADATA_KEY);
     }
-    let llm_request = decode_request(wire_format, &body)
+    let llm_request = observed_translation::decode_request(wire_format, &body)
         .map_err(|error| invalid_body_error(StatusCode::BAD_REQUEST, error.to_string()))?;
     let requested_model = llm_request
         .model
@@ -1471,12 +1490,43 @@ fn error_response(
 }
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
-    Json(model_list_payload(
-        state
-            .runner
-            .models()
+    let mut cache = state.model_catalog.lock().await;
+    if let Some((updated, catalog)) = cache.as_ref()
+        && updated.elapsed() < Duration::from_secs(60)
+    {
+        return Json(catalog.clone());
+    }
+    let mut models: Vec<_> = state.runner.models().collect();
+    let probes = models
+        .iter_mut()
+        .filter(|model| model.capabilities.context_window.is_none())
+        .map(|model| async {
+            model.capabilities.context_window =
+                discover_context_window(&state.runner, model.id).await;
+        });
+    // Keep completed discoveries even when another backend exhausts the shared budget.
+    let _ = tokio::time::timeout(
+        Duration::from_secs(2),
+        futures_util::future::join_all(probes),
+    )
+    .await;
+    let catalog = model_list_payload(
+        models
+            .into_iter()
             .map(|model| (model.id.as_str(), model.capabilities)),
-    ))
+    );
+    *cache = Some((Instant::now(), catalog.clone()));
+    Json(catalog)
+}
+
+async fn discover_context_window(runner: &Runner, model: &ModelId) -> Option<u32> {
+    let body = runner
+        .model_properties(model.as_str(), Duration::from_secs(2))
+        .await?;
+    let context = body
+        .pointer("/default_generation_settings/n_ctx")?
+        .as_u64()?;
+    u32::try_from(context).ok().filter(|context| *context > 0)
 }
 
 async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {

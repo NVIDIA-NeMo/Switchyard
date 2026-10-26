@@ -18,7 +18,7 @@ use switchyard_libsy::{
     DecisionJudgeConfig, DeescalationConfig, EscalationJudgeConfig, HandoffNoteConfig,
     LibsyError as RustLibsyError, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback,
     LlmTaskClassifier, Noop, PickerMode, Random, RoutingOutcome, RuntimeModels, StageRouter,
-    StageRouterConfig, Step as RustStep, StepStream, TaskClassifierConfig, ToolSemantics,
+    StageRouterConfig, State, Step as RustStep, StepStream, TaskClassifierConfig, ToolSemantics,
 };
 use switchyard_protocol::{
     Category, DecisionResponse, LlmClientError, LlmResponse, LlmResponseStream,
@@ -754,6 +754,7 @@ impl PyOutcomeMetadata {
 struct PyRoutingOutcome {
     selected_model_ids: Vec<String>,
     request: Py<PyAny>,
+    fallback_request: Option<Py<PyAny>>,
     response: Option<Py<PyAny>>,
     #[pyo3(get)]
     metadata: Option<Py<PyOutcomeMetadata>>,
@@ -771,6 +772,14 @@ impl PyRoutingOutcome {
     #[getter]
     fn request(&self, py: Python<'_>) -> Py<PyAny> {
         self.request.clone_ref(py)
+    }
+
+    /// The request for the fallback candidates, when it differs from `request`.
+    #[getter]
+    fn fallback_request(&self, py: Python<'_>) -> Option<Py<PyAny>> {
+        self.fallback_request
+            .as_ref()
+            .map(|request| request.clone_ref(py))
     }
 
     /// An aggregate or streamed answer produced while routing, when one already exists.
@@ -911,7 +920,7 @@ impl PyAlgorithm {
         }
         let stream = {
             let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
-            Arc::clone(&self.inner).run_stream(request, Arc::new(runtime_models))
+            Arc::clone(&self.inner).run_stream(request, Arc::new(runtime_models), State::default())
         };
         Ok(PyRunStream {
             inner: Arc::new(Mutex::new(stream)),
@@ -939,8 +948,10 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
             let RoutingOutcome {
                 selected_model_ids,
                 request,
+                fallback_request,
                 response,
                 metadata,
+                state: _,
             } = *outcome;
             Python::attach(|py| {
                 Ok(PyStep::Done {
@@ -955,6 +966,9 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                                 .map(ToString::to_string)
                                 .collect(),
                             request: to_python(py, &request.llm_request)?,
+                            fallback_request: fallback_request
+                                .map(|request| to_python(py, &request.llm_request))
+                                .transpose()?,
                             response: response
                                 .map(|response| response_to_python(py, response.llm_response))
                                 .transpose()?,

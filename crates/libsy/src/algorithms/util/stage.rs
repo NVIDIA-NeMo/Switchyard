@@ -125,9 +125,6 @@ impl PickerMode {
     }
 }
 
-/// `State.extra` key under which the turn's [`DecisionSource`] is recorded.
-pub const DECISION_SOURCE_KEY: &str = "decision_source";
-
 /// `State.extra` key under which a default-tier override is recorded.
 const FALL_OPEN_KEY: &str = "fall_open";
 
@@ -154,20 +151,7 @@ pub(crate) fn fall_open_tier(state: &State) -> Option<Tier> {
     }
 }
 
-/// Record which component decided the turn.
-pub(crate) fn record_decision_source(state: &mut State, source: DecisionSource) {
-    state.extra.insert(
-        DECISION_SOURCE_KEY.to_string(),
-        StateValue::String(source.as_str().to_string()),
-    );
-}
-
 /// What produced a decision — for stats and explainability.
-///
-/// Each is stamped by the component that knows it, so a turn's final label names
-/// whoever actually decided it. [`Ambiguous`](Self::Ambiguous) is the exception:
-/// the signal scorer records it on its way out, and whichever classifier resolves
-/// the turn overwrites it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DecisionSource {
     /// Hard override (critical severity or context compaction).
@@ -537,6 +521,7 @@ impl HandoffNoteConfig {
 pub struct StageClassifier {
     mode: PickerMode,
     confidence_threshold: f64,
+    capable_first_threshold: f64,
     capable_hold_turns: u32,
     handoff_notes: Option<HandoffNoteConfig>,
 }
@@ -548,9 +533,16 @@ impl StageClassifier {
         Self {
             mode,
             confidence_threshold,
+            capable_first_threshold: 0.0,
             capable_hold_turns: 2,
             handoff_notes: None,
         }
+    }
+
+    /// Threshold used when an outer classifier selects capable-first.
+    pub fn with_capable_first_threshold(mut self, threshold: f64) -> Self {
+        self.capable_first_threshold = threshold;
+        self
     }
 
     /// Keep the capable tier for this many requests after an escalation. A
@@ -569,8 +561,7 @@ impl StageClassifier {
 
     /// The signals could not decide, so this turn belongs to whatever the cascade
     /// has behind this classifier.
-    fn abstain(state: &mut State) -> Classification {
-        record_decision_source(state, DecisionSource::Ambiguous);
+    fn abstain() -> Classification {
         Classification::Ambiguous(Vec::new())
     }
 
@@ -621,7 +612,7 @@ impl StageClassifier {
 }
 
 #[async_trait]
-impl Classifier<State> for StageClassifier {
+impl Classifier for StageClassifier {
     async fn score(
         &self,
         state: &mut State,
@@ -631,7 +622,7 @@ impl Classifier<State> for StageClassifier {
         let Some(signal) = state.tool_signals.clone() else {
             // No tool activity yet — nothing to score, so the signals have no
             // opinion, same as a below-threshold turn.
-            return Ok((Self::abstain(state), None));
+            return Ok((Self::abstain(), None));
         };
 
         let capable_hold_key = Self::capable_hold_key(request);
@@ -639,10 +630,15 @@ impl Classifier<State> for StageClassifier {
         if clean_test_pass {
             state.extra.remove(&capable_hold_key);
         }
+        let (mode, threshold) = match fall_open_tier(state) {
+            Some(Tier::Capable) => (PickerMode::CapableFirst, self.capable_first_threshold),
+            Some(Tier::Efficient) => (PickerMode::EfficientFirst, self.confidence_threshold),
+            None => (self.mode, self.confidence_threshold),
+        };
         let outcome = if !clean_test_pass && Self::consume_capable_hold(state, &capable_hold_key) {
             resolved(Tier::Capable, DecisionSource::CapableHold, 0.5, Some(1.0))
         } else {
-            pick_tier(&signal, self.mode, self.confidence_threshold)
+            pick_tier(&signal, mode, threshold)
         };
         record_score_metrics(&signal, &outcome);
         match outcome {
@@ -665,7 +661,6 @@ impl Classifier<State> for StageClassifier {
                 {
                     self.set_capable_hold(state, &capable_hold_key);
                 }
-                record_decision_source(state, source);
                 record_routing_decision(source, target);
                 if source == DecisionSource::Override
                     && let Some(reason) = override_reason(&signal)
@@ -685,7 +680,7 @@ impl Classifier<State> for StageClassifier {
                     (DecisionSource::Dimensions, Some(confidence)) => serde_json::json!({
                         "source": source.as_str(),
                         "confidence": confidence,
-                        "threshold": self.confidence_threshold,
+                        "threshold": threshold,
                     }),
                     _ => serde_json::json!({"source": source.as_str()}),
                 };
@@ -702,7 +697,7 @@ impl Classifier<State> for StageClassifier {
                     None,
                 ))
             }
-            PickOutcome::ConsultClassifier { .. } => Ok((Self::abstain(state), None)),
+            PickOutcome::ConsultClassifier { .. } => Ok((Self::abstain(), None)),
         }
     }
 }
@@ -822,6 +817,59 @@ mod tests {
             scored.confidence < 0.5,
             "one signal should not clear 0.5: {scored:?}"
         );
+    }
+
+    #[test]
+    fn scorer_ceilings_match_the_documented_values() {
+        // The stage-router guide's "How the score is built" quotes these four
+        // scores. A constant change that moves them must update the guide too.
+        let base = signal_from(json!([{"role": "user", "content": "hi"}]));
+        let cases = [
+            (
+                "hard error alone",
+                ToolSignals {
+                    severity: HARD_SEVERITY as f32,
+                    turn_depth: 1,
+                    ..base.clone()
+                },
+                0.4621,
+            ),
+            (
+                "hard error plus stall",
+                ToolSignals {
+                    severity: HARD_SEVERITY as f32,
+                    turn_depth: STALL_MIN_TURN_DEPTH,
+                    ..base.clone()
+                },
+                0.7616,
+            ),
+            (
+                "one write among three operations, no error",
+                ToolSignals {
+                    recent_write_count: 1,
+                    recent_read_count: 2,
+                    turn_depth: 1,
+                    ..base.clone()
+                },
+                -0.6911,
+            ),
+            (
+                "full clean production",
+                ToolSignals {
+                    recent_write_count: 3,
+                    turn_depth: 1,
+                    ..base.clone()
+                },
+                -0.8741,
+            ),
+        ];
+        for (name, signal, expected) in cases {
+            let scored = score_signal(&signal);
+            assert!(
+                (scored.score - expected).abs() < 0.0005,
+                "{name}: {scored:?}, documented {expected}"
+            );
+        }
     }
 
     #[test]
@@ -992,6 +1040,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn classified_tier_controls_the_stage_threshold() -> Result<()> {
+        let mut state = state_with(ToolSignals {
+            severity: 0.3,
+            recent_edit_count: 1,
+            tool_result_count: 1,
+            ..Default::default()
+        });
+        for (tier, threshold, expected) in [
+            (Tier::Capable, 0.0, Some(ModelId::from("weak"))),
+            (Tier::Efficient, 0.0, None),
+            (Tier::Capable, 0.5, None),
+        ] {
+            set_fall_open(&mut state, tier);
+            let (classification, _) = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
+                .with_capable_first_threshold(threshold)
+                .score(&mut state, &mut Request::default(), &driver())
+                .await?;
+            assert_eq!(
+                classification.argmax(false)?.map(|score| score.target),
+                expected
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn classifier_defaults_without_tool_signals() -> Result<()> {
         // No tool activity yet — nothing to score, so the signals have no opinion
         // and the turn belongs to whatever the cascade has behind them.
@@ -1000,10 +1074,6 @@ mod tests {
             .score(&mut state, &mut Request::default(), &driver())
             .await?;
         assert!(classification.0.argmax(false)?.is_none());
-        assert!(matches!(
-            state.extra.get(DECISION_SOURCE_KEY),
-            Some(StateValue::String(source)) if source == "ambiguous"
-        ));
         Ok(())
     }
 
@@ -1028,11 +1098,6 @@ mod tests {
             }
             _ => panic!("expected a definite classification"),
         }
-        // The decision source travels downstream (for handoff-note gating).
-        assert!(matches!(
-            state.extra.get(DECISION_SOURCE_KEY),
-            Some(StateValue::String(source)) if source == "override"
-        ));
         Ok(())
     }
 
@@ -1054,10 +1119,6 @@ mod tests {
             Classification::Scores(scores) => assert_eq!(scores[0].target, "weak"),
             _ => panic!("expected a definite classification"),
         }
-        assert!(matches!(
-            state.extra.get(DECISION_SOURCE_KEY),
-            Some(StateValue::String(source)) if source == "dimensions"
-        ));
         Ok(())
     }
 
@@ -1157,17 +1218,12 @@ mod tests {
 
     #[tokio::test]
     async fn classifier_falls_open_to_default_and_records_it() -> Result<()> {
-        // A quiet signal corroborates neither axis, so the scorer abstains and
-        // records why.
+        // A quiet signal corroborates neither axis, so the scorer abstains.
         let mut state = state_with(ToolSignals::default());
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
             .score(&mut state, &mut Request::default(), &driver())
             .await?;
         assert!(classification.0.argmax(false)?.is_none());
-        assert!(matches!(
-            state.extra.get(DECISION_SOURCE_KEY),
-            Some(StateValue::String(source)) if source == "ambiguous"
-        ));
         Ok(())
     }
 

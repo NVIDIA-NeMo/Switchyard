@@ -1039,6 +1039,8 @@ fn copy_openai_chat_request_extensions(
         "service_tier",
         "store",
         "stream_options",
+        // `top_logprobs` is only valid alongside `logprobs`.
+        "logprobs",
         "top_logprobs",
         "user",
     ] {
@@ -1246,6 +1248,7 @@ pub(crate) fn decode_openai_usage(value: Option<&Value>) -> Usage {
         })
         .and_then(Value::as_u64);
     Usage {
+        provider_cost: crate::codecs::common::provider_cost(value),
         input_tokens: value
             .get("prompt_tokens")
             .and_then(Value::as_u64)
@@ -1254,7 +1257,11 @@ pub(crate) fn decode_openai_usage(value: Option<&Value>) -> Usage {
                     .saturating_sub(cached_input_tokens.unwrap_or(0))
                     .saturating_sub(cache_creation_input_tokens.unwrap_or(0))
             }),
-        cache: Usage::cache_details(cached_input_tokens, cache_creation_input_tokens),
+        cache: crate::codecs::common::cache_usage_details(
+            value,
+            cached_input_tokens,
+            cache_creation_input_tokens,
+        ),
         output_tokens: value.get("completion_tokens").and_then(Value::as_u64),
         total_tokens: value.get("total_tokens").and_then(Value::as_u64),
         reasoning_tokens: value
@@ -1293,7 +1300,7 @@ pub(crate) fn encode_openai_usage(usage: &Usage) -> Value {
             "reasoning_tokens": reasoning_tokens,
         });
     }
-    value
+    crate::codecs::common::encode_usage_metadata(value, usage)
 }
 
 /// Maps OpenAI finish reasons to normalized stop reasons.

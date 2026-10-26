@@ -9,7 +9,9 @@ use std::sync::Arc;
 use libsy::{Algorithm, LibsyError, RoutingOutcome, RuntimeModels};
 use serde_json::Value;
 use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObserver, TranslatingLlmClient};
-use switchyard_protocol::{LlmClientError, ModelId, Request, Response, WireFormat};
+use switchyard_protocol::{
+    LlmClientError, ModelId, Request, Response, RoutedLlmClient, WireFormat,
+};
 use thiserror::Error;
 
 use crate::DecisionTarget;
@@ -214,6 +216,27 @@ impl Route {
         switchyard_llm_client::decide(
             Arc::clone(&self.algorithm),
             self.clients.clone(),
+            request,
+            Arc::clone(&self.models),
+        )
+        .await
+        .map_err(Into::into)
+    }
+
+    /// Routes with a host-owned client for routing-time LLM calls, such as judges.
+    ///
+    /// The host owns transport, credentials, and target request settings. Configured
+    /// HTTP clients, target prompts, and decision clients are not used on this path.
+    /// The same algorithm instance retains its state across calls. No post-routing
+    /// completion is dispatched.
+    pub async fn decide_with_client(
+        &self,
+        request: Request,
+        client: Arc<dyn RoutedLlmClient>,
+    ) -> Result<RoutingOutcome, RunnerError> {
+        switchyard_llm_client::decide(
+            Arc::clone(&self.algorithm),
+            ClientRouter::single(client),
             request,
             Arc::clone(&self.models),
         )

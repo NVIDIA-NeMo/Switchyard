@@ -14,10 +14,11 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    SystemOneClient, TranslatingLlmClient,
+    OpenAiDecisionClient, SystemOneClient, TranslatingLlmClient,
 };
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
+use crate::runner::ModelPropertiesProbe;
 use crate::{
     AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
     Runner, RunnerError,
@@ -25,6 +26,38 @@ use crate::{
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
 const MAX_CONFIGURED_RETRIES: u32 = 10;
+
+/// This function returns a deployment's declared credential variable names without reading their values.
+/// It parses the deployment and checks its schema version before returning names from LLM and decision clients.
+pub fn api_key_variables(source: &str) -> Result<BTreeSet<String>, RunnerError> {
+    let config: DeploymentConfig = toml::from_str(source).map_err(|_| {
+        RunnerError::configuration(
+            "Could not parse the server config to read credential references.",
+        )
+    })?;
+    if config.schema_version != SUPPORTED_SCHEMA_VERSION {
+        return Err(RunnerError::configuration(
+            "Unsupported server config schema version.",
+        ));
+    }
+    let mut variables: BTreeSet<_> = config
+        .llm_clients
+        .values()
+        .filter_map(|client| client.api_key_env.clone())
+        .collect();
+    for client in config.decision_clients.values() {
+        variables.insert(client.api_key_env.clone());
+    }
+    if variables
+        .iter()
+        .any(|name| name.trim().is_empty() || name.contains(['\0', '=']))
+    {
+        return Err(RunnerError::configuration(
+            "Invalid credential environment variable name.",
+        ));
+    }
+    Ok(variables)
+}
 
 type RunnerResult<T> = Result<T, RunnerError>;
 
@@ -48,27 +81,6 @@ pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
     let config: DeploymentConfig = toml::from_str(source).map_err(|error| {
         RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
     })?;
-    config.build()
-}
-
-pub(crate) fn model_selection_from_toml(source: &str) -> RunnerResult<Runner> {
-    let config: DeploymentConfig = toml::from_str(source).map_err(|error: toml::de::Error| {
-        // Report the location while keeping document excerpts in the source error.
-        let mut message = "failed to parse TOML".to_string();
-        if let Some(prefix) = error.span().and_then(|span| source.get(..span.start)) {
-            let line = prefix.bytes().filter(|byte| *byte == b'\n').count() + 1;
-            let column = prefix
-                .rsplit('\n')
-                .next()
-                .unwrap_or_default()
-                .chars()
-                .count()
-                + 1;
-            message = format!("{message} at line {line}, column {column}");
-        }
-        RunnerError::configuration_source(message, error)
-    })?;
-    config.validate_model_selection()?;
     config.build()
 }
 
@@ -166,36 +178,6 @@ impl RouteConfig {
 }
 
 impl DeploymentConfig {
-    fn validate_model_selection(&self) -> RunnerResult<()> {
-        for (name, client) in &self.llm_clients {
-            if client.forward_auth {
-                return Err(RunnerError::configuration(format!(
-                    "llm client {name}: model selection requires configured classifier credentials"
-                )));
-            }
-        }
-        for (name, route) in &self.routes {
-            if !route.algorithm.supports_model_selection() {
-                return Err(RunnerError::configuration(format!(
-                    "route {name}: model selection requires auto, passthrough, or capability llm_classifier with every_request"
-                )));
-            }
-            for target_name in route.routing_target_names() {
-                if let Some(target) = self.targets.get(target_name)
-                    && (target.system_prompt.is_some()
-                        || target.reasoning_effort.is_some()
-                        || !target.extra_body.is_empty()
-                        || !target.omit_body_fields.is_empty())
-                {
-                    return Err(RunnerError::configuration(format!(
-                        "target {target_name}: model selection requires completion settings to be owned by the caller"
-                    )));
-                }
-            }
-        }
-        Ok(())
-    }
-
     fn decision_target(&self, name: &str) -> Option<DecisionTarget> {
         let target = self.targets.get(name)?;
         let client = self.llm_clients.get(&target.llm_client)?;
@@ -284,6 +266,7 @@ impl DeploymentConfig {
         let targets = self.build_targets();
         let fallback_base_url = self.fallback_base_url()?;
         let mut routes = Vec::with_capacity(self.routes.len());
+        let mut model_properties_probes = BTreeMap::new();
         for (route_name, config) in &self.routes {
             let decision_judge = config.algorithm.decision_judge();
             for name in config.callable_target_names() {
@@ -319,6 +302,11 @@ impl DeploymentConfig {
                 .algorithm
                 .build_with_runtime_models(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+            if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
+                && let Some(probe) = self.build_model_properties_probe(&vgr.local_target, &clients)
+            {
+                model_properties_probes.insert(config.id.clone(), probe);
+            }
             let (route_clients, caller_auth) =
                 self.build_route_clients(route_name, config, &clients, &decision_clients)?;
             let anthropic_auxiliary_target =
@@ -344,7 +332,8 @@ impl DeploymentConfig {
         }
         let runner = Runner::new(routes)
             .with_fallback_url(fallback_base_url)
-            .with_provider_api_keys(provider_api_keys);
+            .with_provider_api_keys(provider_api_keys)
+            .with_model_properties_probes(model_properties_probes);
         Ok(runner)
     }
 
@@ -413,11 +402,12 @@ impl DeploymentConfig {
 
         let mut clients = BTreeMap::new();
         for (name, model_configs) in models_by_client {
-            let client = Arc::new(
-                TranslatingLlmClient::new(&model_configs)
-                    .map_err(|error| RunnerError::configuration(error.to_string()))?,
-            );
-            clients.insert(name, client);
+            let mut client = TranslatingLlmClient::new(&model_configs)
+                .map_err(|error| RunnerError::configuration(error.to_string()))?;
+            if !self.llm_clients[&name].fallback_on_rate_limit {
+                client = client.without_rate_limit_cooldown();
+            }
+            clients.insert(name, Arc::new(client));
         }
         Ok(clients)
     }
@@ -430,7 +420,8 @@ impl DeploymentConfig {
             .iter()
             .map(|(name, config)| {
                 validate_value("decision client name", name)?;
-                let DecisionClientConfig::SystemOne {
+                let DecisionClientConfig {
+                    format,
                     endpoint,
                     api_key_env,
                     timeout_ms,
@@ -441,17 +432,20 @@ impl DeploymentConfig {
                     )));
                 }
                 let api_key = read_api_key(&format!("decision client {name}"), api_key_env)?;
-                let client = SystemOneClient::new(
-                    endpoint.0.clone(),
-                    api_key.clone(),
-                    Duration::from_millis(*timeout_ms),
-                )
+                let timeout = Duration::from_millis(*timeout_ms);
+                let client = match format {
+                    DecisionFormat::SystemOne => {
+                        SystemOneClient::new(endpoint.0.clone(), api_key.clone(), timeout)
+                            .map(|client| Arc::new(client) as Arc<dyn RoutedDecisionClient>)
+                    }
+                    DecisionFormat::OpenaiDecisions => {
+                        OpenAiDecisionClient::new(endpoint.0.clone(), api_key.clone(), timeout)
+                            .map(|client| Arc::new(client) as Arc<dyn RoutedDecisionClient>)
+                    }
+                }
                 .map_err(|error| RunnerError::configuration(error.to_string()))?;
                 provider_api_keys.push(api_key);
-                Ok((
-                    name.clone(),
-                    Arc::new(client) as Arc<dyn RoutedDecisionClient>,
-                ))
+                Ok((name.clone(), client))
             })
             .collect()
     }
@@ -555,6 +549,17 @@ impl DeploymentConfig {
             prompts,
             routing_answer_target,
             &completion_targets,
+        )
+        .without_rate_limit_fallback(
+            route
+                .routing_target_names()
+                .into_iter()
+                .filter_map(|name| {
+                    let target = &self.targets[name];
+                    (!self.llm_clients[&target.llm_client].fallback_on_rate_limit)
+                        .then(|| target.id.clone())
+                })
+                .collect(),
         );
         Ok((router, caller_auth))
     }
@@ -623,6 +628,27 @@ impl DeploymentConfig {
             ))
         })?;
         Ok(Some(config.base_url.as_str().to_string()))
+    }
+
+    fn build_model_properties_probe(
+        &self,
+        local_target_name: &str,
+        clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
+    ) -> Option<ModelPropertiesProbe> {
+        let local_target = self.targets.get(local_target_name)?;
+        let client_config = self.llm_clients.get(&local_target.llm_client)?;
+        if !matches!(
+            client_config.context_discovery,
+            Some(ContextDiscovery::LlamaCpp)
+        ) {
+            return None;
+        }
+        let client = clients.get(&local_target.llm_client)?;
+        Some(ModelPropertiesProbe {
+            model: local_target.id.clone(),
+            format: client_config.format.wire_format(),
+            client: Arc::clone(client),
+        })
     }
 
     fn build_anthropic_auxiliary_target(
@@ -718,6 +744,8 @@ impl<'de> Deserialize<'de> for HttpBaseUrl {
 struct LlmClientConfig {
     format: ClientFormat,
     base_url: HttpBaseUrl,
+    /// Opt-in context discovery for VGR's local target. Unset disables discovery.
+    context_discovery: Option<ContextDiscovery>,
     api_key_env: Option<String>,
     #[serde(default)]
     forward_auth: bool,
@@ -725,6 +753,8 @@ struct LlmClientConfig {
     extra_headers: BTreeMap<String, String>,
     #[serde(default = "default_max_retries")]
     max_retries: u32,
+    #[serde(default = "default_fallback_on_rate_limit")]
+    fallback_on_rate_limit: bool,
     /// Cooldown after an exhausted transient completion failure. Defaults to 5 seconds; zero disables it.
     #[serde(default = "default_failure_cooldown_ms")]
     failure_cooldown_ms: u64,
@@ -733,13 +763,25 @@ struct LlmClientConfig {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "format", rename_all = "snake_case", deny_unknown_fields)]
-enum DecisionClientConfig {
-    SystemOne {
-        endpoint: HttpBaseUrl,
-        api_key_env: String,
-        timeout_ms: u64,
-    },
+#[serde(rename_all = "snake_case")]
+enum ContextDiscovery {
+    LlamaCpp,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DecisionClientConfig {
+    format: DecisionFormat,
+    endpoint: HttpBaseUrl,
+    api_key_env: String,
+    timeout_ms: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DecisionFormat {
+    SystemOne,
+    OpenaiDecisions,
 }
 
 #[derive(Debug, Deserialize)]
@@ -873,6 +915,10 @@ fn read_api_key(client: &str, variable: &str) -> RunnerResult<String> {
 // A function so that serde default can use it.
 const fn default_max_retries() -> u32 {
     DEFAULT_MAX_RETRIES
+}
+
+const fn default_fallback_on_rate_limit() -> bool {
+    true
 }
 
 const fn default_failure_cooldown_ms() -> u64 {
@@ -1102,6 +1148,83 @@ target = "strong"
         }
     }
 
+    fn vgr_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+local_target = "weak"
+cloud_target = "strong"
+judge_target = "classifier"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+"#
+        )
+    }
+
+    #[test]
+    fn vgr_compaction_is_opt_in_from_toml() -> RunnerResult<()> {
+        for setting in ["", "compact_handoff = false", "compact_handoff = true"] {
+            let source = format!("{}\nagentic_handoff = true\n{setting}\n", vgr_config());
+            let parsed: DeploymentConfig = toml::from_str(&source).expect("valid VGR config");
+            let AlgorithmSpec::Vgr { config } = &parsed.routes["vgr"].algorithm else {
+                panic!("expected VGR route");
+            };
+            assert_eq!(config.compact_handoff, setting.ends_with("= true"));
+            assert!(runner_from_toml(&source)?.route("switchyard/vgr").is_some());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn vgr_route_builds_and_rejects_unsafe_configuration() -> RunnerResult<()> {
+        let runner = runner_from_toml(&vgr_config())?;
+        assert!(runner.route("switchyard/vgr").is_some());
+
+        let compact = format!("{}\ncompact_handoff = true\n", vgr_config());
+        assert!(error_message(&compact).contains("compact_handoff requires agentic_handoff"));
+        let compact = format!("{compact}\nagentic_handoff = true\n");
+        assert!(
+            runner_from_toml(&compact)?
+                .route("switchyard/vgr")
+                .is_some()
+        );
+
+        let identical_ids =
+            vgr_config().replace("local_target = \"weak\"", "local_target = \"strong\"");
+        assert!(error_message(&identical_ids).contains("distinct local and cloud model IDs"));
+
+        let bad_approval =
+            vgr_config().replace("prospective-validation-and-canary-approved", "approved");
+        assert!(error_message(&bad_approval).contains("approval attestation"));
+
+        let missing_target =
+            vgr_config().replace("local_target = \"weak\"", "local_target = \"missing\"");
+        assert!(error_message(&missing_target).contains("unknown target missing"));
+
+        let zero_cooldown = format!("{}breaker_cooldown_seconds = 0\n", vgr_config());
+        assert!(
+            error_message(&zero_cooldown).contains("breaker_cooldown_seconds must be a positive")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn vgr_local_server_example_builds_and_rejects_unknown_discovery() -> RunnerResult<()> {
+        let example = include_str!("../../../examples/vgr-local-servers.toml");
+        let runner = runner_from_toml(example)?;
+        assert!(runner.route("switchyard/vgr").is_some());
+        let invalid = example.replace(
+            "context_discovery = \"llama_cpp\"",
+            "context_discovery = \"guess\"",
+        );
+        assert!(error_message(&invalid).contains("unknown variant `guess`"));
+        Ok(())
+    }
+
     fn with_subagent_llm_classifier(config: &str, route: &str, extra: &str) -> String {
         let mut configured = config.to_string();
         configured.push_str(&format!("\n[routes.{route}.subagents]\n"));
@@ -1233,6 +1356,39 @@ evidence = { description = "candidate comparison" }
                 valid
             );
         }
+    }
+
+    #[test]
+    fn composite_custom_judge_builds_and_rejects_capability_settings() -> RunnerResult<()> {
+        let source = composite_config().replace(
+            "base_threshold = 0.5\nclassify_trigger",
+            r#"mode = "custom"
+prompt = 'Select efficient or capable.'
+response_schema = '{"type":"object","properties":{"decision":{"type":"object","properties":{"target":{"type":"string","enum":["efficient","capable"]}},"required":["target"],"additionalProperties":false}},"required":["decision"],"additionalProperties":false}'
+policy = { type = "target_selector", selector = "/decision/target" }
+classify_trigger"#,
+        );
+        runner_from_toml(&source)?;
+        runner_from_toml(
+            &source.replace("mode = \"custom\"", "mode = \"custom\"\nfail_open = true"),
+        )?;
+        for (setting, expected) in [
+            (
+                "base_threshold = 0.5",
+                "composite custom classifier cannot use capability thresholds",
+            ),
+            (
+                "fail_open = false",
+                "composite custom classifiers always fail open",
+            ),
+        ] {
+            let invalid = source.replace(
+                "mode = \"custom\"",
+                &format!("mode = \"custom\"\n{setting}"),
+            );
+            assert!(error_message(&invalid).contains(expected));
+        }
+        Ok(())
     }
 
     #[test]

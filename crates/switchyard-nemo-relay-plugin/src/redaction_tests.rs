@@ -8,6 +8,8 @@ use std::process::Command;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use crate::span_capture::SpanCapture;
+
 use super::*;
 
 const KEY_ENV: &str = "SWITCHYARD_RELAY_REDACTION_TEST_KEY";
@@ -122,16 +124,22 @@ async fn reflected_response(format: WireFormat, streaming: bool, fail: bool) {
         }),
     };
     let captured = Arc::new(Mutex::new(Vec::new()));
+    let span_observed = Arc::clone(&captured);
+    let redactor = Arc::clone(&runtime.redactor);
+    let span_capture = SpanCapture::new(move |mut span| {
+        span.sanitize(&redactor);
+        span_observed.lock().unwrap().push(RoutingEvent::Span(span));
+    });
     let output = if streaming {
         let observed = Arc::clone(&captured);
-        let execution = runtime
-            .execute_stream(
+        let execution = span_capture
+            .capture(runtime.execute_stream(
                 format,
                 request,
                 Arc::new(move |event| {
                     observed.lock().unwrap().push(event);
                 }),
-            )
+            ))
             .await;
         assert!(
             captured.lock().unwrap().is_empty(),
@@ -142,7 +150,9 @@ async fn reflected_response(format: WireFormat, streaming: bool, fail: bool) {
         assert_eq!(events.iter().any(Result::is_err), fail);
         format!("{events:?}")
     } else {
-        let execution = runtime.execute_buffered(format, request).await;
+        let execution = span_capture
+            .capture(runtime.execute_buffered(format, request))
+            .await;
         captured.lock().unwrap().extend(execution.events);
         assert_eq!(execution.result.is_err(), fail);
         format!("{:?}", execution.result)
@@ -155,7 +165,14 @@ async fn reflected_response(format: WireFormat, streaming: bool, fail: bool) {
         assert!(output.contains("ordinary diagnostics"), "{output}");
         assert!(output.contains("[REDACTED]"), "{output}");
     }
-    let telemetry = format!("{:?}", captured.lock().unwrap());
+    let captured = captured.lock().unwrap();
+    assert!(
+        captured
+            .iter()
+            .any(|event| matches!(event, RoutingEvent::Span(_))),
+        "client span was not emitted"
+    );
+    let telemetry = format!("{captured:?}");
     assert!(!telemetry.contains(KEY), "{telemetry}");
     assert!(telemetry.contains("[REDACTED]"), "{telemetry}");
 }

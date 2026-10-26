@@ -9,7 +9,7 @@ rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
-description = "Node.js model-selection bindings for Switchyard"
+description = "Node.js composite routing bindings for Switchyard"
 publish = false
 
 [lib]
@@ -18,11 +18,12 @@ crate-type = ["cdylib"]
 [dependencies]
 napi = { version = "3", default-features = false, features = ["napi8", "tokio_rt", "dyn-symbols"] }
 napi-derive = "3"
+futures.workspace = true
+parking_lot.workspace = true
+serde.workspace = true
 serde_json.workspace = true
-switchyard-runner.workspace = true
+switchyard-libsy.workspace = true
 switchyard-protocol.workspace = true
-tokio.workspace = true
-tokio-util = { version = "0.7", features = ["rt"] }
 
 [build-dependencies]
 napi-build = "2"

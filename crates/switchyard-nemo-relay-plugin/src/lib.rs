@@ -3,17 +3,20 @@
 
 mod config;
 mod runtime;
+mod span_capture;
 mod translation;
 
 use std::sync::Arc;
 
-use nemo_relay_plugin::{
-    ConfigDiagnostic, DiagnosticLevel, Json, NativePlugin, PluginContext, PluginRuntime,
-};
+use nemo_relay_plugin::{ConfigDiagnostic, DiagnosticLevel, Json, NativePlugin, PluginContext};
 use serde_json::Map;
 
 use crate::config::{SwitchyardConfig, protocol_from_call};
-use crate::runtime::{SwitchyardRuntime, emit_event, emit_events};
+use crate::runtime::{
+    RoutingEvent, RoutingEventEmitter, SwitchyardRuntime, emit_event as emit_routing_event,
+    emit_events,
+};
+use crate::span_capture::SpanCapture;
 
 #[derive(Default)]
 struct SwitchyardPlugin;
@@ -50,8 +53,24 @@ impl NativePlugin for SwitchyardPlugin {
         let priority = config.priority;
         let runtime = Arc::new(SwitchyardRuntime::new(config)?);
         let plugin_runtime = ctx.runtime();
-        register_buffered(ctx, priority, Arc::clone(&runtime), plugin_runtime.clone())?;
-        register_stream(ctx, priority, runtime, plugin_runtime)?;
+        let event_runtime = Arc::clone(&runtime);
+        let emit_event: RoutingEventEmitter = Arc::new(move |event| {
+            emit_routing_event(&plugin_runtime, event_runtime.redactor(), event)
+        });
+        let span_runtime = Arc::clone(&runtime);
+        let span_emit_event = Arc::clone(&emit_event);
+        let span_capture = SpanCapture::new(move |mut span| {
+            span.sanitize(span_runtime.redactor());
+            span_emit_event(RoutingEvent::Span(span));
+        });
+        register_buffered(
+            ctx,
+            priority,
+            Arc::clone(&runtime),
+            Arc::clone(&emit_event),
+            span_capture.clone(),
+        )?;
+        register_stream(ctx, priority, runtime, emit_event, span_capture)?;
         Ok(())
     }
 }
@@ -60,14 +79,16 @@ fn register_buffered(
     ctx: &mut PluginContext<'_>,
     priority: i32,
     runtime: Arc<SwitchyardRuntime>,
-    plugin_runtime: PluginRuntime,
+    emit_event: RoutingEventEmitter,
+    span_capture: SpanCapture,
 ) -> Result<(), String> {
     ctx.register_llm_execution_intercept(
         "switchyard.runner.buffered",
         priority,
         move |name, request, _context, next| {
             let runtime = Arc::clone(&runtime);
-            let plugin_runtime = plugin_runtime.clone();
+            let emit_event = Arc::clone(&emit_event);
+            let span_capture = span_capture.clone();
             async move {
                 let Some(inbound) = protocol_from_call(&name) else {
                     return next.call(request).await;
@@ -76,8 +97,10 @@ fn register_buffered(
                     return next.call(request).await;
                 }
                 let decoded = runtime.decode_request(inbound, request, false)?;
-                let execution = runtime.execute_buffered(inbound, decoded).await;
-                emit_events(&plugin_runtime, runtime.redactor(), execution.events);
+                let execution = span_capture
+                    .capture(runtime.execute_buffered(inbound, decoded))
+                    .await;
+                emit_events(&emit_event, execution.events);
                 execution.result
             }
         },
@@ -88,14 +111,16 @@ fn register_stream(
     ctx: &mut PluginContext<'_>,
     priority: i32,
     runtime: Arc<SwitchyardRuntime>,
-    plugin_runtime: PluginRuntime,
+    emit_event: RoutingEventEmitter,
+    span_capture: SpanCapture,
 ) -> Result<(), String> {
     ctx.register_llm_stream_execution_intercept(
         "switchyard.runner.streaming",
         priority,
         move |name, request, _context, next| {
             let runtime = Arc::clone(&runtime);
-            let plugin_runtime = plugin_runtime.clone();
+            let emit_event = Arc::clone(&emit_event);
+            let span_capture = span_capture.clone();
             async move {
                 let Some(inbound) = protocol_from_call(&name) else {
                     return next.call(request).await;
@@ -104,18 +129,10 @@ fn register_stream(
                     return next.call(request).await;
                 }
                 let decoded = runtime.decode_request(inbound, request, true)?;
-                let stream_plugin_runtime = plugin_runtime.clone();
-                let stream_runtime = Arc::clone(&runtime);
-                let execution = runtime
-                    .execute_stream(
-                        inbound,
-                        decoded,
-                        Arc::new(move |event| {
-                            emit_event(&stream_plugin_runtime, stream_runtime.redactor(), event)
-                        }),
-                    )
+                let execution = span_capture
+                    .capture(runtime.execute_stream(inbound, decoded, Arc::clone(&emit_event)))
                     .await;
-                emit_events(&plugin_runtime, runtime.redactor(), execution.events);
+                emit_events(&emit_event, execution.events);
                 execution.result
             }
         },

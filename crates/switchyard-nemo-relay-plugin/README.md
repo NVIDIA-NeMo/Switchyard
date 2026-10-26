@@ -231,6 +231,12 @@ marks. Call marks distinguish routing from answer calls; decisions distinguish
 selected from served models. Token metrics cover both call roles, while Relay
 retains ownership of the outer LLM lifecycle.
 
+The plugin also captures the existing `libsy.client_call` and
+`libsy.upstream_attempt` spans for each routed request. It replays completed
+spans beneath Relay's outer LLM scope with their original timestamps. The
+projection includes allowlisted, payload-free routing metadata only; it excludes
+prompts, responses, provider error bodies, and credentials.
+
 ## Observability
 
 When Relay is configured with OTLP logs and metrics exporters, the plugin emits
