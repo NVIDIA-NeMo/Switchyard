@@ -8,39 +8,22 @@ Switchyard represents this exchange with
 <a href="../../rust/switchyard_protocol/decision/struct.DecisionRequest.html"><code>DecisionRequest</code></a>
 and
 <a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html"><code>DecisionResponse</code></a>.
-These are the types exchanged through `Step::CallDecision`.
+These are the types exchanged through <a href="../../rust/switchyard_libsy/enum.Step.html#variant.CallDecision"><code>Step::CallDecision</code></a>.
 
-## Protocol and API mappings
+System One is a common API for open decision models, including Jev.
+Switchyard supports it alongside OpenAI Decisions through the same protocol.
 
-One request carries shared context and a map of independent questions. The
-question IDs let the algorithm match each answer to its question. Each answer
-contains a typed value and optional provider confidence.
+!!! info "Question fields, answer types, and API mappings"
 
-This table combines their meanings with the mappings used by the current
-[System One adapter](../../crates/libsy-llm-client/src/system_one.rs) and
-[OpenAI Decisions adapter](../../crates/libsy-llm-client/src/openai_decisions.rs).
-Select a field or type to open its crate reference for details.
-
-| Protocol field and type | Meaning | System One | OpenAI Decisions |
-|---|---|---|---|
-| <a href="../../rust/switchyard_protocol/decision/struct.DecisionRequest.html#structfield.model"><code>DecisionRequest.model</code></a>: <a href="../../rust/switchyard_protocol/model_id/struct.ModelId.html"><code>Option&lt;ModelId&gt;</code></a> | Selected decision model; required by the HTTP adapters before sending. | `model` | `model` |
-| <a href="../../rust/switchyard_protocol/decision/struct.DecisionRequest.html#structfield.context"><code>DecisionRequest.context: Value</code></a> | Shared material to evaluate, such as a conversation or application state. | JSON-valued `state` | Text-valued `input`; structured values become JSON text |
-| <a href="../../rust/switchyard_protocol/decision/struct.DecisionRequest.html#structfield.questions"><code>DecisionRequest.questions</code></a>: <a href="../../rust/switchyard_protocol/decision/struct.DecisionQuestion.html"><code>BTreeMap&lt;String, DecisionQuestion&gt;</code></a> | Independent questions keyed by stable IDs. | `questions` object, keyed by ID | `questions[]`, identified by `name` |
-| <a href="../../rust/switchyard_protocol/decision/struct.DecisionQuestion.html#structfield.instructions"><code>DecisionQuestion.instructions: Value</code></a> | Instructions for evaluating one question. | JSON-valued `instructions` | Text-valued `instructions`; structured values become JSON text |
-| <a href="../../rust/switchyard_protocol/decision/struct.DecisionQuestion.html#structfield.kind"><code>DecisionQuestion.kind</code></a>: <a href="../../rust/switchyard_protocol/decision/enum.DecisionKind.html"><code>DecisionKind</code></a> | Boolean judgment, choice among options, or position on an ordered rubric. | `type`: `noul`, `choice`, or `score`; descriptions/options/levels in `criteria` | `type`: `predicate`, `choice`, or `score`; `choices` or `levels` where applicable |
-| <a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.answers"><code>DecisionResponse.answers</code></a>: <a href="../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html"><code>BTreeMap&lt;String, DecisionAnswer&gt;</code></a> | Answers matched to the request's question IDs. | `answers` object, keyed by ID | `answers[]`, identified by `name` |
-| <a href="../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html#structfield.value"><code>DecisionAnswer.value</code></a>: <a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html"><code>DecisionValue</code></a> | Boolean estimate, selected option, or rubric score; optional distributions where available. | `noul`, `choice`, or `score`; optional `probabilities` for choices/scores | `probability`, `choice`, or `score`; `probabilities` for choices/scores |
-| <a href="../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html#structfield.provider_confidence"><code>DecisionAnswer.provider_confidence</code></a>: <a href="../../rust/switchyard_protocol/decision/struct.ProviderConfidence.html"><code>Option&lt;ProviderConfidence&gt;</code></a> | Provider-defined confidence, separate from answer probability. | `confidence` | `confidence` |
-| <a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.id"><code>DecisionResponse.id: Option&lt;String&gt;</code></a> | Provider-reported response ID, when available. | Optional `id` | No response ID is read by the adapter; returns `None` |
-| <a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.usage"><code>DecisionResponse.usage</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.Usage.html"><code>Usage</code></a> | Available token counts; missing counts stay unknown. | Deserialized into `Usage` | Token counts normalized into `Usage`, with separate cache counts |
-
-System One serves Jev through `/v1/systemone`; OpenAI uses
-[`/v1/decisions`](https://developers.openai.com/api/reference/resources/decisions/methods/create).
-OpenAI expects text for context and instructions, so the adapter serializes
-structured values as JSON text. It also puts Boolean answer descriptions in
-instruction text because there are no separate fields for them.
+    - **[Question reference](../reference/protocols/decision_questions.md):** shared context, question IDs, Boolean/choice/score questions, and provider request mappings.
+    - **[Answer reference](../reference/protocols/decision_answers.md):** probabilities, rubric scores, confidence, usage, provider response mappings, and errors.
 
 ## Describe the questions
+
+One request carries shared context and independent questions keyed by ID.
+Each <a href="../../rust/switchyard_protocol/decision/struct.DecisionQuestion.html"><code>DecisionQuestion</code></a>
+defines what to evaluate and which answer kind to return. The response uses the
+same question IDs, so the algorithm can match each answer to its question.
 
 Here is a request asking whether a task contains private information. This is
 request construction only; it does not call a provider.
@@ -66,20 +49,21 @@ let request = DecisionRequest {
 };
 ```
 
-The protocol types have public fields. Their documentation states the contracts;
-constructing a value does not validate every constraint. Your adapter must accept
-valid requests and reject responses that do not match their questions.
+For required option IDs, rubric levels, and validation responsibilities, see
+**[question construction and validation](../reference/protocols/decision_questions.md#construction-and-validation)**.
 
 ## Interpret the answers
 
-`DecisionResponse::answers` maps the same question IDs to `DecisionAnswer` values.
-Each answer separates its typed `value` from optional `provider_confidence`.
-For the privacy question, `ProbabilityTrue(Probability(0.8))` means an estimated
+<a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.answers"><code>DecisionResponse::answers</code></a> maps the same question IDs to <a href="../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html"><code>DecisionAnswer</code></a> values.
+Each answer separates its typed <a href="../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html#structfield.value"><code>value</code></a> from optional <a href="../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html#structfield.provider_confidence"><code>provider_confidence</code></a>.
+For the privacy question, <a href="../../rust/switchyard_protocol/decision/enum.BooleanEstimate.html#variant.ProbabilityTrue"><code>ProbabilityTrue(Probability(0.8))</code></a> means an estimated
 0.8 probability that the answer is true. It is not a routing choice until the
 algorithm applies its policy. Choice questions can name any supported set of
-candidates; their shape is not limited to two models. A rubric score is a
-possibly fractional position in `0..=N-1` for the question's ordered levels.
-Retain the question to interpret its score and distribution.
+candidates; their shape is not limited to two models.
+
+The **[answer value reference](../reference/protocols/decision_answers.md#answer-values)**
+explains rubric scores, distributions, and the difference between a Boolean
+judgment and an answer probability.
 
 ## Understand conversion
 
@@ -90,38 +74,39 @@ strings. This retains their content, rather than making the two wire formats
 identical or providing an arbitrary JSON round-trip guarantee.
 
 Both adapters return probabilities for Boolean answers. A custom backend that
-returns only true or false can use `BooleanEstimate::Value` without inventing
+returns only true or false can use <a href="../../rust/switchyard_protocol/decision/enum.BooleanEstimate.html#variant.Value"><code>BooleanEstimate::Value</code></a> without inventing
 certainty. Optional distributions remain `None` when absent. The OpenAI adapter
-reports refusals as errors because `DecisionValue` has no refusal variant.
+reports refusals as errors because <a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html"><code>DecisionValue</code></a> has no refusal variant.
 
 ## Own the conversion
 
-When handling `Step::CallDecision`, use your existing client or a function to
-convert `call.request` into the backend's format, send it, and convert the answer
-into `DecisionResponse`. Pass that work to `call.respond` as a future returning
-`libsy::Result<DecisionResponse>`.
+When handling <a href="../../rust/switchyard_libsy/enum.Step.html#variant.CallDecision"><code>Step::CallDecision</code></a>, use your existing client or a function to
+convert <a href="../../rust/switchyard_libsy/struct.CallDecision.html#structfield.request"><code>call.request</code></a> into the backend's format, send it, and convert the answer
+into <a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html"><code>DecisionResponse</code></a>. Pass that work to <a href="../../rust/switchyard_libsy/struct.CallDecision.html#method.respond"><code>call.respond</code></a> as a future returning
+<a href="../../rust/switchyard_libsy/type.Result.html"><code>libsy::Result&lt;DecisionResponse&gt;</code></a>.
 
 Match question IDs and kinds, and retain available distributions and confidence
-separately. See the two adapters above for reference implementations of request
-encoding and response conversion. Decision conversions live in
-`switchyard-llm-client`; `switchyard-translation` handles LLM formats.
+separately. The
+[question reference](../reference/protocols/decision_questions.md#provider-adapters)
+links the System One and OpenAI adapter implementations. Decision conversions live in
+<a href="../../rust/switchyard_llm_client/"><code>switchyard-llm-client</code></a>; <a href="../../rust/switchyard_translation/"><code>switchyard-translation</code></a> handles LLM formats.
 
 <a href="../../rust/switchyard_protocol/client/trait.RoutedDecisionClient.html"><code>RoutedDecisionClient</code></a>
 is an optional interface that lets Switchyard's clients and execution helpers
-work together. Direct `run_stream` handling does not require implementing it.
+work together. Direct <a href="../../rust/switchyard_libsy/trait.Algorithm.html#method.run_stream"><code>run_stream</code></a> handling does not require implementing it.
 See [Mechanics of Libsy](../mechanics_of_libsy.md#stepcalldecision) for the
 call-handling loop and cancellation behavior.
 
 ## Use the supplied clients
 
-You can instead use the public `SystemOneClient` or `OpenAiDecisionClient` from
+You can instead use the public <a href="../../rust/switchyard_llm_client/struct.SystemOneClient.html"><code>SystemOneClient</code></a> or <a href="../../rust/switchyard_llm_client/struct.OpenAiDecisionClient.html"><code>OpenAiDecisionClient</code></a> from
 [`switchyard-llm-client`](../../crates/libsy-llm-client/README.md). Use dependencies at
 the same API revision as libsy and the protocol crate.
 
 This async excerpt sends the earlier `request` to System One. Set its `model` to
 an ID served by your endpoint. `SYSTEM_ONE_ENDPOINT` must include `/v1/systemone`.
 Running it makes a provider call and may incur a charge.
-The trait import makes the supplied client's `call` method available; you do not
+The trait import makes the supplied client's <a href="../../rust/switchyard_protocol/client/trait.RoutedDecisionClient.html#tymethod.call"><code>call</code></a> method available; you do not
 implement a client in this example.
 
 ```rust
@@ -137,11 +122,11 @@ let client = SystemOneClient::new(
 let response = client.call(request).await?;
 ```
 
-`OpenAiDecisionClient::new` takes the same arguments, with an endpoint ending in
+<a href="../../rust/switchyard_llm_client/struct.OpenAiDecisionClient.html#method.new"><code>OpenAiDecisionClient::new</code></a> takes the same arguments, with an endpoint ending in
 `/v1/decisions` and that provider's key. Each adapter makes one attempt per call;
 its timeout covers the request and reading the response body.
 
 For the built-in execution path, register decision clients by model ID with
-`ClientRouter::single_with_decision_clients` or `new_with_decision_clients`, then
-use `switchyard_llm_client::run`. The algorithm still receives the same typed
-`DecisionResponse` whichever client performs the call.
+<a href="../../rust/switchyard_llm_client/run/struct.ClientRouter.html#method.single_with_decision_clients"><code>ClientRouter::single_with_decision_clients</code></a> or <a href="../../rust/switchyard_llm_client/run/struct.ClientRouter.html#method.new_with_decision_clients"><code>new_with_decision_clients</code></a>, then
+use <a href="../../rust/switchyard_llm_client/run/fn.run.html"><code>switchyard_llm_client::run</code></a>. The algorithm still receives the same typed
+<a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html"><code>DecisionResponse</code></a> whichever client performs the call.

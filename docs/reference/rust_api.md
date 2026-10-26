@@ -24,6 +24,16 @@ Completions, OpenAI Responses, and Anthropic Messages formats.
 
 <a href="../../rust/switchyard_translation/">Open the generated translation API documentation</a>
 
+## `switchyard-llm-client`
+
+Use the optional HTTP clients for LLM and decision calls, or the supplied
+execution helpers when your application does not drive the step stream itself.
+
+<a href="../../rust/switchyard_llm_client/">Open the generated client API documentation</a>
+
+For field meanings and provider API mappings, use the [LLM protocol reference](protocols/llm_requests.md)
+or [decision protocol reference](protocols/decision_questions.md).
+
 ## Crate boundary
 
 Use the [Rust quickstart](../getting_started.md#install) for compatible dependency

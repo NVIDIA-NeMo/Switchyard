@@ -12,6 +12,7 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - "crates/libsy/**"
+      - "crates/libsy-llm-client/**"
       - "crates/protocol/**"
       - "crates/switchyard-translation/**"
       - ".github/workflows/docs.yml"
@@ -27,6 +28,7 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - "crates/libsy/**"
+      - "crates/libsy-llm-client/**"
       - "crates/protocol/**"
       - "crates/switchyard-translation/**"
       - ".github/workflows/docs.yml"
@@ -64,6 +66,7 @@ jobs:
           --package switchyard-libsy
           --package switchyard-protocol
           --package switchyard-translation
+          --package switchyard-llm-client
       - name: Add crate documentation to site
         run: |
           mkdir -p site/rust

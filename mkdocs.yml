@@ -55,6 +55,14 @@ nav:
       - Context-Window Handling: operations/context_window.md
       - Soak Testing: operations/soak_test.md
   - Reference:
+      - Protocols:
+          - LLM:
+              - Requests: reference/protocols/llm_requests.md
+              - Responses and Streams: reference/protocols/llm_responses.md
+              - Translation: reference/protocols/translation.md
+          - Decision Models:
+              - Questions: reference/protocols/decision_questions.md
+              - Answers: reference/protocols/decision_answers.md
       - Host Integration: reference/host_integration.md
       - Server CLI Reference: cli_reference.md
       - TOML Schema: reference/toml_schema.md
