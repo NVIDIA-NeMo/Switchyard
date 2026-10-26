@@ -384,13 +384,21 @@ pub fn temporary_updater(source: &Path) -> Result<tempfile::TempPath, String> {
 }
 /// This function waits for its child so Task Scheduler tracks the app or server's lifetime.
 pub fn launch_managed(s: &Settings, desktop: bool) -> Result<(), String> {
+    while !desktop
+        && !s
+            .desktop_settings()
+            .try_exists()
+            .map_err(|error| error.to_string())?
+    {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
     let (mut command, log) = if desktop {
         (
             Command::new(s.binary("switchyard-desktop")),
             "logs/desktop.log",
         )
     } else {
-        (s.server_command(), "logs/server.log")
+        (s.server_command()?, "logs/server.log")
     };
     fs::create_dir_all(s.sy_home.join("logs")).map_err(|e| e.to_string())?;
     let log = fs::OpenOptions::new()
@@ -408,7 +416,7 @@ pub fn launch_managed(s: &Settings, desktop: bool) -> Result<(), String> {
     if desktop {
         command.arg(s.desktop_settings());
     } else {
-        let config = s.sy_home.join("composite.toml");
+        let config = crate::config::Config::load(&s.desktop_settings())?.config_file;
         // The helper has no console, so a missing key is reported in the server log.
         credentials::configure(&mut command, &config).inspect_err(|error| {
             let _ = writeln!(&log, "switchyard-desktop-install: {error}");

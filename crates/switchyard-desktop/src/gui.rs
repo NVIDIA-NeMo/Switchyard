@@ -1,153 +1,556 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The desktop window shows server health and recorded request and token counts.
+//! Tauri manages the window and tray, and runs blocking operations on worker threads.
 
+use crate::controller::{Action, Controller, Reply, Snapshot};
+use crate::summary::Overview;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use switchyard_desktop::{config::Config, health::Probe, rollup};
-use tauri::State;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicU8, Ordering},
+};
+use std::time::Duration;
+use tauri::{
+    Manager, State,
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::TrayIconBuilder,
+};
 
-/// The window retains the probe and reader so refreshes reuse the health worker and log offset.
-struct Desktop {
+struct Shared {
+    controller: Arc<Mutex<Controller>>,
+    // The state is idle (0), busy (1), closing (2), or busy with Quit queued (3).
+    // The idle state accepts new operations.
+    operation: Arc<AtomicU8>,
+    // This lock serializes saved appearance changes from the main window and popup.
+    appearance: Mutex<()>,
+}
+/// TRAY_ID names the tray icon so refreshes can replace its menu.
+const TRAY_ID: &str = "main";
+
+/// TrayUsage reads the routing log for the tray menu and popup. It loads the settings
+/// and keeps its own log reader, so the tray never waits for an app operation and the
+/// app never waits for the tray.
+struct TrayUsage {
     settings: PathBuf,
-    health: Probe,
-    reader: rollup::Reader,
+    reader: Mutex<crate::rollup::Reader>,
+    health: switchyard_desktop::health::Probe,
+    // The menu is rebuilt only when these rows change, so an open menu does not flicker.
+    rows: Mutex<Vec<String>>,
 }
 
+/// TrayView holds what the tray shows: the usage overview, or the errors that hide it.
 #[derive(serde::Serialize)]
-struct Counts {
-    requests: u64,
-    tokens: u64,
-}
-
-#[derive(serde::Serialize)]
-struct Snapshot {
-    server_url: String,
-    health: serde_json::Value,
-    today: Option<Counts>,
-    week: Option<Counts>,
+struct TrayView {
+    overview: Option<Overview>,
     errors: Vec<String>,
     refresh_seconds: u64,
 }
 
-type Shared = Arc<Mutex<Desktop>>;
-
-/// The worker reads health and usage while the mutex prevents overlapping refreshes.
-#[tauri::command]
-async fn snapshot(state: State<'_, Shared>) -> Result<Snapshot, String> {
-    let shared = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let mut desktop = shared
-            .try_lock()
-            .map_err(|_| "A refresh is running. Try again when it finishes.".to_string())?;
-        let config = Config::load(&desktop.settings)?;
-        let health = desktop.health.details(&config.server_url);
+impl TrayUsage {
+    /// This function reads new log entries, probes the server, and builds the overview.
+    fn read(&self) -> TrayView {
+        let config = match switchyard_desktop::config::Config::load(&self.settings) {
+            Ok(config) => config,
+            Err(error) => {
+                return TrayView {
+                    overview: None,
+                    errors: vec![format!("Cannot read app settings: {error}")],
+                    refresh_seconds: MIN_TRAY_REFRESH,
+                };
+            }
+        };
+        let refresh_seconds = config.refresh_seconds.max(MIN_TRAY_REFRESH);
+        let today = chrono::Local::now().date_naive();
+        let usage = match self.reader.lock() {
+            Ok(mut reader) => reader.read(&config.routing_log, today),
+            Err(_) => Err(std::io::Error::other(
+                "the log reader stopped after an earlier failure",
+            )),
+        };
+        let usage = match usage {
+            Ok(usage) => usage,
+            Err(error) => {
+                return TrayView {
+                    overview: None,
+                    errors: vec![format!("Cannot read routing log: {error}")],
+                    refresh_seconds,
+                };
+            }
+        };
         let mut errors = Vec::new();
-        // A failed read leaves counts absent so the window cannot show incomplete usage as zero.
-        let usage = desktop
-            .reader
-            .read(&config.routing_log, chrono::Local::now().date_naive())
-            .map_err(|error| errors.push(format!("Could not read usage: {error}")))
-            .ok();
-        let counts = |totals: &rollup::Totals| Counts {
-            requests: totals.requests(),
-            tokens: totals.tokens(),
-        };
-        Ok(Snapshot {
-            server_url: config.server_url,
-            health,
-            today: usage.as_ref().map(|usage| counts(&usage.today)),
-            week: usage.as_ref().map(|usage| counts(&usage.week)),
+        // An invalid price file hides savings but keeps traffic and spending visible.
+        let rates = crate::pricing::load(config.prices_file.as_deref()).unwrap_or_else(|error| {
+            errors.push(format!("Could not read model prices: {error}"));
+            Default::default()
+        });
+        let status = self.health.probe(&config.server_url);
+        TrayView {
+            overview: Some(Overview::new(status, &usage, &config, &rates)),
             errors,
-            refresh_seconds: config.refresh_seconds.max(1),
-        })
-    })
-    .await
-    .map_err(|error| error.to_string())?
+            refresh_seconds,
+        }
+    }
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum FileKind {
-    Config,
-    Logs,
+/// MIN_TRAY_REFRESH keeps the tray from probing the server more than once every 5 seconds.
+const MIN_TRAY_REFRESH: u64 = 5;
+
+/// This function reads the tray usage and replaces the tray menu when its rows changed.
+fn refresh_tray(app: &tauri::AppHandle) -> TrayView {
+    let usage = app.state::<TrayUsage>();
+    let view = usage.read();
+    let mut rows = view
+        .overview
+        .as_ref()
+        .map(Overview::rows)
+        .unwrap_or_default();
+    if !view.errors.is_empty() && !rows.is_empty() {
+        rows.push(String::new());
+    }
+    rows.extend(view.errors.iter().cloned());
+    let Ok(mut shown) = usage.rows.lock() else {
+        return view;
+    };
+    if *shown != rows {
+        let result = tray_menu(app, &rows).and_then(|menu| match app.tray_by_id(TRAY_ID) {
+            Some(tray) => tray.set_menu(Some(menu)),
+            None => Ok(()),
+        });
+        match result {
+            Ok(()) => *shown = rows,
+            Err(error) => eprintln!("switchyard-desktop: could not update the tray menu: {error}"),
+        }
+    }
+    view
 }
 
-/// The worker waits for any refresh, then opens the configured file after releasing the mutex.
+/// This function builds the tray menu: the usage rows, then the server and app actions.
+fn tray_menu(app: &tauri::AppHandle, rows: &[String]) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::new(app)?;
+    for row in rows {
+        if row.is_empty() {
+            menu.append(&PredefinedMenuItem::separator(app)?)?;
+        } else {
+            // Rows are labels, not commands, so they are disabled.
+            menu.append(&MenuItem::new(app, row, false, None::<&str>)?)?;
+        }
+    }
+    let groups: [&[(&str, &str)]; 3] = [
+        &[
+            ("restart", "Restart server"),
+            ("open-config", "Open server config…"),
+            ("settings", "Settings…"),
+        ],
+        &[("open", "Open Switchyard"), ("install", "Connect tools…")],
+        &[("quit", "Quit Switchyard")],
+    ];
+    for group in groups {
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+        for (id, text) in group {
+            menu.append(&MenuItem::with_id(app, *id, *text, true, None::<&str>)?)?;
+        }
+    }
+    Ok(menu)
+}
+
+/// This function runs a tray menu action and reports a failure in the app window.
+fn run_tray_action(app: &tauri::AppHandle, action: Action) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let result = dispatch(app.clone(), action).await;
+        let refresh = app.clone();
+        // The refresh probes the server, so it runs on a worker thread.
+        let _ = tauri::async_runtime::spawn_blocking(move || refresh_tray(&refresh)).await;
+        if let Err(error) = result {
+            eprintln!("switchyard-desktop: {error}");
+            notice(&app, &error);
+        }
+    });
+}
+
+/// This function shows a message in the app window and brings the window forward.
+fn notice(app: &tauri::AppHandle, message: &str) {
+    if let Some(window) = app.get_webview_window("main") {
+        let detail = serde_json::json!(message);
+        let _ = window.eval(format!(
+            "window.dispatchEvent(new CustomEvent('switchyard-notice',{{detail:{detail}}}))"
+        ));
+    }
+    show(app);
+}
+
+/// This function quits now, or after the running operation when one is running.
+fn quit(app: &tauri::AppHandle) {
+    if app.state::<Shared>().quit() {
+        app.exit(0);
+    } else {
+        notice(
+            app,
+            "Switchyard will quit when the current operation finishes.",
+        );
+    }
+}
+// Operation keeps the app busy from queueing through worker completion.
+// Drop returns a busy app to idle or closes it when Quit is queued.
+struct Operation(Arc<AtomicU8>, Option<tauri::AppHandle>);
+impl Drop for Operation {
+    fn drop(&mut self) {
+        if self
+            .0
+            .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Acquire)
+            == Err(3)
+        {
+            self.0.store(2, Ordering::Release);
+            if let Some(app) = &self.1 {
+                app.exit(0);
+            }
+        }
+    }
+}
+impl Shared {
+    fn begin(&self) -> Result<Operation, String> {
+        self.operation
+            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| "An operation is running. Try again when it finishes.".to_string())?;
+        Ok(Operation(self.operation.clone(), None))
+    }
+    fn quit(&self) -> bool {
+        if self
+            .operation
+            .compare_exchange(1, 3, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return false;
+        }
+        self.operation
+            .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+            || self.operation.load(Ordering::Acquire) == 2
+    }
+}
+
 #[tauri::command]
-async fn open_file(state: State<'_, Shared>, kind: FileKind) -> Result<(), String> {
-    let shared = state.inner().clone();
+async fn snapshot(app: tauri::AppHandle, state: State<'_, Shared>) -> Result<Snapshot, String> {
+    let mut operation = state.begin()?;
+    operation.1 = Some(app.clone());
+    let shared = state.controller.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let config = {
-            let desktop = shared
-                .lock()
-                .map_err(|_| "Could not access desktop state after a worker failed.".to_string())?;
-            Config::load(&desktop.settings)?
-        };
-        let path = match kind {
-            FileKind::Config => config.config_file,
-            FileKind::Logs => config.routing_log,
-        };
-        #[cfg(target_os = "macos")]
-        {
-            let output = std::process::Command::new("open")
-                .arg("--")
-                .arg(&path)
-                .output()
-                .map_err(|error| format!("Could not open {}: {error}", path.display()))?;
-            if !output.status.success() {
-                return Err(format!(
-                    "Could not open {}: {}",
-                    path.display(),
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ));
-            }
-            Ok(())
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::ffi::OsStrExt;
-            use windows_sys::Win32::UI::{
-                Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL,
-            };
-            let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-            let status = unsafe {
-                ShellExecuteW(
-                    std::ptr::null_mut(),
-                    std::ptr::null(),
-                    path.as_ptr(),
-                    std::ptr::null(),
-                    std::ptr::null(),
-                    SW_SHOWNORMAL,
-                )
-            } as isize;
-            if status > 32 {
-                Ok(())
-            } else {
-                Err(format!("Windows could not open the file (error {status})."))
-            }
-        }
+        let _operation = operation;
+        shared
+            .try_lock()
+            .map_err(|_| "An operation is running. Try again when it finishes.".to_string())?
+            .snapshot()
     })
     .await
-    .map_err(|error| error.to_string())?
+    .map_err(|e| e.to_string())?
 }
-
-/// Quitting closes the window and stops the application.
+async fn dispatch(app: tauri::AppHandle, action: Action) -> Result<Reply, String> {
+    let (operation, shared) = {
+        let state = app.state::<Shared>();
+        let mut operation = state.begin()?;
+        operation.1 = Some(app.clone());
+        (operation, state.controller.clone())
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = operation;
+        shared
+            .try_lock()
+            .map_err(|_| "An operation is running. Try again when it finishes.".to_string())?
+            .dispatch(action)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+#[tauri::command]
+async fn action(app: tauri::AppHandle, action: Action) -> Result<Reply, String> {
+    dispatch(app, action).await
+}
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
-    app.exit(0);
+    quit(&app);
+}
+#[tauri::command]
+async fn choose_path(directory: bool) -> Result<Option<String>, String> {
+    // The blocking worker waits for the picker; rfd opens macOS panels on the main thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        let dialog = rfd::FileDialog::new().set_title(if directory {
+            "Choose a Git project folder"
+        } else {
+            "Choose harness settings"
+        });
+        let path = if directory {
+            dialog.pick_folder()
+        } else {
+            dialog.pick_file()
+        };
+        #[cfg(windows)]
+        {
+            Ok(path.map(|path| path.display().to_string()))
+        }
+        #[cfg(target_os = "macos")]
+        {
+            path.map(|path| {
+                path.into_os_string().into_string().map_err(|_| {
+                    "The selected path cannot be represented as UTF-8. \
+                     Enter a different path in the field."
+                        .to_string()
+                })
+            })
+            .transpose()
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?
 }
 
-/// The application owns one health probe and log reader for the lifetime of the window.
-pub fn run(settings: PathBuf) -> Result<(), String> {
-    tauri::Builder::default()
-        .manage(Arc::new(Mutex::new(Desktop {
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum AppearanceMode {
+    #[default]
+    System,
+    // Dark is saved as "canary".
+    Canary,
+    Light,
+}
+
+#[tauri::command]
+fn appearance(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    state: State<'_, Shared>,
+    mode: Option<AppearanceMode>,
+) -> Result<serde_json::Value, String> {
+    let _lock = state.appearance.lock().map_err(|e| e.to_string())?;
+    let system = window.theme().map_err(|e| e.to_string())?;
+    let path = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| e.to_string())?
+        .join("appearance.json");
+    let selected = if let Some(mode) = mode {
+        let directory = path
+            .parent()
+            .ok_or("Could not find the appearance settings folder.")?;
+        std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+        use std::io::Write;
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(directory).map_err(|e| e.to_string())?;
+        temporary
+            .write_all(&serde_json::to_vec(&mode).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        temporary.as_file().sync_all().map_err(|e| e.to_string())?;
+        temporary.persist(&path).map_err(|e| e.to_string())?;
+        mode
+    } else {
+        match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|e| format!("Could not read appearance settings: {e}"))?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => AppearanceMode::default(),
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+    let result = serde_json::json!({"mode": selected, "system": system});
+    if mode.is_some() {
+        for window in app.webview_windows().values() {
+            window
+                .eval(format!(
+                    "window.dispatchEvent(new CustomEvent('switchyard-appearance', \
+                     {{detail:{result}}}))"
+                ))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(result)
+}
+
+#[cfg(target_os = "macos")]
+fn material(
+    fallback: tauri::window::Effect,
+    radius: Option<f64>,
+    state: tauri::window::EffectState,
+) -> tauri::utils::config::WindowEffectsConfig {
+    tauri::utils::config::WindowEffectsConfig {
+        effects: vec![tauri::window::Effect::LiquidGlassRegular, fallback],
+        state: Some(state),
+        radius,
+        color: None,
+        interactive: false,
+    }
+}
+
+#[tauri::command]
+fn accessibility() -> serde_json::Value {
+    #[cfg(target_os = "macos")]
+    {
+        let workspace = objc2_app_kit::NSWorkspace::sharedWorkspace();
+        serde_json::json!({
+            "native_material": true,
+            "reduce_transparency": workspace.accessibilityDisplayShouldReduceTransparency(),
+            "reduce_motion": workspace.accessibilityDisplayShouldReduceMotion(),
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    serde_json::json!({"native_material": false, "reduce_transparency": true, "reduce_motion": false})
+}
+
+fn open_page(app: &tauri::AppHandle, page: &str) {
+    if let Some(window) = app.get_webview_window("main") {
+        // Only the fixed page names from the tray menu reach this script.
+        let script = format!(
+            "window.dispatchEvent(new CustomEvent('switchyard-page', {{detail:{page:?}}}))"
+        );
+        if let Err(error) = window.eval(&script) {
+            eprintln!("switchyard-desktop: could not select the page: {error}");
+        }
+    }
+    show(app);
+}
+fn activation(app: &tauri::AppHandle, visible: bool) -> tauri::Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        app.set_activation_policy(if visible {
+            tauri::ActivationPolicy::Regular
+        } else {
+            tauri::ActivationPolicy::Accessory
+        })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, visible);
+        Ok(())
+    }
+}
+fn show(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main")
+        && let Err(e) = activation(app, true)
+            .and_then(|()| window.show())
+            .and_then(|()| window.set_focus())
+    {
+        eprintln!("switchyard-desktop: could not open the window: {e}");
+    }
+}
+pub fn run(controller: Controller, settings: PathBuf) -> Result<(), String> {
+    let app = tauri::Builder::default()
+        .manage(Shared {
+            controller: Arc::new(Mutex::new(controller)),
+            operation: Arc::new(AtomicU8::new(0)),
+            appearance: Mutex::new(()),
+        })
+        .manage(TrayUsage {
             settings,
-            health: Probe::default(),
-            reader: rollup::Reader::default(),
-        })))
-        .invoke_handler(tauri::generate_handler![snapshot, open_file, quit_app])
-        .run(tauri::generate_context!())
-        .map_err(|error| error.to_string())
+            reader: Mutex::new(crate::rollup::Reader::default()),
+            health: switchyard_desktop::health::Probe::default(),
+            rows: Mutex::new(Vec::new()),
+        })
+        .invoke_handler(tauri::generate_handler![
+            snapshot,
+            action,
+            choose_path,
+            appearance,
+            accessibility,
+            quit_app
+        ])
+        .setup(|app| {
+            #[cfg(target_os = "macos")]
+            if let Some(window) = app.get_webview_window("main") {
+                window.set_effects(material(
+                    tauri::window::Effect::Sidebar,
+                    None,
+                    tauri::window::EffectState::FollowsWindowActiveState,
+                ))?;
+            }
+
+            let tray_pixels = include_bytes!("../icons/tray.rgba");
+            TrayIconBuilder::with_id(TRAY_ID)
+                .icon(tauri::image::Image::new_owned(tray_pixels.to_vec(), 22, 22))
+                .icon_as_template(false)
+                .tooltip("Switchyard — routes and usage")
+                .menu(&tray_menu(app.handle(), &["Reading usage…".into()])?)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "restart" => run_tray_action(app, Action::Restart {}),
+                    "open-config" => run_tray_action(app, Action::OpenConfig {}),
+                    "settings" => open_page(app, "settings"),
+                    "open" => open_page(app, "overview"),
+                    "install" => open_page(app, "install"),
+                    "quit" => quit(app),
+                    _ => {}
+                })
+                .build(app)?;
+            // Like the menu bar app, the tray rereads usage on the settings interval.
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                loop {
+                    let view = refresh_tray(&handle);
+                    std::thread::sleep(Duration::from_secs(view.refresh_seconds));
+                }
+            });
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::ThemeChanged(theme) = event {
+                let value = serde_json::json!(theme);
+                for target in window.app_handle().webview_windows().values() {
+                    if let Err(error) = target.eval(format!(
+                        "window.dispatchEvent(new CustomEvent('switchyard-system-theme', \
+                         {{detail:{value}}}))"
+                    )) {
+                        eprintln!("switchyard-desktop: could not update the appearance: {error}");
+                    }
+                }
+            }
+
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+
+                // Accessory removes the running Dock entry while keeping the tray menu.
+                if let Err(e) = window.hide().and_then(|()| {
+                    if window.label() == "main" {
+                        activation(window.app_handle(), false)
+                    } else {
+                        Ok(())
+                    }
+                }) {
+                    eprintln!("switchyard-desktop: could not hide the window: {e}");
+                }
+            }
+        })
+        .build(tauri::generate_context!())
+        .map_err(|e| e.to_string())?;
+    app.run(|app, event| match event {
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { .. } => show(app),
+        tauri::RunEvent::ExitRequested { api, .. } if !app.state::<Shared>().quit() => {
+            api.prevent_exit()
+        }
+        _ => {}
+    });
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    // A queued operation must prevent Quit before its worker starts.
+    fn quit_blocks_pending_operations_and_stays_closed() {
+        let directory = tempfile::tempdir().expect("directory");
+        let settings = directory.path().join("app.toml");
+        let shared = Shared {
+            controller: Arc::new(Mutex::new(Controller::new(
+                crate::config::Config::defaults_for(&settings).expect("defaults"),
+                settings,
+            ))),
+            operation: Arc::new(AtomicU8::new(0)),
+            appearance: Mutex::new(()),
+        };
+        let operation = shared.begin().expect("operation");
+        assert!(shared.begin().is_err());
+        assert!(!shared.quit());
+        drop(operation);
+        assert!(shared.quit());
+        assert!(shared.quit());
+        assert!(shared.begin().is_err());
+    }
 }
