@@ -2039,6 +2039,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#switchyard-runner" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard-runner
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#crate-boundary" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2152,7 +2163,7 @@
   <span class="md-ellipsis">
     
   
-    Background
+    Demo Server
   
 
     
@@ -2165,119 +2176,6 @@
         
         <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_7_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_7_7">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Background
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../core_concepts/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Core Concepts
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../architecture/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Architecture
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    
-    
-    
-    
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_8" >
-        
-          
-          <label class="md-nav__link" for="__nav_7_8" id="__nav_7_8_label" tabindex="0">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Demo Server
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_7_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2431,6 +2329,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#switchyard-runner" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        switchyard-runner
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#crate-boundary" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2473,11 +2382,11 @@
 
 
 <h1 id="rust-api">Rust API<a class="headerlink" href="#rust-api" title="Permanent link">&para;</a></h1>
-<p>Switchyard publishes generated API documentation for its embeddable routing
-library, provider-neutral protocol types, and format translation.</p>
+<p>Choose the crates your integration needs. The links below open generated Rust
+API documentation for the core library and its optional supporting components.</p>
 <h2 id="switchyard-libsy"><code>switchyard-libsy</code><a class="headerlink" href="#switchyard-libsy" title="Permanent link">&para;</a></h2>
-<p>Use libsy to construct targets, run built-in routing algorithms, implement a
-custom algorithm, or drive model calls through the host-facing step stream.</p>
+<p>Use libsy to construct the model pool, run built-in routing algorithms, implement
+a custom algorithm, or handle requested work through the Step stream.</p>
 <p><a href="../../rust/switchyard_libsy/">Open the generated libsy API documentation</a></p>
 <h2 id="switchyard-protocol"><code>switchyard-protocol</code><a class="headerlink" href="#switchyard-protocol" title="Permanent link">&para;</a></h2>
 <p>Use protocol types for normalized conversations, response streams, routed LLM
@@ -2491,6 +2400,12 @@ Completions, OpenAI Responses, and Anthropic Messages formats.</p>
 <p>Use the optional HTTP clients for LLM and decision calls, or the supplied
 execution helpers when your application does not drive the step stream itself.</p>
 <p><a href="../../rust/switchyard_llm_client/">Open the generated client API documentation</a></p>
+<h2 id="switchyard-runner"><code>switchyard-runner</code><a class="headerlink" href="#switchyard-runner" title="Permanent link">&para;</a></h2>
+<p>Use the optional runner to load TOML configuration, resolve named routes, and
+execute them inside a serving integration. See
+<a href="../../rust/switchyard_runner/struct.Runner.html"><code>Runner</code></a>
+and the <a href="../toml_schema/">configuration reference</a>.</p>
+<p><a href="../../rust/switchyard_runner/">Open the generated runner API documentation</a></p>
 <p>For field meanings and provider API mappings, use the <a href="../protocols/llm_requests/">LLM protocol reference</a>
 or <a href="../protocols/decision_questions/">decision protocol reference</a>.</p>
 <h2 id="crate-boundary">Crate boundary<a class="headerlink" href="#crate-boundary" title="Permanent link">&para;</a></h2>
@@ -2503,6 +2418,11 @@ requests, responses, metadata, decisions, and LLM client traits from
 <p>Add <code>switchyard-translation</code> when your application directly converts requests,
 responses, or streams between provider formats. Use a version compatible with
 your other Switchyard dependencies.</p>
+<p>The runner and HTTP client are optional for direct libsy integration. Your host
+can construct the algorithm and execute the requested work itself. The
+<a href="../../operations/local_evaluation/">demo server</a> is a reference application around
+the runner; <a href="../host_integration/#python-bindings">Python bindings</a> expose the
+same routing core to Python applications.</p>
 <h2 id="ci-previews">CI previews<a class="headerlink" href="#ci-previews" title="Permanent link">&para;</a></h2>
 <p>The Documentation workflow publishes a preview for same-repository pull
 requests. Open the workflow's <strong>Deploy PR preview</strong> summary to find its preview

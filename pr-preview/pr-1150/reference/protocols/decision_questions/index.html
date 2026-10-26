@@ -2134,7 +2134,7 @@
   <span class="md-ellipsis">
     
   
-    Background
+    Demo Server
   
 
     
@@ -2147,119 +2147,6 @@
         
         <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_7_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_7_7">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Background
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../../core_concepts/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Core Concepts
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../../architecture/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Architecture
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    
-    
-    
-    
-      
-    
-    
-    <li class="md-nav__item md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_8" >
-        
-          
-          <label class="md-nav__link" for="__nav_7_8" id="__nav_7_8_label" tabindex="0">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Demo Server
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_7_8">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2542,8 +2429,8 @@ possible backend.</p>
 <code>data</code> payload. Provider payloads use the mappings above. Serializing the protocol
 value directly is therefore not a substitute for a provider adapter.</p>
 <h2 id="provider-adapters">Provider adapters<a class="headerlink" href="#provider-adapters" title="Permanent link">&para;</a></h2>
-<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9d4646ef5d580f1c48d75b7431a0cdc927175e73/crates/libsy-llm-client/src/system_one.rs">System One implementation</a>
-and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9d4646ef5d580f1c48d75b7431a0cdc927175e73/crates/libsy-llm-client/src/openai_decisions.rs">OpenAI Decisions implementation</a>
+<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/924d228a8723140132cf3ae4078c7bfba65b7fdc/crates/libsy-llm-client/src/system_one.rs">System One implementation</a>
+and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/924d228a8723140132cf3ae4078c7bfba65b7fdc/crates/libsy-llm-client/src/openai_decisions.rs">OpenAI Decisions implementation</a>
 are reference examples of request encoding and response conversion. Both supplied
 clients make one attempt per call, with a timeout covering the request and reading
 the body.</p>
