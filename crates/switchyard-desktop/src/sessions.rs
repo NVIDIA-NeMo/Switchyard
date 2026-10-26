@@ -267,6 +267,13 @@ pub struct OpenRequest<'a> {
     /// Claude's session UUID. Choosing it here makes the transcript path known before the
     /// session starts.
     pub native_session_id: Option<&'a str>,
+    /// Instructions the harness reads before the first turn: Codex `developer_instructions`,
+    /// Claude `--append-system-prompt`. A hand-off points at its file here.
+    pub instructions: Option<&'a str>,
+    /// Directories outside the session directory that Claude may read without asking.
+    pub read_dirs: &'a [std::path::PathBuf],
+    /// A first prompt that starts the session's first turn at once.
+    pub first_prompt: Option<&'a str>,
 }
 
 /// Claude Code accepts a UUID for `--session-id`. Its own session IDs are version 4, so the
@@ -362,7 +369,7 @@ pub fn launch(
         .to_path_buf();
     let id = format!("sy-{}", uuid::Uuid::now_v7());
     // Path resolution must succeed before launch creates directories or a worktree.
-    let default_files = harness::paths(tool)?;
+    harness::paths(tool)?;
     let (worktree, private, mut pending) = create_worktree(&project, &id, revision)?;
     let files = match tool {
         Harness::Pi => vec![private.join("models.json"), private.join("settings.json")],
@@ -403,10 +410,7 @@ pub fn launch(
         serde_json::to_vec_pretty(&receipt).map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    let account = account.or_else(|| match tool {
-        Harness::Claude if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() => None,
-        _ => default_files[0].parent(),
-    });
+    let account = script_account(tool, account)?;
     open_harness(&OpenRequest {
         tool,
         binary,
@@ -414,11 +418,14 @@ pub fn launch(
         model,
         root: &root,
         login,
-        account,
+        account: account.as_deref(),
         session_id: &id,
         files: &files,
         private: &private,
         native_session_id: native_session_id.as_deref(),
+        instructions: None,
+        read_dirs: &[],
+        first_prompt: None,
     })?;
     pending.opened = true;
     Ok(format!(
@@ -431,12 +438,61 @@ pub fn launch(
     ))
 }
 
-/// This opens the harness in `request.directory` through the user's terminal.
-pub fn open_harness(request: &OpenRequest) -> Result<(), String> {
+/// This records another harness opened in a managed session's worktree. The top-level `tool`,
+/// `route`, `account_directory`, and `settings_directory` follow the latest launch.
+pub fn append_launch(id: &str, launched: &serde_json::Value) -> Result<(), String> {
+    let mut receipt = managed_session(id)?;
+    let path = session_root()?.join(format!("{id}-settings/session.json"));
+    let launches = receipt
+        .as_object_mut()
+        .ok_or("The session receipt does not match this worktree.")?
+        .entry("launches")
+        .or_insert_with(|| serde_json::json!([]));
+    launches
+        .as_array_mut()
+        .ok_or("The session receipt lists launches in an unexpected form.")?
+        .push(launched.clone());
+    for key in ["tool", "route", "account_directory", "settings_directory"] {
+        receipt[key] = launched[key].clone();
+    }
+    std::fs::write(
+        &path,
+        serde_json::to_vec_pretty(&receipt).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| format!("Write {}: {error}", path.display()))
+}
+
+/// The arguments and environment that start a harness. `open_harness` runs them in a terminal;
+/// a review window shows them first.
+pub struct Invocation {
+    pub args: Vec<String>,
+    pub environment: Vec<(String, String)>,
+    pub remove_environment: Vec<String>,
+}
+
+/// The login directory the launch exports: the named account, or the harness's current
+/// directory. Claude keeps an unset `CLAUDE_CONFIG_DIR` unset, so its default login stays
+/// the user's default.
+pub fn script_account(
+    tool: Harness,
+    account: Option<&Path>,
+) -> Result<Option<std::path::PathBuf>, String> {
+    if let Some(account) = account {
+        return Ok(Some(account.to_path_buf()));
+    }
+    let default_files = harness::paths(tool)?;
+    Ok(match tool {
+        Harness::Claude if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() => None,
+        _ => default_files[0].parent().map(Path::to_path_buf),
+    })
+}
+
+/// This builds the harness command for `request` without opening anything.
+pub fn invocation(request: &OpenRequest) -> Result<Invocation, String> {
     let OpenRequest {
         tool,
-        binary,
-        directory,
+        binary: _,
+        directory: _,
         model,
         root,
         login,
@@ -445,9 +501,12 @@ pub fn open_harness(request: &OpenRequest) -> Result<(), String> {
         files,
         private,
         native_session_id,
+        instructions,
+        read_dirs,
+        first_prompt,
     } = request;
     let (tool, model, login, session_id) = (*tool, *model, *login, *session_id);
-    let codex_args = [
+    let mut codex_args = vec![
         "-c".to_string(),
         format!("model={}", toml_edit::Value::from(model)),
         "-c".into(),
@@ -461,6 +520,18 @@ pub fn open_harness(request: &OpenRequest) -> Result<(), String> {
             toml_edit::Value::from(session_id)
         ),
     ];
+    if let Some(instructions) = instructions {
+        codex_args.extend([
+            "-c".to_string(),
+            format!(
+                "developer_instructions={}",
+                toml_edit::Value::from(*instructions)
+            ),
+        ]);
+    }
+    if let Some(prompt) = first_prompt {
+        codex_args.push((*prompt).to_string());
+    }
     let mut claude_args = vec![
         "--settings".to_string(),
         files[0].display().to_string(),
@@ -470,111 +541,130 @@ pub fn open_harness(request: &OpenRequest) -> Result<(), String> {
     if let Some(native) = native_session_id {
         claude_args.extend(["--session-id".to_string(), (*native).to_string()]);
     }
+    if let Some(instructions) = instructions {
+        claude_args.extend([
+            "--append-system-prompt".to_string(),
+            (*instructions).to_string(),
+        ]);
+    }
+    for dir in read_dirs.iter() {
+        claude_args.extend(["--add-dir".to_string(), dir.display().to_string()]);
+    }
+    if let Some(prompt) = first_prompt {
+        claude_args.push((*prompt).to_string());
+    }
+    let mut environment = Vec::new();
+    let mut remove_environment = Vec::new();
+    let args = match tool {
+        Harness::CodexCli => codex_args,
+        Harness::Claude => {
+            environment.push((
+                "ANTHROPIC_CUSTOM_HEADERS".to_string(),
+                format!("x-switchyard-session-id: {session_id}\nx-switchyard-origin: claude"),
+            ));
+            if login {
+                remove_environment.extend(
+                    [
+                        "ANTHROPIC_AUTH_TOKEN",
+                        "ANTHROPIC_API_KEY",
+                        "CLAUDE_CODE_OAUTH_TOKEN",
+                    ]
+                    .map(String::from),
+                );
+            }
+            claude_args
+        }
+        Harness::Pi => {
+            environment.push((
+                "PI_CODING_AGENT_DIR".to_string(),
+                private.display().to_string(),
+            ));
+            vec![
+                "--provider".into(),
+                "switchyard".into(),
+                "--model".into(),
+                model.into(),
+            ]
+        }
+        Harness::CodexApp => return Err("Choose a CLI harness.".into()),
+    };
+    if let Some(path) = account {
+        match tool {
+            Harness::CodexCli => {
+                environment.push(("CODEX_HOME".into(), path.display().to_string()))
+            }
+            Harness::Claude => {
+                environment.push(("CLAUDE_CONFIG_DIR".into(), path.display().to_string()))
+            }
+            _ => {}
+        }
+    }
+    Ok(Invocation {
+        args,
+        environment,
+        remove_environment,
+    })
+}
+
+/// The shell lines that `open_harness` runs, for a review window. Windows runs the same
+/// program, arguments, and environment through its own console.
+pub fn display_command(request: &OpenRequest) -> Result<String, String> {
+    let invocation = invocation(request)?;
+    let mut text = format!("cd {}", quote(&request.directory.display().to_string()));
+    for (name, value) in &invocation.environment {
+        text.push_str(&format!("\nexport {name}={}", quote(value)));
+    }
+    if !invocation.remove_environment.is_empty() {
+        text.push_str(&format!(
+            "\nunset {}",
+            invocation.remove_environment.join(" ")
+        ));
+    }
+    text.push('\n');
+    text.push_str(&quote(&request.binary.display().to_string()));
+    for arg in &invocation.args {
+        text.push(' ');
+        text.push_str(&quote(arg));
+    }
+    Ok(text)
+}
+
+/// This opens the harness in `request.directory` through the user's terminal.
+pub fn open_harness(request: &OpenRequest) -> Result<(), String> {
+    let invocation = invocation(request)?;
     #[cfg(windows)]
     {
-        let mut environment = Vec::new();
-        let mut remove_environment = Vec::new();
-        let args = match tool {
-            Harness::CodexCli => codex_args.into(),
-            Harness::Claude => {
-                environment.push((
-                    "ANTHROPIC_CUSTOM_HEADERS".into(),
-                    format!("x-switchyard-session-id: {session_id}\nx-switchyard-origin: claude"),
-                ));
-                if login {
-                    remove_environment.extend(
-                        [
-                            "ANTHROPIC_AUTH_TOKEN",
-                            "ANTHROPIC_API_KEY",
-                            "CLAUDE_CODE_OAUTH_TOKEN",
-                        ]
-                        .map(String::from),
-                    );
-                }
-                claude_args
-            }
-            Harness::Pi => {
-                environment.push(("PI_CODING_AGENT_DIR".into(), private.display().to_string()));
-                vec![
-                    "--provider".into(),
-                    "switchyard".into(),
-                    "--model".into(),
-                    model.into(),
-                ]
-            }
-            Harness::CodexApp => return Err("Choose a CLI harness.".into()),
-        };
-        if let Some(path) = account {
-            match tool {
-                Harness::CodexCli => {
-                    environment.push(("CODEX_HOME".into(), path.display().to_string()))
-                }
-                Harness::Claude => {
-                    environment.push(("CLAUDE_CONFIG_DIR".into(), path.display().to_string()))
-                }
-                _ => {}
-            }
-        }
         crate::windows::open_terminal(crate::windows::TerminalJob {
-            binary: binary.clone(),
-            args,
-            directory: Some(directory.clone()),
-            environment,
-            remove_environment,
+            binary: request.binary.clone(),
+            args: invocation.args,
+            directory: Some(request.directory.clone()),
+            environment: invocation.environment,
+            remove_environment: invocation.remove_environment,
         })?;
     }
     #[cfg(not(windows))]
     {
-        let program = quote(&binary.display().to_string());
-        let command = match tool {
-            Harness::CodexCli => format!(
-                "{program} {}",
-                codex_args
-                    .iter()
-                    .map(|arg| quote(arg))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ),
-            Harness::Claude => format!(
-                "env ANTHROPIC_CUSTOM_HEADERS={} {program} {}",
-                quote(&format!(
-                    "x-switchyard-session-id: {session_id}\nx-switchyard-origin: claude"
-                )),
-                claude_args
-                    .iter()
-                    .map(|arg| quote(arg))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ),
-            Harness::Pi => format!(
-                "env PI_CODING_AGENT_DIR={} {program} --provider switchyard --model {}",
-                quote(&private.display().to_string()),
-                quote(model)
-            ),
-            Harness::CodexApp => return Err("Choose a CLI harness.".into()),
-        };
-        let account_env = match (tool, account) {
-            (Harness::CodexCli, Some(path)) => {
-                format!("export CODEX_HOME={}\n", quote(&path.display().to_string()))
-            }
-            (Harness::Claude, Some(path)) => format!(
-                "export CLAUDE_CONFIG_DIR={}\n",
-                quote(&path.display().to_string())
-            ),
-            _ => String::new(),
-        };
-        let subscription_env = if tool == Harness::Claude && login {
-            "unset ANTHROPIC_AUTH_TOKEN ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN\n"
-        } else {
-            ""
-        };
+        let mut environment = String::new();
+        for (name, value) in &invocation.environment {
+            environment.push_str(&format!("export {name}={}\n", quote(value)));
+        }
+        if !invocation.remove_environment.is_empty() {
+            environment.push_str(&format!(
+                "unset {}\n",
+                invocation.remove_environment.join(" ")
+            ));
+        }
+        let command = std::iter::once(quote(&request.binary.display().to_string()))
+            .chain(invocation.args.iter().map(|arg| quote(arg)))
+            .collect::<Vec<_>>()
+            .join(" ");
         let script = format!(
             "#!/bin/bash\n\
              export PATH=\"$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH\"\n\
              rm -- \"$0\"\n\
              cd {} || exit 1\n\
-             {account_env}{subscription_env}{command}",
-            quote(&directory.display().to_string())
+             {environment}{command}",
+            quote(&request.directory.display().to_string())
         );
         crate::server::open_terminal_script("switchyard-session-", &script)?;
     }

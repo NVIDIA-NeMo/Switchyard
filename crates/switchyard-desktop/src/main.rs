@@ -12,6 +12,7 @@ mod accounts;
 mod controller;
 #[cfg(any(target_os = "macos", windows))]
 mod gui;
+mod handoffs;
 mod harness;
 mod models;
 mod pricing;

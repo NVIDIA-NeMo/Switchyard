@@ -75,6 +75,8 @@ impl Default for Limits {
 
 /// Listing reads only enough of each transcript to describe its session.
 const LIST_HEAD_BYTES: u64 = 64 * 1024;
+/// `detect` reads this much to find the first record of an unnamed transcript.
+const DETECT_HEAD_BYTES: u64 = 64 * 1024;
 const MAX_WALK_DEPTH: usize = 4;
 const TITLE_BYTES: usize = 120;
 
@@ -185,6 +187,32 @@ pub fn list(kind: Kind, config_dir: &Path) -> Result<Listing, String> {
         .sessions
         .sort_by(|left, right| right.last_activity.cmp(&left.last_activity));
     Ok(listing)
+}
+
+/// This tells which harness wrote a transcript. Codex rollouts are named `rollout-…` and
+/// Claude Code transcripts are named by their session UUID; otherwise the first record decides.
+pub fn detect(path: &Path) -> Result<Kind, String> {
+    let stem = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if stem.starts_with("rollout-") {
+        return Ok(Kind::Codex);
+    }
+    if looks_like_uuid(&stem) {
+        return Ok(Kind::Claude);
+    }
+    let (head, _) = read_head(path, DETECT_HEAD_BYTES)?;
+    let first = records(&head, false)
+        .next()
+        .ok_or_else(|| format!("{} is not a JSONL transcript.", path.display()))?;
+    match first["type"].as_str() {
+        Some("session_meta" | "turn_context" | "event_msg" | "response_item" | "compacted") => {
+            Ok(Kind::Codex)
+        }
+        Some(_) => Ok(Kind::Claude),
+        None => Err(format!("{} is not a harness transcript.", path.display())),
+    }
 }
 
 /// This finds the transcript of one session by its harness-native ID.

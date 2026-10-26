@@ -7,6 +7,7 @@
 use crate::{
     accounts,
     config::Config,
+    handoffs,
     harness::{self, Harness},
     history, models, pricing, rollup, server,
     server_config::{ALGORITHMS, Choice, Route, ServerConfig},
@@ -14,7 +15,11 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
+use switchyard_desktop::transcripts;
 
 #[derive(Clone, Debug, Deserialize, strum::EnumDiscriminants)]
 #[strum_discriminants(name(ActionKind), derive(strum::EnumIter))]
@@ -114,6 +119,32 @@ pub enum Action {
         id: String,
         project: String,
     },
+    /// This shows the hand-off that another harness reads to continue `source`: the text,
+    /// the destination, the warnings, and the command. `tool`, `account`, and `route` select
+    /// the destination.
+    PreviewHandoff {
+        source: HandoffSource,
+        tool: Harness,
+        account: Option<String>,
+        route: String,
+        id: String,
+    },
+    /// This writes the reviewed hand-off and opens the destination harness in the session's
+    /// directory.
+    Handoff {
+        source: HandoffSource,
+        tool: Harness,
+        account: Option<String>,
+        route: String,
+        id: String,
+        preview_token: Option<String>,
+    },
+    /// This lists the sessions whose transcripts a harness keeps, for the given account or the
+    /// harness's current login. The list is read on demand because it opens every transcript.
+    HarnessSessions {
+        tool: Harness,
+        account: Option<String>,
+    },
     LoginAccount {
         tool: Harness,
         name: String,
@@ -177,6 +208,18 @@ pub enum Action {
     },
 }
 
+/// HandoffSource names the session that a hand-off continues.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HandoffSource {
+    /// A session that the app launched, by its `sy-` ID. The hand-off reads the transcript of
+    /// the session's latest launch and keeps the session ID.
+    Managed { id: String },
+    /// A transcript file that the user chose: a Claude Code `<uuid>.jsonl` or a Codex rollout.
+    /// The hand-off continues in the directory the transcript records, under a new session ID.
+    Transcript { path: String },
+}
+
 /// Snapshot holds the data shown by the apps. The terminal app destructures every field,
 /// so adding a field requires an update to `draw`.
 #[derive(Clone, Default, Serialize)]
@@ -190,6 +233,9 @@ pub struct Snapshot {
     /// This field holds the error that stopped the inventory read. `session_inventory` is empty
     /// when this field is set.
     pub session_inventory_error: Option<String>,
+    /// Each value is the `handoff.json` record of a hand-off, newest first. Records older than
+    /// `handoffs::RETENTION_DAYS` are removed on the first snapshot after the app starts.
+    pub handoffs: Vec<Value>,
     pub settings: Option<AppSettings>,
     pub data_state: DataState,
     /// The controller increases this number when the app settings select another server
@@ -449,6 +495,31 @@ struct ReviewedLaunch {
     account: Option<PathBuf>,
 }
 
+// The hand-off review keeps the rendered text, so Handoff writes exactly what the user read.
+// The transcript is a live file, so the review remembers its size and modification time
+// rather than its bytes.
+struct ReviewedHandoff {
+    review: Review,
+    plan: HandoffPlan,
+}
+struct HandoffPlan {
+    id: String,
+    markdown: String,
+    kind: transcripts::Kind,
+    transcript: PathBuf,
+    fingerprint: transcripts::Fingerprint,
+    source: Value,
+    managed: Option<String>,
+    tool: Harness,
+    model: String,
+    root: String,
+    login: bool,
+    account: Option<PathBuf>,
+    directory: PathBuf,
+    session_id: String,
+    native_session_id: Option<String>,
+}
+
 pub struct Controller {
     settings: PathBuf,
     config: Config,
@@ -463,7 +534,10 @@ pub struct Controller {
     route_change: Option<Review>,
     update_review: Option<(String, Value)>,
     launch_review: Option<ReviewedLaunch>,
+    handoff_review: Option<ReviewedHandoff>,
     settings_review: Option<Review>,
+    /// Old hand-offs are removed once per run, on the first snapshot.
+    purged_handoffs: bool,
 }
 impl Controller {
     pub fn new(config: Config, settings: PathBuf) -> Self {
@@ -480,7 +554,9 @@ impl Controller {
             route_change: None,
             update_review: None,
             launch_review: None,
+            handoff_review: None,
             settings_review: None,
+            purged_handoffs: false,
         }
     }
     fn reload(&mut self) -> Result<(), String> {
@@ -491,6 +567,7 @@ impl Controller {
             self.tool_review = None;
             self.route_change = None;
             self.launch_review = None;
+            self.handoff_review = None;
         }
         self.config = config;
 
@@ -693,6 +770,16 @@ impl Controller {
             Ok(inventory) => (inventory, None),
             Err(error) => (Vec::new(), Some(error)),
         };
+        if !self.purged_handoffs {
+            self.purged_handoffs = true;
+            if let Err(error) = handoffs::purge(chrono::Utc::now()) {
+                errors.push(format!("Could not remove old hand-offs: {error}"));
+            }
+        }
+        let handoffs = handoffs::list().unwrap_or_else(|error| {
+            errors.push(format!("Could not read hand-offs: {error}"));
+            Vec::new()
+        });
         let Config {
             server_url,
             routing_log,
@@ -721,6 +808,7 @@ impl Controller {
             }),
             session_inventory,
             session_inventory_error,
+            handoffs,
             data_state: DataState {
                 usage: Source {
                     state: usage_state,
@@ -1273,6 +1361,341 @@ impl Controller {
                     data,
                 })
             }
+            Action::PreviewHandoff {
+                source,
+                tool,
+                account,
+                route,
+                id,
+            } => {
+                let inputs =
+                    json!({"source":source,"tool":tool,"account":account,"route":route,"id":id});
+                if matches!(tool, Harness::CodexApp | Harness::Pi) {
+                    return Err("Choose Codex CLI or Claude Code to continue a session.".into());
+                }
+                let binary = harness::binary(tool).ok_or("Install the selected harness first.")?;
+                let review = Review::capture(
+                    inputs.clone(),
+                    vec![self.config.config_file.clone(), self.settings.clone()],
+                )?;
+                let app_config = Config::load(&self.settings)?;
+                if app_config.config_file != self.config.config_file {
+                    return Err("Review these changes again before applying them.".into());
+                }
+                let config = ServerConfig::parse(review.original()?).map_err(
+                    |_| "The server config contains invalid TOML. Open it in Settings to fix it.",
+                )?;
+                let route = current_route(&config, &route, Some(&id))?;
+                let login = login_mode(tool, &config, &route)?;
+                let root = harness::validate(tool, &app_config.server_url, &route.id, login)?;
+                let account = account_path(tool, account.as_deref())?;
+                let mut warnings = Vec::new();
+                let (kind, transcript, managed, directory, session_id) = match &source {
+                    HandoffSource::Managed { id } => {
+                        let receipt = sessions::managed_session(id)?;
+                        let (kind, transcript) = managed_transcript(&receipt)?;
+                        let directory = session_directory(&receipt)?;
+                        warnings.push(format!(
+                            "The new session keeps the session ID {id}, so the server's \
+                             per-session routing state carries over and Usage lists both \
+                             harnesses under it."
+                        ));
+                        (
+                            kind,
+                            transcript,
+                            Some(id.clone()),
+                            Some(directory),
+                            id.clone(),
+                        )
+                    }
+                    HandoffSource::Transcript { path } => {
+                        let path = PathBuf::from(path);
+                        if !path.is_absolute()
+                            || !path.is_file()
+                            || path.extension().is_none_or(|e| e != "jsonl")
+                        {
+                            return Err(
+                                "Choose a .jsonl transcript file by its absolute path.".into()
+                            );
+                        }
+                        let kind = transcripts::detect(&path)?;
+                        let session_id = format!("sy-{}", uuid::Uuid::now_v7());
+                        (kind, path, None, None, session_id)
+                    }
+                };
+                let limits = transcripts::Limits::default();
+                let excerpt = transcripts::excerpt(kind, &transcript, &limits)?;
+                let markdown = transcripts::render(&excerpt, &limits);
+                let directory = match directory {
+                    Some(directory) => directory,
+                    None => excerpt.session.cwd.clone().ok_or(
+                        "The transcript does not record a working directory, so the app \
+                         cannot tell where to continue. Hand off a managed session instead.",
+                    )?,
+                };
+                if !directory.is_dir() {
+                    return Err(format!(
+                        "The session directory {} does not exist on this computer.",
+                        directory.display()
+                    ));
+                }
+                if excerpt.truncated {
+                    warnings.push(
+                        "Parts of the transcript were cut to keep the hand-off short.".into(),
+                    );
+                }
+                if let Some(branch) = &excerpt.session.branch
+                    && let Some(current) = current_branch(&directory)
+                    && &current != branch
+                {
+                    warnings.push(format!(
+                        "The transcript records branch {branch}, but {} is on {current}.",
+                        directory.display()
+                    ));
+                }
+                if chrono::Utc::now().timestamp_millis() - excerpt.fingerprint.modified_ms
+                    < RECENT_MS
+                {
+                    warnings.push(
+                        "The transcript changed in the last two minutes, so the source session \
+                         may still be running. Finish or quit it before continuing elsewhere."
+                            .into(),
+                    );
+                }
+                if kind == transcripts::Kind::Claude
+                    && claude_open(&transcript, &excerpt.session.native_id)
+                {
+                    warnings.push("Claude Code lists this session as open.".into());
+                }
+                let handoff_id = handoffs::new_id();
+                let dir = handoffs::directory(&handoff_id)?;
+                let file = dir.join(handoffs::FILE);
+                let native_session_id = (tool == Harness::Claude).then(sessions::claude_session_id);
+                let script_account = sessions::script_account(tool, account.as_deref())?;
+                let files = vec![dir.join("settings.json")];
+                let instructions = pointer(kind, &file);
+                let first = first_prompt(&file);
+                let command = sessions::display_command(&sessions::OpenRequest {
+                    tool,
+                    binary,
+                    directory: directory.clone(),
+                    model: &route.id,
+                    root: &root,
+                    login,
+                    account: script_account.as_deref(),
+                    session_id: &session_id,
+                    files: &files,
+                    private: &dir,
+                    native_session_id: native_session_id.as_deref(),
+                    instructions: Some(&instructions),
+                    read_dirs: std::slice::from_ref(&dir),
+                    first_prompt: Some(&first),
+                })?;
+                let mut source_info =
+                    serde_json::to_value(&excerpt.session).map_err(|error| error.to_string())?;
+                source_info["tool"] = json!(source_harness(kind));
+                source_info["label"] = json!(kind.label());
+                source_info["managed_id"] = json!(managed);
+                let data = json!({
+                    "preview_token": review.token,
+                    "handoff": markdown,
+                    "bytes": markdown.len(),
+                    "truncated": excerpt.truncated,
+                    "turns": excerpt.turns.len(),
+                    "files_touched": excerpt.files.len(),
+                    "commands": excerpt.commands.len(),
+                    "source": source_info,
+                    "destination": {
+                        "tool": tool,
+                        "label": harness_name(tool),
+                        "route": route.id,
+                        "account_directory": account,
+                        "directory": directory,
+                        "session_id": session_id,
+                        "native_session_id": native_session_id,
+                        "login": login,
+                        "server_url": app_config.server_url,
+                    },
+                    "handoff_file": file,
+                    "settings_file": (tool == Harness::Claude).then(|| files[0].clone()),
+                    "command": command,
+                    "warnings": warnings,
+                    "notice": HANDOFF_NOTICE,
+                });
+                self.handoff_review = Some(ReviewedHandoff {
+                    review,
+                    plan: HandoffPlan {
+                        id: handoff_id,
+                        markdown,
+                        kind,
+                        transcript,
+                        fingerprint: excerpt.fingerprint,
+                        source: source_info,
+                        managed,
+                        tool,
+                        model: route.id,
+                        root,
+                        login,
+                        account,
+                        directory,
+                        session_id,
+                        native_session_id,
+                    },
+                });
+                Ok(Reply {
+                    message: String::new(),
+                    data,
+                })
+            }
+            Action::Handoff {
+                source,
+                tool,
+                account,
+                route,
+                id,
+                preview_token,
+            } => {
+                let inputs =
+                    json!({"source":source,"tool":tool,"account":account,"route":route,"id":id});
+                let reviewed = self
+                    .handoff_review
+                    .as_ref()
+                    .ok_or("Review the hand-off before opening Terminal.")?;
+                reviewed.review.check(preview_token.as_deref(), &inputs)?;
+                if transcripts::fingerprint(&reviewed.plan.transcript)? != reviewed.plan.fingerprint
+                {
+                    return Err(
+                        "The transcript changed since your review. Review the hand-off again."
+                            .into(),
+                    );
+                }
+                let binary = harness::binary(tool).ok_or("Install the selected harness first.")?;
+                // A review opens one session. Another hand-off needs another review.
+                let plan = self
+                    .handoff_review
+                    .take()
+                    .ok_or("Review the hand-off before opening Terminal.")?
+                    .plan;
+                let started_at = chrono::Utc::now().to_rfc3339();
+                let dir = handoffs::directory(&plan.id)?;
+                let file = dir.join(handoffs::FILE);
+                let mut record = json!({
+                    "id": plan.id,
+                    "created_at": started_at,
+                    "file": file,
+                    "source": plan.source,
+                    "destination": {
+                        "tool": plan.tool,
+                        "label": harness_name(plan.tool),
+                        "route": plan.model,
+                        "account_directory": plan.account,
+                        "directory": plan.directory,
+                        "session_id": plan.session_id,
+                        "native_session_id": plan.native_session_id,
+                    },
+                    "bytes": plan.markdown.len(),
+                    "opened": false,
+                });
+                handoffs::create(&plan.id, &plan.markdown, &record)?;
+                let files = vec![dir.join("settings.json")];
+                let instructions = pointer(plan.kind, &file);
+                let first = first_prompt(&file);
+                let opened = sessions::script_account(plan.tool, plan.account.as_deref()).and_then(
+                    |script_account| {
+                        if plan.tool == Harness::Claude {
+                            harness::install(
+                                plan.tool,
+                                &files,
+                                &plan.root,
+                                &plan.model,
+                                None,
+                                plan.login,
+                            )?;
+                        }
+                        sessions::open_harness(&sessions::OpenRequest {
+                            tool: plan.tool,
+                            binary,
+                            directory: plan.directory.clone(),
+                            model: &plan.model,
+                            root: &plan.root,
+                            login: plan.login,
+                            account: script_account.as_deref(),
+                            session_id: &plan.session_id,
+                            files: &files,
+                            private: &dir,
+                            native_session_id: plan.native_session_id.as_deref(),
+                            instructions: Some(&instructions),
+                            read_dirs: std::slice::from_ref(&dir),
+                            first_prompt: Some(&first),
+                        })
+                    },
+                );
+                // A hand-off that never opened holds only an unread excerpt, so it goes away.
+                if let Err(error) = opened {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    return Err(error);
+                }
+                record["opened"] = json!(true);
+                handoffs::update(&plan.id, &record)?;
+                if let Some(managed) = &plan.managed {
+                    sessions::append_launch(
+                        managed,
+                        &json!({
+                            "tool": plan.tool,
+                            "route": plan.model,
+                            "account_directory": plan.account,
+                            "settings_directory": dir,
+                            "started_at": started_at,
+                            "native_session_id": plan.native_session_id,
+                            "handoff": {
+                                "id": plan.id,
+                                "from_tool": plan.source["tool"],
+                                "from_native_id": plan.source["native_id"],
+                                "file": file,
+                            },
+                        }),
+                    )?;
+                }
+                Ok(Reply::message(format!(
+                    "Opened Terminal to continue the session in {}.\n\
+                     Hand-off: {}\n\
+                     Directory: {}\n\
+                     Session ID: {}\n\
+                     The new session reads the hand-off under its own login. Hand-offs are \
+                     removed after {} days.",
+                    harness_name(plan.tool),
+                    file.display(),
+                    plan.directory.display(),
+                    plan.session_id,
+                    handoffs::RETENTION_DAYS
+                )))
+            }
+            Action::HarnessSessions { tool, account } => {
+                let kind = transcript_kind(tool)?;
+                let account = account_path(tool, account.as_deref())?;
+                let root = transcript_root(tool, account.as_deref())?;
+                let listing = transcripts::list(kind, &root)?;
+                let total = listing.sessions.len();
+                let sessions = listing
+                    .sessions
+                    .iter()
+                    .take(LISTED_SESSIONS)
+                    .map(serde_json::to_value)
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?;
+                Ok(Reply {
+                    message: String::new(),
+                    data: json!({
+                        "tool": tool,
+                        "label": kind.label(),
+                        "directory": root,
+                        "transcripts": kind.transcript_dir(&root),
+                        "sessions": sessions,
+                        "total": total,
+                        "skipped": listing.skipped,
+                    }),
+                })
+            }
             Action::LoginAccount { tool, name } => {
                 let path = account_path(tool, Some(&name))?.ok_or("Choose an account.")?;
                 accounts::login(tool, &path, &name).map(Reply::message)
@@ -1587,6 +2010,172 @@ fn login_mode(
         }
     }
     Ok(login)
+}
+
+/// A transcript changed this recently suggests that its session is still running.
+const RECENT_MS: i64 = 2 * 60 * 1000;
+/// `HarnessSessions` lists at most this many sessions, newest first.
+const LISTED_SESSIONS: usize = 200;
+const HANDOFF_NOTICE: &str = "Switchyard writes the hand-off text above to a private file and opens the harness in the \
+     session directory. The new session reads the file under its own login and summarizes it; \
+     nothing is uploaded, and no login is shared.";
+
+/// The short harness name that hand-offs use. `HARNESSES` labels describe settings files.
+fn harness_name(tool: Harness) -> &'static str {
+    match tool {
+        Harness::CodexCli => "Codex CLI",
+        Harness::CodexApp => "Codex app",
+        Harness::Claude => "Claude Code",
+        Harness::Pi => "Pi",
+    }
+}
+
+fn source_harness(kind: transcripts::Kind) -> Harness {
+    match kind {
+        transcripts::Kind::Claude => Harness::Claude,
+        transcripts::Kind::Codex => Harness::CodexCli,
+    }
+}
+
+/// The transcripts that a harness writes. Codex app and Codex CLI share one session store.
+fn transcript_kind(tool: Harness) -> Result<transcripts::Kind, String> {
+    match tool {
+        Harness::Claude => Ok(transcripts::Kind::Claude),
+        Harness::CodexCli | Harness::CodexApp => Ok(transcripts::Kind::Codex),
+        Harness::Pi => Err("Pi sessions cannot be continued in another harness yet.".into()),
+    }
+}
+
+/// The directory that holds a harness's transcripts: the account directory, or the harness's
+/// current config directory.
+fn transcript_root(tool: Harness, account: Option<&Path>) -> Result<PathBuf, String> {
+    if let Some(account) = account {
+        return Ok(account.to_path_buf());
+    }
+    harness::paths(tool)?[0]
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "The harness settings have no parent directory.".into())
+}
+
+// Harnesses record the resolved directory, which differs from the recorded one through
+// symlinks such as macOS's /var → /private/var.
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn parse_time(text: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|time| time.with_timezone(&chrono::Utc))
+}
+
+/// This finds the transcript of a managed session's latest launch. Claude launches record
+/// their session UUID; Codex names its thread itself, so the newest rollout started in the
+/// session directory after the launch stands in for it.
+fn managed_transcript(receipt: &Value) -> Result<(transcripts::Kind, PathBuf), String> {
+    let launch = receipt["launches"]
+        .as_array()
+        .and_then(|launches| launches.last())
+        .unwrap_or(receipt);
+    let tool: Harness = serde_json::from_value(launch["tool"].clone())
+        .map_err(|_| "The session receipt names an unknown harness.")?;
+    let kind = transcript_kind(tool)?;
+    let account = launch["account_directory"].as_str().map(PathBuf::from);
+    let root = transcript_root(tool, account.as_deref())?;
+    if let Some(native) = launch["native_session_id"].as_str() {
+        return Ok((kind, transcripts::locate(kind, &root, native)?));
+    }
+    let directory = canonical(&session_directory(receipt)?);
+    let launched = launch["started_at"].as_str().and_then(parse_time);
+    let listing = transcripts::list(kind, &root)?;
+    listing
+        .sessions
+        .into_iter()
+        .filter(|session| {
+            session
+                .cwd
+                .as_deref()
+                .is_some_and(|cwd| canonical(cwd) == directory)
+        })
+        .find(|session| {
+            match (launched, session.started.as_deref().and_then(parse_time)) {
+                // A rollout's own timestamp can precede the launch record by the time the
+                // harness took to start.
+                (Some(launched), Some(begun)) => begun + chrono::Duration::minutes(1) >= launched,
+                _ => true,
+            }
+        })
+        .map(|session| (kind, session.transcript))
+        .ok_or_else(|| {
+            format!(
+                "No {} transcript started in {} after the launch. Send one message in that \
+                 session first, or choose its transcript file.",
+                kind.label(),
+                directory.display()
+            )
+        })
+}
+
+/// The directory a managed session's harness starts in: the worktree, or the recorded folder
+/// within it.
+fn session_directory(receipt: &Value) -> Result<PathBuf, String> {
+    let worktree = PathBuf::from(
+        receipt["worktree"]
+            .as_str()
+            .ok_or("Missing session worktree.")?,
+    );
+    Ok(match receipt["relative_directory"].as_str() {
+        Some(relative) if !relative.is_empty() => worktree.join(relative),
+        _ => worktree,
+    })
+}
+
+fn current_branch(directory: &Path) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(["branch", "--show-current"])
+        .output()
+        .ok()?;
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (output.status.success() && !branch.is_empty()).then_some(branch)
+}
+
+/// Claude Code registers each open session under `<config dir>/sessions`. The transcript
+/// lives at `<config dir>/projects/<slug>/<uuid>.jsonl`.
+fn claude_open(transcript: &Path, native_id: &str) -> bool {
+    let Some(config_dir) = transcript.ancestors().nth(3) else {
+        return false;
+    };
+    let Ok(entries) = std::fs::read_dir(config_dir.join("sessions")) else {
+        return false;
+    };
+    entries.flatten().any(|entry| {
+        std::fs::read(entry.path())
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|record| record["sessionId"] == native_id)
+    })
+}
+
+/// The instructions that point the destination at the hand-off. The excerpt itself never goes
+/// on the command line.
+fn pointer(kind: transcripts::Kind, file: &Path) -> String {
+    format!(
+        "Switchyard handed a {} session to you. Its state is in the file {}. Read that file \
+         before anything else. Then summarize the state in at most five lines, confirm the \
+         next step, and continue the work. Do not redo completed work.",
+        kind.label(),
+        file.display()
+    )
+}
+
+fn first_prompt(file: &Path) -> String {
+    format!(
+        "Read the hand-off file {} and continue from where the previous session stopped.",
+        file.display()
+    )
 }
 
 fn install_metadata(settings: &std::path::Path) -> Result<PathBuf, String> {
@@ -1921,6 +2510,428 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+    // The subprocess isolates harness discovery, transcripts, hand-off files, and the terminal.
+    // The stubs record their arguments and environment, so the test sees what the destination
+    // harness receives.
+    #[cfg(unix)]
+    #[test]
+    fn session_handoff_requires_an_unchanged_review_and_opens_the_other_harness() {
+        use std::io::Write;
+        use std::os::unix::fs::PermissionsExt;
+        use std::{fs, process::Command};
+        if let Some(home) = std::env::var_os("SWITCHYARD_HANDOFF_REVIEW_FIXTURE") {
+            let home = PathBuf::from(home);
+            let project = home.join("project");
+            let git = |args: &[&str]| {
+                let result = Command::new("/usr/bin/git")
+                    .arg("-C")
+                    .arg(&project)
+                    .args(args)
+                    .output()
+                    .expect("git");
+                assert!(
+                    result.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            };
+            fs::create_dir(&project).expect("project");
+            git(&["init"]);
+            git(&["symbolic-ref", "HEAD", "refs/heads/main"]);
+            git(&[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "initial",
+            ]);
+            let settings = home.join("desktop.toml");
+            let server = home.join("server.toml");
+            fs::write(
+                &server,
+                "[llm_clients.c]\n\
+                 base_url='http://localhost:1234'\n\
+                 [targets.m]\n\
+                 id='actual'\n\
+                 llm_client='c'\n\
+                 [routes.r]\n\
+                 id='public'\n\
+                 type='passthrough'\n\
+                 target='m'\n",
+            )
+            .expect("server");
+            fs::write(
+                &settings,
+                format!(
+                    "config_file={server:?}\nrouting_log={:?}\n",
+                    home.join("routing.jsonl")
+                ),
+            )
+            .expect("settings");
+            let mut controller =
+                Controller::new(Config::load(&settings).expect("settings"), settings.clone());
+            let revision = sessions::preview(&project).expect("preview")["revision"]
+                .as_str()
+                .expect("revision")
+                .to_string();
+            let server_url = controller.config.server_url.clone();
+            sessions::launch(
+                Harness::CodexCli,
+                &project,
+                "public",
+                &server_url,
+                false,
+                None,
+                &revision,
+            )
+            .expect("launch");
+            let receipt = &sessions::inventory().expect("inventory")[0];
+            let id = receipt["id"].as_str().expect("id").to_string();
+            let worktree = PathBuf::from(receipt["worktree"].as_str().expect("worktree"));
+            // Codex names its thread itself, so a rollout started in the worktree after the
+            // launch stands in for the session.
+            let codex_home = PathBuf::from(std::env::var_os("CODEX_HOME").expect("CODEX_HOME"));
+            let day = codex_home.join("sessions/2026/10/26");
+            fs::create_dir_all(&day).expect("rollouts");
+            let thread = uuid::Uuid::now_v7().to_string();
+            let rollout = day.join(format!("rollout-2026-10-26T10-00-00-{thread}.jsonl"));
+            let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            let line = |record: Value| format!("{record}\n");
+            fs::write(
+                &rollout,
+                [
+                    line(
+                        json!({"timestamp": now, "type": "session_meta", "payload": {
+                        "id": thread, "cwd": worktree, "timestamp": now, "git": {"branch": id}}}),
+                    ),
+                    line(json!({"timestamp": now, "type": "event_msg", "payload": {
+                        "type": "user_message", "message": "Fix the flaky login test"}})),
+                    line(json!({"timestamp": now, "type": "event_msg", "payload": {
+                        "type": "agent_message",
+                        "message": "I changed auth.rs and the test passes now."}})),
+                ]
+                .concat(),
+            )
+            .expect("rollout");
+            let preview = |controller: &mut Controller, source: HandoffSource, tool: Harness| {
+                controller.dispatch(Action::PreviewHandoff {
+                    source,
+                    tool,
+                    account: None,
+                    route: "r".into(),
+                    id: "public".into(),
+                })
+            };
+            let handoff =
+                |source: HandoffSource, tool: Harness, token: Option<String>| Action::Handoff {
+                    source,
+                    tool,
+                    account: None,
+                    route: "r".into(),
+                    id: "public".into(),
+                    preview_token: token,
+                };
+            let managed = HandoffSource::Managed { id: id.clone() };
+            assert!(preview(&mut controller, managed.clone(), Harness::Pi).is_err());
+            assert!(preview(&mut controller, managed.clone(), Harness::CodexApp).is_err());
+            let reviewed =
+                preview(&mut controller, managed.clone(), Harness::Claude).expect("preview");
+            let data = &reviewed.data;
+            let token = data["preview_token"].as_str().expect("token").to_string();
+            let text = data["handoff"].as_str().expect("hand-off text");
+            assert!(text.starts_with("# Hand-off from Codex"), "{text}");
+            assert!(text.contains("Fix the flaky login test") && text.contains("auth.rs"));
+            assert_eq!(data["destination"]["directory"], json!(worktree));
+            assert_eq!(data["destination"]["session_id"], json!(id));
+            assert_eq!(data["source"]["tool"], "codex_cli");
+            assert_eq!(data["source"]["native_id"], json!(thread));
+            assert_eq!(data["source"]["managed_id"], json!(id));
+            let warnings = data["warnings"].to_string();
+            assert!(warnings.contains("keeps the session ID"), "{warnings}");
+            assert!(warnings.contains("may still be running"), "{warnings}");
+            assert!(!warnings.contains("records branch"), "{warnings}");
+            let command = data["command"].as_str().expect("command");
+            for flag in [
+                "--append-system-prompt",
+                "--add-dir",
+                "--session-id",
+                "--settings",
+            ] {
+                assert!(command.contains(flag), "{command}");
+            }
+            // The excerpt stays out of the command line.
+            assert!(!command.contains("Fix the flaky"), "{command}");
+            assert!(!home.join(".switchyard/handoffs").exists());
+            for rejected in [
+                handoff(managed.clone(), Harness::Claude, None),
+                handoff(managed.clone(), Harness::Claude, Some("wrong".into())),
+                handoff(managed.clone(), Harness::CodexCli, Some(token.clone())),
+            ] {
+                assert!(controller.dispatch(rejected).is_err());
+            }
+            assert!(!home.join(".switchyard/handoffs").exists());
+            // The transcript grew after the review.
+            let mut file = fs::OpenOptions::new()
+                .append(true)
+                .open(&rollout)
+                .expect("append");
+            writeln!(
+                file,
+                "{}",
+                json!({"timestamp": now, "type": "event_msg", "payload": {
+                    "type": "user_message", "message": "later"}})
+            )
+            .expect("write");
+            drop(file);
+            let error = controller
+                .dispatch(handoff(managed.clone(), Harness::Claude, Some(token)))
+                .err()
+                .expect("stale review");
+            assert!(error.contains("changed since"), "{error}");
+            assert!(!home.join(".switchyard/handoffs").exists());
+            let reviewed =
+                preview(&mut controller, managed.clone(), Harness::Claude).expect("second preview");
+            let token = reviewed.data["preview_token"]
+                .as_str()
+                .expect("token")
+                .to_string();
+            let file = PathBuf::from(reviewed.data["handoff_file"].as_str().expect("file"));
+            let done = controller
+                .dispatch(handoff(
+                    managed.clone(),
+                    Harness::Claude,
+                    Some(token.clone()),
+                ))
+                .expect("hand-off");
+            assert!(done.message.contains("Claude Code"), "{}", done.message);
+            // One review opens one session.
+            assert!(
+                controller
+                    .dispatch(handoff(managed.clone(), Harness::Claude, Some(token)))
+                    .is_err()
+            );
+            let dir = file.parent().expect("hand-off directory");
+            assert_eq!(
+                fs::metadata(dir).expect("dir").permissions().mode() & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&file).expect("file").permissions().mode() & 0o777,
+                0o600
+            );
+            assert_eq!(
+                fs::read_to_string(&file).expect("hand-off"),
+                reviewed.data["handoff"].as_str().expect("text")
+            );
+            assert!(dir.join("settings.json").is_file());
+            let record: Value =
+                serde_json::from_slice(&fs::read(dir.join("handoff.json")).expect("record"))
+                    .expect("json");
+            assert_eq!(record["opened"], true);
+            assert_eq!(record["file"], json!(file));
+            assert_eq!(record["destination"]["session_id"], json!(id));
+            assert_eq!(record["source"]["native_id"], json!(thread));
+            let receipt = sessions::managed_session(&id).expect("receipt");
+            let launches = receipt["launches"].as_array().expect("launches");
+            assert_eq!(launches.len(), 2);
+            assert_eq!(launches[1]["tool"], "claude");
+            assert_eq!(launches[1]["route"], "public");
+            assert_eq!(launches[1]["handoff"]["from_tool"], "codex_cli");
+            assert_eq!(launches[1]["handoff"]["from_native_id"], json!(thread));
+            assert_eq!(launches[1]["handoff"]["file"], json!(file));
+            assert_eq!(launches[1]["settings_directory"], json!(dir));
+            assert!(
+                uuid::Uuid::parse_str(
+                    launches[1]["native_session_id"]
+                        .as_str()
+                        .expect("claude session")
+                )
+                .is_ok()
+            );
+            assert_eq!(receipt["tool"], "claude");
+            assert!(sessions::cleanup_preview(&id).is_ok());
+            let arguments = wait_for(&home.join("claude-arguments"), |_| true);
+            assert!(
+                arguments.contains(&format!("--add-dir\n{}\n", dir.display())),
+                "{arguments}"
+            );
+            assert!(
+                arguments.contains(&format!(
+                    "--settings\n{}\n",
+                    dir.join("settings.json").display()
+                )),
+                "{arguments}"
+            );
+            assert!(
+                arguments.contains("--append-system-prompt\nSwitchyard handed a Codex session"),
+                "{arguments}"
+            );
+            assert!(
+                arguments.contains(&format!("x-switchyard-session-id: {id}\n")),
+                "{arguments}"
+            );
+            assert!(
+                arguments.contains(&format!("Read the hand-off file {}", file.display())),
+                "{arguments}"
+            );
+            assert!(!arguments.contains("Fix the flaky login test"));
+            let snapshot = controller.snapshot().expect("snapshot");
+            assert_eq!(snapshot.handoffs.len(), 1);
+            assert_eq!(snapshot.handoffs[0]["id"], record["id"]);
+
+            // A transcript that the app did not start continues in its own directory under a
+            // new session ID, and no receipt is written for it.
+            let claude_dir =
+                PathBuf::from(std::env::var_os("CLAUDE_CONFIG_DIR").expect("CLAUDE_CONFIG_DIR"));
+            let session = sessions::claude_session_id();
+            let slug = claude_dir.join("projects/-fixture-project");
+            fs::create_dir_all(&slug).expect("projects");
+            let transcript = slug.join(format!("{session}.jsonl"));
+            fs::write(
+                &transcript,
+                [
+                    line(json!({"type": "user", "cwd": project, "sessionId": session,
+                        "gitBranch": "main", "timestamp": now,
+                        "message": {"role": "user", "content": "Add retries to the uploader"}})),
+                    line(
+                        json!({"type": "assistant", "cwd": project, "sessionId": session,
+                        "timestamp": now, "message": {"id": "m1", "role": "assistant",
+                        "model": "claude-x",
+                        "content": [{"type": "text", "text": "Added retries in uploader.rs."}]}}),
+                    ),
+                ]
+                .concat(),
+            )
+            .expect("transcript");
+            let listing = controller
+                .dispatch(Action::HarnessSessions {
+                    tool: Harness::Claude,
+                    account: None,
+                })
+                .expect("listing");
+            assert_eq!(listing.data["total"], 1);
+            assert_eq!(listing.data["sessions"][0]["transcript"], json!(transcript));
+            assert_eq!(listing.data["sessions"][0]["cwd"], json!(project));
+            assert!(
+                preview(
+                    &mut controller,
+                    HandoffSource::Transcript {
+                        path: settings.display().to_string()
+                    },
+                    Harness::CodexCli
+                )
+                .is_err()
+            );
+            let source = HandoffSource::Transcript {
+                path: transcript.display().to_string(),
+            };
+            let reviewed = preview(&mut controller, source.clone(), Harness::CodexCli)
+                .expect("transcript preview");
+            let new_id = reviewed.data["destination"]["session_id"]
+                .as_str()
+                .expect("session id")
+                .to_string();
+            assert!(new_id.starts_with("sy-") && new_id != id);
+            assert_eq!(reviewed.data["destination"]["directory"], json!(project));
+            assert_eq!(reviewed.data["source"]["tool"], "claude");
+            assert!(reviewed.data["source"]["managed_id"].is_null());
+            let command = reviewed.data["command"].as_str().expect("command");
+            assert!(command.contains("developer_instructions="), "{command}");
+            assert!(command.contains("model_providers.sy="), "{command}");
+            let token = reviewed.data["preview_token"]
+                .as_str()
+                .expect("token")
+                .to_string();
+            controller
+                .dispatch(handoff(source, Harness::CodexCli, Some(token)))
+                .expect("transcript hand-off");
+            assert_eq!(sessions::inventory().expect("inventory").len(), 1);
+            assert!(sessions::managed_session(&new_id).is_err());
+            let arguments = wait_for(&home.join("codex-arguments"), |text| {
+                text.contains("developer_instructions")
+            });
+            assert!(arguments.contains(&new_id) && !arguments.contains(&id));
+            assert!(arguments.contains("Read the hand-off file"), "{arguments}");
+            assert!(!arguments.contains("Add retries to the uploader"));
+            assert_eq!(controller.snapshot().expect("snapshot").handoffs.len(), 2);
+            return;
+        }
+        let home = tempfile::tempdir().expect("fixture");
+        let bin = home.path().join("bin");
+        fs::create_dir(&bin).expect("bin");
+        for name in ["codex", "claude"] {
+            let path = bin.join(name);
+            fs::write(
+                &path,
+                format!(
+                    "#!/bin/bash\n\
+                     printf '%s\\n' \"${{CODEX_HOME:-}}\" \"${{CLAUDE_CONFIG_DIR:-}}\" \
+                     \"${{ANTHROPIC_CUSTOM_HEADERS:-}}\" \"$@\" > \"$HOME/{name}-arguments.partial\" \
+                     && mv \"$HOME/{name}-arguments.partial\" \"$HOME/{name}-arguments\"\n"
+                ),
+            )
+            .expect("stub");
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("executable");
+        }
+        // macOS runs the script through `open`; Linux runs it through the program in TERMINAL,
+        // which receives `-e` before the script path.
+        let terminal = bin.join(if cfg!(target_os = "linux") {
+            "terminal"
+        } else {
+            "open"
+        });
+        fs::write(
+            &terminal,
+            "#!/bin/bash\n[ \"$1\" = -e ] && shift\nbash \"$1\"\n",
+        )
+        .expect("terminal");
+        fs::set_permissions(&terminal, fs::Permissions::from_mode(0o755)).expect("executable");
+        let output = Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "controller::tests::session_handoff_requires_an_unchanged_review_and_opens_the_other_harness",
+            ])
+            .env("SWITCHYARD_HANDOFF_REVIEW_FIXTURE", home.path())
+            .env("HOME", home.path())
+            .env("CODEX_HOME", home.path().join("codex-home"))
+            .env("CLAUDE_CONFIG_DIR", home.path().join("claude-config"))
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("TERMINAL", &terminal)
+            .output()
+            .expect("child");
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// The terminal starts apart from the hand-off, so a stub's record can arrive after the
+    /// action returns. This waits for the file to hold what `ready` expects.
+    #[cfg(unix)]
+    fn wait_for(path: &std::path::Path, ready: impl Fn(&str) -> bool) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(path)
+                && ready(&text)
+            {
+                return text;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{} was not written in time",
+                path.display()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
     #[test]
     // An algorithm switch must not give stale choices a revision for externally edited bytes.
     fn algorithm_switches_keep_the_first_revision_and_external_edits_reject_it() {

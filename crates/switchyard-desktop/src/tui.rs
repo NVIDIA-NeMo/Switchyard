@@ -8,8 +8,8 @@
 //! draws and reads input.
 
 use crate::controller::{
-    AccountInfo, Action, ActionKind, AppSettings, Availability, Controller, Dependent, Reply,
-    RouteInfo, Snapshot, ToolInfo,
+    AccountInfo, Action, ActionKind, AppSettings, Availability, Controller, Dependent,
+    HandoffSource, Reply, RouteInfo, Snapshot, ToolInfo,
 };
 use crate::harness::Harness;
 use crate::history::Entry;
@@ -337,6 +337,32 @@ const ACTIONS: &[ActionRow] = &[
         "Shows what cleanup deletes, including Git-ignored files, then removes the clean \
          worktree and its session branch after you type REMOVE.",
         &[ActionKind::PreviewSessionCleanup, ActionKind::RemoveSession],
+    ),
+    (
+        Tab::Sessions,
+        'c',
+        "continue",
+        "Hands the selected recorded session to the selected harness, account, and route. The \
+         review shows the hand-off text that the new session reads; after you type HANDOFF, \
+         it writes that text to a private file and opens the harness in the same worktree.",
+        &[ActionKind::PreviewHandoff, ActionKind::Handoff],
+    ),
+    (
+        Tab::Sessions,
+        'x',
+        "transcript",
+        "Asks for a Claude Code or Codex transcript file, then shows the same hand-off review \
+         for the selected harness, account, and route. The new session starts in the \
+         directory that the transcript records.",
+        &[ActionKind::PreviewHandoff, ActionKind::Handoff],
+    ),
+    (
+        Tab::Sessions,
+        'h',
+        "harness sessions",
+        "Lists the sessions that the selected harness and account keep transcripts for, with \
+         the transcript paths that the transcript key accepts.",
+        &[ActionKind::HarnessSessions],
     ),
     (
         Tab::Settings,
@@ -672,6 +698,14 @@ enum FormKind {
         route: String,
         id: String,
     },
+    /// The field holds a transcript file path; the destination is the selection when the form
+    /// opened.
+    Transcript {
+        tool: Harness,
+        account: Option<String>,
+        route: String,
+        id: String,
+    },
 }
 /// Choices names the list that ↑ and ↓ cycle through in a form field.
 enum Choices {
@@ -1000,6 +1034,20 @@ impl Form {
                 id: id.clone(),
                 project: self.value(0),
             },
+            FormKind::Transcript {
+                tool,
+                account,
+                route,
+                id,
+            } => Action::PreviewHandoff {
+                source: HandoffSource::Transcript {
+                    path: self.value(0),
+                },
+                tool: *tool,
+                account: account.clone(),
+                route: route.clone(),
+                id: id.clone(),
+            },
         }))
     }
     fn label(&self) -> &'static str {
@@ -1022,6 +1070,7 @@ impl Form {
                 Action::ArchiveAccount { .. } => "Archiving the account",
                 Action::Launch { .. } => "Launching the session",
                 Action::RemoveSession { .. } => "Removing the session",
+                Action::Handoff { .. } => "Writing the hand-off and opening the harness",
                 _ => "Saving the route",
             },
             FormKind::Remove { .. } => "Deleting the route",
@@ -1030,6 +1079,7 @@ impl Form {
             FormKind::Account(_) => "Adding the account",
             FormKind::SettingsFile => "Choosing the settings file",
             FormKind::Project { .. } => "Reviewing the session",
+            FormKind::Transcript { .. } => "Reviewing the hand-off",
         }
     }
 }
@@ -1180,6 +1230,20 @@ fn reviewed(previewed: Action, preview: &Value) -> Option<Action> {
             project,
         },
         Action::PreviewSessionCleanup { id } => Action::RemoveSession { id, preview_token },
+        Action::PreviewHandoff {
+            source,
+            tool,
+            account,
+            route,
+            id,
+        } => Action::Handoff {
+            source,
+            tool,
+            account,
+            route,
+            id,
+            preview_token,
+        },
         _ => return None,
     })
 }
@@ -1861,6 +1925,27 @@ impl App {
                     )));
                 }
             }
+            // The review shows the whole hand-off text, so the user sees what the file holds
+            // before it is written. It replaces the transcript form when that asked for it.
+            (Some(ActionKind::PreviewHandoff), Ok(reply)) if popup_matches => {
+                if let Some(handoff) = action.and_then(|action| reviewed(action, &reply.data)) {
+                    self.set_popup(Some(Popup::review(
+                        handoff_lines(self.theme, &reply.data),
+                        "Continue",
+                        FormKind::Confirm("HANDOFF".into(), Box::new(handoff)),
+                        "Continue this session in another harness?",
+                        "Type HANDOFF to write the file and open the harness",
+                    )));
+                }
+            }
+            (Some(ActionKind::HarnessSessions), Ok(reply)) if popup_matches => {
+                self.set_popup(Some(Popup::Message {
+                    title: "Harness sessions",
+                    text: harness_sessions_text(&reply.data),
+                    tone: Tone::Done,
+                    scroll: 0,
+                }));
+            }
             (Some(ActionKind::Models), Ok(reply)) if popup_matches => {
                 let models: Vec<&str> = reply.data["models"]
                     .as_array()
@@ -2469,6 +2554,54 @@ impl App {
                 let cleanup = Action::PreviewSessionCleanup { id };
                 request(cleanup, "Reviewing the session cleanup")
             }
+            // c hands the selected recorded session off, and x asks for a transcript file
+            // first. Both show the hand-off review, which submits Handoff.
+            ActionKind::PreviewHandoff | ActionKind::Handoff => {
+                let harness = self.harness()?;
+                let route = self.selected_route()?;
+                let (tool, account) = (harness.tool, self.account());
+                let (route_key, route_id) = (route.key.clone(), route.id.clone());
+                match key {
+                    'c' => {
+                        let session = self.session_id()?;
+                        request(
+                            Action::PreviewHandoff {
+                                source: HandoffSource::Managed { id: session },
+                                tool,
+                                account,
+                                route: route_key,
+                                id: route_id,
+                            },
+                            "Reviewing the hand-off",
+                        )
+                    }
+                    'x' => {
+                        let title = format!(
+                            "Continue a transcript · {} · {}",
+                            harness.label, route.label
+                        );
+                        self.open(Form::new(
+                            FormKind::Transcript {
+                                tool,
+                                account,
+                                route: route_key,
+                                id: route_id,
+                            },
+                            title,
+                            vec![("Transcript file", String::new())],
+                        ))
+                    }
+                    _ => Err(format!("No hand-off flow starts with {key}.")),
+                }
+            }
+            ActionKind::HarnessSessions => {
+                let harness = self.harness()?;
+                let sessions = Action::HarnessSessions {
+                    tool: harness.tool,
+                    account: self.account(),
+                };
+                request(sessions, "Listing harness sessions")
+            }
             ActionKind::OpenConfig => request(Action::OpenConfig {}, "Opening the server config"),
             ActionKind::CheckConfig => {
                 request(Action::CheckConfig {}, "Checking the server config")
@@ -2841,6 +2974,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         // and session_lines shows the selected session.
         session_inventory: _,
         session_inventory_error: _,
+        handoffs: _, // new_session_lines counts them; session_lines lists a session's launches
     } = &app.data;
     let area = frame.area();
     app.width = area.width;
@@ -4256,6 +4390,19 @@ fn new_session_lines(app: &App) -> Vec<Line<'static>> {
             theme.muted,
         ),
     ]);
+    if let Some(newest) = app.data.handoffs.first() {
+        lines.push(Line::styled(
+            format!(
+                "Hand-offs: {} recorded · newest {} → {} {} · c continues the selected session \
+                 in the harness above, x continues a transcript file",
+                app.data.handoffs.len(),
+                text_or(&newest["source"], "label", "?"),
+                text_or(&newest["destination"], "label", "?"),
+                age(&text(newest, "created_at"), Utc::now())
+            ),
+            theme.muted,
+        ));
+    }
     lines
 }
 
@@ -4277,12 +4424,42 @@ fn session_lines(app: &App, receipt: &Value) -> Vec<Line<'static>> {
                 |entry| local_time(&entry.ts),
             ),
         ),
+        field("Launches", launches_text(receipt)),
         Line::default(),
         Line::styled(
             "Recorded calls do not establish that a process is running.",
             theme.muted,
         ),
     ]
+}
+
+/// This function lists the harnesses opened in a session's worktree, oldest first, and marks
+/// the ones that a hand-off opened.
+fn launches_text(receipt: &Value) -> String {
+    let launches: Vec<String> = receipt["launches"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|launch| {
+            let tool = text(launch, "tool");
+            let tool = match tool.as_str() {
+                "codex_cli" => "Codex CLI".to_string(),
+                "claude" => "Claude Code".to_string(),
+                _ => tool,
+            };
+            let when = local_time(&text(launch, "started_at"));
+            if launch["handoff"].is_object() {
+                format!("{tool} {when} (hand-off)")
+            } else {
+                format!("{tool} {when}")
+            }
+        })
+        .collect();
+    if launches.is_empty() {
+        text(receipt, "tool")
+    } else {
+        launches.join(" → ")
+    }
 }
 
 /// This function returns the session's newest call among the calls that the app loaded.
@@ -4786,6 +4963,15 @@ fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
             ),
             Line::default(),
         ],
+        FormKind::Transcript { .. } => vec![
+            Line::from(
+                "Enter the absolute path of a Claude Code transcript (<config dir>/projects/\
+                 <project>/<session>.jsonl) or a Codex rollout (<CODEX_HOME>/sessions/…/\
+                 rollout-….jsonl). The h key lists them. The next step shows the hand-off \
+                 text before anything is written.",
+            ),
+            Line::default(),
+        ],
         FormKind::Configuration
         | FormKind::Preferences
         | FormKind::Update(_)
@@ -5037,6 +5223,107 @@ fn cleanup_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
         }
     }
     lines
+}
+
+/// This function shows a hand-off preview: where the session continues, what the new session
+/// uses, the warnings, the command, and the whole hand-off text that the file will hold.
+fn handoff_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
+    let field = |name: &str, value: String| labeled(theme, name, 14, value);
+    let source = &preview["source"];
+    let destination = &preview["destination"];
+    let mut lines = vec![
+        field(
+            "From",
+            format!(
+                "{} · {}",
+                text_or(source, "label", "?"),
+                text_or(source, "title", &text(source, "native_id"))
+            ),
+        ),
+        field("Transcript", text(source, "transcript")),
+        field("To", text_or(destination, "label", "?")),
+        field("Directory", text(destination, "directory")),
+        field("Route", text(destination, "route")),
+        field(
+            "Account",
+            text_or(destination, "account_directory", "Current login"),
+        ),
+        field("Session ID", text(destination, "session_id")),
+        field("Hand-off file", text(preview, "handoff_file")),
+        field(
+            "Excerpt",
+            format!(
+                "{} bytes · {} turns · {} files · {} commands",
+                preview["bytes"].as_u64().unwrap_or_default(),
+                preview["turns"].as_u64().unwrap_or_default(),
+                preview["files_touched"].as_u64().unwrap_or_default(),
+                preview["commands"].as_u64().unwrap_or_default()
+            ),
+        ),
+        Line::default(),
+    ];
+    for warning in preview["warnings"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        lines.push(Line::styled(warning.to_string(), theme.warn));
+    }
+    lines.extend([
+        Line::from(text(preview, "notice")),
+        Line::default(),
+        Line::styled("COMMAND", theme.muted.bold()),
+    ]);
+    lines.extend(
+        text(preview, "command")
+            .lines()
+            .map(|line| Line::from(line.to_string())),
+    );
+    lines.extend([
+        Line::default(),
+        Line::styled(
+            "HAND-OFF TEXT · the new session reads this",
+            theme.muted.bold(),
+        ),
+        Line::default(),
+    ]);
+    lines.extend(
+        text(preview, "handoff")
+            .lines()
+            .map(|line| Line::from(line.to_string())),
+    );
+    lines
+}
+
+/// This function lists a harness's sessions from a `HarnessSessions` reply, newest first.
+fn harness_sessions_text(reply: &Value) -> String {
+    let sessions = reply["sessions"].as_array().map(Vec::as_slice);
+    let sessions = sessions.unwrap_or_default();
+    let mut text_out = format!(
+        "{} sessions under {}",
+        reply["total"].as_u64().unwrap_or_default(),
+        text(reply, "transcripts")
+    );
+    let skipped = reply["skipped"].as_u64().unwrap_or_default();
+    if skipped > 0 {
+        text_out.push_str(&format!(" · {skipped} unreadable files skipped"));
+    }
+    if sessions.is_empty() {
+        text_out.push_str("\n\nNo transcripts found.");
+        return text_out;
+    }
+    text_out.push_str("\n\nPress x and enter a transcript path to continue one.\n");
+    for session in sessions {
+        text_out.push_str(&format!(
+            "\n{} · {}\n  {}\n  {}\n",
+            local_time(&text(session, "last_activity")),
+            text_or(session, "title", &text(session, "native_id")),
+            text_or(session, "cwd", "(directory unknown)"),
+            text(session, "transcript")
+        ));
+    }
+    text_out
 }
 
 fn update_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
@@ -5964,6 +6251,137 @@ mod tests {
         let overview = screen(&mut app, Tab::Overview);
         assert!(overview.contains("Spent unknown"));
         assert!(overview.contains("no recorded cost"));
+    }
+
+    #[test]
+    // c hands the selected recorded session off and x asks for a transcript file; both reach
+    // the review that shows the whole hand-off text and submits Handoff with the preview token.
+    fn continue_keys_hand_off_the_selected_session_and_a_transcript_file() {
+        let snapshot = Snapshot {
+            routes: vec![RouteInfo {
+                key: "r".into(),
+                id: "public".into(),
+                label: "public · passthrough".into(),
+                ..Default::default()
+            }],
+            tools: vec![ToolInfo {
+                tool: Harness::Claude,
+                label: "Claude Code",
+                available: true,
+                files: Vec::new(),
+                status: String::new(),
+                accounts: Vec::new(),
+                account_details: Vec::new(),
+                discovery_error: None,
+            }],
+            session_inventory: vec![json!({
+                "id": "sy-0192f0a0-0000-7000-8000-000000000001",
+                "tool": "codex_cli",
+                "route": "public",
+                "repository": "/repo",
+                "worktree": "/worktrees/sy-0192f0a0-0000-7000-8000-000000000001",
+                "branch": "sy-0192f0a0-0000-7000-8000-000000000001",
+                "created_at": "2026-10-26T10:00:00Z",
+            })],
+            ..Snapshot::default()
+        };
+        let mut app = App::new(Theme::new(false));
+        app.finish(None, Ok(Box::new(snapshot)));
+        app.tab = Tab::Sessions;
+        let request = press(&mut app, KeyCode::Char('c')).expect("preview request");
+        match &request.job {
+            Job::Run(Action::PreviewHandoff {
+                source: HandoffSource::Managed { id },
+                tool: Harness::Claude,
+                account: None,
+                route,
+                id: route_id,
+            }) => {
+                assert_eq!(id, "sy-0192f0a0-0000-7000-8000-000000000001");
+                assert_eq!((route.as_str(), route_id.as_str()), ("r", "public"));
+            }
+            _ => panic!("c did not request a hand-off preview"),
+        }
+        // The reply opens the review over the page with the hand-off text and the token.
+        let (jobs, _inbox) = mpsc::channel();
+        app.start(&jobs, request).expect("start");
+        let reply = Reply {
+            message: String::new(),
+            data: json!({
+                "preview_token": "token-1",
+                "handoff": "# Hand-off from Codex\n\n## Goal\n\nFix the flaky login test\n",
+                "bytes": 52, "turns": 1, "files_touched": 0, "commands": 0,
+                "source": {"label": "Codex", "native_id": "thread-1", "title": "Fix the flaky login test",
+                    "transcript": "/codex/sessions/rollout-1.jsonl"},
+                "destination": {"label": "Claude Code", "directory": "/worktrees/sy-1", "route": "public",
+                    "session_id": "sy-0192f0a0-0000-7000-8000-000000000001"},
+                "handoff_file": "/handoffs/hd-1/HANDOFF.md",
+                "warnings": ["The transcript changed in the last two minutes."],
+                "command": "cd '/worktrees/sy-1'\n'claude' '--settings'",
+                "notice": "Nothing is uploaded.",
+            }),
+        };
+        let data = app.data.clone();
+        assert!(app.finish(Some(Ok(reply)), Ok(Box::new(data))).is_none());
+        match &app.popup {
+            Some(Popup::Review { lines, confirm, .. }) => {
+                let text: String = lines
+                    .iter()
+                    .flat_map(|line| line.spans.iter().map(|span| span.content.clone()))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                for expected in [
+                    "Fix the flaky login test",
+                    "changed in the last two minutes",
+                    "'--settings'",
+                    "/handoffs/hd-1/HANDOFF.md",
+                ] {
+                    assert!(text.contains(expected), "{text}");
+                }
+                match &confirm.kind {
+                    FormKind::Confirm(word, action) => {
+                        assert_eq!(word.as_ref(), "HANDOFF");
+                        assert!(matches!(
+                            **action,
+                            Action::Handoff {
+                                source: HandoffSource::Managed { .. },
+                                tool: Harness::Claude,
+                                preview_token: Some(ref token),
+                                ..
+                            } if token == "token-1"
+                        ));
+                    }
+                    _ => panic!("the review does not ask for the HANDOFF word"),
+                }
+            }
+            _ => panic!("the preview reply did not open the review"),
+        }
+        app.popup = None;
+        // x asks for a transcript path first; the form submits the preview for that file.
+        assert!(press(&mut app, KeyCode::Char('x')).is_none());
+        assert!(matches!(app.popup, Some(Popup::Form(_))));
+        for c in "/codex/sessions/rollout-2.jsonl".chars() {
+            assert!(press(&mut app, KeyCode::Char(c)).is_none());
+        }
+        let request = press(&mut app, KeyCode::Enter).expect("transcript preview");
+        match &request.job {
+            Job::Run(Action::PreviewHandoff {
+                source: HandoffSource::Transcript { path },
+                tool: Harness::Claude,
+                ..
+            }) => assert_eq!(path, "/codex/sessions/rollout-2.jsonl"),
+            _ => panic!("x did not request a transcript hand-off preview"),
+        }
+        // Without a selected session, c explains what to do instead of sending an action.
+        app.popup = None;
+        app.busy = None;
+        app.managed = None;
+        assert!(press(&mut app, KeyCode::Char('c')).is_none());
+        assert!(
+            app.toast
+                .as_ref()
+                .is_some_and(|toast| toast.text.contains("Press s"))
+        );
     }
 
     #[test]

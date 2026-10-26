@@ -407,6 +407,40 @@ remove the worktree, branch, and private settings it created; cleanup can fail.
 The app does not show provider reset windows or manage task dependencies,
 session resume, remote workspaces, or review comments. Provider limits still apply.
 
+## Continue a session in another harness
+
+A recorded session can continue in another harness, for example from Claude
+Code to Codex CLI, without replaying its transcript or sharing a login. In
+**Sessions**, choose the destination harness, account, and route at the top,
+then click **Continue in…** on a recorded session. **Continue from a
+transcript** does the same for a session that the app did not start: list the
+source harness's sessions, or choose a transcript file.
+
+The review shows the hand-off text that the new session reads: the goal, the
+harness's own compaction summary when it wrote one, the last eight turns, the
+files and commands it touched, and the last error, cut to 32 KiB. Tool output
+is left out. Nothing is written until you confirm. Then Switchyard writes that
+text to `~/.switchyard/handoffs/<id>/HANDOFF.md`, readable only by you, and
+opens the destination harness in the session's directory with a short
+instruction to read the file, summarize the state in five lines, and continue.
+Codex CLI receives the instruction as `developer_instructions`; Claude Code
+receives it as `--append-system-prompt`, with `--add-dir` for the hand-off
+directory. The destination model does the summarizing under its own login.
+Switchyard makes no model call, uploads nothing, and never copies login files.
+
+A hand-off from a recorded session keeps its session ID, so Usage lists both
+harnesses under one session, and the server's per-session routing state carries
+over. A hand-off from a transcript file starts a new session ID in the
+directory that the transcript records. The session's receipt lists every
+launch. Hand-off files are removed seven days after they are written; the new
+session's own transcript stays with its harness. Switchyard reads transcripts
+on this computer only, and only when you ask for a review or a listing.
+
+In the terminal app, `c` continues the selected recorded session, `x` continues
+a transcript file, and `h` lists the sessions of the selected harness and
+account. Each review ends with the whole hand-off text; type `HANDOFF` to write
+it and open the harness.
+
 ## Usage
 
 Usage displays up to 100 calls per page. **Previous calls** and **Next calls** move

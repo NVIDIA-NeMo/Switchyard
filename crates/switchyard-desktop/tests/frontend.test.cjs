@@ -86,3 +86,17 @@ test('route creation keeps pending model lists with their endpoint', async () =>
   const result=vm.runInContext(`[lists.get(modelListKey('A'))?.models,lists.has(modelListKey('B')),controls.get('Model').options]`,context);
   assert.deepEqual(JSON.parse(JSON.stringify(result)),[['A/model'],false,[]]);
 });
+
+// Hand-off previews and transcript listings only read, so a running mutation must not block
+// them, while the hand-off itself waits like every other mutation.
+test('hand-off previews and session listings read without taking the busy lock', async () => {
+  const context = editor((command, args) => Promise.resolve({message: '', data: {kind: args.action.kind}}));
+  const result = await vm.runInContext(`(async () => {
+    busy = true;
+    const preview = await run({kind:'preview_handoff'}, false);
+    const sessions = await run({kind:'harness_sessions'}, false);
+    const blocked = await run({kind:'handoff'}, false);
+    return [preview.data.kind, sessions.data.kind, blocked === undefined, busy];
+  })()`, context);
+  assert.deepEqual(Array.from(result), ['preview_handoff', 'harness_sessions', true, true]);
+});
