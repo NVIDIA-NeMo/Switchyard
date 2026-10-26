@@ -883,6 +883,57 @@
                 
   
   
+    
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_1" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7_1" id="__nav_7_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Algorithms
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_1_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Algorithms
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
   
   
     <li class="md-nav__item">
@@ -1386,6 +1437,14 @@
   
 
       </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
     </li>
   
 
@@ -2185,7 +2244,7 @@ serving stack.</p>
 <tr>
 <td>Qwen3.6-35B-A3B, also the judge</td>
 <td>Claude Opus 4.7</td>
-<td><code>llm_classifier</code> custom, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/fe862a97772491db29ce84286ea9ad0daf450ac1/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">balanced</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/fe862a97772491db29ce84286ea9ad0daf450ac1/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml">aggressive</a></td>
+<td><code>llm_classifier</code> custom, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d6ab48e71df251e332fddd80eaa20efb0a833ffa/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">balanced</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d6ab48e71df251e332fddd80eaa20efb0a833ffa/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml">aggressive</a></td>
 <td>tau2-bench telecom, 114 tasks</td>
 <td>0.903 ± 0.071 solve rate with 45% of turns on the weak tier. 0.891 ± 0.029 with about 85%.</td>
 <td>Within noise of the strong tier, per the profile headers</td>
@@ -2213,7 +2272,7 @@ serving stack.</p>
 </ul>
 <p>Other checked-in configurations:</p>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/fe862a97772491db29ce84286ea9ad0daf450ac1/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml"><code>tb-lite-llm-classifier-opus-kimi-gemini.toml</code></a>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d6ab48e71df251e332fddd80eaa20efb0a833ffa/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml"><code>tb-lite-llm-classifier-opus-kimi-gemini.toml</code></a>
   (Claude Opus 4.7 strong, Kimi K2.7 code weak, Gemini 3.5 Flash judge) is a
   smoke test. It has no published result.</li>
 </ul>
@@ -2332,7 +2391,7 @@ endpoint. See the <a href="../../reference/toml_schema/#targetsname">target keys
 <li><a href="../../operations/local_evaluation/#verify-routing-is-active">Verify routing is active</a>: see the served model and the decision counts.</li>
 <li><a href="../stage_router_routing/#tuning-confidence_threshold">Stage Router</a>: tune the threshold once the pair is right.</li>
 <li><a href="../escalation_router_routing/#judge-model-compatibility">Escalation-Router Routing</a>: judge requirements for escalation routes.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/fe862a97772491db29ce84286ea9ad0daf450ac1/benchmark/README.md">Benchmarks</a>: how the measured runs were made.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d6ab48e71df251e332fddd80eaa20efb0a833ffa/benchmark/README.md">Benchmarks</a>: how the measured runs were made.</li>
 </ul>
 
 

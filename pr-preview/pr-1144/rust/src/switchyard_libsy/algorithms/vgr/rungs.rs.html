@@ -17,7 +17,7 @@
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span><span class="kw">crate</span>::algorithms::util::transcript::message_text;
 <a href=#18 id=18 data-nosnippet>18</a>
 <a href=#19 id=19 data-nosnippet>19</a><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">const </span>DELIBERATION_MAX_OUTPUT_TOKENS: u64 = <span class="number">512</span>;
-<a href=#20 id=20 data-nosnippet>20</a><span class="kw">const </span>LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS: u64 = <span class="number">768</span>;
+<a href=#20 id=20 data-nosnippet>20</a><span class="kw">const </span>EFFICIENT_DELIBERATION_MAX_OUTPUT_TOKENS: u64 = <span class="number">768</span>;
 <a href=#21 id=21 data-nosnippet>21</a><span class="kw">const </span>TYPING_MAX_OUTPUT_TOKENS: u64 = <span class="number">8</span>;
 <a href=#22 id=22 data-nosnippet>22</a><span class="kw">const </span>TYPING_TASK_BUDGET: usize = <span class="number">4000</span>;
 <a href=#23 id=23 data-nosnippet>23</a>
@@ -101,7 +101,7 @@
 <a href=#101 id=101 data-nosnippet>101</a>                ..OutputParams::default()
 <a href=#102 id=102 data-nosnippet>102</a>            },
 <a href=#103 id=103 data-nosnippet>103</a>            sampling: SamplingParams {
-<a href=#104 id=104 data-nosnippet>104</a>                <span class="comment">// Only these run locally; cloud reasoning modes can reject temperature.
+<a href=#104 id=104 data-nosnippet>104</a>                <span class="comment">// Only these use the efficient verifier; cloud reasoning modes can reject temperature.
 <a href=#105 id=105 data-nosnippet>105</a>                </span>temperature: <span class="macro">matches!</span>(question, Question::Typing | Question::Deliberation)
 <a href=#106 id=106 data-nosnippet>106</a>                    .then_some(<span class="number">0.0</span>),
 <a href=#107 id=107 data-nosnippet>107</a>                ..SamplingParams::default()
@@ -129,7 +129,7 @@
 <a href=#129 id=129 data-nosnippet>129</a>    build_request(
 <a href=#130 id=130 data-nosnippet>130</a>        Question::Deliberation,
 <a href=#131 id=131 data-nosnippet>131</a>        judged_text,
-<a href=#132 id=132 data-nosnippet>132</a>        LOCAL_DELIBERATION_MAX_OUTPUT_TOKENS,
+<a href=#132 id=132 data-nosnippet>132</a>        EFFICIENT_DELIBERATION_MAX_OUTPUT_TOKENS,
 <a href=#133 id=133 data-nosnippet>133</a>        metadata,
 <a href=#134 id=134 data-nosnippet>134</a>    )
 <a href=#135 id=135 data-nosnippet>135</a>}
@@ -340,7 +340,7 @@
 <a href=#340 id=340 data-nosnippet>340</a>    assistant_text(output)
 <a href=#341 id=341 data-nosnippet>341</a>}
 <a href=#342 id=342 data-nosnippet>342</a>
-<a href=#343 id=343 data-nosnippet>343</a><span class="doccomment">/// The local attempt's text, however generation stopped.
+<a href=#343 id=343 data-nosnippet>343</a><span class="doccomment">/// The efficient attempt's text, however generation stopped.
 <a href=#344 id=344 data-nosnippet>344</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>response_text(response: <span class="kw-2">&amp;</span>AggLlmResponse) -&gt; <span class="prelude-ty">Option</span>&lt;String&gt; {
 <a href=#345 id=345 data-nosnippet>345</a>    assistant_text(response.first_output()<span class="question-mark">?</span>)
 <a href=#346 id=346 data-nosnippet>346</a>}

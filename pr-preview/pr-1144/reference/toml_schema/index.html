@@ -883,6 +883,55 @@
   
   
   
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_1" id="__nav_7_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Algorithms
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Algorithms
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
     <li class="md-nav__item">
       <a href="../../routing_algorithms/overview/" class="md-nav__link">
         
@@ -1180,6 +1229,14 @@
   
 
       </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
     </li>
   
 
@@ -2246,7 +2303,7 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 <td><code>context_discovery</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
-<td>Set to <code>"llama_cpp"</code> to enable <code>/props</code> context discovery for VGR local targets. Disabled when unset. An explicit route <code>context_window</code> takes precedence.</td>
+<td>Set to <code>"llama_cpp"</code> to enable <code>/props</code> context discovery for VGR efficient targets. Disabled when unset. An explicit route <code>context_window</code> takes precedence.</td>
 </tr>
 <tr>
 <td><code>api_key_env</code></td>
@@ -2616,7 +2673,7 @@ arguments. Each complete argument object must pass the tool's JSON Schema. Unsup
 or oversized tools remain available to the normal model and are visible to the judge.
 Requests containing non-function tools, unsupported tool-choice policies, structured
 output constraints, multiple completions, or provider-owned continuation state use the normal target directly.</p>
-<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/fe862a97772491db29ce84286ea9ad0daf450ac1/examples/speculative_tool_call/config.toml">three-backend example</a> compares
+<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d6ab48e71df251e332fddd80eaa20efb0a833ffa/examples/speculative_tool_call/config.toml">three-backend example</a> compares
 Luna Decisions, local FunctionGemma, and Deciffusion against the same normal Luna target.
 It uses 25 candidates so FunctionGemma's additional abstention option fits the 26-label limit.</p>
 <h3 id="random"><code>random</code><a class="headerlink" href="#random" title="Permanent link">&para;</a></h3>
