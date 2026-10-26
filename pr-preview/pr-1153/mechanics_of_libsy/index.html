@@ -759,34 +759,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../integrations/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Choose an Integration
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../reference/host_integration/" class="md-nav__link">
         
   
@@ -825,10 +797,10 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_2" >
         
           
-          <label class="md-nav__link" for="__nav_3_3" id="__nav_3_3_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_3_2" id="__nav_3_2_label" tabindex="0">
             
   
   
@@ -846,8 +818,8 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_3_3">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3_2">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -2755,7 +2727,7 @@ Only calls requested concurrently by the algorithm can overlap. The returned
 <code>outcome</code> is handled as shown in <a href="#stepdone"><code>Step::Done</code></a>.</p>
 <p>For a ready-made version, see
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/fn.drive.html"><code>libsy::drive</code></a>
-and its <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/2e15e31266325b38f40265388e3c360d9bf1c6e0/crates/libsy/src/core/algorithm.rs#L593">reference execution loop</a>.</p>
+and its <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1181cb34fc221e35a9a140eacc1f06d9a3792927/crates/libsy/src/core/algorithm.rs#L593">reference execution loop</a>.</p>
 <p>If the algorithm stops waiting, <code>respond</code> drops that call's work future. The
 explicit drops stop the remaining handlers and abort the algorithm task. Returning
 an error or cancelling the enclosing future also drops these local values. Your
