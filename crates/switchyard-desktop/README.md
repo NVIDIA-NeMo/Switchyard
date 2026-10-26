@@ -409,12 +409,17 @@ session resume, remote workspaces, or review comments. Provider limits still app
 
 ## Continue a session in another harness
 
-A recorded session can continue in another harness, for example from Claude
-Code to Codex CLI, without replaying its transcript or sharing a login. In
-**Sessions**, choose the destination harness, account, and route at the top,
-then click **Continue in…** on a recorded session. **Continue from a
-transcript** does the same for a session that the app did not start: list the
-source harness's sessions, or choose a transcript file.
+A session can continue in another harness, for example from Codex CLI to
+Claude Code, without replaying its transcript or sharing a login. In
+**Sessions**, **Continue a session in the other harness** lists the newest
+Codex CLI and Claude Code sessions on this computer, read from their own
+transcripts, with one button each. A Codex session continues in Claude Code and
+a Claude Code session continues in Codex CLI, with the first route that harness
+can use and your current login. **Options** chooses another route or a saved
+account for each destination, and **Choose a transcript file…** continues a
+transcript that the list does not show. Recorded sessions have the same button.
+The menu bar popup lists the newest sessions with the same action; choosing one
+opens the window on the review.
 
 The review shows the hand-off text that the new session reads: the goal, the
 harness's own compaction summary when it wrote one, the last eight turns, the

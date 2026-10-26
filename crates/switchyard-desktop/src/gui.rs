@@ -40,6 +40,8 @@ struct TrayUsage {
     health: switchyard_desktop::health::Probe,
     // The menu is rebuilt only when these rows change, so an open menu does not flicker.
     rows: Mutex<Vec<String>>,
+    // Session rows open every transcript, so they are re-read at most every 30 seconds.
+    sessions: Mutex<Option<(std::time::Instant, Vec<serde_json::Value>)>>,
 }
 
 /// TrayView holds what the tray shows: the usage overview, or the errors that hide it.
@@ -48,6 +50,8 @@ struct TrayView {
     overview: Option<Overview>,
     errors: Vec<String>,
     refresh_seconds: u64,
+    /// The newest sessions, each with the harness that continues it by default.
+    sessions: Vec<serde_json::Value>,
 }
 
 impl TrayUsage {
@@ -60,6 +64,7 @@ impl TrayUsage {
                     overview: None,
                     errors: vec![format!("Cannot read app settings: {error}")],
                     refresh_seconds: MIN_TRAY_REFRESH,
+                    sessions: Vec::new(),
                 };
             }
         };
@@ -78,6 +83,7 @@ impl TrayUsage {
                     overview: None,
                     errors: vec![format!("Cannot read routing log: {error}")],
                     refresh_seconds,
+                    sessions: Vec::new(),
                 };
             }
         };
@@ -88,16 +94,55 @@ impl TrayUsage {
             Default::default()
         });
         let status = self.health.probe(&config.server_url);
+        let sessions = self.recent_sessions(&config.config_file, &mut errors);
         TrayView {
             overview: Some(Overview::new(status, &usage, &config, &rates)),
             errors,
             refresh_seconds,
+            sessions,
+        }
+    }
+
+    /// The newest sessions for the popup's Continue rows. The listing opens every transcript,
+    /// so one result serves the popup for TRAY_SESSIONS_SECONDS.
+    fn recent_sessions(
+        &self,
+        config_file: &std::path::Path,
+        errors: &mut Vec<String>,
+    ) -> Vec<serde_json::Value> {
+        let Ok(mut cache) = self.sessions.lock() else {
+            return Vec::new();
+        };
+        if let Some((read_at, sessions)) = cache.as_ref()
+            && read_at.elapsed() < Duration::from_secs(TRAY_SESSIONS_SECONDS)
+        {
+            return sessions.clone();
+        }
+        match crate::controller::recent_sessions(config_file, None, None) {
+            Ok(listing) => {
+                let sessions: Vec<serde_json::Value> = listing["sessions"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .take(TRAY_SESSIONS)
+                    .cloned()
+                    .collect();
+                *cache = Some((std::time::Instant::now(), sessions.clone()));
+                sessions
+            }
+            Err(error) => {
+                errors.push(format!("Could not list sessions: {error}"));
+                Vec::new()
+            }
         }
     }
 }
 
 /// MIN_TRAY_REFRESH keeps the tray from probing the server more than once every 5 seconds.
 const MIN_TRAY_REFRESH: u64 = 5;
+/// The popup shows this many sessions, re-read at most every TRAY_SESSIONS_SECONDS.
+const TRAY_SESSIONS: usize = 3;
+const TRAY_SESSIONS_SECONDS: u64 = 30;
 
 /// This function reads the tray usage and replaces the tray menu when its rows changed.
 fn refresh_tray(app: &tauri::AppHandle) -> TrayView {
@@ -445,6 +490,28 @@ fn tray_page(app: tauri::AppHandle, page: String) -> Result<(), String> {
     dismiss_tray(app)
 }
 #[tauri::command]
+fn tray_continue(app: tauri::AppHandle, request: serde_json::Value) -> Result<(), String> {
+    // The popup forwards a session row. The window reviews it like any other hand-off, so the
+    // hand-off text is shown before anything is written.
+    let source = request["source"]["kind"].as_str();
+    let tool = request["destination"]["tool"].as_str();
+    if !matches!(source, Some("managed" | "transcript"))
+        || !matches!(tool, Some("codex_cli" | "claude"))
+    {
+        return Err("Choose a session row.".into());
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        let script = format!(
+            "window.dispatchEvent(new CustomEvent('switchyard-continue', {{detail:{request}}}))"
+        );
+        if let Err(error) = window.eval(&script) {
+            eprintln!("switchyard-desktop: could not open the hand-off review: {error}");
+        }
+    }
+    show(&app);
+    dismiss_tray(app)
+}
+#[tauri::command]
 fn dismiss_tray(app: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     app.state::<panel::TrayPanel>().dismiss();
@@ -581,6 +648,7 @@ pub fn run(controller: Controller, settings: PathBuf) -> Result<(), String> {
             reader: Mutex::new(crate::rollup::Reader::default()),
             health: switchyard_desktop::health::Probe::default(),
             rows: Mutex::new(Vec::new()),
+            sessions: Mutex::new(None),
         })
         .invoke_handler(tauri::generate_handler![
             snapshot,
@@ -590,6 +658,7 @@ pub fn run(controller: Controller, settings: PathBuf) -> Result<(), String> {
             accessibility,
             tray_size,
             tray_page,
+            tray_continue,
             tray_overview,
             dismiss_tray,
             quit_app

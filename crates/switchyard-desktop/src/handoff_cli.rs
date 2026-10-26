@@ -12,7 +12,9 @@ use std::process::ExitCode;
 use serde_json::Value;
 
 use crate::config::Config;
-use crate::controller::{Action, Controller, HandoffSource, RouteInfo, canonical, harness_name};
+use crate::controller::{
+    Action, Controller, HandoffSource, RouteInfo, canonical, harness_name, other_harness,
+};
 use crate::harness::{self, Harness};
 
 pub const USAGE: &str = "\
@@ -145,13 +147,6 @@ fn parse_harness(text: &str) -> Result<Harness, String> {
     }
 }
 
-fn other_harness(tool: Harness) -> Harness {
-    match tool {
-        Harness::Claude => Harness::CodexCli,
-        _ => Harness::Claude,
-    }
-}
-
 /// This reviews the hand-off, asks for confirmation, writes it, and returns the program to
 /// run. `Ok(None)` means the user declined, and nothing was written.
 pub fn prepare(options: &Options) -> Result<Option<Launch>, String> {
@@ -280,12 +275,15 @@ fn newest_here(
     account: Option<String>,
 ) -> Result<HandoffSource, String> {
     let here = canonical(&std::env::current_dir().map_err(|error| error.to_string())?);
-    let reply = controller.dispatch(Action::HarnessSessions { tool, account })?;
+    let reply = controller.dispatch(Action::RecentSessions {
+        tool: Some(tool),
+        account,
+    })?;
     let sessions = reply.data["sessions"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let label = reply.data["label"].as_str().unwrap_or("harness");
+    let label = harness_name(tool);
     let recorded_here = |session: &Value| {
         session["cwd"]
             .as_str()
@@ -303,7 +301,9 @@ fn newest_here(
     if sessions.is_empty() {
         message.push_str(&format!(
             " No transcripts were found under {}.",
-            reply.data["transcripts"].as_str().unwrap_or("?")
+            reply.data["roots"][0]["transcripts"]
+                .as_str()
+                .unwrap_or("?")
         ));
     } else {
         message.push_str(" Newest sessions:");

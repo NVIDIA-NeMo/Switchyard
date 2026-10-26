@@ -362,7 +362,7 @@ const ACTIONS: &[ActionRow] = &[
         "harness sessions",
         "Lists the sessions that the selected harness and account keep transcripts for, with \
          the transcript paths that the transcript key accepts.",
-        &[ActionKind::HarnessSessions],
+        &[ActionKind::RecentSessions],
     ),
     (
         Tab::Settings,
@@ -1939,10 +1939,10 @@ impl App {
                     )));
                 }
             }
-            (Some(ActionKind::HarnessSessions), Ok(reply)) if popup_matches => {
+            (Some(ActionKind::RecentSessions), Ok(reply)) if popup_matches => {
                 self.set_popup(Some(Popup::Message {
                     title: "Harness sessions",
-                    text: harness_sessions_text(&reply.data),
+                    text: recent_sessions_text(&reply.data),
                     tone: Tone::Done,
                     scroll: 0,
                 }));
@@ -2595,10 +2595,10 @@ impl App {
                     _ => Err(format!("No hand-off flow starts with {key}.")),
                 }
             }
-            ActionKind::HarnessSessions => {
+            ActionKind::RecentSessions => {
                 let harness = self.harness()?;
-                let sessions = Action::HarnessSessions {
-                    tool: harness.tool,
+                let sessions = Action::RecentSessions {
+                    tool: Some(harness.tool),
                     account: self.account(),
                 };
                 request(sessions, "Listing harness sessions")
@@ -5298,17 +5298,26 @@ fn handoff_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
 }
 
 /// This function lists a harness's sessions from a `HarnessSessions` reply, newest first.
-fn harness_sessions_text(reply: &Value) -> String {
+fn recent_sessions_text(reply: &Value) -> String {
     let sessions = reply["sessions"].as_array().map(Vec::as_slice);
     let sessions = sessions.unwrap_or_default();
+    let roots: Vec<String> = reply["roots"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|root| text(root, "transcripts"))
+        .collect();
     let mut text_out = format!(
         "{} sessions under {}",
         reply["total"].as_u64().unwrap_or_default(),
-        text(reply, "transcripts")
+        roots.join(", ")
     );
     let skipped = reply["skipped"].as_u64().unwrap_or_default();
     if skipped > 0 {
         text_out.push_str(&format!(" · {skipped} unreadable files skipped"));
+    }
+    for error in reply["errors"].as_array().into_iter().flatten() {
+        text_out.push_str(&format!("\n{}", error.as_str().unwrap_or_default()));
     }
     if sessions.is_empty() {
         text_out.push_str("\n\nNo transcripts found.");
@@ -5317,9 +5326,10 @@ fn harness_sessions_text(reply: &Value) -> String {
     text_out.push_str("\n\nPress x and enter a transcript path to continue one.\n");
     for session in sessions {
         text_out.push_str(&format!(
-            "\n{} · {}\n  {}\n  {}\n",
+            "\n{} · {} → {}\n  {}\n  {}\n",
             local_time(&text(session, "last_activity")),
             text_or(session, "title", &text(session, "native_id")),
+            text(&session["destination"], "label"),
             text_or(session, "cwd", "(directory unknown)"),
             text(session, "transcript")
         ));

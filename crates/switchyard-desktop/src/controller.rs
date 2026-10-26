@@ -142,10 +142,12 @@ pub enum Action {
         #[serde(default)]
         attach: bool,
     },
-    /// This lists the sessions whose transcripts a harness keeps, for the given account or the
-    /// harness's current login. The list is read on demand because it opens every transcript.
-    HarnessSessions {
-        tool: Harness,
+    /// This lists recent sessions from harness transcripts, newest first: those of one harness
+    /// and account, or of both command line harnesses and every saved account when `tool` is
+    /// absent. Each session names the harness that continues it by default. The list is read on
+    /// demand because it opens every transcript.
+    RecentSessions {
+        tool: Option<Harness>,
         account: Option<String>,
     },
     LoginAccount {
@@ -1698,32 +1700,10 @@ impl Controller {
                 };
                 Ok(Reply { message, data })
             }
-            Action::HarnessSessions { tool, account } => {
-                let kind = transcript_kind(tool)?;
-                let account = account_path(tool, account.as_deref())?;
-                let root = transcript_root(tool, account.as_deref())?;
-                let listing = transcripts::list(kind, &root)?;
-                let total = listing.sessions.len();
-                let sessions = listing
-                    .sessions
-                    .iter()
-                    .take(LISTED_SESSIONS)
-                    .map(serde_json::to_value)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| error.to_string())?;
-                Ok(Reply {
-                    message: String::new(),
-                    data: json!({
-                        "tool": tool,
-                        "label": kind.label(),
-                        "directory": root,
-                        "transcripts": kind.transcript_dir(&root),
-                        "sessions": sessions,
-                        "total": total,
-                        "skipped": listing.skipped,
-                    }),
-                })
-            }
+            Action::RecentSessions { tool, account } => Ok(Reply {
+                message: String::new(),
+                data: recent_sessions(&self.config.config_file, tool, account.as_deref())?,
+            }),
             Action::LoginAccount { tool, name } => {
                 let path = account_path(tool, Some(&name))?.ok_or("Choose an account.")?;
                 accounts::login(tool, &path, &name).map(Reply::message)
@@ -2084,6 +2064,154 @@ fn transcript_root(tool: Harness, account: Option<&Path>) -> Result<PathBuf, Str
         .parent()
         .map(Path::to_path_buf)
         .ok_or_else(|| "The harness settings have no parent directory.".into())
+}
+
+/// The harness that continues a session by default: the other command line harness.
+pub(crate) fn other_harness(tool: Harness) -> Harness {
+    match tool {
+        Harness::Claude => Harness::CodexCli,
+        _ => Harness::Claude,
+    }
+}
+
+/// This lists sessions from harness transcripts, newest first: those of one harness and
+/// account, or of both command line harnesses and every saved account when `tool` is `None`.
+/// Each session names the harness that continues it by default, with the first route that
+/// harness can use, so a caller can offer one action per session.
+pub(crate) fn recent_sessions(
+    config_file: &Path,
+    tool: Option<Harness>,
+    account: Option<&str>,
+) -> Result<Value, String> {
+    let mut roots = Vec::new();
+    match tool {
+        Some(tool) => {
+            let path = account_path(tool, account)?;
+            roots.push((
+                tool,
+                account.map(str::to_owned),
+                transcript_root(tool, path.as_deref())?,
+            ));
+        }
+        None => {
+            for tool in [Harness::CodexCli, Harness::Claude] {
+                if let Ok(root) = transcript_root(tool, None) {
+                    roots.push((tool, None, root));
+                }
+                for (name, path) in accounts::list(tool) {
+                    roots.push((tool, Some(name), path));
+                }
+            }
+        }
+    }
+    let text = std::fs::read_to_string(config_file)
+        .map_err(|error| format!("Read {}: {error}", config_file.display()))?;
+    let config = ServerConfig::parse(&text)
+        .map_err(|_| "The server config contains invalid TOML. Open it in Settings to fix it.")?;
+    let routes = config.routes();
+    let destination = |tool: Harness| {
+        let name = harness_name(tool);
+        let mut usable = None;
+        let mut rejected = None;
+        for route in &routes {
+            match login_mode(tool, &config, route) {
+                Ok(_) => {
+                    usable = Some((route.key.clone(), route.id.clone()));
+                    break;
+                }
+                Err(reason) => {
+                    rejected.get_or_insert(reason);
+                }
+            }
+        }
+        let available = harness::binary(tool).is_some();
+        let reason = if !available {
+            Some(format!(
+                "{name} is not detected. Install it or add it to PATH."
+            ))
+        } else if usable.is_none() {
+            Some(match rejected {
+                Some(why) => format!("No route in the server config can serve {name}. {why}"),
+                None => format!("Add a route that {name} can use to the server config."),
+            })
+        } else {
+            None
+        };
+        json!({
+            "tool": tool,
+            "label": name,
+            "available": available,
+            "route": usable.as_ref().map(|(key, _)| key.clone()),
+            "id": usable.as_ref().map(|(_, id)| id.clone()),
+            "reason": reason,
+        })
+    };
+    let destinations: BTreeMap<Harness, Value> = [Harness::CodexCli, Harness::Claude]
+        .into_iter()
+        .map(|tool| (tool, destination(tool)))
+        .collect();
+    // A session in a managed worktree keeps its session ID when it continues.
+    let managed: Vec<(PathBuf, String)> = sessions::inventory()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|receipt| {
+            Some((
+                canonical(Path::new(receipt["worktree"].as_str()?)),
+                receipt["id"].as_str()?.to_owned(),
+            ))
+        })
+        .collect();
+    let mut listed = Vec::new();
+    let mut errors = Vec::new();
+    let mut found = Vec::new();
+    let mut skipped = 0;
+    for (tool, account, root) in &roots {
+        let kind = transcript_kind(*tool)?;
+        listed.push(json!({
+            "tool": tool,
+            "label": kind.label(),
+            "account": account,
+            "transcripts": kind.transcript_dir(root),
+        }));
+        let listing = match transcripts::list(kind, root) {
+            Ok(listing) => listing,
+            Err(error) => {
+                errors.push(format!("{}: {error}", kind.transcript_dir(root).display()));
+                continue;
+            }
+        };
+        skipped += listing.skipped;
+        for session in &listing.sessions {
+            let mut value = serde_json::to_value(session).map_err(|error| error.to_string())?;
+            let managed_id = session.cwd.as_deref().map(canonical).and_then(|cwd| {
+                managed
+                    .iter()
+                    .find(|(worktree, _)| cwd.starts_with(worktree))
+                    .map(|(_, id)| id.clone())
+            });
+            value["tool"] = json!(tool);
+            value["label"] = json!(kind.label());
+            value["account"] = json!(account);
+            value["managed_id"] = json!(managed_id);
+            value["destination"] = destinations[&other_harness(*tool)].clone();
+            found.push(value);
+        }
+    }
+    found.sort_by(|left, right| {
+        right["last_activity"]
+            .as_str()
+            .cmp(&left["last_activity"].as_str())
+    });
+    let total = found.len();
+    found.truncate(LISTED_SESSIONS);
+    Ok(json!({
+        "sessions": found,
+        "total": total,
+        "skipped": skipped,
+        "roots": listed,
+        "errors": errors,
+        "limit": LISTED_SESSIONS,
+    }))
 }
 
 // Harnesses record the resolved directory, which differs from the recorded one through
@@ -2838,14 +2966,41 @@ mod tests {
             )
             .expect("transcript");
             let listing = controller
-                .dispatch(Action::HarnessSessions {
-                    tool: Harness::Claude,
+                .dispatch(Action::RecentSessions {
+                    tool: Some(Harness::Claude),
                     account: None,
                 })
                 .expect("listing");
             assert_eq!(listing.data["total"], 1);
             assert_eq!(listing.data["sessions"][0]["transcript"], json!(transcript));
             assert_eq!(listing.data["sessions"][0]["cwd"], json!(project));
+            // Without a harness, both harnesses list together, and each session names the
+            // other harness with the first route it can use.
+            let merged = controller
+                .dispatch(Action::RecentSessions {
+                    tool: None,
+                    account: None,
+                })
+                .expect("merged listing");
+            let all = merged.data["sessions"].as_array().expect("sessions");
+            assert_eq!(all.len(), 2, "{all:?}");
+            let claude = all
+                .iter()
+                .find(|s| s["tool"] == "claude")
+                .expect("claude session");
+            let codex = all
+                .iter()
+                .find(|s| s["tool"] == "codex_cli")
+                .expect("codex session");
+            assert_eq!(claude["destination"]["tool"], "codex_cli");
+            assert_eq!(codex["destination"]["tool"], "claude");
+            assert_eq!(codex["destination"]["route"], "r");
+            assert_eq!(codex["destination"]["id"], "public");
+            assert_eq!(codex["destination"]["available"], true);
+            assert!(codex["destination"]["reason"].is_null(), "{codex}");
+            assert_eq!(codex["managed_id"], json!(id));
+            assert!(claude["managed_id"].is_null());
+            assert_eq!(merged.data["roots"].as_array().map(Vec::len), Some(2));
             assert!(
                 preview(
                     &mut controller,
