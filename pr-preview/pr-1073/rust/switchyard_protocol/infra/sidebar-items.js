@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["ModelInfraSignals","WorkerLoad"],"type":["InfraSignals"]};
+window.SIDEBAR_ITEMS = {"struct":["ModelInfraSignals","PoolLoad"],"type":["InfraSignals"]};
