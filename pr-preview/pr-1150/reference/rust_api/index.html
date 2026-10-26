@@ -723,34 +723,6 @@
 
               
             
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="https://github.com/NVIDIA-NeMo/Switchyard/tree/main/examples/litellm" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    LiteLLM
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
           </ul>
         </nav>
       
@@ -1285,34 +1257,6 @@
     
   
     Compare and Tune
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../operations/soak_test/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Soak Testing
   
 
     
@@ -2187,15 +2131,64 @@
   
   
   
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_7" id="__nav_7_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Background
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Background
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
     <li class="md-nav__item">
-      <a href="../../cli_reference/" class="md-nav__link">
+      <a href="../../core_concepts/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Demo Server CLI
+    Core Concepts
   
 
     
@@ -2204,6 +2197,155 @@
   
 
       </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_8" id="__nav_7_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Demo Server
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Demo Server
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli_reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/soak_test/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Soak Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
     </li>
   
 
@@ -2352,53 +2494,6 @@ execution helpers when your application does not drive the step stream itself.</
 <p>For field meanings and provider API mappings, use the <a href="../protocols/llm_requests/">LLM protocol reference</a>
 or <a href="../protocols/decision_questions/">decision protocol reference</a>.</p>
 <h2 id="crate-boundary">Crate boundary<a class="headerlink" href="#crate-boundary" title="Permanent link">&para;</a></h2>
-<p>Start with libsy and protocol types. Add the other components when your host
-needs their behavior:</p>
-<table>
-<thead>
-<tr>
-<th>Component</th>
-<th>Responsibility</th>
-<th>Used by your application when</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><a href="../../rust/switchyard_libsy/">libsy</a></td>
-<td>Routing algorithms and the Step exchange.</td>
-<td>You embed routing.</td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/">protocol</a></td>
-<td>Shared LLM and decision request/response types.</td>
-<td>You exchange model data with libsy.</td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_translation/">translation</a></td>
-<td>Supported provider JSON and streaming conversions.</td>
-<td>You want supplied conversions with your own transport.</td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_llm_client/">LLM client</a></td>
-<td>Optional HTTP clients and execution helpers.</td>
-<td>You want supplied model I/O and call handling.</td>
-</tr>
-<tr>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/3360566ff7c863d0c8f102848fcc431e1db900e0/crates/switchyard-runner/src/lib.rs">Runner</a></td>
-<td>Loads configured routes and coordinates their execution.</td>
-<td>Your integration uses Switchyard TOML configuration.</td>
-</tr>
-<tr>
-<td><a href="../../operations/local_evaluation/">Demo server</a></td>
-<td>A local HTTP reference application around the runner.</td>
-<td>You want to try routing quickly with local agents.</td>
-</tr>
-</tbody>
-</table>
-<p>The host owns its service lifecycle, credentials, and operational policy. The
-demo server is for local use; deployment and scaling belong to the gateway or
-application embedding Switchyard. See <a href="../host_integration/">host integration</a>
-for the application boundary and <a href="../../mechanics_of_libsy/">Mechanics</a> for execution.</p>
 <p>Use the <a href="../../getting_started/#install">Rust quickstart</a> for compatible dependency
 versions. <a href="../../mechanics_of_libsy/">Mechanics of Libsy</a> explains how these crates
 work together during a run.</p>
