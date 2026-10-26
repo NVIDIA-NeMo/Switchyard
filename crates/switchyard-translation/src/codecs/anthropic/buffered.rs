@@ -21,7 +21,7 @@ use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
-    McpToolConfig, McpToolset, MediaSource, Message, OutputParams, ProviderExtensions,
+    McpContent, McpToolConfig, McpToolset, MediaSource, Message, OutputParams, ProviderExtensions,
     ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason, Tool, ToolCall, ToolChoice,
     ToolDefinition, ToolResult, Usage,
 };
@@ -206,16 +206,13 @@ impl FormatCodec for AnthropicMessagesCodec {
         request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
+        let mut diagnostics = Vec::new();
+        validate_request_capabilities(request, &mut diagnostics, policy)?;
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::AnthropicMessages, policy)
         {
-            return Ok(EncodedRequest {
-                body,
-                diagnostics: Vec::new(),
-            });
+            return Ok(EncodedRequest { body, diagnostics });
         }
-        let mut diagnostics = Vec::new();
-        validate_request_capabilities(request, &mut diagnostics, policy)?;
         let allowed = crate::codecs::common::allowed_function_tools(request)?;
         let (tools, tool_choice) = allowed.as_ref().map_or(
             (request.tools.as_slice(), request.tool_choice.as_ref()),
@@ -718,6 +715,49 @@ fn decode_anthropic_content_block(
                 .to_string(),
             arguments: block.get("input").cloned().unwrap_or_else(|| json!({})),
         })],
+        Some("mcp_tool_use") => {
+            let arguments = block.get("input").cloned().unwrap_or_else(|| json!({}));
+            validate_mcp_input(&arguments)?;
+            vec![ContentBlock::Mcp(McpContent::Call {
+                server_name: required_mcp_string(block, "server_name", "mcp_tool_use")?,
+                call: ToolCall {
+                    id: required_mcp_string(block, "id", "mcp_tool_use")?,
+                    name: required_mcp_string(block, "name", "mcp_tool_use")?,
+                    arguments,
+                },
+            })]
+        }
+        Some("mcp_tool_result") => {
+            let content = block.get("content").unwrap_or(&Value::Null);
+            match content {
+                Value::String(_) => {}
+                Value::Array(blocks) => {
+                    for block in blocks {
+                        validate_mcp_result_block(block)?;
+                    }
+                }
+                _ => {
+                    return Err(TranslationError::InvalidValue {
+                        path: "mcp_tool_result.content".into(),
+                        message: "expected a string or array of content blocks".into(),
+                    });
+                }
+            }
+            if block
+                .get("is_error")
+                .is_some_and(|value| !value.is_boolean())
+            {
+                return Err(TranslationError::InvalidValue {
+                    path: "mcp_tool_result.is_error".into(),
+                    message: "expected a boolean".into(),
+                });
+            }
+            vec![ContentBlock::Mcp(McpContent::Result(ToolResult {
+                tool_call_id: required_mcp_string(block, "tool_use_id", "mcp_tool_result")?,
+                content: decode_tool_result_content(content),
+                is_error: block.get("is_error").and_then(Value::as_bool),
+            }))]
+        }
         Some("tool_result") => vec![ContentBlock::ToolResult(ToolResult {
             tool_call_id: block
                 .get("tool_use_id")
@@ -744,6 +784,59 @@ fn decode_anthropic_content_block(
             raw: Value::Object(block.clone()),
         }],
     })
+}
+
+fn required_mcp_string(block: &Map<String, Value>, key: &str, kind: &str) -> Result<String> {
+    let value = block.get(key).and_then(Value::as_str).unwrap_or_default();
+    validate_nonempty_string(value, &format!("{kind}.{key}"))?;
+    Ok(value.to_owned())
+}
+
+fn validate_nonempty_string(value: &str, path: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(TranslationError::InvalidValue {
+            path: path.into(),
+            message: "expected a nonempty string".into(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_mcp_input(input: &Value) -> Result<()> {
+    if !input.is_object() {
+        return Err(TranslationError::InvalidValue {
+            path: "mcp_tool_use.input".into(),
+            message: "expected an object".into(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_mcp_result_block(block: &Value) -> Result<()> {
+    let kind = block
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if kind.is_empty()
+        || (kind == "text" && !block.get("text").is_some_and(Value::is_string))
+        || (matches!(kind, "image" | "document")
+            && !block.get("source").is_some_and(Value::is_object))
+    {
+        return Err(TranslationError::InvalidValue {
+            path: "mcp_tool_result.content".into(),
+            message: "expected typed content blocks with string text or object media sources"
+                .into(),
+        });
+    }
+    if matches!(kind, "tool_use" | "tool_result" | "mcp_tool_listing")
+        || kind.ends_with("_tool_use")
+        || kind.ends_with("_tool_result")
+    {
+        return Err(TranslationError::LossyConversion(
+            "nested tool activity is unsupported in Anthropic MCP results".into(),
+        ));
+    }
+    Ok(())
 }
 
 // Preserves supported Anthropic tool-result blocks in the neutral IR.
@@ -1266,7 +1359,52 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Result<Vec<Value>> {
             }),
             MediaSource::Raw(raw) => raw.clone(),
         }],
-        ContentBlock::Mcp(_) => {
+        ContentBlock::Mcp(McpContent::Call { server_name, call }) => {
+            validate_nonempty_string(server_name, "mcp_tool_use.server_name")?;
+            validate_nonempty_string(&call.id, "mcp_tool_use.id")?;
+            validate_nonempty_string(&call.name, "mcp_tool_use.name")?;
+            validate_mcp_input(&call.arguments)?;
+            vec![
+                json!({"type": "mcp_tool_use", "id": call.id, "name": call.name,
+                "server_name": server_name, "input": call.arguments}),
+            ]
+        }
+        ContentBlock::Mcp(McpContent::Result(result)) => {
+            validate_nonempty_string(&result.tool_call_id, "mcp_tool_result.tool_use_id")?;
+            let mut content = Vec::new();
+            for block in &result.content {
+                match block {
+                    ContentBlock::Text { .. }
+                    | ContentBlock::Image { .. }
+                    | ContentBlock::File { .. } => {
+                        crate::codecs::openai_media::validate_media(
+                            block,
+                            WireFormat::AnthropicMessages,
+                        )?;
+                        content.extend(encode_one_anthropic_block(block)?);
+                    }
+                    ContentBlock::Unknown { provider, raw }
+                        if provider.as_str() == WireFormat::AnthropicMessages.as_str() =>
+                    {
+                        content.push(raw.clone());
+                    }
+                    _ => {
+                        return Err(TranslationError::LossyConversion(
+                            "unsupported content in Anthropic MCP result".into(),
+                        ));
+                    }
+                }
+            }
+            for block in &content {
+                validate_mcp_result_block(block)?;
+            }
+            let mut item = json!({"type": "mcp_tool_result", "tool_use_id": result.tool_call_id, "content": content});
+            if let Some(is_error) = result.is_error {
+                item["is_error"] = json!(is_error);
+            }
+            vec![item]
+        }
+        ContentBlock::Mcp(McpContent::Listing { .. }) => {
             return Err(TranslationError::LossyConversion(
                 "MCP history encoding is not implemented".into(),
             ));

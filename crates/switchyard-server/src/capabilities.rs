@@ -119,12 +119,15 @@ fn unsupported_content(
 ) -> Option<&'static str> {
     content.iter().find_map(|block| match block {
         ContentBlock::Image { .. } if capabilities.vision == Some(false) => Some("vision"),
-        ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
+        ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_) | ContentBlock::Mcp(_)
             if capabilities.tool_calling == Some(false) =>
         {
             Some("tool_calling")
         }
-        ContentBlock::ToolResult(result) => unsupported_content(capabilities, &result.content),
+        ContentBlock::ToolResult(result)
+        | ContentBlock::Mcp(switchyard_protocol::McpContent::Result(result)) => {
+            unsupported_content(capabilities, &result.content)
+        }
         _ => None,
     })
 }
@@ -270,6 +273,62 @@ mod tests {
             },
             "vision",
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_history_requires_tools_and_nested_images_require_vision() -> TestResult {
+        let body = json!({"messages": [{"role": "assistant", "content": [
+            {"type": "mcp_tool_use", "id": "call_1", "name": "lookup", "server_name": "inventory", "input": {}},
+            {"type": "mcp_tool_result", "tool_use_id": "call_1", "content": [
+                {"type": "text", "text": "Found it."},
+                {"type": "image", "source": {"type": "url", "url": "https://example.test/image.png"}}
+            ]}
+        ]}]});
+        let mut request = decode_request(AnthropicMessages, &body)?;
+        // Check the decoded IR without the raw-body fallback.
+        for (capabilities, expected) in [
+            (
+                ModelCapabilities {
+                    tool_calling: Some(false),
+                    ..Default::default()
+                },
+                Some("tool_calling"),
+            ),
+            (
+                ModelCapabilities {
+                    tool_calling: Some(true),
+                    vision: Some(false),
+                    ..Default::default()
+                },
+                Some("vision"),
+            ),
+            (
+                ModelCapabilities {
+                    tool_calling: Some(true),
+                    vision: Some(true),
+                    ..Default::default()
+                },
+                None,
+            ),
+        ] {
+            assert_eq!(
+                unsupported_capability(capabilities, &request, &json!({})),
+                expected
+            );
+        }
+        request.messages[0].content.remove(0);
+        assert_eq!(
+            unsupported_capability(
+                ModelCapabilities {
+                    tool_calling: Some(false),
+                    ..Default::default()
+                },
+                &request,
+                &json!({}),
+            ),
+            Some("tool_calling")
+        );
         Ok(())
     }
 }

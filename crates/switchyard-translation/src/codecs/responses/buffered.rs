@@ -176,6 +176,14 @@ impl FormatCodec for OpenAiResponsesCodec {
         request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
+        // Responses supports MCP history, but Switchyard does not yet encode it.
+        super::super::common::reject_mcp_content(
+            request
+                .instructions
+                .iter()
+                .flat_map(|instruction| &instruction.content)
+                .chain(request.messages.iter().flat_map(|message| &message.content)),
+        )?;
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::OpenAiResponses, policy)
         {
@@ -419,6 +427,10 @@ impl FormatCodec for OpenAiResponsesCodec {
         response: &AggLlmResponse,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
+        // Responses supports MCP output, but Switchyard does not yet encode it.
+        super::super::common::reject_mcp_content(
+            response.outputs.iter().flat_map(|output| &output.content),
+        )?;
         if let Some(body) =
             exact_preserved_response(&response.preservation, WireFormat::OpenAiResponses, _policy)
         {

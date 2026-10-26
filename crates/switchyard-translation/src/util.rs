@@ -244,7 +244,7 @@ fn messages_have_tools(messages: &[Message]) -> bool {
     messages_have_block(messages, |block| {
         matches!(
             block,
-            ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
+            ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_) | ContentBlock::Mcp(_)
         )
     })
 }
@@ -267,7 +267,10 @@ fn content_has_block(
     content.iter().any(|block| {
         predicate(block)
             || match block {
-                ContentBlock::ToolResult(result) => content_has_block(&result.content, predicate),
+                ContentBlock::ToolResult(result)
+                | ContentBlock::Mcp(crate::McpContent::Result(result)) => {
+                    content_has_block(&result.content, predicate)
+                }
                 _ => false,
             }
     })
