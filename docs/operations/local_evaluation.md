@@ -1,6 +1,16 @@
 # Evaluate Routing Locally
 
-Use the standalone server to try routing configurations with your own model pool. It is for demos, evaluation, and personal use on single-user machines. **It is not a supported production deployment path.** To add routing to your gateway or application, use the [libsy quickstart](../getting_started.md).
+Use the standalone server to try routing with your own models and local agents.
+It is a runnable reference implementation of libsy, protocol conversion, and
+configured execution. **It is for demos, evaluation, and personal use on
+single-user machines, not a supported production deployment or a service to scale.**
+
+To embed routing in a gateway or application, use the
+**[libsy quickstart](../getting_started.md)**. For an existing gateway, use
+**[NeMo Relay](../integrations/nemo_relay.md)** or the experimental
+**[LiteLLM integration](../../examples/litellm/README.md)**.
+The **[reference implementation walkthrough](../reference/demo_server.md)**
+shows which parts of this server you can learn from.
 
 ## Install the server
 
@@ -163,3 +173,13 @@ For per-request records, restart with `--routing-log-file routing.jsonl`. Each r
 | Every fresh chat selects the efficient model | Expected for this preset without tool signals. Use the escalation request above. |
 
 Stop the server with Ctrl+C when finished.
+
+## Continue With Your Application
+
+The local run demonstrates configuration and model selection. It does not
+validate a scaled deployment or establish quality on your workload.
+
+- **Use local agents:** [Claude Code and Codex](../recipes/single_provider_coding_agents.md), [pi](../integrations/pi.md), or [Oh My Pi](../integrations/oh_my_pi.md).
+- **Embed the routing core:** start with the [Rust quickstart](../getting_started.md) and [host integration](../reference/host_integration.md).
+- **Keep an existing gateway:** follow the [Relay](../integrations/nemo_relay.md) or [LiteLLM](../../examples/litellm/README.md) instructions and compatibility limits.
+- **Understand this implementation:** read [how the demo server uses libsy](../reference/demo_server.md).

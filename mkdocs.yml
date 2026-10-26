@@ -65,6 +65,7 @@ nav:
               - Questions: reference/protocols/decision_questions.md
               - Answers: reference/protocols/decision_answers.md
       - Host Integration: reference/host_integration.md
+      - Demo Server Implementation: reference/demo_server.md
       - Server CLI Reference: cli_reference.md
       - TOML Schema: reference/toml_schema.md
       - OpenTelemetry: reference/opentelemetry.md
