@@ -186,8 +186,7 @@ impl Metrics {
         let mut signals = self.state.lock().unwrap_or_else(|p| p.into_inner());
         route.apply_infra(outcome, &signals)?;
         let model = outcome.selected_model_id()?.clone();
-        let counts = signals.entry(model.clone()).or_default();
-        counts.local_inflight += 1;
+        signals.entry(model.clone()).or_default().local_inflight += 1;
         Ok(InFlight {
             state: self.state.clone(),
             model,

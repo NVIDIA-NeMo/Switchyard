@@ -440,6 +440,17 @@ mod tests {
         rx.message().await.unwrap().unwrap().response.unwrap()
     }
 
+    async fn process_body(client: &mut Client, json: &[u8]) -> Streaming<ext::ProcessingResponse> {
+        client
+            .process(tokio_stream::iter([
+                input(headers()),
+                input(Input::RequestBody(body(json, true))),
+            ]))
+            .await
+            .unwrap()
+            .into_inner()
+    }
+
     fn streamed(reply: ext::BodyResponse) -> ext::StreamedBodyResponse {
         let Some(ext::body_mutation::Mutation::StreamedResponse(body)) =
             reply.response.unwrap().body_mutation.unwrap().mutation
@@ -482,7 +493,7 @@ mod tests {
         assert!(b.end_of_stream);
         let value: serde_json::Value = serde_json::from_slice(&b.body).unwrap();
         assert_eq!(value["model"], "Qwen/Qwen3-0.6B");
-        assert_eq!(requests.available_permits(), 8);
+        assert_eq!(requests.available_permits(), MAX_UPLOADS);
         assert_eq!(router.metrics.as_ref().unwrap().inflight_for_test(), 1);
         send(&tx, Input::ResponseHeaders(ext::HttpHeaders::default())).await;
         assert!(matches!(next(&mut rx).await, Output::ResponseHeaders(_)));
@@ -556,17 +567,11 @@ mod tests {
         send(&tx, Input::ResponseHeaders(ext::HttpHeaders::default())).await;
         assert!(matches!(next(&mut rx).await, Output::ResponseHeaders(_)));
 
-        let mut rejected = client
-            .process(tokio_stream::iter([
-                input(headers()),
-                input(Input::RequestBody(body(
-                    br#"{"model":"auto","messages":[{"role":"user","content":"hello"}]}"#,
-                    true,
-                ))),
-            ]))
-            .await
-            .unwrap()
-            .into_inner();
+        let mut rejected = process_body(
+            &mut client,
+            br#"{"model":"auto","messages":[{"role":"user","content":"hello"}]}"#,
+        )
+        .await;
         let Output::ImmediateResponse(error) = next(&mut rejected).await else {
             panic!()
         };
@@ -625,9 +630,7 @@ mod tests {
                 // Hold all parent slots before their judge calls re-enter PreProc.
                 barrier.wait().await;
                 let json = br#"{"model":"Qwen/Qwen3-1.7B","messages":[{"role":"user","content":"judge"}]}"#;
-                let mut rx = client.process(tokio_stream::iter([
-                    input(headers()), input(Input::RequestBody(body(json,true)))
-                ])).await.unwrap().into_inner();
+                let mut rx = process_body(&mut client, json).await;
                 assert!(matches!(next(&mut rx).await, Output::RequestHeaders(_)));
                 assert!(matches!(next(&mut rx).await, Output::RequestBody(_)));
                 axum::Json(serde_json::json!({
@@ -645,14 +648,7 @@ mod tests {
             tasks.spawn(async move {
                 let json =
                     br#"{"model":"auto","messages":[{"role":"user","content":"Sort [3,1,2]."}]}"#;
-                let mut rx = client
-                    .process(tokio_stream::iter([
-                        input(headers()),
-                        input(Input::RequestBody(body(json, true))),
-                    ]))
-                    .await
-                    .unwrap()
-                    .into_inner();
+                let mut rx = process_body(&mut client, json).await;
                 assert!(matches!(next(&mut rx).await, Output::RequestHeaders(_)));
                 let Output::RequestBody(response) = next(&mut rx).await else {
                     panic!("expected routed body")

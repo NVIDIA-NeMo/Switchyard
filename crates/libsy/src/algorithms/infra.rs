@@ -6,7 +6,7 @@
 use crate::{LibsyError, Result, RoutingOutcome, RuntimeModels};
 use serde::Deserialize;
 use std::time::{Duration, Instant};
-use switchyard_protocol::{Category, InfraSignals, ModelInfraSignals};
+use switchyard_protocol::{Category, InfraSignals, ModelId};
 
 /// Queue and capacity limits for moving requests to the capable model.
 #[derive(Clone, Debug, Deserialize)]
@@ -36,28 +36,29 @@ impl InfraPolicy {
 
     fn evaluate(
         &self,
-        source: &ModelInfraSignals,
-        destination: &ModelInfraSignals,
-    ) -> (bool, &'static str) {
-        let (Some(source), Some(load)) = (&source.load, &destination.load) else {
-            return (false, "unknown_or_stale_signals");
-        };
+        signals: &InfraSignals,
+        source: &ModelId,
+        destination: &ModelId,
+    ) -> Option<(bool, &'static str)> {
+        let source = signals.get(source)?.load.as_ref()?;
+        let destination = signals.get(destination)?;
+        let load = destination.load.as_ref()?;
         let now = Instant::now();
         if [source, load].iter().any(|pool| {
             now.checked_duration_since(pool.sampled_at)
                 .is_none_or(|age| age > Duration::from_millis(self.max_signal_age_ms))
         }) {
-            return (false, "unknown_or_stale_signals");
+            return None;
         }
         if source.min_waiting < self.min_waiting_requests {
-            return (false, "small_pool_not_queued");
+            return Some((false, "small_pool_not_queued"));
         }
         if load.max_waiting > 0
             || load.running.max(destination.local_inflight) >= self.max_capable_inflight
         {
-            return (false, "protect_capable_capacity");
+            return Some((false, "protect_capable_capacity"));
         }
-        (true, "small_pool_queued")
+        Some((true, "small_pool_queued"))
     }
 
     /// Adjust a decision-only task result. Returns true only when the model changes.
@@ -90,10 +91,9 @@ impl InfraPolicy {
         if outcome.selected_model_id()? != efficient || efficient == capable {
             return Ok(false);
         }
-        let (spillover, reason) = match (signals.get(efficient), signals.get(capable)) {
-            (Some(source), Some(destination)) => self.evaluate(source, destination),
-            _ => (false, "unknown_or_stale_signals"),
-        };
+        let (spillover, reason) = self
+            .evaluate(signals, efficient, capable)
+            .unwrap_or((false, "unknown_or_stale_signals"));
         tracing::info!(task_model = %efficient, alternate_model = %capable, spillover, reason,
             "queue routing decision");
         if spillover {
@@ -108,7 +108,7 @@ impl InfraPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use switchyard_protocol::{ModelId, PoolLoad, Request, text_request};
+    use switchyard_protocol::{ModelInfraSignals, PoolLoad, Request, text_request};
 
     #[test]
     fn queue_policy_preserves_task_choices() {
