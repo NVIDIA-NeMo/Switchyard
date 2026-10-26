@@ -91,17 +91,17 @@
 <a href=#91 id=91 data-nosnippet>91</a>        <span class="kw">if </span>outcome.selected_model_id()<span class="question-mark">? </span>!= efficient || efficient == capable {
 <a href=#92 id=92 data-nosnippet>92</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(<span class="bool-val">false</span>);
 <a href=#93 id=93 data-nosnippet>93</a>        }
-<a href=#94 id=94 data-nosnippet>94</a>        <span class="kw">let </span>(spillover, reason) = <span class="self">self
+<a href=#94 id=94 data-nosnippet>94</a>        <span class="kw">let </span>(is_spillover, reason) = <span class="self">self
 <a href=#95 id=95 data-nosnippet>95</a>            </span>.evaluate(signals, efficient, capable)
 <a href=#96 id=96 data-nosnippet>96</a>            .unwrap_or((<span class="bool-val">false</span>, <span class="string">"unknown_or_stale_signals"</span>));
-<a href=#97 id=97 data-nosnippet>97</a>        <span class="macro">tracing::info!</span>(task_model = %efficient, alternate_model = %capable, spillover, reason,
+<a href=#97 id=97 data-nosnippet>97</a>        <span class="macro">tracing::info!</span>(task_model = %efficient, alternate_model = %capable, spillover = is_spillover, reason,
 <a href=#98 id=98 data-nosnippet>98</a>            <span class="string">"queue routing decision"</span>);
-<a href=#99 id=99 data-nosnippet>99</a>        <span class="kw">if </span>spillover {
+<a href=#99 id=99 data-nosnippet>99</a>        <span class="kw">if </span>is_spillover {
 <a href=#100 id=100 data-nosnippet>100</a>            outcome.selected_model_ids.retain(|id| id != capable);
 <a href=#101 id=101 data-nosnippet>101</a>            outcome.selected_model_ids.insert(<span class="number">0</span>, capable.clone());
 <a href=#102 id=102 data-nosnippet>102</a>            outcome.request.llm_request.model = <span class="prelude-val">Some</span>(capable.to_string());
 <a href=#103 id=103 data-nosnippet>103</a>        }
-<a href=#104 id=104 data-nosnippet>104</a>        <span class="prelude-val">Ok</span>(spillover)
+<a href=#104 id=104 data-nosnippet>104</a>        <span class="prelude-val">Ok</span>(is_spillover)
 <a href=#105 id=105 data-nosnippet>105</a>    }
 <a href=#106 id=106 data-nosnippet>106</a>}
 <a href=#107 id=107 data-nosnippet>107</a>
@@ -176,15 +176,15 @@
 <a href=#176 id=176 data-nosnippet>176</a>                <span class="string">"small"
 <a href=#177 id=177 data-nosnippet>177</a>            </span>};
 <a href=#178 id=178 data-nosnippet>178</a>            <span class="kw">let </span><span class="kw-2">mut </span>outcome = RoutingOutcome::route_to(initial.into(), <span class="macro">vec!</span>[], request.clone());
-<a href=#179 id=179 data-nosnippet>179</a>            <span class="kw">let </span>moved = <span class="macro">matches!</span>(case, <span class="string">"busy" </span>| <span class="string">"at_threshold"</span>);
+<a href=#179 id=179 data-nosnippet>179</a>            <span class="kw">let </span>is_spillover = <span class="macro">matches!</span>(case, <span class="string">"busy" </span>| <span class="string">"at_threshold"</span>);
 <a href=#180 id=180 data-nosnippet>180</a>            <span class="macro">assert_eq!</span>(
 <a href=#181 id=181 data-nosnippet>181</a>                policy.apply(<span class="kw-2">&amp;mut </span>outcome, <span class="kw-2">&amp;</span>models, <span class="kw-2">&amp;</span>signals).unwrap(),
-<a href=#182 id=182 data-nosnippet>182</a>                moved,
+<a href=#182 id=182 data-nosnippet>182</a>                is_spillover,
 <a href=#183 id=183 data-nosnippet>183</a>                <span class="string">"{case}"
 <a href=#184 id=184 data-nosnippet>184</a>            </span>);
 <a href=#185 id=185 data-nosnippet>185</a>            <span class="macro">assert_eq!</span>(
 <a href=#186 id=186 data-nosnippet>186</a>                outcome.selected_model_id().unwrap().as_str(),
-<a href=#187 id=187 data-nosnippet>187</a>                <span class="kw">if </span>moved { <span class="string">"large" </span>} <span class="kw">else </span>{ initial },
+<a href=#187 id=187 data-nosnippet>187</a>                <span class="kw">if </span>is_spillover { <span class="string">"large" </span>} <span class="kw">else </span>{ initial },
 <a href=#188 id=188 data-nosnippet>188</a>                <span class="string">"{case}"
 <a href=#189 id=189 data-nosnippet>189</a>            </span>);
 <a href=#190 id=190 data-nosnippet>190</a>            outcome.request.llm_request.model = <span class="prelude-val">None</span>;
