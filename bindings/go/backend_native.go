@@ -26,6 +26,9 @@ import (
 	"unsafe"
 )
 
+// Backend returns the compiled routing backend: "native" or "wasm".
+func Backend() string { return "native" }
+
 type nativeBackend struct {
 	mu  sync.RWMutex
 	ptr *C.SyRouter
