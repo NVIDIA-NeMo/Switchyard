@@ -306,7 +306,7 @@ impl DeploymentConfig {
                 .algorithm
                 .build_with_runtime_models(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
-            let infra = if let Some(infra) = &config.infra {
+            if let Some(infra) = &config.infra {
                 if !matches!(&config.algorithm, AlgorithmSpec::LlmClassifier { config }
                     if matches!(config.mode, None | Some(crate::ClassifierMode::Capability))
                         && config.escalation.is_none())
@@ -318,10 +318,7 @@ impl DeploymentConfig {
                 infra.validate().map_err(|error| {
                     RunnerError::configuration_source(format!("route {route_name}: {error}"), error)
                 })?;
-                Some(infra.clone())
-            } else {
-                None
-            };
+            }
             if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
                 && let Some(probe) = self.build_model_properties_probe(&vgr.local_target, &clients)
             {
@@ -348,7 +345,7 @@ impl DeploymentConfig {
                 decision_targets,
                 models,
             )
-            .with_infra(infra);
+            .with_infra(config.infra.clone());
             routes.push((config.id.clone(), route));
         }
         let runner = Runner::new(routes)

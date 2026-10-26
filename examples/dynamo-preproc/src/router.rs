@@ -32,6 +32,11 @@ pub const MODEL_HEADER: &str = "x-gateway-model-name";
 const SESSION_TTL: Duration = Duration::from_secs(60 * 60);
 type SessionIdentity = (String, String, Option<String>);
 
+#[derive(serde::Deserialize)]
+struct RequestModel {
+    model: String,
+}
+
 pub struct Router {
     runner: Runner,
     sessions: Mutex<HashMap<SessionIdentity, Instant>>,
@@ -55,6 +60,13 @@ impl Router {
             sessions: Mutex::new(HashMap::new()),
             metrics: None,
         }
+    }
+
+    pub fn is_passthrough(&self, body: &[u8]) -> bool {
+        serde_json::from_slice::<RequestModel>(body)
+            .ok()
+            .and_then(|request| self.runner.route(&request.model))
+            .is_some_and(|route| route.algorithm_name() == "passthrough")
     }
 
     pub async fn decide(

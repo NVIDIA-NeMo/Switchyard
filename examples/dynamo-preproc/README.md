@@ -9,6 +9,10 @@ Run Switchyard as a separate ExtProc service behind agentgateway 1.0.0. The gate
 an OpenAI Chat Completions request to PreProc before matching its HTTPRoute. Switchyard
 chooses the model; the selected model's Dynamo EPP chooses the worker.
 
+**Before you start:** you need an existing Kubernetes cluster with working GPU access
+and `kubectl` configured to access it. This example does not create a cluster or
+install GPU drivers.
+
 ```mermaid
 sequenceDiagram
     participant Client
@@ -16,8 +20,21 @@ sequenceDiagram
     participant Proc as Switchyard PreProc
     participant EPP as Dynamo EPP
     participant Worker
+    participant Prom as Prometheus
+    Note over Proc,Prom: Optional queue rule: PreProc polls pool metrics in the background
     Client->>Gateway: Chat completion (model: auto)
     Gateway->>Proc: Request headers and body
+    opt Task classifier: new session
+        Proc->>Gateway: Judge request with explicit large-model ID
+        Gateway->>Proc: Process judge request
+        Proc-->>Gateway: Passthrough: keep the explicit model
+        Gateway->>EPP: Select a large-model worker
+        EPP-->>Gateway: Worker endpoint
+        Gateway->>Worker: Classify task
+        Worker-->>Gateway: Verdict
+        Gateway-->>Proc: Verdict (response phases also pass through PreProc)
+    end
+    Note over Proc: Apply optional queue rule to the task choice
     Proc-->>Gateway: Selected model header and updated body
     Gateway->>EPP: Route to selected InferencePool
     EPP-->>Gateway: Worker endpoint
@@ -65,61 +82,52 @@ on restart. The default StageRouter configuration does not use infrastructure si
 ## Task classification and queue-based routing
 
 [task-classifier.toml](config/task-classifier.toml) classifies the task once per session.
-Its optional `infra` table lets the larger model help when every small worker reaches
-`min_waiting_requests`. The larger model must have no queued requests and remain below
-`max_capable_inflight`, using the greater of running and locally tracked requests.
-EPP still selects the worker. This rule does not estimate waiting time or cache reuse.
+Use a separate `X-Switchyard-Session-Id` per task. The classifier calls the large model
+through the same gateway; `large_direct` skips classification for that explicit model ID.
+Temperature zero and disabled Qwen thinking leave the judge's token budget for its verdict.
 
-Mount the routing file as `routes.toml` and [metrics.toml](config/metrics.toml), then set:
+The optional `infra` rule can move an individual small-model request to the large model:
 
-```bash
-ROUTES_CONFIG=/etc/switchyard/routes.toml
-METRICS_CONFIG=/etc/switchyard/metrics.toml
+```text
+every small worker has at least min_waiting_requests waiting
+AND no large worker has requests waiting
+AND max(total large-model running requests, local unfinished requests) < max_capable_inflight
+AND both pools' samples are within max_signal_age_ms
 ```
 
-The classifier uses the existing large model through the same gateway. Its explicit
-model ID matches `large_direct`, which skips classification and continues to EPP.
-The judge uses temperature zero and disables Qwen thinking to leave its token budget
-for the routing JSON.
-Use a separate `X-Switchyard-Session-Id` per task to retain the classifier's choice.
-The queue rule can still override that choice on individual requests.
+Once the queue drains, requests use the original task choice again. EPP selects the
+worker. This rule does not estimate waiting time or cache reuse. Removing `infra`
+or `METRICS_CONFIG` disables the override; StageRouter is unaffected.
 
-This collector supports SGLang's `sglang:num_queue_reqs` and
-`sglang:num_running_reqs`. Enable SGLang metrics and Prometheus scraping through
-[Dynamo's monitoring setup](https://docs.nvidia.com/dynamo/dev/kubernetes/operations/observability).
-Set the selectors to cover the whole pool without duplicate scrape targets or
-replicated rank metrics. This example assumes Prometheus is scraping every worker;
-it does not check worker health or detect a partially missing pool.
+PreProc polls `sglang:num_queue_reqs` and `sglang:num_running_reqs` through the
+Prometheus endpoint in [metrics.toml](config/metrics.toml). Select every engine in
+each pool exactly once. Duplicate rank series or missing workers distort the counts;
+this example does not detect those cases or check worker health.
 
-Prometheus computes the minimum and maximum queue depth and total running requests.
-PreProc checks the oldest scrape time for both metrics. Failed queries, missing
-aggregates or stale samples preserve the task decision. Start with one-second
-scrapes and a three-second freshness limit, then validate the engine update delay.
+Failed queries, missing aggregates or stale samples keep the task choice. Freshness
+uses the oldest original scrape time, not the time of the Prometheus query.
 
-Removing `METRICS_CONFIG` or the `infra` table leaves task routing unchanged.
-StageRouter does not use this adjustment.
-
-Use one PreProc replica. The capacity check and local increment are atomic; counts
-are released when responses finish or are cancelled. Metrics can lag other traffic,
-and local counts do not reserve backend capacity. Logs record the routing reason.
+Use one PreProc replica. Its capacity check and local increment are atomic; response
+completion or cancellation releases the count. Metrics can lag other traffic, so
+this is a routing guard, not a backend capacity reservation.
 
 ### Patch an existing Dynamo deployment
 
 The [deployment patch](deploy/preproc-patch.yaml) enables this configuration on the
-existing `switchyard-preproc` Deployment. It requires no Dynamo repository changes.
-First enable SGLang's `--enable-metrics` and Prometheus scraping using the monitoring
-setup above. Dynamo's worker PodMonitor defaults to a five-second scrape interval;
+existing `switchyard-preproc` Deployment. It sets one replica and uses `Recreate`
+updates to avoid overlapping processes with separate state. Updates interrupt service
+and reset session state. No Dynamo repository changes are needed.
+
+Enable SGLang's `--enable-metrics` and follow
+[Dynamo's monitoring setup](https://docs.nvidia.com/dynamo/dev/kubernetes/operations/observability).
+Dynamo's worker PodMonitor defaults to a five-second scrape interval;
 set `max_signal_age_ms` to `15000` for that interval, or use one-second scrapes with
 the supplied three-second limit.
 
-Before applying, set the model IDs in both TOML files to match your deployed HTTPRoutes,
-including the ID of `large_direct`. The supplied files use the small Qwen models used
-for local validation; Dynamo's current deployment example names larger models.
-Check the gateway and Prometheus service URLs and the worker namespace in the selectors.
-The defaults follow Dynamo's documented service names; each selector must return only
-one queue and running series per engine.
-For QA, also set `fail_open = false` in the task route before creating the ConfigMap,
-so classifier call errors surface.
+Match the model IDs in both TOML files, including `large_direct`, to your HTTPRoutes.
+The sample uses Qwen3-0.6B and Qwen3-1.7B; Dynamo's deployment example uses larger models.
+Check the gateway and Prometheus URLs and the selectors' namespace. For QA, set
+`fail_open = false` before creating the ConfigMap so classifier call errors surface.
 
 Build and push this branch's image as described above, then run from the Switchyard root:
 
@@ -130,9 +138,9 @@ kubectl -n "$AGW_NAMESPACE" create configmap switchyard-task-config \
   --from-file=routes.toml="$EXAMPLE/config/task-classifier.toml" \
   --from-file=metrics.toml="$EXAMPLE/config/metrics.toml" \
   --dry-run=client -o yaml | kubectl apply -f -
-kubectl -n "$AGW_NAMESPACE" set image deployment/switchyard-preproc preproc="$PREPROC_IMAGE"
 kubectl -n "$AGW_NAMESPACE" patch deployment switchyard-preproc --type=strategic \
   --patch-file "$EXAMPLE/deploy/preproc-patch.yaml"
+kubectl -n "$AGW_NAMESPACE" set image deployment/switchyard-preproc preproc="$PREPROC_IMAGE"
 kubectl -n "$AGW_NAMESPACE" rollout status deployment/switchyard-preproc --timeout=180s
 ```
 
@@ -165,26 +173,27 @@ These tiny Qwen models are for integration checks; their classifications can var
 kubectl -n "$AGW_NAMESPACE" logs deployment/switchyard-preproc --since=5m
 ```
 
-For a manual queue check, first establish a task that chooses the small model. Send
-background traffic directly to its pool so it stays there. Once Prometheus reports
-at least four waiting requests on every small worker, repeat the task request with
-the same session ID. With an idle large pool, expect `small_pool_queued` and the
-large model in the response. After the queue drains, expect `small_pool_not_queued`
-and the small model again. If the large pool is busy, expect
-`protect_capable_capacity`. Missing or stale metrics give `unknown_or_stale_signals`
-and preserve the task's original choice.
+For a manual queue check, use your deployment's load generator to send background
+requests directly to the small pool. Keep one task session and verify:
 
-This queue check requires a load generator for your deployment. The repository does
-not include the workstation-specific burst driver. Record the session ID, queue
-samples, response models and routing reasons to verify small → large → small.
+- Quiet pool: small model, `small_pool_not_queued`.
+- At least four waiting requests on every small worker, large pool idle: large model,
+  `small_pool_queued`.
+- Queue drained: small model again. A busy large pool gives `protect_capable_capacity`;
+  missing or stale signals give `unknown_or_stale_signals` and keep the task choice.
+
+Save the session ID, queue samples, response models and reason logs as QA evidence.
 
 ## Concurrency and timeouts
 
-agentgateway 1.0.0 sends responses through PreProc and cannot disable those phases.
-Each request holds a stream slot until its response finishes. Set `MAX_ACTIVE_STREAMS` to change
-the default of 16 per replica. Preprocessing also has a separate limit of eight concurrent
-requests; reaching either limit returns HTTP 503. Raising the stream limit increases memory
-and response-forwarding work.
+agentgateway 1.0.0 sends responses through PreProc. Each request holds a slot until its
+response finishes. `MAX_ACTIVE_STREAMS` defaults to 16 **per group**: routed requests
+and configured passthrough requests have separate budgets, allowing up to 32 streams.
+This lets judge calls re-enter PreProc while their parent requests wait. Explicit
+model requests share the passthrough budget with judges.
+
+At most eight requests can upload their bodies at once. The upload slot is released
+before calling the classifier. A full upload or stream budget returns HTTP 503.
 
 Preprocessing has a five-second total deadline, including the classifier call.
 The example gives the judge two seconds. Metrics collection is outside this deadline.

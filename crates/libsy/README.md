@@ -26,7 +26,6 @@ tokio = { version = "1", features = ["macros", "rt"] }
 | [`LlmTaskClassifier`] | Ask a judge model to choose an efficient or capable target. |
 | [`StageRouter`] | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
 
-
 [`Noop`] is a test helper, not a production routing algorithm.
 
 ## How it fits together

@@ -202,7 +202,7 @@ min_waiting_requests = 4
 max_capable_inflight = 2
 ```
 
-All keys are required. Limits must be positive. Missing, stale or incomplete observations retain
+All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
 [Dynamo PreProc example](../../examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing)
 for collection and capacity safeguards.

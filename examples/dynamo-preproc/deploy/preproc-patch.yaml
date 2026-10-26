@@ -3,6 +3,10 @@
 
 # Strategic merge patch for Dynamo's existing switchyard-preproc Deployment.
 spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+    rollingUpdate: null
   template:
     spec:
       containers:

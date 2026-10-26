@@ -12,13 +12,13 @@ pub type InfraSignals = BTreeMap<ModelId, ModelInfraSignals>;
 /// Pool observations and local request accounting.
 #[derive(Clone, Debug, Default)]
 pub struct ModelInfraSignals {
-    /// Missing or incomplete collection is unknown, never idle.
+    /// None means unknown, never idle.
     pub load: Option<PoolLoad>,
     /// Requests still in flight through this host.
     pub local_inflight: u64,
 }
 
-/// Aggregated scheduler counts from a complete pool observation.
+/// Aggregated scheduler counts. The host is responsible for pool coverage.
 #[derive(Clone, Debug)]
 pub struct PoolLoad {
     /// Oldest underlying observation, expressed in the host's monotonic clock.

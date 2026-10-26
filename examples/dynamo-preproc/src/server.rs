@@ -22,7 +22,7 @@ use std::{
 use anyhow::{Context, ensure};
 use futures_util::{Stream, StreamExt};
 use tokio::{
-    sync::{Semaphore, mpsc},
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc},
     task::JoinSet,
     time::{Instant, timeout, timeout_at},
 };
@@ -45,6 +45,7 @@ use crate::{
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 const RESPONSE_TIMEOUT: Duration = Duration::from_secs(120);
 const CHUNK_SIZE: usize = 64 * 1024;
+const MAX_UPLOADS: usize = 8;
 
 #[derive(Debug, thiserror::Error)]
 #[error("{message}")]
@@ -62,10 +63,12 @@ impl Error {
     }
 }
 
+#[derive(Clone)]
 pub struct Server {
     router: Arc<Router>,
     requests: Arc<Semaphore>,
     streams: Arc<Semaphore>,
+    direct_streams: Arc<Semaphore>,
 }
 
 struct Prepared {
@@ -73,14 +76,16 @@ struct Prepared {
     headers: ext::HeaderMutation,
     has_trailers: bool,
     inflight: Option<crate::metrics::InFlight>,
+    stream_permit: OwnedSemaphorePermit,
 }
 
 impl Server {
     pub fn new(router: Arc<Router>, max_active_streams: usize) -> Self {
         Self {
             router,
-            requests: Arc::new(Semaphore::new(8)),
+            requests: Arc::new(Semaphore::new(MAX_UPLOADS)),
             streams: Arc::new(Semaphore::new(max_active_streams)),
+            direct_streams: Arc::new(Semaphore::new(max_active_streams)),
         }
     }
 
@@ -89,8 +94,9 @@ impl Server {
     }
 
     async fn prepare(
-        router: &Router,
+        &self,
         input: &mut Streaming<ext::ProcessingRequest>,
+        request_permit: OwnedSemaphorePermit,
     ) -> anyhow::Result<Prepared> {
         let first = input.message().await?.context("missing request headers")?;
         let Some(Input::RequestHeaders(first)) = first.request else {
@@ -138,7 +144,18 @@ impl Server {
                 _ => anyhow::bail!("expected request body"),
             }
         }
-        let (body, model, inflight) = router.decide(&body, &headers).await?;
+        // Loopback judge calls need headroom while the parent holds its stream slot.
+        let streams = if self.router.is_passthrough(&body) {
+            &self.direct_streams
+        } else {
+            &self.streams
+        };
+        let stream_permit = streams
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| Error::new(503, "processor stream limit reached"))?;
+        drop(request_permit);
+        let (body, model, inflight) = self.router.decide(&body, &headers).await?;
         if body.len() > MAX_BODY {
             return Err(Error::new(413, "rewritten request body exceeds 2 MiB").into());
         }
@@ -151,6 +168,7 @@ impl Server {
             },
             has_trailers,
             inflight,
+            stream_permit,
         })
     }
 }
@@ -164,27 +182,16 @@ impl ExternalProcessor for Server {
         &self,
         request: Request<Streaming<ext::ProcessingRequest>>,
     ) -> Result<Response<Self::ProcessStream>, Status> {
-        let stream_permit = self.streams.clone().try_acquire_owned();
-        let request_permit = stream_permit
-            .as_ref()
-            .ok()
-            .and_then(|_| self.requests.clone().try_acquire_owned().ok());
-        let router = self.router.clone();
+        let request_permit = self.requests.clone().try_acquire_owned();
+        let server = self.clone();
         let deadline = Instant::now() + REQUEST_TIMEOUT;
         let mut input = request.into_inner();
         let output = async_stream::stream! {
-            // These permits belong to the output stream, including while it is backpressured.
-            // Dropping that stream also cancels input reads and the routing future.
-            let Ok(_stream_permit) = stream_permit else {
-                yield Ok(reject(Error::new(503, "processor stream limit reached")));
+            let Ok(request_permit) = request_permit else {
+                yield Ok(reject(Error::new(503, "request upload limit reached")));
                 return;
             };
-            let Some(request_permit) = request_permit else {
-                yield Ok(reject(Error::new(503, "preprocessor concurrency limit reached")));
-                return;
-            };
-            let result = timeout_at(deadline, Self::prepare(&router, &mut input)).await;
-            drop(request_permit);
+            let result = timeout_at(deadline, server.prepare(&mut input, request_permit)).await;
             let prepared = match result {
                 Ok(Ok(prepared)) => prepared,
                 Ok(Err(error)) => {
@@ -198,6 +205,8 @@ impl ExternalProcessor for Server {
                     return;
                 }
             };
+            // Both guards live through response completion, cancellation and backpressure.
+            let _stream_permit = prepared.stream_permit;
             let _inflight = prepared.inflight;
             let mut response_deadline = Instant::now() + RESPONSE_TIMEOUT;
             // v1.0 selects the route when this header reply arrives, before reading the body.
@@ -360,10 +369,13 @@ mod tests {
     type Client =
         ext::external_processor_client::ExternalProcessorClient<tonic::transport::Channel>;
 
-    async fn start(max_active_streams: usize) -> (Client, Arc<Semaphore>, Arc<Router>) {
+    async fn start(
+        max_active_streams: usize,
+        config: &str,
+    ) -> (Client, Arc<Semaphore>, Arc<Router>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let runner = switchyard_runner::Runner::from_toml(include_str!("../config/routes.toml"));
+        let runner = switchyard_runner::Runner::from_toml(config);
         let mut router = Router::new(runner.unwrap());
         router.metrics = Some(crate::metrics::Metrics::empty_for_test());
         let router = Arc::new(router);
@@ -439,7 +451,7 @@ mod tests {
 
     #[tokio::test]
     async fn routes_upload_and_passes_response_through_trailers_to_eos() {
-        let (mut client, requests, router) = start(16).await;
+        let (mut client, requests, router) = start(16, include_str!("../config/routes.toml")).await;
         let (tx, receive) = mpsc::channel(8);
         send(&tx, headers()).await;
         let receive = ReceiverStream::new(receive);
@@ -523,7 +535,7 @@ mod tests {
             tokio::time::resume();
         }
 
-        let (mut client, _, router) = start(1).await;
+        let (mut client, _, router) = start(1, include_str!("../config/routes.toml")).await;
         let (tx, receive) = mpsc::channel(8);
         send(&tx, headers()).await;
         let mut rx = client
@@ -545,7 +557,13 @@ mod tests {
         assert!(matches!(next(&mut rx).await, Output::ResponseHeaders(_)));
 
         let mut rejected = client
-            .process(tokio_stream::iter([input(headers())]))
+            .process(tokio_stream::iter([
+                input(headers()),
+                input(Input::RequestBody(body(
+                    br#"{"model":"auto","messages":[{"role":"user","content":"hello"}]}"#,
+                    true,
+                ))),
+            ]))
             .await
             .unwrap()
             .into_inner();
@@ -573,7 +591,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_cumulative_body_limit_before_routing_headers() {
-        let (mut client, _, _) = start(16).await;
+        let (mut client, _, _) = start(16, include_str!("../config/routes.toml")).await;
         let messages = tokio_stream::iter([
             input(headers()),
             input(Input::RequestBody(body(&vec![b' '; MAX_BODY], false))),
@@ -585,5 +603,68 @@ mod tests {
         };
         assert_eq!(error.status.unwrap().code, 413);
         assert!(rx.message().await.unwrap().is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn loopback_judge_runs_when_task_slots_are_full() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let config = include_str!("../config/task-classifier.toml")
+            .replace(
+                "http://inference-gateway.agentgateway-system.svc.cluster.local/v1",
+                &format!("http://{address}/v1"),
+            )
+            .replace("fail_open = true", "fail_open = false");
+        let (client, _, _) = start(8, &config).await;
+        let nested_client = client.clone();
+        let barrier = Arc::new(tokio::sync::Barrier::new(8));
+        let app = axum::Router::new().route("/v1/chat/completions", axum::routing::post(move || {
+            let mut client = nested_client.clone();
+            let barrier = barrier.clone();
+            async move {
+                // Hold all parent slots before their judge calls re-enter PreProc.
+                barrier.wait().await;
+                let json = br#"{"model":"Qwen/Qwen3-1.7B","messages":[{"role":"user","content":"judge"}]}"#;
+                let mut rx = client.process(tokio_stream::iter([
+                    input(headers()), input(Input::RequestBody(body(json,true)))
+                ])).await.unwrap().into_inner();
+                assert!(matches!(next(&mut rx).await, Output::RequestHeaders(_)));
+                assert!(matches!(next(&mut rx).await, Output::RequestBody(_)));
+                axum::Json(serde_json::json!({
+                    "id":"judge", "object":"chat.completion", "created":0, "model":"Qwen/Qwen3-1.7B",
+                    "choices":[{"index":0,"message":{"role":"assistant","content":
+                        r#"{"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.9}"#
+                    },"finish_reason":"stop"}]
+                }))
+            }
+        }));
+        let http_task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut tasks = JoinSet::new();
+        for _ in 0..8 {
+            let mut client = client.clone();
+            tasks.spawn(async move {
+                let json =
+                    br#"{"model":"auto","messages":[{"role":"user","content":"Sort [3,1,2]."}]}"#;
+                let mut rx = client
+                    .process(tokio_stream::iter([
+                        input(headers()),
+                        input(Input::RequestBody(body(json, true))),
+                    ]))
+                    .await
+                    .unwrap()
+                    .into_inner();
+                assert!(matches!(next(&mut rx).await, Output::RequestHeaders(_)));
+                let Output::RequestBody(response) = next(&mut rx).await else {
+                    panic!("expected routed body")
+                };
+                let body: serde_json::Value =
+                    serde_json::from_slice(&streamed(response).body).unwrap();
+                assert_eq!(body["model"], "Qwen/Qwen3-0.6B");
+            });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result.unwrap();
+        }
+        http_task.abort();
     }
 }
