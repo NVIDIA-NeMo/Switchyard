@@ -141,7 +141,7 @@ func (generation *wasmGeneration) newRouter(ctx context.Context, config []byte) 
 	return ptr, nil
 }
 
-func (generation *wasmGeneration) newRun(ctx context.Context, router uint32, input []byte) (uint32, error) {
+func (generation *wasmGeneration) newRun(ctx context.Context, router uint32, input []byte, wire bool) (uint32, error) {
 	inputPtr, inputLen, err := generation.guest.cstring(ctx, input)
 	if err != nil {
 		return 0, err
@@ -152,7 +152,11 @@ func (generation *wasmGeneration) newRun(ctx context.Context, router uint32, inp
 		return 0, err
 	}
 	defer generation.guest.free(context.Background(), outPtr, 4)
-	values, err := generation.guest.call(ctx, "sy_run_new", uint64(router), uint64(inputPtr), uint64(outPtr))
+	constructor := "sy_run_new"
+	if wire {
+		constructor = "sy_decide_new"
+	}
+	values, err := generation.guest.call(ctx, constructor, uint64(router), uint64(inputPtr), uint64(outPtr))
 	if err != nil {
 		return 0, err
 	}
@@ -291,17 +295,17 @@ func (slot *wasmSlot) poisonLocked(gen *wasmGeneration, cause error) {
 	slot.err = nil
 }
 
-func (backend *wasmBackend) route(ctx context.Context, input Input, call HostCall) (Outcome, error) {
+func (backend *wasmBackend) route(ctx context.Context, input runInput, call func(context.Context, runWork) (Reply, error)) (runOutcome, error) {
 	if backend.closed.Load() {
-		return Outcome{}, errors.New("Switchyard router is closed")
+		return runOutcome{}, errors.New("Switchyard router is closed")
 	}
-	data, err := json.Marshal(input)
+	data, err := input.marshal()
 	if err != nil {
-		return Outcome{}, err
+		return runOutcome{}, err
 	}
-	run, err := backend.slotFor(input).startRun(ctx, data)
+	run, err := backend.slotFor(input).startRun(ctx, data, input.wire != nil)
 	if err != nil {
-		return Outcome{}, err
+		return runOutcome{}, err
 	}
 	defer run.close()
 	// Host calls run concurrently, as on the native backend; replies are delivered
@@ -310,14 +314,14 @@ func (backend *wasmBackend) route(ctx context.Context, input Input, call HostCal
 	var wake <-chan time.Time
 	for {
 		if err := ctx.Err(); err != nil {
-			return Outcome{}, err
+			return runOutcome{}, err
 		}
 		stepData, err := run.next(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				return Outcome{}, ctx.Err()
+				return runOutcome{}, ctx.Err()
 			}
-			return Outcome{}, err
+			return runOutcome{}, err
 		}
 		if stepData == nil {
 			if wake == nil {
@@ -329,54 +333,51 @@ func (backend *wasmBackend) route(ctx context.Context, input Input, call HostCal
 			select {
 			case reply := <-replies:
 				if err := run.deliver(ctx, reply); err != nil {
-					return Outcome{}, err
+					return runOutcome{}, err
 				}
 			case <-wake:
 			case <-run.ctx.Done():
 				if err := run.gen.error(); err != nil {
-					return Outcome{}, err
+					return runOutcome{}, err
 				}
-				return Outcome{}, run.ctx.Err()
+				return runOutcome{}, run.ctx.Err()
 			case <-run.gen.done:
-				return Outcome{}, run.gen.error()
+				return runOutcome{}, run.gen.error()
 			}
 			continue
 		}
-		var step struct {
-			Type    string          `json:"type"`
-			ID      uint64          `json:"id"`
-			Models  []string        `json:"models"`
-			Model   string          `json:"model"`
-			Request json.RawMessage `json:"request"`
-		}
+		var step runWork
 		if err := json.Unmarshal(stepData, &step); err != nil {
-			return Outcome{}, err
+			return runOutcome{}, err
 		}
 		switch step.Type {
 		case "done":
-			var outcome Outcome
+			var outcome runOutcome
 			if err := json.Unmarshal(stepData, &outcome); err != nil {
-				return Outcome{}, err
+				return runOutcome{}, err
 			}
 			return outcome, nil
 		case "call_model", "call_decision":
 			if call == nil {
-				return Outcome{}, errors.New("Switchyard algorithm requires a host model client")
+				return runOutcome{}, errors.New("Switchyard algorithm requires a host model client")
 			}
-			work := Work{Type: step.Type, ID: step.ID, Models: step.Models, Model: step.Model, Request: step.Request}
-			go run.hostCall(call, work, replies)
+			go run.hostCall(call, step, replies)
 		default:
-			return Outcome{}, errors.New("unknown Switchyard step: " + step.Type)
+			return runOutcome{}, errors.New("unknown Switchyard step: " + step.Type)
 		}
 	}
 }
 
-func (backend *wasmBackend) slotFor(input Input) *wasmSlot {
+func (backend *wasmBackend) slotFor(input runInput) *wasmSlot {
 	if metadata := input.Metadata; metadata != nil && metadata.SessionID != "" {
 		return backend.slotForKey("session\x00" + metadata.SessionID)
 	}
 	// Without a session ID, keep message-keyed retention on one instance.
-	if text, ok := firstUserText(input.Request); ok {
+	format := ""
+	if input.wire != nil {
+		format = input.wire.Format
+	}
+	if text, ok := firstUserText(input.Request, format); ok {
 		return backend.slotForKey("message\x00" + text)
 	}
 	index := backend.next.Add(1) - 1
@@ -389,29 +390,53 @@ func (backend *wasmBackend) slotForKey(key string) *wasmSlot {
 	return backend.slots[hash.Sum64()%uint64(len(backend.slots))]
 }
 
-// firstUserText matches libsy's Message::text_content("") on the first user message.
-func firstUserText(request json.RawMessage) (string, bool) {
+// Extracts only the affinity key; Rust still decodes the complete request.
+func firstUserText(request json.RawMessage, format string) (string, bool) {
+	type message struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
 	var parsed struct {
-		Messages []struct {
-			Role    string `json:"role"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"messages"`
+		Messages []message       `json:"messages"`
+		Input    json.RawMessage `json:"input"`
 	}
 	if json.Unmarshal(request, &parsed) != nil {
 		return "", false
+	}
+	if format == "openai_responses" {
+		var text string
+		if json.Unmarshal(parsed.Input, &text) == nil {
+			return text, true
+		}
+		if json.Unmarshal(parsed.Input, &parsed.Messages) != nil {
+			return "", false
+		}
 	}
 	for _, message := range parsed.Messages {
 		if message.Role != "user" {
 			continue
 		}
+		var plain string
+		if json.Unmarshal(message.Content, &plain) == nil {
+			return plain, true
+		}
+		var blocks []struct{ Type, Text, Refusal string }
+		if json.Unmarshal(message.Content, &blocks) != nil {
+			return "", false
+		}
 		var text strings.Builder
 		found := false
-		for _, block := range message.Content {
-			if block.Type == "text" || block.Type == "refusal" {
+		for _, block := range blocks {
+			switch block.Type {
+			case "text", "input_text", "output_text":
 				text.WriteString(block.Text)
+				found = true
+			case "refusal":
+				if format == "" {
+					text.WriteString(block.Text)
+				} else {
+					text.WriteString(block.Refusal)
+				}
 				found = true
 			}
 		}
@@ -420,7 +445,7 @@ func firstUserText(request json.RawMessage) (string, bool) {
 	return "", false
 }
 
-func (slot *wasmSlot) startRun(ctx context.Context, input []byte) (*wasmRun, error) {
+func (slot *wasmSlot) startRun(ctx context.Context, input []byte, wire bool) (*wasmRun, error) {
 	slot.mu.Lock()
 	defer slot.mu.Unlock()
 	slot.owner.lifecycle.Lock()
@@ -440,7 +465,7 @@ func (slot *wasmSlot) startRun(ctx context.Context, input []byte) (*wasmRun, err
 	}
 	// Guest calls never see the caller's context: wazero closes the whole shared module
 	// when a call's context ends. The route loop checks ctx between steps instead.
-	ptr, err := gen.newRun(context.Background(), gen.router, input)
+	ptr, err := gen.newRun(context.Background(), gen.router, input, wire)
 	if err != nil {
 		if gen.guest.module.IsClosed() || isWasmTrap(err) {
 			slot.poisonLocked(gen, err)
@@ -504,7 +529,7 @@ type wasmHostReply struct {
 	err   error
 }
 
-func (run *wasmRun) hostCall(call HostCall, work Work, replies chan<- wasmHostReply) {
+func (run *wasmRun) hostCall(call func(context.Context, runWork) (Reply, error), work runWork, replies chan<- wasmHostReply) {
 	reply, err := call(run.ctx, work)
 	select {
 	case replies <- wasmHostReply{work.ID, reply, err}:

@@ -165,7 +165,7 @@ func (backend *nativeBackend) route(ctx context.Context, input runInput, call fu
 			err = nativeError(C.sy_run_respond(run, C.uint64_t(reply.id), value))
 			C.free(unsafe.Pointer(value))
 			if abort := hostAbort(reply.err); abort != nil {
-				return Outcome{}, abort
+				return runOutcome{}, abort
 			}
 			if err != nil {
 				return runOutcome{}, err

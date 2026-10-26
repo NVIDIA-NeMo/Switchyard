@@ -19,14 +19,42 @@ func TestWasmSessionAffinity(t *testing.T) {
 	backend := &wasmBackend{slots: []*wasmSlot{{}, {}}}
 	request := input()
 	request.Metadata = &RequestMetadata{SessionID: "shared"}
-	parent := backend.slotFor(request)
+	parent := backend.slotFor(runInput{Input: request})
 	request.Request = json.RawMessage(`{"messages":[{"role":"user","content":[{"type":"text","text":"child task"}]}]}`)
 	for _, agent := range []string{"a", "b", ""} {
 		request.Metadata.IsSubagent = true
 		request.Metadata.AgentID = agent
-		if backend.slotFor(request) != parent {
+		if backend.slotFor(runInput{Input: request}) != parent {
 			t.Errorf("child %q was assigned outside its parent's session guest", agent)
 		}
+	}
+}
+
+// Equivalent wire and normalized requests retain the same guest without a session ID.
+func TestWasmWireMessageAffinity(t *testing.T) {
+	backend := &wasmBackend{slots: []*wasmSlot{{}, {}, {}}}
+	for _, tc := range []struct{ name, format, body string }{
+		{"normalized", "", `{"messages":[{"role":"user","content":[{"type":"text","text":"first"},{"type":"refusal","text":" turn"}]}]}`},
+		{"chat string", "openai_chat", `{"messages":[{"role":"assistant","content":"ignore"},{"role":"user","content":"first turn"},{"role":"user","content":"later"}]}`},
+		{"chat blocks", "openai_chat", `{"messages":[{"role":"user","content":[{"type":"text","text":"first"},{"type":"image_url","image_url":{"url":"https://example.com/image"}},{"type":"text","text":" turn"}]}]}`},
+		{"chat refusal", "openai_chat", `{"messages":[{"role":"user","content":[{"type":"text","text":"first"},{"type":"refusal","refusal":" turn"}]}]}`},
+		{"responses string", "openai_responses", `{"input":"first turn"}`},
+		{"responses messages", "openai_responses", `{"input":[{"type":"function_call","name":"ignore"},{"role":"developer","content":"ignore"},{"role":"user","content":[{"type":"input_text","text":"first"},{"type":"input_text","text":" turn"}]}]}`},
+		{"anthropic string", "anthropic_messages", `{"messages":[{"role":"user","content":"first turn"}]}`},
+		{"anthropic blocks", "anthropic_messages", `{"messages":[{"role":"user","content":[{"type":"text","text":"first"},{"type":"text","text":" turn"}]}]}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request := runInput{Input: Input{Request: json.RawMessage(tc.body)}}
+			if tc.format != "" {
+				request.wire = &WireInput{Input: request.Input, Format: tc.format}
+			}
+			if text, ok := firstUserText(request.Request, tc.format); !ok || text != "first turn" {
+				t.Fatalf("text=%q found=%t", text, ok)
+			}
+			if backend.slotFor(request) != backend.slotForKey("message\x00first turn") {
+				t.Fatal("equivalent request was assigned to another guest")
+			}
+		})
 	}
 }
 
@@ -42,17 +70,17 @@ func TestWasmTrapIsolatesAndReplacesInstance(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	first, err := backend.slots[0].startRun(ctx, input)
+	first, err := backend.slots[0].startRun(ctx, input, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer first.close()
-	second, err := backend.slots[0].startRun(ctx, input)
+	second, err := backend.slots[0].startRun(ctx, input, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer second.close()
-	other, err := backend.slots[1].startRun(ctx, input)
+	other, err := backend.slots[1].startRun(ctx, input, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +107,7 @@ func TestWasmTrapIsolatesAndReplacesInstance(t *testing.T) {
 		t.Fatalf("unrelated run returned %s", step)
 	}
 
-	replacement, err := backend.slots[0].startRun(ctx, input)
+	replacement, err := backend.slots[0].startRun(ctx, input, false)
 	if err != nil {
 		t.Fatalf("pool did not replace the trapped instance: %v", err)
 	}
@@ -102,12 +130,12 @@ func TestWasmClosedInstanceIsReplaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	closedRun, err := backend.slots[0].startRun(ctx, input)
+	closedRun, err := backend.slots[0].startRun(ctx, input, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closedRun.close()
-	otherRun, err := backend.slots[1].startRun(ctx, input)
+	otherRun, err := backend.slots[1].startRun(ctx, input, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +150,7 @@ func TestWasmClosedInstanceIsReplaced(t *testing.T) {
 	if err != nil || !strings.Contains(string(step), `"type":"done"`) {
 		t.Fatalf("unrelated instance returned step=%s err=%v", step, err)
 	}
-	replacement, err := backend.slots[0].startRun(ctx, input)
+	replacement, err := backend.slots[0].startRun(ctx, input, false)
 	if err != nil {
 		t.Fatalf("closed instance was not replaced: %v", err)
 	}
@@ -145,7 +173,7 @@ func TestWasmCancelledRunKeepsSharedInstance(t *testing.T) {
 	release := make(chan struct{})
 	result := make(chan error, 1)
 	go func() {
-		_, err := backend.route(context.Background(), input(), func(ctx context.Context, _ Work) (Reply, error) {
+		_, err := backend.route(context.Background(), runInput{Input: input()}, func(ctx context.Context, _ runWork) (Reply, error) {
 			close(entered)
 			select {
 			case <-release:
@@ -162,7 +190,7 @@ func TestWasmCancelledRunKeepsSharedInstance(t *testing.T) {
 	large.Request = json.RawMessage(`{"messages":[{"role":"user","content":[{"type":"text","text":"` + strings.Repeat("x", 32<<20) + `"}]}]}`)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Millisecond)
 	defer cancel()
-	if _, err := backend.route(ctx, large, nil); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := backend.route(ctx, runInput{Input: large}, nil); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expired run returned %v", err)
 	}
 
@@ -201,7 +229,7 @@ func TestWasmNextWhileHostCallPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	run, err := backend.slots[0].startRun(ctx, data)
+	run, err := backend.slots[0].startRun(ctx, data, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +241,7 @@ func TestWasmNextWhileHostCallPending(t *testing.T) {
 	if step, err := run.next(ctx); err != nil || step != nil {
 		t.Fatalf("read with an unanswered call returned step=%s err=%v", step, err)
 	}
-	waiting, err := backend.slots[0].startRun(ctx, data)
+	waiting, err := backend.slots[0].startRun(ctx, data, false)
 	if err != nil {
 		t.Fatal(err)
 	}
