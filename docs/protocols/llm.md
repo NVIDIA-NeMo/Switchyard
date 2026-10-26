@@ -6,30 +6,52 @@ generation settings. Switchyard represents these in
 The same type works whether the next call goes to Anthropic Messages, OpenAI
 Responses, or Chat Completions.
 
-## Read a request
+## Protocol and API mappings
 
 `LlmRequest` separates instructions from conversation turns. A turn is a
 `Message` with a `Role` and an ordered list of `ContentBlock` values. That list
-can mix text, reasoning, media, tool calls, and tool results.
-Select a protocol field or type in the tables to open its crate reference.
+can mix text, reasoning, media, tool calls, and tool results. Responses use
+`LlmResponse` for a buffered answer or a stream of events.
 
-| Field | Rust type | Meaning |
-|---|---|---|
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.model"><code>LlmRequest.model</code></a> | `Option<String>` | The addressed model. A host can replace it with the selected target. |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.instructions"><code>LlmRequest.instructions</code></a> | <a href="../../rust/switchyard_protocol/llm/struct.InstructionBlock.html"><code>Vec&lt;InstructionBlock&gt;</code></a> | System and developer instructions, each with a role and content blocks. |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.messages"><code>LlmRequest.messages</code></a> | <a href="../../rust/switchyard_protocol/llm/struct.Message.html"><code>Vec&lt;Message&gt;</code></a> | Ordered conversation turns. |
-| <a href="../../rust/switchyard_protocol/llm/struct.Message.html#structfield.role"><code>Message.role</code></a> | <a href="../../rust/switchyard_protocol/llm/enum.Role.html"><code>Role</code></a> | Who produced the message. |
-| <a href="../../rust/switchyard_protocol/llm/struct.Message.html#structfield.content"><code>Message.content</code></a> | <a href="../../rust/switchyard_protocol/llm/enum.ContentBlock.html"><code>Vec&lt;ContentBlock&gt;</code></a> | Ordered text, reasoning, media, tool calls, tool results, MCP activity, refusals, or unknown provider blocks. |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.tools"><code>LlmRequest.tools</code></a> | <a href="../../rust/switchyard_protocol/llm/enum.Tool.html"><code>Vec&lt;Tool&gt;</code></a> | Available function tools, MCP servers, or provider tools. |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.tool_choice"><code>LlmRequest.tool_choice</code></a> | <a href="../../rust/switchyard_protocol/llm/enum.ToolChoice.html"><code>Option&lt;ToolChoice&gt;</code></a> | How the model may select tools. |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.sampling"><code>LlmRequest.sampling</code></a> | <a href="../../rust/switchyard_protocol/llm/struct.SamplingParams.html"><code>SamplingParams</code></a> | Sampling settings such as temperature. |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.output"><code>LlmRequest.output</code></a> | <a href="../../rust/switchyard_protocol/llm/struct.OutputParams.html"><code>OutputParams</code></a> | Output budget, format, and schema enforcement. |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.reasoning"><code>LlmRequest.reasoning</code></a> | <a href="../../rust/switchyard_protocol/llm/struct.ReasoningParams.html"><code>ReasoningParams</code></a> | Reasoning effort and provider-specific controls. |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.stream"><code>LlmRequest.stream</code></a> | `bool` | Whether a streamed response is requested. |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.extensions"><code>LlmRequest.extensions</code></a> | <a href="../../rust/switchyard_protocol/llm/struct.ProviderExtensions.html"><code>ProviderExtensions</code></a> | Fields without neutral equivalents. |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.preservation"><code>LlmRequest.preservation</code></a> | <a href="../../rust/switchyard_protocol/llm/struct.PreservationMetadata.html"><code>PreservationMetadata</code></a> | Original payloads retained for round trips. |
+The table combines each field's meaning with the built-in codecs' API mappings.
+Select a field or type to open its crate reference for the full definition.
+See the provider references for
+[Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create),
+[OpenAI Responses](https://developers.openai.com/api/reference/resources/responses/methods/create),
+and [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create)
+for their complete wire contracts.
 
-For example, this constructs the neutral request passed to an algorithm. It
+| Protocol field and type | Meaning | Anthropic Messages | OpenAI Responses | Chat Completions |
+|---|---|---|---|---|
+| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.model"><code>LlmRequest.model: Option&lt;String&gt;</code></a> | Model addressed by the request. | `model` | `model` | `model` |
+| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.instructions"><code>LlmRequest.instructions</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.InstructionBlock.html"><code>Vec&lt;InstructionBlock&gt;</code></a> | System and developer instructions. | Top-level `system`; no separate developer role | `instructions` and system/developer messages in `input` | System/developer messages in `messages` |
+| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.messages"><code>LlmRequest.messages</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.Message.html"><code>Vec&lt;Message&gt;</code></a> | Ordered turns containing text, media, or tool activity. | `messages[].content`, including `tool_use` and `tool_result` | Messages, `function_call`, and `function_call_output` in `input` | `messages[]`, assistant `tool_calls`, and tool messages |
+| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.tools"><code>LlmRequest.tools</code></a>: <a href="../../rust/switchyard_protocol/llm/enum.Tool.html"><code>Vec&lt;Tool&gt;</code></a> | Tools available to the model; function definitions contain an argument schema. | `tools[]`, with `input_schema` for functions | `tools[]`, with `parameters` for functions | `tools[].function`, with `parameters` |
+| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.tool_choice"><code>LlmRequest.tool_choice</code></a>: <a href="../../rust/switchyard_protocol/llm/enum.ToolChoice.html"><code>Option&lt;ToolChoice&gt;</code></a> | Whether the model may, must, or must not use tools. | `tool_choice` | `tool_choice` | `tool_choice` |
+| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.sampling"><code>LlmRequest.sampling</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.SamplingParams.html"><code>SamplingParams</code></a> | Sampling controls, where supported. | `temperature`, `top_p`, `top_k` | `temperature`, `top_p`; no standard `top_k` | `temperature`, `top_p`; no standard `top_k` |
+| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.output"><code>LlmRequest.output</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.OutputParams.html"><code>OutputParams</code></a> | Output budget, format, and schema enforcement. | `max_tokens`, `output_config.format` | `max_output_tokens`, `text.format` | `max_completion_tokens` or `max_tokens`, `response_format` |
+| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.reasoning"><code>LlmRequest.reasoning</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.ReasoningParams.html"><code>ReasoningParams</code></a> | Reasoning effort and provider-specific controls. | `thinking`, `output_config.effort` | `reasoning` | `reasoning_effort`; other controls are provider-specific |
+| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.stream"><code>LlmRequest.stream: bool</code></a>; <a href="../../rust/switchyard_protocol/stream/enum.LlmResponse.html#variant.Stream"><code>LlmResponse::Stream</code></a> | Request and receive incremental output. | `stream`; `message_*` and `content_block_*` events | `stream`; `response.*` events | `stream`; `chat.completion.chunk` objects |
+| <a href="../../rust/switchyard_protocol/llm/struct.AggLlmResponse.html#structfield.outputs"><code>AggLlmResponse.outputs</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.ResponseOutput.html"><code>Vec&lt;ResponseOutput&gt;</code></a> | Completed output content and stop reasons. | Assistant `content` and `stop_reason` | `output`, `status`, and `incomplete_details` | `choices[].message` and `finish_reason` |
+| <a href="../../rust/switchyard_protocol/llm/struct.AggLlmResponse.html#structfield.usage"><code>AggLlmResponse.usage</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.Usage.html"><code>Usage</code></a> | Available token counts, including cache and reasoning detail. | Input/output and separate cache counts | Input/output totals and token details | Prompt/completion totals and token details |
+| <a href="../../rust/switchyard_protocol/llm/struct.ProviderExtensions.html"><code>extensions: ProviderExtensions</code></a>; <a href="../../rust/switchyard_protocol/llm/struct.PreservationMetadata.html"><code>preservation: PreservationMetadata</code></a> | Provider-only fields and original JSON, retained on requests and buffered responses. | Source fields and original body | Source fields and original body | Source fields and original body |
+
+`Message.content` holds
+<a href="../../rust/switchyard_protocol/llm/enum.ContentBlock.html"><code>ContentBlock</code></a>
+values. A
+<a href="../../rust/switchyard_protocol/llm/struct.ToolCall.html"><code>ToolCall</code></a>
+and its
+<a href="../../rust/switchyard_protocol/llm/struct.ToolResult.html"><code>ToolResult</code></a>
+stay paired by ID. Tool arguments are JSON values in the protocol; the codecs
+handle the JSON-encoded strings used by the OpenAI formats.
+
+Support varies by API and model. For example, Anthropic has no separate developer
+role, while the OpenAI formats have no dedicated `ToolResult.is_error` field.
+Preserving a field does not give another API an equivalent feature.
+
+## Read a request
+
+This example constructs the neutral request passed to an algorithm. It
 uses the [quickstart's dependencies](../getting_started.md#install).
 
 ```rust
@@ -52,75 +74,14 @@ let request = Request {
 and `raw_request`, a host-owned JSON body. **Codecs use
 `LlmRequest::preservation` for replay**, not `Request::raw_request`.
 
-## Map the request to a provider API
-
-These are the main mappings in the built-in codecs. Each column names fields
-or items in that API; it does not imply every provider or model supports every
-feature. Fields without a type prefix below belong to `LlmRequest`.
-For the full wire contracts, see
-[Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create),
-[OpenAI Responses](https://developers.openai.com/api/reference/resources/responses/methods/create),
-and [Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
-
-### Conversation and tools
-
-| Switchyard field and type | Anthropic Messages | OpenAI Responses | Chat Completions |
-|---|---|---|---|
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.model"><code>model: Option&lt;String&gt;</code></a> | `model` | `model` | `model` |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.instructions"><code>instructions: Vec&lt;InstructionBlock&gt;</code></a> | Top-level `system`; no separate developer role | Top-level `instructions` and system/developer messages in `input` | System/developer messages in `messages` |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.messages"><code>messages: Vec&lt;Message&gt;</code></a> | `messages[]`, with text in `content` blocks | Messages in `input`, with text strings or `input_text` / `output_text` content | `messages[]`, with text or content parts in `content` |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.tools"><code>tools: Vec&lt;Tool&gt;</code></a> (function tools) | `tools[]`: `name`, `description`, `input_schema` | Function entries in `tools[]`: `name`, `description`, `parameters` | `tools[].function`: `name`, `description`, `parameters` |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.tool_choice"><code>tool_choice: Option&lt;ToolChoice&gt;</code></a> | `auto`, `any`, `none`, or a named `tool` | `auto`, `required`, `none`, or a named `function` | `auto`, `required`, `none`, or a named `function` |
-| <a href="../../rust/switchyard_protocol/llm/struct.ToolCall.html#structfield.id"><code>ToolCall.id: String</code></a> | `tool_use.id` | `function_call.call_id` | `tool_calls[].id` |
-| <a href="../../rust/switchyard_protocol/llm/struct.ToolCall.html#structfield.name"><code>ToolCall.name: String</code></a> | `tool_use.name` | `function_call.name` | `tool_calls[].function.name` |
-| <a href="../../rust/switchyard_protocol/llm/struct.ToolCall.html#structfield.arguments"><code>ToolCall.arguments: Value</code></a> | `tool_use.input` | `function_call.arguments` | `tool_calls[].function.arguments` |
-| <a href="../../rust/switchyard_protocol/llm/struct.ToolResult.html#structfield.tool_call_id"><code>ToolResult.tool_call_id: String</code></a> | `tool_result.tool_use_id` | `function_call_output.call_id` | Tool message `tool_call_id` |
-| <a href="../../rust/switchyard_protocol/llm/struct.ToolResult.html#structfield.content"><code>ToolResult.content: Vec&lt;ContentBlock&gt;</code></a> | `tool_result.content` | `function_call_output.output` | Tool message `content` |
-| <a href="../../rust/switchyard_protocol/llm/struct.ToolResult.html#structfield.is_error"><code>ToolResult.is_error: Option&lt;bool&gt;</code></a> | `tool_result.is_error` | No dedicated error flag | No standard error flag |
-| <a href="../../rust/switchyard_protocol/llm/enum.ContentBlock.html#variant.Image"><code>ContentBlock::Image { source }</code></a>, <a href="../../rust/switchyard_protocol/llm/enum.ImageSource.html"><code>source: ImageSource</code></a> | `image.source` | `input_image` | `image_url` content part |
-| <a href="../../rust/switchyard_protocol/llm/enum.ContentBlock.html#variant.File"><code>ContentBlock::File { source }</code></a>, <a href="../../rust/switchyard_protocol/llm/enum.FileSource.html"><code>source: FileSource</code></a> | `document.source` | `input_file` | `file` content part |
-
-Tool arguments are JSON values in the protocol. The OpenAI formats commonly carry
-function arguments as JSON-encoded strings; the codecs handle that encoding.
-Tool calls and their results stay paired by ID.
-
-### Generation settings
-
-| Switchyard field and type | Anthropic Messages | OpenAI Responses | Chat Completions |
-|---|---|---|---|
-| <a href="../../rust/switchyard_protocol/llm/struct.SamplingParams.html#structfield.temperature"><code>sampling.temperature: Option&lt;f64&gt;</code></a> | `temperature` | `temperature` | `temperature` |
-| <a href="../../rust/switchyard_protocol/llm/struct.SamplingParams.html#structfield.top_p"><code>sampling.top_p: Option&lt;f64&gt;</code></a> | `top_p` | `top_p` | `top_p` |
-| <a href="../../rust/switchyard_protocol/llm/struct.SamplingParams.html#structfield.top_k"><code>sampling.top_k: Option&lt;i64&gt;</code></a> | `top_k` | No standard field | No standard field |
-| <a href="../../rust/switchyard_protocol/llm/struct.OutputParams.html#structfield.max_output_tokens"><code>output.max_output_tokens: Option&lt;u64&gt;</code></a> | `max_tokens` | `max_output_tokens` | `max_completion_tokens`, or legacy `max_tokens` |
-| <a href="../../rust/switchyard_protocol/llm/struct.OutputParams.html#structfield.response_format"><code>output.response_format: Option&lt;Value&gt;</code></a> | `output_config.format` | `text.format` | `response_format` |
-| <a href="../../rust/switchyard_protocol/llm/struct.ReasoningParams.html#structfield.effort"><code>reasoning.effort: Option&lt;String&gt;</code></a> | `output_config.effort` | <a href="../../rust/switchyard_protocol/llm/struct.ReasoningParams.html#structfield.effort"><code>reasoning.effort</code></a> | `reasoning_effort` |
-| <a href="../../rust/switchyard_protocol/llm/struct.ReasoningParams.html#structfield.raw"><code>reasoning.raw: Option&lt;Value&gt;</code></a> | `thinking` controls | Provider `reasoning` object | No standard reasoning-control object |
-| <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.stream"><code>stream: bool</code></a> | `stream` | `stream` | `stream` |
-
-**A missing feature is not just a different field name.** For example,
-`ToolResult.is_error` has no dedicated field in the OpenAI formats, and their
-standard sampling settings have no `top_k`. Anthropic's `system` field cannot
-express separate system and developer authority. A provider-compatible server
-may offer extra fields, but those extensions are specific to that server.
-
 ## Read a response
 
 The host returns a `Response` envelope containing
 <a href="../../rust/switchyard_protocol/stream/enum.LlmResponse.html"><code>LlmResponse</code></a>.
 `LlmResponse::Agg` holds a completed `AggLlmResponse`. `LlmResponse::Stream`
-holds a single-consumption stream of `LlmResponseStreamEvent` values.
-
-| Switchyard field and type | Anthropic Messages | OpenAI Responses | Chat Completions |
-|---|---|---|---|
-| <a href="../../rust/switchyard_protocol/llm/struct.AggLlmResponse.html#structfield.id"><code>AggLlmResponse.id: Option&lt;String&gt;</code></a> | `id` | `id` | `id` |
-| <a href="../../rust/switchyard_protocol/llm/struct.AggLlmResponse.html#structfield.model"><code>AggLlmResponse.model: Option&lt;String&gt;</code></a> | `model` | `model` | `model` |
-| <a href="../../rust/switchyard_protocol/llm/struct.AggLlmResponse.html#structfield.outputs"><code>AggLlmResponse.outputs: Vec&lt;ResponseOutput&gt;</code></a> | Assistant `content` blocks | Items in `output` | `choices[].message` |
-| <a href="../../rust/switchyard_protocol/llm/struct.ResponseOutput.html#structfield.content"><code>ResponseOutput.content: Vec&lt;ContentBlock&gt;</code></a> | `text`, `tool_use`, and other blocks | `output_text` content, `function_call` items, and other output | Message `content` and `tool_calls` |
-| <a href="../../rust/switchyard_protocol/llm/enum.ContentBlock.html#variant.Reasoning"><code>ContentBlock::Reasoning { text, signature, details }</code></a>: `String`, `Option<String>`, `Vec<Value>` | `thinking`, signature, and opaque reasoning data | Reasoning summaries and encrypted content | Provider-specific reasoning fields; no standard equivalent for all reasoning data |
-| <a href="../../rust/switchyard_protocol/llm/struct.ResponseOutput.html#structfield.stop_reason"><code>ResponseOutput.stop_reason: Option&lt;StopReason&gt;</code></a> | `stop_reason` | Response `status` and `incomplete_details` | `choices[].finish_reason` |
-| <a href="../../rust/switchyard_protocol/llm/struct.AggLlmResponse.html#structfield.usage"><code>AggLlmResponse.usage: Usage</code></a> | Input/output counts and separate cache counts | Input/output totals and token details | Prompt/completion totals and token details |
-| <a href="../../rust/switchyard_protocol/stream/enum.LlmResponse.html#variant.Stream"><code>LlmResponse::Stream(LlmResponseStream)</code></a>; items are <a href="../../rust/switchyard_protocol/stream/struct.LlmResponseStreamEvent.html"><code>LlmResponseStreamEvent</code></a> | `message_*` and `content_block_*` events | `response.*` events | `chat.completion.chunk` objects |
-
+holds a single-consumption stream of
+<a href="../../rust/switchyard_protocol/stream/struct.LlmResponseStreamEvent.html"><code>LlmResponseStreamEvent</code></a>
+values.
 Each stream event exposes neutral chunks through `normalized()`. Chunks describe
 message starts, text deltas, tool arguments, usage, and completion. An event may
 also retain parsed provider JSON for same-format replay.
@@ -153,8 +114,8 @@ still support the requested features.
 !!! warning "Encoding an edited request"
 
     A preserved same-format body takes precedence over normalized fields. If you
-    change the protocol fields and want those edits encoded, remove that format's entry from
-    `preservation.requests`, or encode with `PreservationPolicy::Disabled`.
+    change the protocol fields and want those edits encoded, remove that format's
+    entry from `preservation.requests`, or encode with `PreservationPolicy::Disabled`.
     The same rule applies to `preservation.responses` for buffered responses.
 
 For streams, pass the original events through when replay matters.
