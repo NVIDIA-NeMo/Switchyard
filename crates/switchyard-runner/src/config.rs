@@ -108,7 +108,7 @@ struct RouteConfig {
     reasoning: Option<bool>,
     vision: Option<bool>,
     algorithm: AlgorithmSpec,
-    infra: Option<libsy::InfraPolicyConfig>,
+    infra: Option<libsy::InfraPolicy>,
 }
 
 struct TargetPromptPolicy {
@@ -315,9 +315,10 @@ impl DeploymentConfig {
                         "route {route_name}: infra requires capability llm_classifier without escalation"
                     )));
                 }
-                Some(libsy::InfraPolicy::new(infra.clone()).map_err(|error| {
+                infra.validate().map_err(|error| {
                     RunnerError::configuration_source(format!("route {route_name}: {error}"), error)
-                })?)
+                })?;
+                Some(infra.clone())
             } else {
                 None
             };
@@ -1063,7 +1064,17 @@ efficient_target = "weak"
 
     #[test]
     fn public_runner_from_toml_builds_a_deployment() -> RunnerResult<()> {
-        let runner = Runner::from_toml(VALID_CONFIG)?;
+        let config = format!(
+            "{VALID_CONFIG}\n[routes.classifier.infra]\n\
+             max_signal_age_ms = 1000\nmin_waiting_requests = 4\nmax_capable_inflight = 2"
+        );
+        let runner = Runner::from_toml(&config)?;
+        assert!(
+            Runner::from_toml(
+                &config.replace("min_waiting_requests = 4", "min_waiting_requests = 0")
+            )
+            .is_err()
+        );
 
         let classifier = runner
             .route("switchyard/classifier")

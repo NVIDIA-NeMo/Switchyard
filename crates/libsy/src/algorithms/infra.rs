@@ -11,7 +11,7 @@ use switchyard_protocol::{Category, InfraSignals, ModelInfraSignals};
 /// Queue and capacity limits for moving requests to the capable model.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct InfraPolicyConfig {
+pub struct InfraPolicy {
     /// Maximum age of the pool observation.
     pub max_signal_age_ms: u64,
     /// Every efficient worker must have at least this many waiting requests.
@@ -20,23 +20,18 @@ pub struct InfraPolicyConfig {
     pub max_capable_inflight: u64,
 }
 
-/// Applies a queue policy after task routing; the host owns collection and request lifetimes.
-pub struct InfraPolicy {
-    config: InfraPolicyConfig,
-}
-
 impl InfraPolicy {
     /// Validate the policy once at configuration load.
-    pub fn new(config: InfraPolicyConfig) -> Result<Self> {
-        if config.max_signal_age_ms == 0
-            || config.min_waiting_requests == 0
-            || config.max_capable_inflight == 0
+    pub fn validate(&self) -> Result<()> {
+        if self.max_signal_age_ms == 0
+            || self.min_waiting_requests == 0
+            || self.max_capable_inflight == 0
         {
             return Err(LibsyError::AlgorithmError {
                 message: "infra requires positive limits".into(),
             });
         }
-        Ok(Self { config })
+        Ok(())
     }
 
     fn evaluate(
@@ -50,15 +45,15 @@ impl InfraPolicy {
         let now = Instant::now();
         if [source, load].iter().any(|pool| {
             now.checked_duration_since(pool.sampled_at)
-                .is_none_or(|age| age > Duration::from_millis(self.config.max_signal_age_ms))
+                .is_none_or(|age| age > Duration::from_millis(self.max_signal_age_ms))
         }) {
             return (false, "unknown_or_stale_signals");
         }
-        if source.min_waiting < self.config.min_waiting_requests {
+        if source.min_waiting < self.min_waiting_requests {
             return (false, "small_pool_not_queued");
         }
         if load.max_waiting > 0
-            || load.running.max(destination.local_inflight) >= self.config.max_capable_inflight
+            || load.running.max(destination.local_inflight) >= self.max_capable_inflight
         {
             return (false, "protect_capable_capacity");
         }
@@ -115,16 +110,25 @@ mod tests {
     use super::*;
     use switchyard_protocol::{ModelId, PoolLoad, Request, text_request};
 
-    fn config() -> InfraPolicyConfig {
-        InfraPolicyConfig {
+    #[test]
+    fn queue_policy_preserves_task_choices() {
+        let policy = InfraPolicy {
             max_signal_age_ms: 1000,
             min_waiting_requests: 4,
             max_capable_inflight: 2,
-        }
-    }
-
-    #[test]
-    fn queue_policy_requires_all_workers_and_preserves_task_choices() {
+        };
+        policy.validate().unwrap();
+        let models = RuntimeModels::new(
+            [
+                (Category::Efficient, vec!["small".into()]),
+                (Category::Capable, vec!["large".into()]),
+            ]
+            .into(),
+        );
+        let request = Request {
+            llm_request: text_request(None, "hello"),
+            ..Default::default()
+        };
         for case in [
             "busy",
             "one_quiet",
@@ -154,9 +158,7 @@ mod tests {
                 "capable_queued" => destination.load.as_mut().unwrap().max_waiting = 1,
                 "capable_running" => destination.load.as_mut().unwrap().running = 2,
                 "local_limit" => destination.local_inflight = 2,
-                "missing" => {
-                    source.load = None;
-                }
+                "missing" => source.load = None,
                 "stale" => source.load.as_mut().unwrap().sampled_at -= Duration::from_secs(2),
                 "future" => destination.load.as_mut().unwrap().sampled_at += Duration::from_secs(2),
                 "below_threshold" => source.load.as_mut().unwrap().min_waiting = 3,
@@ -168,47 +170,28 @@ mod tests {
                 (ModelId::from("large"), destination),
             ]
             .into();
-            let models = RuntimeModels::new(
-                [
-                    (Category::Efficient, vec!["small".into()]),
-                    (Category::Capable, vec!["large".into()]),
-                ]
-                .into(),
-            );
-            let request = Request {
-                llm_request: text_request(None, "hello"),
-                ..Default::default()
-            };
-            let mut outcome = RoutingOutcome::route_to(
-                if case == "capable_task" {
-                    "large"
-                } else {
-                    "small"
-                }
-                .into(),
-                vec![],
-                request.clone(),
-            );
-            let moved = InfraPolicy::new(config())
-                .unwrap()
-                .apply(&mut outcome, &models, &signals)
-                .unwrap();
-            assert_eq!(moved, matches!(case, "busy" | "at_threshold"), "{case}");
-            let expected = if matches!(case, "busy" | "at_threshold" | "capable_task") {
+            let initial = if case == "capable_task" {
                 "large"
             } else {
                 "small"
             };
+            let mut outcome = RoutingOutcome::route_to(initial.into(), vec![], request.clone());
+            let moved = matches!(case, "busy" | "at_threshold");
+            assert_eq!(
+                policy.apply(&mut outcome, &models, &signals).unwrap(),
+                moved,
+                "{case}"
+            );
             assert_eq!(
                 outcome.selected_model_id().unwrap().as_str(),
-                expected,
+                if moved { "large" } else { initial },
                 "{case}"
             );
             outcome.request.llm_request.model = None;
             assert_eq!(outcome.request.llm_request, request.llm_request);
         }
-        let mut invalid = config();
+        let mut invalid = policy;
         invalid.min_waiting_requests = 0;
-        assert!(InfraPolicy::new(invalid).is_err());
+        assert!(invalid.validate().is_err());
     }
 }

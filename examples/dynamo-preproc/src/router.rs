@@ -235,5 +235,14 @@ mod tests {
                 assert_eq!(rewritten[&key].get(), value.get(), "changed {key}");
             }
         }
+        let classifier =
+            Router::new(Runner::from_toml(include_str!("../config/task-classifier.toml")).unwrap());
+        let direct = replace_model(input, "Qwen/Qwen3-1.7B").unwrap();
+        let (output, model, _) = classifier
+            .decide(&direct, &http::HeaderMap::new())
+            .await
+            .unwrap();
+        assert_eq!(model, "Qwen/Qwen3-1.7B");
+        assert_eq!(output, direct);
     }
 }

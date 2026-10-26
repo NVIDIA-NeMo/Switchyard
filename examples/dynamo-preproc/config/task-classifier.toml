@@ -5,12 +5,7 @@ schema_version = 1
 
 [llm_clients.dynamo]
 format = "openai_chat"
-base_url = "http://switchyard-gateway/v1"
-
-# Use a private inference endpoint that bypasses this PreProc to avoid recursion.
-[llm_clients.judge]
-format = "openai_chat"
-base_url = "http://qwen-large-frontend:8000/v1"
+base_url = "http://inference-gateway.agentgateway-system.svc.cluster.local/v1"
 timeout_ms = 2000
 max_retries = 0
 
@@ -20,7 +15,8 @@ llm_client = "dynamo"
 
 [targets.qwen-large]
 id = "Qwen/Qwen3-1.7B"
-llm_client = "judge"
+llm_client = "dynamo"
+extra_body = { temperature = 0, chat_template_kwargs = { enable_thinking = false } }
 
 [routes.task]
 id = "auto"
@@ -39,3 +35,9 @@ max_output_tokens = 256
 max_signal_age_ms = 3000
 min_waiting_requests = 4
 max_capable_inflight = 2
+
+# The classifier calls this model through the same gateway without classifying again.
+[routes.large_direct]
+id = "Qwen/Qwen3-1.7B"
+type = "passthrough"
+target = "qwen-large"
