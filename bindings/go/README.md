@@ -70,6 +70,7 @@ Import `encoding/json` and
 
 The backend is selected at build time: `cgo` with `switchyard_native` uses the
 native library; other builds use WASM. Both use `New(config)` and the same routing API.
+Call `Backend()` to report `"native"` or `"wasm"` without creating a router.
 
 Supply the model groups needed by the configured algorithm. Composite needs
 `any` for eligible answer targets, plus `capable`, `efficient`, and `judge`.
