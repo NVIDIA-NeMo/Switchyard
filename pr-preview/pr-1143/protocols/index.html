@@ -1933,10 +1933,11 @@
 <p><a href="../mechanics_of_libsy/">Mechanics of Libsy</a> follows the work exchanged through
 <code>run_stream</code>. This section explains the data inside that work: an LLM conversation
 or a set of typed questions for a decision model.</p>
-<p>Both use <strong>provider-neutral Rust types</strong> from <code>switchyard-protocol</code>. These types
-form Switchyard's intermediate representation, or <strong>IR</strong>. Your application
-converts its inputs into the IR, passes them to libsy, and converts model calls
-and responses at its provider boundary.</p>
+<p>Both use <strong>provider-neutral Rust types</strong> from the
+<a href="../rust/switchyard_protocol/"><code>switchyard-protocol</code> crate</a>. These types
+define Switchyard's protocols. Your application converts its inputs into these
+types, passes them to libsy, and converts model calls and responses at its
+provider boundary.</p>
 <h2 id="why-use-a-neutral-protocol">Why use a neutral protocol?<a class="headerlink" href="#why-use-a-neutral-protocol" title="Permanent link">&para;</a></h2>
 <p>Provider APIs describe the same interactions in different ways. An Anthropic
 tool call is a <code>tool_use</code> content block. OpenAI Responses uses a <code>function_call</code>
@@ -1955,14 +1956,17 @@ credentials, and execution.</p>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>          v
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>Your model client and provider API
 </span></code></pre></div>
-<p>The protocol crate defines data and client contracts. Conversion and network
-calls happen in your application or in optional Switchyard crates.</p>
+<p>The protocol crate defines the data exchanged with libsy. Conversion and network
+calls happen in your application or in optional Switchyard crates. When handling
+<code>run_stream</code>, your application can use any client and return the protocol response
+through <code>call.respond</code>. The crate also provides optional client traits that help
+Switchyard's supplied clients and execution helpers work together.</p>
 <h2 id="two-kinds-of-model-interaction">Two kinds of model interaction<a class="headerlink" href="#two-kinds-of-model-interaction" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
 <th>Interaction</th>
-<th>Request and response</th>
+<th>Protocol fields and types</th>
 <th>Used when</th>
 <th>Read next</th>
 </tr>
@@ -1970,19 +1974,19 @@ calls happen in your application or in optional Switchyard crates.</p>
 <tbody>
 <tr>
 <td>LLM conversation</td>
-<td><code>Request</code> contains <code>LlmRequest</code>; <code>Response</code> contains <code>LlmResponse</code></td>
+<td><a href="../rust/switchyard_protocol/envelope/struct.Request.html#structfield.llm_request"><code>Request.llm_request: LlmRequest</code></a>; <a href="../rust/switchyard_protocol/envelope/struct.Response.html#structfield.llm_response"><code>Response.llm_response: LlmResponse</code></a></td>
 <td>Your application starts a run or serves <code>Step::CallModel</code>. Content can include text, tools, reasoning, and media.</td>
 <td><a href="llm/">LLM-Related Protocols</a></td>
 </tr>
 <tr>
 <td>Typed decision</td>
-<td><code>DecisionRequest</code> and <code>DecisionResponse</code></td>
+<td><a href="../rust/switchyard_protocol/decision/struct.DecisionRequest.html"><code>CallDecision.request: DecisionRequest</code></a>; the work future returns <a href="../rust/switchyard_protocol/decision/struct.DecisionResponse.html"><code>libsy::Result&lt;DecisionResponse&gt;</code></a></td>
 <td>Your application serves <code>Step::CallDecision</code>. Named questions ask for a Boolean estimate, a choice, or a rubric score.</td>
 <td><a href="decisions/">Decision Model-Related Protocols</a></td>
 </tr>
 </tbody>
 </table>
-<p>The LLM envelope also carries optional correlation <code>Metadata</code>. That application
+<p>The LLM envelopes also carry <code>metadata: Option&lt;Metadata&gt;</code>. That application
 metadata is separate from the provider's conversation content. Decision calls
 use their own request and response types directly.</p>
 <h2 id="choose-who-owns-conversion">Choose who owns conversion<a class="headerlink" href="#choose-who-owns-conversion" title="Permanent link">&para;</a></h2>
@@ -2010,7 +2014,7 @@ use their own request and response types directly.</p>
 </table>
 <p>The two pages below explain these boundaries and show the field mappings. For
 complete type and method definitions, open the
-<a href="../../rust/switchyard_protocol/">protocol crate reference</a>.</p>
+<a href="../rust/switchyard_protocol/">protocol crate reference</a>.</p>
 
 
 

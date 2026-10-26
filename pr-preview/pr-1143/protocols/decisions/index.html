@@ -2040,45 +2040,56 @@ and
 These are the types exchanged through <code>Step::CallDecision</code>.</p>
 <h2 id="describe-the-questions">Describe the questions<a class="headerlink" href="#describe-the-questions" title="Permanent link">&para;</a></h2>
 <p>One request carries shared context and a map of independent questions. The
-question IDs let the algorithm match each answer to its question.</p>
+question IDs let the algorithm match each answer to its question.
+Select a protocol field or type in the tables to open its crate reference.</p>
 <table>
 <thead>
 <tr>
-<th>Component</th>
-<th>Rust shape</th>
+<th>Field</th>
+<th>Rust type</th>
 <th>Meaning</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Selected model</td>
-<td><code>Option&lt;ModelId&gt;</code></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionRequest.html#structfield.model"><code>DecisionRequest.model</code></a></td>
+<td><a href="../../rust/switchyard_protocol/model_id/struct.ModelId.html"><code>Option&lt;ModelId&gt;</code></a></td>
 <td>Optional while constructing the request. The HTTP adapters require a selected model before sending it.</td>
 </tr>
 <tr>
-<td>Context</td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionRequest.html#structfield.context"><code>DecisionRequest.context</code></a></td>
 <td><code>serde_json::Value</code></td>
 <td>Conversation, application state, or other material to evaluate.</td>
 </tr>
 <tr>
-<td>Questions</td>
-<td><code>BTreeMap&lt;String, DecisionQuestion&gt;</code></td>
-<td>Questions keyed by stable IDs. Each has JSON-valued <code>instructions</code> and a <code>DecisionKind</code>.</td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionRequest.html#structfield.questions"><code>DecisionRequest.questions</code></a></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionQuestion.html"><code>BTreeMap&lt;String, DecisionQuestion&gt;</code></a></td>
+<td>Independent questions keyed by stable IDs.</td>
 </tr>
 <tr>
-<td>Boolean question</td>
-<td><code>DecisionKind::Boolean</code></td>
-<td>A true/false judgment, with optional descriptions of each answer.</td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionQuestion.html#structfield.instructions"><code>DecisionQuestion.instructions</code></a></td>
+<td><code>serde_json::Value</code></td>
+<td>Instructions for evaluating one question.</td>
 </tr>
 <tr>
-<td>Choice question</td>
-<td><code>DecisionKind::Choice</code></td>
-<td>One of a nonempty list of <code>ChoiceOption</code> values. IDs must be unique; descriptions are optional.</td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionQuestion.html#structfield.kind"><code>DecisionQuestion.kind</code></a></td>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionKind.html"><code>DecisionKind</code></a></td>
+<td>The expected Boolean, choice, or score answer.</td>
 </tr>
 <tr>
-<td>Score question</td>
-<td><code>DecisionKind::Score</code></td>
-<td>A position on an ordered rubric with at least two levels, indexed from zero.</td>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionKind.html#variant.Boolean"><code>DecisionKind::Boolean { true_description, false_description }</code></a></td>
+<td>Each field is <code>Option&lt;Value&gt;</code></td>
+<td>Optional descriptions of the true and false answers.</td>
+</tr>
+<tr>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionKind.html#variant.Choice"><code>DecisionKind::Choice { options }</code></a></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.ChoiceOption.html"><code>Vec&lt;ChoiceOption&gt;</code></a></td>
+<td>Nonempty options with unique <code>id: String</code> values and optional <code>description: Option&lt;Value&gt;</code> values.</td>
+</tr>
+<tr>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionKind.html#variant.Score"><code>DecisionKind::Score { levels }</code></a></td>
+<td><code>Vec&lt;Value&gt;</code></td>
+<td>At least two rubric levels, ordered low to high and indexed from zero.</td>
 </tr>
 </tbody>
 </table>
@@ -2112,41 +2123,71 @@ Each answer separates its typed <code>value</code> from optional <code>provider_
 <table>
 <thead>
 <tr>
-<th>Answer</th>
-<th>Rust representation</th>
+<th>Field or variant</th>
+<th>Rust type</th>
 <th>How to interpret it</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Boolean judgment</td>
-<td><code>BooleanEstimate::Value(bool)</code></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.answers"><code>DecisionResponse.answers</code></a></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html"><code>BTreeMap&lt;String, DecisionAnswer&gt;</code></a></td>
+<td>Answers keyed by the request's question IDs.</td>
+</tr>
+<tr>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html#structfield.value"><code>DecisionAnswer.value</code></a></td>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html"><code>DecisionValue</code></a></td>
+<td>The typed answer matching the question's kind.</td>
+</tr>
+<tr>
+<td><a href="../../rust/switchyard_protocol/decision/enum.BooleanEstimate.html#variant.Value"><code>BooleanEstimate::Value</code></a></td>
+<td><code>bool</code></td>
 <td>A Boolean result without an implied probability.</td>
 </tr>
 <tr>
-<td>Boolean probability</td>
-<td><code>BooleanEstimate::ProbabilityTrue(Probability)</code></td>
+<td><a href="../../rust/switchyard_protocol/decision/enum.BooleanEstimate.html#variant.ProbabilityTrue"><code>BooleanEstimate::ProbabilityTrue</code></a></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.Probability.html"><code>Probability</code></a></td>
 <td>Probability of true in <code>[0, 1]</code>. The algorithm chooses any threshold.</td>
 </tr>
 <tr>
-<td>Choice</td>
-<td><code>DecisionValue::Choice { selected, probabilities }</code></td>
-<td><code>selected</code> names a declared option. An optional distribution maps every option ID to its probability.</td>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Choice.field.selected"><code>DecisionValue::Choice { selected, .. }</code></a></td>
+<td><code>String</code></td>
+<td>The selected option's declared ID.</td>
 </tr>
 <tr>
-<td>Rubric score</td>
-<td><code>DecisionValue::Score { value, probabilities }</code></td>
-<td>A possibly fractional position in <code>0..=N-1</code>. An optional distribution follows the request's level order. Retain the request to interpret it.</td>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Choice.field.probabilities"><code>DecisionValue::Choice { probabilities, .. }</code></a></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.Probability.html"><code>Option&lt;BTreeMap&lt;String, Probability&gt;&gt;</code></a></td>
+<td>A complete distribution keyed by option ID, when supplied.</td>
 </tr>
 <tr>
-<td>Provider confidence</td>
-<td><code>Option&lt;ProviderConfidence&gt;</code></td>
-<td>A provider-defined confidence measure. Its scale is separate from answer probability.</td>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Score.field.value"><code>DecisionValue::Score { value, .. }</code></a></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.ScoreValue.html"><code>ScoreValue</code></a></td>
+<td>A possibly fractional position in <code>0..=N-1</code>. Retain the question's rubric to interpret it.</td>
 </tr>
 <tr>
-<td>Response details</td>
-<td><code>id</code>, <code>model</code>, <code>Usage</code></td>
-<td>Provider-reported identity and available usage counts. Missing information stays unknown.</td>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Score.field.probabilities"><code>DecisionValue::Score { probabilities, .. }</code></a></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.Probability.html"><code>Option&lt;Vec&lt;Probability&gt;&gt;</code></a></td>
+<td>A distribution in the request's rubric order, when supplied.</td>
+</tr>
+<tr>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html#structfield.provider_confidence"><code>DecisionAnswer.provider_confidence</code></a></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.ProviderConfidence.html"><code>Option&lt;ProviderConfidence&gt;</code></a></td>
+<td>Provider-defined confidence, with its own scale and meaning.</td>
+</tr>
+<tr>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.id"><code>DecisionResponse.id</code></a></td>
+<td><code>Option&lt;String&gt;</code></td>
+<td>Provider-reported response ID, when available.</td>
+</tr>
+<tr>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.model"><code>DecisionResponse.model</code></a></td>
+<td><a href="../../rust/switchyard_protocol/model_id/struct.ModelId.html"><code>Option&lt;ModelId&gt;</code></a></td>
+<td>Provider-reported model ID, when available.</td>
+</tr>
+<tr>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.usage"><code>DecisionResponse.usage</code></a></td>
+<td><a href="../../rust/switchyard_protocol/llm/struct.Usage.html"><code>Usage</code></a></td>
+<td>Available token counts. Missing counts remain unknown.</td>
 </tr>
 </tbody>
 </table>
@@ -2156,52 +2197,58 @@ algorithm applies its policy. Choice questions can name any supported set of
 candidates; their shape is not limited to two models.</p>
 <h2 id="map-to-system-one-and-openai-decisions">Map to System One and OpenAI Decisions<a class="headerlink" href="#map-to-system-one-and-openai-decisions" title="Permanent link">&para;</a></h2>
 <p>The following tables describe Switchyard's current
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4de6a3fd8c2d501b7f1053bf523b094737a8a4fd/crates/libsy-llm-client/src/system_one.rs">System One adapter</a> and
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4de6a3fd8c2d501b7f1053bf523b094737a8a4fd/crates/libsy-llm-client/src/openai_decisions.rs">OpenAI Decisions adapter</a>.
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e2c9471e5479f6d703646208e6f02fcdc2f637d6/crates/libsy-llm-client/src/system_one.rs">System One adapter</a> and
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e2c9471e5479f6d703646208e6f02fcdc2f637d6/crates/libsy-llm-client/src/openai_decisions.rs">OpenAI Decisions adapter</a>.
 System One serves Jev through <code>/v1/systemone</code>; OpenAI uses
 <a href="https://developers.openai.com/api/reference/resources/decisions/methods/create"><code>/v1/decisions</code></a>.</p>
 <h3 id="request-fields">Request fields<a class="headerlink" href="#request-fields" title="Permanent link">&para;</a></h3>
+<p>Fields without a type prefix in this table belong to <code>DecisionRequest</code>.</p>
 <table>
 <thead>
 <tr>
-<th>Switchyard IR</th>
+<th>Switchyard field and type</th>
 <th>System One</th>
 <th>OpenAI Decisions</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>model</code></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionRequest.html#structfield.model"><code>model: Option&lt;ModelId&gt;</code></a></td>
 <td><code>model</code></td>
 <td><code>model</code></td>
 </tr>
 <tr>
-<td><code>context</code></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionRequest.html#structfield.context"><code>context: Value</code></a></td>
 <td>JSON-valued <code>state</code></td>
-<td>Text-valued <code>input</code>; structured context is serialized as JSON text</td>
+<td>Text-valued <code>input</code>; no structured JSON input field, so the adapter serializes structured context as JSON text</td>
 </tr>
 <tr>
-<td>Question map key</td>
-<td>Key in the <code>questions</code> object</td>
-<td><code>questions[].name</code></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionRequest.html#structfield.questions"><code>questions: BTreeMap&lt;String, DecisionQuestion&gt;</code></a></td>
+<td><code>questions</code> object; each key is the question ID</td>
+<td><code>questions[]</code> array; each <code>name</code> is the question ID</td>
 </tr>
 <tr>
-<td><code>DecisionQuestion.instructions</code></td>
-<td>JSON-valued <code>instructions</code></td>
-<td>Text-valued <code>instructions</code>; structured instructions become JSON text</td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionQuestion.html#structfield.instructions"><code>DecisionQuestion.instructions: Value</code></a></td>
+<td><code>questions[id].instructions</code>, as JSON</td>
+<td><code>questions[].instructions</code>, as text; structured instructions become JSON text</td>
 </tr>
 <tr>
-<td>Boolean kind</td>
-<td><code>type: "noul"</code>; descriptions in <code>criteria.true</code> and <code>criteria.false</code></td>
-<td><code>type: "predicate"</code>; optional true/false descriptions are included in instruction text</td>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionKind.html#variant.Boolean"><code>DecisionKind::Boolean { true_description, false_description }</code></a>; each is <code>Option&lt;Value&gt;</code></td>
+<td><code>type: "noul"</code>; <code>criteria.true</code> and <code>criteria.false</code> hold the descriptions</td>
+<td><code>type: "predicate"</code>; no separate description fields, so descriptions are included in instruction text</td>
 </tr>
 <tr>
-<td>Choice kind</td>
-<td><code>type: "choice"</code>; <code>criteria</code> maps option IDs to descriptions</td>
-<td><code>type: "choice"</code>; <code>choices[]</code> contains <code>value</code> and optional <code>description</code></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.ChoiceOption.html#structfield.id"><code>ChoiceOption.id: String</code></a></td>
+<td><code>type: "choice"</code>; option IDs are keys in <code>criteria</code></td>
+<td><code>type: "choice"</code>; option IDs are <code>choices[].value</code></td>
 </tr>
 <tr>
-<td>Score kind</td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.ChoiceOption.html#structfield.description"><code>ChoiceOption.description: Option&lt;Value&gt;</code></a></td>
+<td><code>criteria[option_id]</code>, as JSON</td>
+<td><code>choices[].description</code>, as text</td>
+</tr>
+<tr>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionKind.html#variant.Score"><code>DecisionKind::Score { levels }</code></a>; <code>levels: Vec&lt;Value&gt;</code></td>
 <td><code>type: "score"</code>; <code>criteria</code> is the ordered level array</td>
 <td><code>type: "score"</code>; <code>levels[].label</code> carries each level's text</td>
 </tr>
@@ -2211,56 +2258,66 @@ System One serves Jev through <code>/v1/systemone</code>; OpenAI uses
 <table>
 <thead>
 <tr>
-<th>Switchyard IR</th>
+<th>Switchyard field and type</th>
 <th>System One</th>
 <th>OpenAI Decisions</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Answer map key</td>
-<td>Key in the <code>answers</code> object</td>
-<td><code>answers[].name</code></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.answers"><code>DecisionResponse.answers: BTreeMap&lt;String, DecisionAnswer&gt;</code></a></td>
+<td><code>answers</code> object; each key is the question ID</td>
+<td><code>answers[]</code> array; each <code>name</code> is the question ID</td>
 </tr>
 <tr>
-<td>Boolean probability</td>
+<td><a href="../../rust/switchyard_protocol/decision/enum.BooleanEstimate.html#variant.ProbabilityTrue"><code>BooleanEstimate::ProbabilityTrue(Probability)</code></a></td>
 <td><code>type: "noul"</code>, <code>noul</code></td>
 <td><code>type: "predicate"</code>, <code>probability</code></td>
 </tr>
 <tr>
-<td>Selected choice</td>
+<td><a href="../../rust/switchyard_protocol/decision/enum.BooleanEstimate.html#variant.Value"><code>BooleanEstimate::Value(bool)</code></a></td>
+<td>No Boolean-only field; the adapter returns a probability</td>
+<td>No Boolean-only field; the adapter returns a probability</td>
+</tr>
+<tr>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Choice.field.selected"><code>DecisionValue::Choice { selected, .. }</code></a>; <code>selected: String</code></td>
 <td><code>choice</code></td>
 <td><code>choice</code></td>
 </tr>
 <tr>
-<td>Choice distribution</td>
-<td><code>probabilities</code> object keyed by option ID</td>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Choice.field.probabilities"><code>DecisionValue::Choice { probabilities, .. }</code></a>; <a href="../../rust/switchyard_protocol/decision/struct.Probability.html"><code>probabilities: Option&lt;BTreeMap&lt;String, Probability&gt;&gt;</code></a></td>
+<td>Optional <code>probabilities</code> object keyed by option ID</td>
 <td><code>probabilities[]</code> with <code>value</code> and <code>probability</code>, converted to an ID-keyed map</td>
 </tr>
 <tr>
-<td>Score</td>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Score.field.value"><code>DecisionValue::Score { value, .. }</code></a>; <a href="../../rust/switchyard_protocol/decision/struct.ScoreValue.html"><code>value: ScoreValue</code></a></td>
 <td><code>score</code></td>
 <td><code>score</code></td>
 </tr>
 <tr>
-<td>Score distribution</td>
-<td><code>probabilities</code> object with numeric string keys</td>
+<td><a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Score.field.probabilities"><code>DecisionValue::Score { probabilities, .. }</code></a>; <a href="../../rust/switchyard_protocol/decision/struct.Probability.html"><code>probabilities: Option&lt;Vec&lt;Probability&gt;&gt;</code></a></td>
+<td>Optional <code>probabilities</code> object with numeric string keys</td>
 <td><code>probabilities[]</code> with numeric <code>value</code> and <code>probability</code>; reordered into rubric order</td>
 </tr>
 <tr>
-<td>Provider confidence</td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html#structfield.provider_confidence"><code>DecisionAnswer.provider_confidence: Option&lt;ProviderConfidence&gt;</code></a></td>
 <td><code>confidence</code></td>
 <td><code>confidence</code></td>
 </tr>
 <tr>
-<td>Identity</td>
-<td>Optional <code>id</code>, <code>model</code></td>
-<td><code>model</code>; the adapter returns <code>id: None</code></td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.id"><code>DecisionResponse.id: Option&lt;String&gt;</code></a></td>
+<td>Optional <code>id</code></td>
+<td>No response ID is read by the adapter; returns <code>None</code></td>
 </tr>
 <tr>
-<td>Usage</td>
-<td>Deserialized into <code>Usage</code></td>
-<td>Token counts normalized into <code>Usage</code>, separating cache-read/write counts from total input</td>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.model"><code>DecisionResponse.model: Option&lt;ModelId&gt;</code></a></td>
+<td>Optional <code>model</code></td>
+<td><code>model</code></td>
+</tr>
+<tr>
+<td><a href="../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.usage"><code>DecisionResponse.usage: Usage</code></a></td>
+<td>Deserialized into <a href="../../rust/switchyard_protocol/llm/struct.Usage.html"><code>Usage</code></a></td>
+<td>Token counts normalized into <a href="../../rust/switchyard_protocol/llm/struct.Usage.html"><code>Usage</code></a>, separating cache-read/write counts from total input</td>
 </tr>
 </tbody>
 </table>
@@ -2274,26 +2331,28 @@ returns only true or false can use <code>BooleanEstimate::Value</code> without i
 certainty. Optional distributions remain <code>None</code> when absent. The OpenAI adapter
 reports refusals as errors because <code>DecisionValue</code> has no refusal variant.</p>
 <h2 id="own-the-conversion">Own the conversion<a class="headerlink" href="#own-the-conversion" title="Permanent link">&para;</a></h2>
-<p>To keep an existing client, implement
-<a href="../../rust/switchyard_protocol/client/trait.RoutedDecisionClient.html"><code>RoutedDecisionClient</code></a>.
-Its <code>call</code> method accepts a <code>DecisionRequest</code> and returns
-<code>Result&lt;DecisionResponse, LlmClientError&gt;</code> asynchronously.</p>
-<p>Your implementation converts the request to the backend's format, sends it,
-and converts the result back. Match question IDs and kinds, retain available
-distributions and confidence separately, and report transport or decoding errors
-through <code>LlmClientError</code>. See the two adapters above for reference implementations
-of request encoding and response conversion. Decision conversions live in
+<p>When handling <code>Step::CallDecision</code>, use your existing client or a function to
+convert <code>call.request</code> into the backend's format, send it, and convert the answer
+into <code>DecisionResponse</code>. Pass that work to <code>call.respond</code> as a future returning
+<code>libsy::Result&lt;DecisionResponse&gt;</code>.</p>
+<p>Match question IDs and kinds, and retain available distributions and confidence
+separately. See the two adapters above for reference implementations of request
+encoding and response conversion. Decision conversions live in
 <code>switchyard-llm-client</code>; <code>switchyard-translation</code> handles LLM formats.</p>
-<p>When driving <code>run_stream</code> directly, pass that client future to the decision call's
-<code>respond</code> method. See <a href="../../mechanics_of_libsy/#stepcalldecision">Mechanics of Libsy</a>
-for the call-handling loop and cancellation behavior.</p>
+<p><a href="../../rust/switchyard_protocol/client/trait.RoutedDecisionClient.html"><code>RoutedDecisionClient</code></a>
+is an optional interface that lets Switchyard's clients and execution helpers
+work together. Direct <code>run_stream</code> handling does not require implementing it.
+See <a href="../../mechanics_of_libsy/#stepcalldecision">Mechanics of Libsy</a> for the
+call-handling loop and cancellation behavior.</p>
 <h2 id="use-the-supplied-clients">Use the supplied clients<a class="headerlink" href="#use-the-supplied-clients" title="Permanent link">&para;</a></h2>
 <p>You can instead use the public <code>SystemOneClient</code> or <code>OpenAiDecisionClient</code> from
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4de6a3fd8c2d501b7f1053bf523b094737a8a4fd/crates/libsy-llm-client/README.md"><code>switchyard-llm-client</code></a>. Use dependencies at
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e2c9471e5479f6d703646208e6f02fcdc2f637d6/crates/libsy-llm-client/README.md"><code>switchyard-llm-client</code></a>. Use dependencies at
 the same API revision as libsy and the protocol crate.</p>
 <p>This async excerpt sends the earlier <code>request</code> to System One. Set its <code>model</code> to
 an ID served by your endpoint. <code>SYSTEM_ONE_ENDPOINT</code> must include <code>/v1/systemone</code>.
-Running it makes a provider call and may incur a charge.</p>
+Running it makes a provider call and may incur a charge.
+The trait import makes the supplied client's <code>call</code> method available; you do not
+implement a client in this example.</p>
 <div class="language-rust highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">use</span><span class="w"> </span><span class="n">std</span><span class="p">::</span><span class="n">time</span><span class="p">::</span><span class="n">Duration</span><span class="p">;</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_llm_client</span><span class="p">::</span><span class="n">SystemOneClient</span><span class="p">;</span>
 </span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_protocol</span><span class="p">::</span><span class="n">RoutedDecisionClient</span><span class="p">;</span>
