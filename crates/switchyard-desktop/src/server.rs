@@ -36,6 +36,7 @@ pub struct SaveResult {
 /// The details contain the backup path and edit notes. An error means the file was not changed.
 pub fn apply(
     settings: &Config,
+    health: &Probe,
     route: &str,
     algorithm: &Algorithm,
     choices: &[Choice],
@@ -44,11 +45,12 @@ pub fn apply(
     let text = read_reviewed(settings, expected)?;
     let config = ServerConfig::parse(&text)?;
     let edited = config.edit(route, algorithm, choices)?;
-    save_edit(settings, &text, edited, "Updated the route.")
+    save_edit(settings, health, &text, edited, "Updated the route.")
 }
 
 pub fn remove(
     settings: &Config,
+    health: &Probe,
     route: &str,
     id: &str,
     expected: &str,
@@ -59,16 +61,17 @@ pub fn remove(
         return Err("The route changed or was removed. Refresh and choose it again.".into());
     }
     let edited = config.remove(route)?;
-    save_edit(settings, &text, edited, "Removed the route.")
+    save_edit(settings, health, &text, edited, "Removed the route.")
 }
 
 pub fn save_route_change(
     settings: &Config,
+    health: &Probe,
     expected: &str,
     edited: crate::server_config::Edited,
 ) -> Result<SaveResult, String> {
     let text = read_reviewed(settings, expected)?;
-    save_edit(settings, &text, edited, "Changed the routes.")
+    save_edit(settings, health, &text, edited, "Changed the routes.")
 }
 
 /// This function reads the server config again, so an edit made while the review window was
@@ -96,6 +99,7 @@ fn check_original(text: &str, expected: &str) -> Result<(), String> {
 
 fn save_edit(
     settings: &Config,
+    health: &Probe,
     text: &str,
     edited: crate::server_config::Edited,
     summary: &str,
@@ -113,7 +117,7 @@ fn save_edit(
     let binary = server_binary()?;
     let backup = save_checked(&binary, path, text, &edited.text)?;
     let saved = format!("{summary} Changed {}.", path.display());
-    let health = format!("{}/health", settings.server_url);
+    let health_url = format!("{}/health", settings.server_url);
     let (message, warning) = match restart(&settings.launchd_label) {
         Err(error) => (
             format!(
@@ -122,12 +126,12 @@ fn save_edit(
             ),
             true,
         ),
-        Ok(()) if wait_for_health(&settings.server_url) => {
+        Ok(()) if wait_for_health(health, &settings.server_url) => {
             (format!("{saved} Restarted Switchyard."), false)
         }
         Ok(()) => (
             format!(
-                "{saved} Switchyard restarted but did not answer {health} within {} seconds. \
+                "{saved} Switchyard restarted but did not answer {health_url} within {} seconds. \
                  Check the server log in ~/.switchyard/logs/.",
                 RESTART_WAIT.as_secs()
             ),
@@ -424,11 +428,11 @@ pub fn check_config(settings: &Config) -> Result<(), String> {
 }
 
 /// This function checks the file that the installed server loads, then restarts the server.
-pub fn restart_checked(settings: &Config) -> Result<String, String> {
+pub fn restart_checked(settings: &Config, health: &Probe) -> Result<String, String> {
     let file = service_config(settings)?;
     check(&server_binary()?, file)?;
     restart(&settings.launchd_label)?;
-    if !wait_for_health(&settings.server_url) {
+    if !wait_for_health(health, &settings.server_url) {
         return Err(format!(
             "Switchyard did not answer {}/health within {} seconds. Open the server log and retry.",
             settings.server_url.trim_end_matches('/'),
@@ -460,9 +464,8 @@ pub fn restart(launchd_label: &str) -> Result<(), String> {
     }
 }
 
-pub(crate) fn wait_for_health(server_url: &str) -> bool {
+pub(crate) fn wait_for_health(probe: &Probe, server_url: &str) -> bool {
     let deadline = Instant::now() + RESTART_WAIT;
-    let probe = Probe::default();
     loop {
         if probe.probe(server_url) == ServerStatus::Running {
             return true;
@@ -675,9 +678,15 @@ mod tests {
             text: "# edited\n".into(),
             notes: Vec::new(),
         };
-        let error = save_edit(&settings, "# custom\n", edited, "Updated the route.")
-            .err()
-            .expect("a different file");
+        let error = save_edit(
+            &settings,
+            &Probe::default(),
+            "# custom\n",
+            edited,
+            "Updated the route.",
+        )
+        .err()
+        .expect("a different file");
         assert!(error.contains("The installed server loads"), "{error}");
         assert_eq!(
             std::fs::read_to_string(&custom).expect("custom"),
@@ -689,7 +698,7 @@ mod tests {
         );
         for error in [
             check_config(&settings).expect_err("check"),
-            restart_checked(&settings).expect_err("restart"),
+            restart_checked(&settings, &Probe::default()).expect_err("restart"),
         ] {
             assert!(error.contains("The installed server loads"), "{error}");
         }
