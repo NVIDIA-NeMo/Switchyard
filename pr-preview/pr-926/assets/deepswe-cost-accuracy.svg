@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="1250pt" height="560pt" viewBox="0 0 1250 560" xmlns="http://www.w3.org/2000/svg" version="1.1" role="img" aria-labelledby="title description">
+ <title id="title">DeepSWE v1.1 task completion versus cost</title>
+ <desc id="description">DeepSWE v1.1 on 113 tasks using Codex CLI and GPT-5.6 Luna and Sol. Plan/Execute: 60.8% ± 5.3 at $180.51 ± 9.43 per run. Advisor: 57.5% ± 3.2 at $208 ± 22 per run. Stage: 61.36% ± 6.02 at $466.28 ± $8.83 per run, averaged over 3 runs. One baseline per model, selected by highest reported completion score, with lower cost breaking ties: Sol: 62.8% ± 3.1 at $720.95 ± 19.47, from the Plan/Execute study; Luna: 52.2% at about $49, the better of two valid runs from the Advisor study. Sol and the routed points are three-run means; Luna is an individual run. Reported ± values are sample standard deviations.</desc>
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:title>DeepSWE v1.1 task completion versus cost</dc:title>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.2, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <linearGradient id="frontier" gradientUnits="userSpaceOnUse" x1="157" y1="24" x2="309" y2="176">
+      <stop offset="0" stop-color="#5f8f15"/>
+      <stop offset="0.2" stop-color="#92b75f"/>
+      <stop offset="0.45" stop-color="#c5df9d"/>
+      <stop offset="0.7" stop-color="#eaf2d8"/>
+      <stop offset="0.9" stop-color="#fbfdf7"/>
+      <stop offset="1" stop-color="#ffffff"/>
+    </linearGradient>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 560
+L 1250 560
+L 1250 0
+L 0 0
+z
+" style="fill: #ffffff"/>
+  </g>
+  <rect x="157" y="24" width="304" height="304" fill="url(#frontier)"/>
+  <g id="axes_1">
+   <g id="line2d_1">
+    <path d="M 165.5 415.5
+L 1082.5 415.5
+" clip-path="url(#p9201e5e723)" style="fill: none; stroke: #d9d9d9; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_2">
+    <path d="M 165.5 264.5
+L 1082.5 264.5
+" clip-path="url(#p9201e5e723)" style="fill: none; stroke: #d9d9d9; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_3">
+    <path d="M 165.5 113.5
+L 1082.5 113.5
+" clip-path="url(#p9201e5e723)" style="fill: none; stroke: #d9d9d9; stroke-linecap: square"/>
+   </g>
+   <g id="line2d_4">
+    <defs>
+     <path id="m0288455ae3" d="M 0 5.2
+C 1.379056 5.2 2.701815 4.652095 3.676955 3.676955
+C 4.652095 2.701815 5.2 1.379056 5.2 0
+C 5.2 -1.379056 4.652095 -2.701815 3.676955 -3.676955
+C 2.701815 -4.652095 1.379056 -5.2 0 -5.2
+C -1.379056 -5.2 -2.701815 -4.652095 -3.676955 -3.676955
+C -4.652095 -2.701815 -5.2 -1.379056 -5.2 0
+C -5.2 1.379056 -4.652095 2.701815 -3.676955 3.676955
+C -2.701815 4.652095 -1.379056 5.2 0 5.2
+z
+"/>
+    </defs>
+    <g clip-path="url(#p9201e5e723)">
+     <use xlink:href="#m0288455ae3" x="370.4" y="516.7" style="fill: #76b900"/>
+    </g>
+   </g>
+   <g id="line2d_5">
+    <defs>
+     <path id="m460a3c8150" d="M 0 5.2
+C 1.379056 5.2 2.701815 4.652095 3.676955 3.676955
+C 4.652095 2.701815 5.2 1.379056 5.2 0
+C 5.2 -1.379056 4.652095 -2.701815 3.676955 -3.676955
+C 2.701815 -4.652095 1.379056 -5.2 0 -5.2
+C -1.379056 -5.2 -2.701815 -4.652095 -3.676955 -3.676955
+C -4.652095 -2.701815 -5.2 -1.379056 -5.2 0
+C -5.2 1.379056 -4.652095 2.701815 -3.676955 3.676955
+C -2.701815 4.652095 -1.379056 5.2 0 5.2
+z
+"/>
+    </defs>
+    <g clip-path="url(#p9201e5e723)">
+     <use xlink:href="#m460a3c8150" x="709.2" y="516.7" style="fill: #ffc000"/>
+    </g>
+   </g>
+   <g id="text_1">
+    <text style="font-size: 22px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: end" x="145" y="421" transform="rotate(-0 145 421)">45</text>
+   </g>
+   <g id="text_2">
+    <text style="font-size: 22px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: end" x="145" y="270" transform="rotate(-0 145 270)">55</text>
+   </g>
+   <g id="text_3">
+    <text style="font-size: 22px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: end" x="145" y="119" transform="rotate(-0 145 119)">65</text>
+   </g>
+   <g id="text_4">
+    <text style="font-size: 22px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: middle" x="165.5" y="448" transform="rotate(-0 165.5 448)">$0</text>
+   </g>
+   <g id="text_5">
+    <text style="font-size: 22px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: middle" x="394.75" y="448" transform="rotate(-0 394.75 448)">$200</text>
+   </g>
+   <g id="text_6">
+    <text style="font-size: 22px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: middle" x="624" y="448" transform="rotate(-0 624 448)">$400</text>
+   </g>
+   <g id="text_7">
+    <text style="font-size: 22px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: middle" x="853.25" y="448" transform="rotate(-0 853.25 448)">$600</text>
+   </g>
+   <g id="text_8">
+    <text style="font-size: 22px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: middle" x="1082.5" y="448" transform="rotate(-0 1082.5 448)">$800</text>
+   </g>
+   <g id="text_9">
+    <text style="font-weight: 700; font-size: 18px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: middle" x="586" y="482" transform="rotate(-0 586 482)">Cost per run ($)</text>
+   </g>
+   <g id="text_10">
+    <text style="font-weight: 700; font-size: 16px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif" transform="translate(54.648438 276.367188) rotate(-90)">% Tasks Completed</text>
+   </g>
+   <g id="text_11">
+    <text style="font-weight: 700; font-size: 22px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start" x="173" y="59" transform="rotate(-0 173 59)">Efficiency</text>
+   </g>
+   <g id="text_12">
+    <text style="font-weight: 700; font-size: 22px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start" x="173" y="85" transform="rotate(-0 173 85)">Frontier</text>
+   </g>
+   <g id="plan-execute" data-cost="180.51" data-score="60.8">
+    <defs>
+     <path id="m38f0431c9c" d="M 0 9
+C 2.386828 9 4.676219 8.051703 6.363961 6.363961
+C 8.051703 4.676219 9 2.386828 9 0
+C 9 -2.386828 8.051703 -4.676219 6.363961 -6.363961
+C 4.676219 -8.051703 2.386828 -9 0 -9
+C -2.386828 -9 -4.676219 -8.051703 -6.363961 -6.363961
+C -8.051703 -4.676219 -9 -2.386828 -9 0
+C -9 2.386828 -8.051703 4.676219 -6.363961 6.363961
+C -4.676219 8.051703 -2.386828 9 0 9
+z
+"/>
+    </defs>
+    <g clip-path="url(#p9201e5e723)">
+     <use xlink:href="#m38f0431c9c" x="372.409587" y="176.92" style="fill: #76b900"/>
+    </g>
+   </g>
+   <g id="advisor" data-cost="208" data-score="57.5">
+    <g clip-path="url(#p9201e5e723)">
+     <use xlink:href="#m38f0431c9c" x="403.92" y="226.75" style="fill: #76b900"/>
+    </g>
+   </g>
+   <g id="stage" data-cost="466.28" data-score="61.36">
+    <g clip-path="url(#p9201e5e723)">
+     <use xlink:href="#m38f0431c9c" x="699.97345" y="168.464" style="fill: #76b900"/>
+    </g>
+   </g>
+   <g id="plan-sol" data-cost="720.95" data-score="62.8">
+    <defs>
+     <path id="mabb4518413" d="M 0 8
+C 2.121625 8 4.156639 7.15707 5.656854 5.656854
+C 7.15707 4.156639 8 2.121625 8 0
+C 8 -2.121625 7.15707 -4.156639 5.656854 -5.656854
+C 4.156639 -7.15707 2.121625 -8 0 -8
+C -2.121625 -8 -4.156639 -7.15707 -5.656854 -5.656854
+C -7.15707 -4.156639 -8 -2.121625 -8 0
+C -8 2.121625 -7.15707 4.156639 -5.656854 5.656854
+C -4.156639 7.15707 -2.121625 8 0 8
+z
+"/>
+    </defs>
+    <g clip-path="url(#p9201e5e723)">
+     <use xlink:href="#mabb4518413" x="991.888937" y="146.72" style="fill: #ffc000"/>
+    </g>
+   </g>
+   <g id="advisor-luna-2" data-cost="49" data-score="52.2">
+    <g clip-path="url(#p9201e5e723)">
+     <use xlink:href="#mabb4518413" x="221.66625" y="306.78" style="fill: #ffc000"/>
+    </g>
+   </g>
+   <g id="text_13">
+    <text style="font-weight: 700; font-size: 18.5px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start" x="430" y="169" transform="rotate(-0 430 169)">Plan/Execute Router</text>
+   </g>
+   <g id="text_14">
+    <text style="font-size: 14px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start; fill: #777777" x="430" y="188" transform="rotate(-0 430 188)">Sol + Luna · 60.8% · $180.51</text>
+   </g>
+   <g id="text_15">
+    <text style="font-weight: 700; font-size: 18.5px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start" x="740" y="140" transform="rotate(-0 740 140)">Agent Stage Router</text>
+   </g>
+   <g id="text_16">
+    <text style="font-size: 14px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start; fill: #777777" x="740" y="159" transform="rotate(-0 740 159)">Sol + Luna · 61.36% · $466.28</text>
+   </g>
+   <g id="text_17">
+    <text style="font-weight: 700; font-size: 18.5px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start" x="450" y="240" transform="rotate(-0 450 240)">Advisor Router</text>
+   </g>
+   <g id="text_18">
+    <text style="font-size: 14px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start; fill: #777777" x="450" y="259" transform="rotate(-0 450 259)">Luna + Sol · 57.5% · $208</text>
+   </g>
+   <g id="text_19">
+    <text style="font-weight: 700; font-size: 18.5px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: middle" x="992" y="197" transform="rotate(-0 992 197)">GPT-5.6 Sol Only</text>
+   </g>
+   <g id="text_20">
+    <text style="font-size: 14px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: middle; fill: #777777" x="992" y="216" transform="rotate(-0 992 216)">62.8% · $720.95</text>
+   </g>
+   <g id="text_21">
+    <text style="font-weight: 700; font-size: 18.5px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start" x="285" y="314" transform="rotate(-0 285 314)">GPT-5.6 Luna Only</text>
+   </g>
+   <g id="text_22">
+    <text style="font-size: 14px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start; fill: #777777" x="285" y="333" transform="rotate(-0 285 333)">52.2% · ≈$49</text>
+   </g>
+   <g id="patch_2">
+    <path d="M 425 177
+Q 407 177 390.118034 177
+" style="fill: none; stroke-dasharray: 2,2; stroke-dashoffset: 0; stroke: #a6a6a6; stroke-linecap: round"/>
+    <path d="M 397.518034 180.7
+L 390.118034 177
+L 397.518034 173.3
+" style="fill: none; stroke-dasharray: 2,2; stroke-dashoffset: 0; stroke: #a6a6a6; stroke-linecap: round"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 444 232
+Q 431.5 230 420.103992 228.176639
+" style="fill: none; stroke-dasharray: 2,2; stroke-dashoffset: 0; stroke: #a6a6a6; stroke-linecap: round"/>
+    <path d="M 426.826488 232.999299
+L 420.103992 228.176639
+L 427.995618 225.692238
+" style="fill: none; stroke-dasharray: 2,2; stroke-dashoffset: 0; stroke: #a6a6a6; stroke-linecap: round"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 275 307
+Q 256.5 307 239.118034 307
+" style="fill: none; stroke-dasharray: 2,2; stroke-dashoffset: 0; stroke: #a6a6a6; stroke-linecap: round"/>
+    <path d="M 246.518034 310.7
+L 239.118034 307
+L 246.518034 303.3
+" style="fill: none; stroke-dasharray: 2,2; stroke-dashoffset: 0; stroke: #a6a6a6; stroke-linecap: round"/>
+   </g>
+   <g id="text_23">
+    <text style="font-size: 18px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start" x="379.2" y="522" transform="rotate(-0 379.2 522)">NeMo Switchyard Routing Algorithm</text>
+   </g>
+   <g id="text_24">
+    <text style="font-size: 18px; font-family: 'Arial', 'Helvetica', 'Liberation Sans', 'DejaVu Sans', sans-serif; text-anchor: start" x="718" y="522" transform="rotate(-0 718 522)">Single Model</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p9201e5e723">
+   <rect x="0" y="0" width="1250" height="560"/>
+  </clipPath>
+ </defs>
+</svg>
