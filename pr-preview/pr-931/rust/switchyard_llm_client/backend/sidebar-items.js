@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_MAX_RETRIES"],"enum":["Backend"],"struct":["HttpBackendConfig"]};
