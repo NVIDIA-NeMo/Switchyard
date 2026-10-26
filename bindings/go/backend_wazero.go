@@ -18,6 +18,9 @@ import (
 	"time"
 )
 
+// Backend returns the compiled routing backend: "native" or "wasm".
+func Backend() string { return "wasm" }
+
 type wasmBackend struct {
 	runtime   *wasmRuntime
 	slots     []*wasmSlot

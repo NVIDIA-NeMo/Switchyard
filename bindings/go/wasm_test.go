@@ -14,6 +14,12 @@ import (
 	"time"
 )
 
+func TestBackend(t *testing.T) {
+	if got := Backend(); got != "wasm" {
+		t.Fatalf("Backend() = %q, want wasm", got)
+	}
+}
+
 // Parent and child identities must share the guest that owns their session state.
 func TestWasmSessionAffinity(t *testing.T) {
 	backend := &wasmBackend{slots: []*wasmSlot{{}, {}}}
