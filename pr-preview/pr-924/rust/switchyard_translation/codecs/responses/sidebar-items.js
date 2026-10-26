@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["is_anthropic_thinking_envelope"],"struct":["OpenAiResponsesCodec","OpenAiResponsesStreamCodec"]};
