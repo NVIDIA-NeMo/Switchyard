@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["BooleanEstimate","DecisionKind","DecisionValue"],"struct":["ChoiceOption","DecisionAnswer","DecisionQuestion","DecisionRequest","DecisionResponse","Probability","ProviderConfidence","ScoreValue"]};
