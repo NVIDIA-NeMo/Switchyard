@@ -78,6 +78,38 @@ evidence, and an optional answer. When it has no answer, the host calls the
 selected target. Routing-produced responses are buffered; the host may stream
 the final selected provider response separately.
 
+## Provider-shaped decisions
+
+`Decide` accepts a provider request and uses the same algorithm as `Route`:
+
+```go
+decision, err := router.Decide(ctx, switchyard.WireInput{
+    Input: switchyard.Input{
+        Request: body,
+        Models: eligibleGroups,
+    },
+    Format: "openai_chat",
+}, nil)
+```
+
+The C bridge handles decoding and request preparation through `sy_decide_new`.
+Build its matching native library before compiling this source-only Go package.
+
+Pass a `WireHostCall` for algorithms that make routing-time calls. For
+`call_model`, `WireWork.Requests` contains every ordered candidate, each with
+its target model and provider-shaped request. Return the buffered provider
+response in `Reply.Response`; set `ServedModel` when more than one candidate
+was requested. The host still owns retries and fallback execution.
+
+`TargetFormats` can override the input format for particular target IDs, such
+as an Anthropic judge for a Chat request. Typed `call_decision` requests and
+replies keep their existing decision protocol.
+
+The result's `Requests` are prepared, ordered final candidates. Its embedded
+`Outcome` retains the normalized request, evidence, and any algorithm-produced
+answer. That answer remains normalized; this API does not encode responses.
+No post-routing answer is sent automatically.
+
 ## Cancellation and ownership
 
 `Route` waits in its calling goroutine. A host that needs immediate return can

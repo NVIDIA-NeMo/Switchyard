@@ -109,9 +109,31 @@ func (router *Router) Close() {
 	}
 }
 
+type runInput struct {
+	Input
+	wire *WireInput
+}
+
+func (input runInput) marshal() ([]byte, error) {
+	if input.wire != nil {
+		return json.Marshal(input.wire)
+	}
+	return json.Marshal(input.Input)
+}
+
+type runWork struct {
+	Work
+	Requests []PreparedRequest `json:"requests"`
+}
+
+type runOutcome struct {
+	Outcome
+	Requests []PreparedRequest `json:"requests"`
+}
+
 // Limit the router borrow to construction; each native run retains its own engine reference.
-func (router *Router) newRun(input Input) (*C.SyRun, error) {
-	data, err := json.Marshal(input)
+func (router *Router) newRun(input runInput) (*C.SyRun, error) {
+	data, err := input.marshal()
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +149,11 @@ func (router *Router) newRun(input Input) (*C.SyRun, error) {
 		return nil, errors.New("Switchyard router is closed")
 	}
 	var run *C.SyRun
-	err = nativeError(C.sy_run_new(state.ptr, value, &run))
+	if input.wire != nil {
+		err = nativeError(C.sy_decide_new(state.ptr, value, &run))
+	} else {
+		err = nativeError(C.sy_run_new(state.ptr, value, &run))
+	}
 	return run, err
 }
 
@@ -145,12 +171,23 @@ type hostReply struct {
 // Route waits for an outcome while the host services calls with its own clients.
 // Cancellation stops routing without waiting for host calls that ignore their context.
 func (router *Router) Route(ctx context.Context, input Input, call HostCall) (Outcome, error) {
+	var host func(context.Context, runWork) (Reply, error)
+	if call != nil {
+		host = func(ctx context.Context, work runWork) (Reply, error) {
+			return call(ctx, work.Work)
+		}
+	}
+	outcome, err := router.route(ctx, runInput{Input: input}, host)
+	return outcome.Outcome, err
+}
+
+func (router *Router) route(ctx context.Context, input runInput, call func(context.Context, runWork) (Reply, error)) (runOutcome, error) {
 	if err := ctx.Err(); err != nil {
-		return Outcome{}, err
+		return runOutcome{}, err
 	}
 	run, err := router.newRun(input)
 	if err != nil {
-		return Outcome{}, err
+		return runOutcome{}, err
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	// At most one read is outstanding; consume its result before requesting another.
@@ -166,40 +203,40 @@ func (router *Router) Route(ctx context.Context, input Input, call HostCall) (Ou
 		return nativeError(C.sy_run_next_async(run, C.SyNextCallback(C.syGoNext), C.uintptr_t(handle)))
 	}
 	if err := readNext(); err != nil {
-		return Outcome{}, err
+		return runOutcome{}, err
 	}
 	replies := make(chan hostReply)
 	for {
 		select {
 		case <-ctx.Done():
-			return Outcome{}, ctx.Err()
+			return runOutcome{}, ctx.Err()
 		case result := <-next:
 			if err := ctx.Err(); err != nil {
-				return Outcome{}, err
+				return runOutcome{}, err
 			}
 			if result.err != nil {
-				return Outcome{}, result.err
+				return runOutcome{}, result.err
 			}
-			var work Work
+			var work runWork
 			if err := json.Unmarshal(result.data, &work); err != nil {
-				return Outcome{}, err
+				return runOutcome{}, err
 			}
 			if work.Type == "done" {
-				var outcome Outcome
+				var outcome runOutcome
 				err := json.Unmarshal(result.data, &outcome)
 				if cancelErr := ctx.Err(); cancelErr != nil {
-					return Outcome{}, cancelErr
+					return runOutcome{}, cancelErr
 				}
 				return outcome, err
 			}
 			if work.Type != "call_model" && work.Type != "call_decision" {
-				return Outcome{}, errors.New("unknown Switchyard step: " + work.Type)
+				return runOutcome{}, errors.New("unknown Switchyard step: " + work.Type)
 			}
 			if call == nil {
-				return Outcome{}, errors.New("Switchyard algorithm requires a host model client")
+				return runOutcome{}, errors.New("Switchyard algorithm requires a host model client")
 			}
 			// Workers own Go data only; late results cannot call into a freed native run.
-			go func(work Work) {
+			go func(work runWork) {
 				if ctx.Err() != nil {
 					return
 				}
@@ -210,7 +247,7 @@ func (router *Router) Route(ctx context.Context, input Input, call HostCall) (Ou
 				}
 			}(work)
 			if err := readNext(); err != nil {
-				return Outcome{}, err
+				return runOutcome{}, err
 			}
 		case reply := <-replies:
 			envelope := struct {
@@ -225,16 +262,16 @@ func (router *Router) Route(ctx context.Context, input Input, call HostCall) (Ou
 			}
 			data, err := json.Marshal(envelope)
 			if err != nil {
-				return Outcome{}, err
+				return runOutcome{}, err
 			}
 			if err := ctx.Err(); err != nil {
-				return Outcome{}, err
+				return runOutcome{}, err
 			}
 			value := C.CString(string(data))
 			err = nativeError(C.sy_run_respond(run, C.uint64_t(reply.id), value))
 			C.free(unsafe.Pointer(value))
 			if err != nil {
-				return Outcome{}, err
+				return runOutcome{}, err
 			}
 		}
 	}
