@@ -1243,6 +1243,7 @@ fn reviewed(previewed: Action, preview: &Value) -> Option<Action> {
             route,
             id,
             preview_token,
+            attach: false,
         },
         _ => return None,
     })

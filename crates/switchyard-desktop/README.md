@@ -441,6 +441,15 @@ a transcript file, and `h` lists the sessions of the selected harness and
 account. Each review ends with the whole hand-off text; type `HANDOFF` to write
 it and open the harness.
 
+From a shell, `switchyard-desktop handoff --to claude` continues the session
+that was last recorded in the current directory, in that same terminal. It
+prints the review, asks for confirmation, writes the hand-off, and then starts
+the destination harness in place of itself. `--to codex` goes the other way.
+`--transcript FILE` or `--session ID` names the source, `--route` and
+`--account` choose the destination's route and saved account, `--show` prints
+the hand-off text, and `--yes` skips the confirmation. Run
+`switchyard-desktop handoff --help` for every option.
+
 ## Usage
 
 Usage displays up to 100 calls per page. **Previous calls** and **Next calls** move

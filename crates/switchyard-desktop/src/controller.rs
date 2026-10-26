@@ -130,7 +130,8 @@ pub enum Action {
         id: String,
     },
     /// This writes the reviewed hand-off and opens the destination harness in the session's
-    /// directory.
+    /// directory. With `attach`, it returns the harness command instead of opening a terminal,
+    /// for the `handoff` subcommand, which runs the harness in its own terminal.
     Handoff {
         source: HandoffSource,
         tool: Harness,
@@ -138,6 +139,8 @@ pub enum Action {
         route: String,
         id: String,
         preview_token: Option<String>,
+        #[serde(default)]
+        attach: bool,
     },
     /// This lists the sessions whose transcripts a harness keeps, for the given account or the
     /// harness's current login. The list is read on demand because it opens every transcript.
@@ -1554,6 +1557,7 @@ impl Controller {
                 route,
                 id,
                 preview_token,
+                attach,
             } => {
                 let inputs =
                     json!({"source":source,"tool":tool,"account":account,"route":route,"id":id});
@@ -1612,9 +1616,9 @@ impl Controller {
                                 plan.login,
                             )?;
                         }
-                        sessions::open_harness(&sessions::OpenRequest {
+                        let request = sessions::OpenRequest {
                             tool: plan.tool,
-                            binary,
+                            binary: binary.clone(),
                             directory: plan.directory.clone(),
                             model: &plan.model,
                             root: &plan.root,
@@ -1627,14 +1631,22 @@ impl Controller {
                             instructions: Some(&instructions),
                             read_dirs: std::slice::from_ref(&dir),
                             first_prompt: Some(&first),
-                        })
+                        };
+                        if attach {
+                            sessions::invocation(&request).map(Some)
+                        } else {
+                            sessions::open_harness(&request).map(|()| None)
+                        }
                     },
                 );
                 // A hand-off that never opened holds only an unread excerpt, so it goes away.
-                if let Err(error) = opened {
-                    let _ = std::fs::remove_dir_all(&dir);
-                    return Err(error);
-                }
+                let invocation = match opened {
+                    Ok(invocation) => invocation,
+                    Err(error) => {
+                        let _ = std::fs::remove_dir_all(&dir);
+                        return Err(error);
+                    }
+                };
                 record["opened"] = json!(true);
                 handoffs::update(&plan.id, &record)?;
                 if let Some(managed) = &plan.managed {
@@ -1656,19 +1668,35 @@ impl Controller {
                         }),
                     )?;
                 }
-                Ok(Reply::message(format!(
-                    "Opened Terminal to continue the session in {}.\n\
+                let message = format!(
+                    "{} {}.\n\
                      Hand-off: {}\n\
                      Directory: {}\n\
                      Session ID: {}\n\
                      The new session reads the hand-off under its own login. Hand-offs are \
                      removed after {} days.",
+                    if attach {
+                        "Continuing the session here in"
+                    } else {
+                        "Opened Terminal to continue the session in"
+                    },
                     harness_name(plan.tool),
                     file.display(),
                     plan.directory.display(),
                     plan.session_id,
                     handoffs::RETENTION_DAYS
-                )))
+                );
+                let data = match invocation {
+                    Some(invocation) => json!({"invocation": {
+                        "program": binary,
+                        "directory": plan.directory,
+                        "args": invocation.args,
+                        "environment": invocation.environment,
+                        "remove_environment": invocation.remove_environment,
+                    }}),
+                    None => Value::Null,
+                };
+                Ok(Reply { message, data })
             }
             Action::HarnessSessions { tool, account } => {
                 let kind = transcript_kind(tool)?;
@@ -2021,7 +2049,7 @@ const HANDOFF_NOTICE: &str = "Switchyard writes the hand-off text above to a pri
      nothing is uploaded, and no login is shared.";
 
 /// The short harness name that hand-offs use. `HARNESSES` labels describe settings files.
-fn harness_name(tool: Harness) -> &'static str {
+pub(crate) fn harness_name(tool: Harness) -> &'static str {
     match tool {
         Harness::CodexCli => "Codex CLI",
         Harness::CodexApp => "Codex app",
@@ -2060,7 +2088,7 @@ fn transcript_root(tool: Harness, account: Option<&Path>) -> Result<PathBuf, Str
 
 // Harnesses record the resolved directory, which differs from the recorded one through
 // symlinks such as macOS's /var → /private/var.
-fn canonical(path: &Path) -> PathBuf {
+pub(crate) fn canonical(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
@@ -2635,6 +2663,7 @@ mod tests {
                     route: "r".into(),
                     id: "public".into(),
                     preview_token: token,
+                    attach: false,
                 };
             let managed = HandoffSource::Managed { id: id.clone() };
             assert!(preview(&mut controller, managed.clone(), Harness::Pi).is_err());
