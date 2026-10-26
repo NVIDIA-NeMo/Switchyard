@@ -11,19 +11,19 @@ max_concurrent = 4
 id = "small-a"
 model = "Qwen/Qwen3-0.6B"
 url = "http://small-a:8081/metrics"
-backend = "vllm"
-labels = { model_name = "Qwen/Qwen3-0.6B", engine = "0" }
+backend = "sglang"
+labels = { model_name = "Qwen/Qwen3-0.6B" }
 
 [[workers]]
 id = "small-b"
 model = "Qwen/Qwen3-0.6B"
 url = "http://small-b:8081/metrics"
-backend = "vllm"
-labels = { model_name = "Qwen/Qwen3-0.6B", engine = "0" }
+backend = "sglang"
+labels = { model_name = "Qwen/Qwen3-0.6B" }
 
 [[workers]]
 id = "large"
 model = "Qwen/Qwen3-1.7B"
 url = "http://large:8081/metrics"
-backend = "vllm"
-labels = { model_name = "Qwen/Qwen3-1.7B", engine = "0" }
+backend = "sglang"
+labels = { model_name = "Qwen/Qwen3-1.7B" }

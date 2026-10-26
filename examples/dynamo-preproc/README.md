@@ -83,36 +83,25 @@ METRICS_CONFIG=/etc/switchyard/metrics.toml
 Configure one direct metrics endpoint per independently scheduled worker. Use labels
 to select exactly one series for that worker/rank. Do not use a load-balanced Service
 URL that returns an arbitrary replica. Include every worker for each model and keep
-these IDs consistent with the routing file's calibration tables. This version uses
+these IDs consistent with the routing file's worker lists. This version uses
 an explicit worker list; scaling or replacing workers requires updating that list.
 
 The example scrapes every 500 ms with a 250 ms timeout and bounded concurrency.
 `backend = "vllm"` reads `vllm:num_requests_running` and `vllm:num_requests_waiting`;
 `backend = "sglang"` reads `sglang:num_running_reqs` and `sglang:num_queue_reqs`.
-Enable the backend's metrics export and inspect its labels before configuring them.
+The sample uses SGLang. Set `DYN_SYSTEM_PORT=8081` and `--enable-metrics` on each
+Dynamo SGLang worker, then inspect `/metrics` and select its worker/rank labels.
 See [Dynamo's engine metrics documentation](https://docs.nvidia.com/dynamo/reference/observability/metrics-comparison).
 
-For each efficient worker, libsy estimates:
-
-```text
-small-model time = ceil(waiting_requests / batch_size) * batch_time_ms + request_time_ms
-```
-
-It moves the request only when every small worker has at least `min_waiting_requests`
-queued and even the fastest small-worker estimate exceeds the capable model's measured
-service time by more than `min_saving_ms`. With multiple capable workers, it uses the
-slowest configured service time. Any capable-worker queue blocks the move.
+It moves an eligible request only when every small worker has at least
+`min_waiting_requests` queued and no capable worker has a queue. This is a congestion
+rule; queue counts do not predict how long requests will take.
 
 `max_capable_inflight` limits moves using the larger of observed running requests and
 all locally tracked capable-model requests. `max_spillovers` separately limits moved
 requests. PreProc checks and increments these counts atomically, then holds each count
 until the response finishes, times out or is cancelled. Requests whose tasks require
 the capable model still go there. A temporary move does not change task classification.
-
-All service times in the example are illustrative. Measure foreground latency and
-background batch time under the expected contention before enabling this policy.
-The estimate assumes a representative background request length; mixed or changing
-workloads need new calibration. It does not account for this prompt's cache reuse.
 
 Missing, ambiguous, invalid or stale metrics keep the task decision. Collection runs
 in the background, so routing never waits for a scrape. Without `METRICS_CONFIG`, or
@@ -122,7 +111,7 @@ without the `infra` table, routing stays task-only. The same table also works wi
 Run one PreProc replica for the local limits and session state. These limits only
 coordinate requests passing through that process. Metrics can lag external traffic,
 and the policy does not reserve worker capacity. Logs record the original task model,
-the adjustment reason and estimated times. No request/session IDs are metric labels.
+the selected alternate model and the adjustment reason. No request/session IDs are metric labels.
 
 ## Concurrency and timeouts
 

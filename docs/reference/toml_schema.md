@@ -202,24 +202,15 @@ max_signal_age_ms = 1000
 min_waiting_requests = 4
 max_capable_inflight = 2
 max_spillovers = 2
-min_saving_ms = 500.0
-
-[routes.example.infra.efficient_workers.small-a]
-batch_size = 4
-batch_time_ms = 2000.0
-request_time_ms = 1000.0
-
-[routes.example.infra.capable_workers]
-large = 4000.0
+efficient_workers = ["small-a", "small-b"]
+capable_workers = ["large"]
 ```
 
-All keys are required. Worker IDs must match the complete metrics inventory for each
-model. Limits and service times must be positive; `min_saving_ms` must be finite and
-nonnegative. The example times are illustrative, not measured defaults. Add one
-calibration entry per worker. Missing, stale or incomplete observations retain the
-task decision. See the
+All keys are required. Limits must be positive. Worker IDs must match the complete
+metrics inventory for each model. Missing, stale or incomplete observations retain
+the task decision. See the
 [Dynamo PreProc example](../../examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing)
-for the estimate, atomic local accounting and calibration limitations.
+for collection and capacity safeguards.
 
 ### `noop`
 

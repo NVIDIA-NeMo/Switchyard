@@ -34,25 +34,12 @@ base_threshold = 0.5
 fail_open = true
 max_output_tokens = 256
 
-# Illustrative calibration only. Measure these times for your deployment and workload.
 # Worker IDs must match every worker in metrics.toml for the respective model.
-# Remove this table for task-only routing.
+# Remove this table for task-only routing. Tune limits for your deployment.
 [routes.task.infra]
 max_signal_age_ms = 1000
 min_waiting_requests = 4
 max_capable_inflight = 2
 max_spillovers = 2
-min_saving_ms = 500.0
-
-[routes.task.infra.efficient_workers.small-a]
-batch_size = 4
-batch_time_ms = 2000.0
-request_time_ms = 1000.0
-
-[routes.task.infra.efficient_workers.small-b]
-batch_size = 4
-batch_time_ms = 2200.0
-request_time_ms = 1100.0
-
-[routes.task.infra.capable_workers]
-large = 4000.0
+efficient_workers = ["small-a", "small-b"]
+capable_workers = ["large"]

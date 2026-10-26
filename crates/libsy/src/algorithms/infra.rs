@@ -6,24 +6,12 @@
 use crate::{LibsyError, Result, RoutingOutcome, RuntimeModels};
 use serde::Deserialize;
 use std::{
-    collections::BTreeMap,
+    collections::BTreeSet,
     time::{Duration, Instant},
 };
 use switchyard_protocol::{Category, InfraSignals, ModelInfraSignals};
 
-/// Measured service times for a representative, bounded workload on one efficient worker.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct QueueCalibration {
-    /// Number of background requests served per measured batch.
-    pub batch_size: u64,
-    /// Duration of a background batch, measured under the expected contention.
-    pub batch_time_ms: f64,
-    /// Duration of the foreground request without a background queue.
-    pub request_time_ms: f64,
-}
-
-/// Queue thresholds and measured service times. No production defaults are assumed.
+/// Queue and capacity limits for moving requests to the capable model.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InfraPolicyConfig {
@@ -35,12 +23,10 @@ pub struct InfraPolicyConfig {
     pub max_capable_inflight: u64,
     /// Limit concurrent moved requests through the host.
     pub max_spillovers: u64,
-    /// Required predicted saving over the capable model's service time.
-    pub min_saving_ms: f64,
-    /// All efficient workers, with their measured batch and foreground service times.
-    pub efficient_workers: BTreeMap<String, QueueCalibration>,
-    /// All capable workers, with their measured foreground service time in milliseconds.
-    pub capable_workers: BTreeMap<String, f64>,
+    /// Complete set of efficient worker IDs in the host's metrics inventory.
+    pub efficient_workers: BTreeSet<String>,
+    /// Complete set of capable worker IDs in the host's metrics inventory.
+    pub capable_workers: BTreeSet<String>,
 }
 
 /// Applies a queue policy after task routing; the host owns collection and request lifetimes.
@@ -51,40 +37,31 @@ pub struct InfraPolicy {
 impl InfraPolicy {
     /// Validate the policy once at configuration load.
     pub fn new(config: InfraPolicyConfig) -> Result<Self> {
-        let positive = |v: f64| v.is_finite() && v > 0.0;
         if config.max_signal_age_ms == 0
             || config.min_waiting_requests == 0
             || config.max_capable_inflight == 0
             || config.max_spillovers == 0
-            || !config.min_saving_ms.is_finite()
-            || config.min_saving_ms < 0.0
             || config.efficient_workers.is_empty()
             || config.capable_workers.is_empty()
-            || config.efficient_workers.iter().any(|(id, c)| {
-                id.is_empty()
-                    || c.batch_size == 0
-                    || !positive(c.batch_time_ms)
-                    || !positive(c.request_time_ms)
-                    || config.capable_workers.contains_key(id)
-            })
+            || !config
+                .efficient_workers
+                .is_disjoint(&config.capable_workers)
             || config
-                .capable_workers
+                .efficient_workers
                 .iter()
-                .any(|(id, ms)| id.is_empty() || !positive(*ms))
+                .chain(&config.capable_workers)
+                .any(String::is_empty)
         {
-            return Err(LibsyError::AlgorithmError { message: "infra requires positive limits and service times, distinct nonempty worker IDs, and a finite nonnegative saving margin".into() });
+            return Err(LibsyError::AlgorithmError {
+                message: "infra requires positive limits and distinct nonempty worker IDs".into(),
+            });
         }
         Ok(Self { config })
     }
 
-    fn fresh<T>(
-        &self,
-        model: &ModelInfraSignals,
-        expected: &BTreeMap<String, T>,
-        now: Instant,
-    ) -> bool {
+    fn fresh(&self, model: &ModelInfraSignals, expected: &BTreeSet<String>, now: Instant) -> bool {
         expected.len() == model.workers.len()
-            && expected.keys().all(|id| {
+            && expected.iter().all(|id| {
                 model.workers.get(id).is_some_and(|worker| {
                     now.checked_duration_since(worker.sampled_at)
                         .is_some_and(|age| {
@@ -98,19 +75,19 @@ impl InfraPolicy {
         &self,
         source: &ModelInfraSignals,
         destination: &ModelInfraSignals,
-    ) -> (bool, &'static str, Option<(f64, f64)>) {
+    ) -> (bool, &'static str) {
         let now = Instant::now();
         if !self.fresh(source, &self.config.efficient_workers, now)
             || !self.fresh(destination, &self.config.capable_workers, now)
         {
-            return (false, "unknown_or_stale_signals", None);
+            return (false, "unknown_or_stale_signals");
         }
         if source
             .workers
             .values()
             .any(|w| w.waiting < self.config.min_waiting_requests)
         {
-            return (false, "small_workers_not_all_queued", None);
+            return (false, "small_workers_not_all_queued");
         }
         let running = destination
             .workers
@@ -122,36 +99,9 @@ impl InfraPolicy {
             })
             || destination.local_spillovers >= self.config.max_spillovers
         {
-            return (false, "protect_capable_capacity", None);
+            return (false, "protect_capable_capacity");
         }
-        // Use the fastest small-worker estimate: EPP may still find a better small worker.
-        let small_ms = source
-            .workers
-            .iter()
-            .map(|(id, worker)| {
-                let c = &self.config.efficient_workers[id];
-                worker.waiting.div_ceil(c.batch_size) as f64 * c.batch_time_ms + c.request_time_ms
-            })
-            .fold(f64::INFINITY, f64::min);
-        let large_ms = self
-            .config
-            .capable_workers
-            .values()
-            .copied()
-            .fold(0.0, f64::max);
-        if !small_ms.is_finite() {
-            return (false, "invalid_queue_estimate", None);
-        }
-        let move_request = small_ms > large_ms + self.config.min_saving_ms;
-        (
-            move_request,
-            if move_request {
-                "queue_cost_exceeds_capable_service"
-            } else {
-                "insufficient_predicted_saving"
-            },
-            Some((small_ms, large_ms)),
-        )
+        (true, "small_workers_queued")
     }
 
     /// Adjust a decision-only task result. Returns true only when the model changes.
@@ -184,9 +134,9 @@ impl InfraPolicy {
         if outcome.selected_model_id()? != efficient || efficient == capable {
             return Ok(false);
         }
-        let (spillover, reason, estimates) = match (signals.get(efficient), signals.get(capable)) {
+        let (spillover, reason) = match (signals.get(efficient), signals.get(capable)) {
             (Some(source), Some(destination)) => self.evaluate(source, destination),
-            _ => (false, "unknown_or_stale_signals", None),
+            _ => (false, "unknown_or_stale_signals"),
         };
         if let Some(metadata) = &mut outcome.metadata {
             let evidence = metadata
@@ -197,14 +147,12 @@ impl InfraPolicy {
                     "infra".into(),
                     serde_json::json!({
                         "task_model": efficient, "alternate_model": capable, "spillover": spillover,
-                        "reason": reason, "estimated_small_ms": estimates.map(|v| v.0),
-                        "estimated_capable_ms": estimates.map(|v| v.1),
+                        "reason": reason,
                     }),
                 );
             }
         }
         tracing::info!(task_model = %efficient, alternate_model = %capable, spillover, reason,
-            estimated_small_ms = estimates.map(|v| v.0), estimated_capable_ms = estimates.map(|v| v.1),
             "queue routing decision");
         if spillover {
             outcome.selected_model_ids.retain(|id| id != capable);
@@ -226,21 +174,8 @@ mod tests {
             min_waiting_requests: 4,
             max_capable_inflight: 2,
             max_spillovers: 2,
-            min_saving_ms: 500.0,
-            efficient_workers: ["a", "b"]
-                .into_iter()
-                .map(|id| {
-                    (
-                        id.into(),
-                        QueueCalibration {
-                            batch_size: 4,
-                            batch_time_ms: 2000.0,
-                            request_time_ms: 1000.0,
-                        },
-                    )
-                })
-                .collect(),
-            capable_workers: [("c".into(), 4000.0)].into(),
+            efficient_workers: ["a".into(), "b".into()].into(),
+            capable_workers: ["c".into()].into(),
         }
     }
 
@@ -256,7 +191,8 @@ mod tests {
             "missing",
             "stale",
             "future",
-            "no_saving",
+            "below_threshold",
+            "at_threshold",
             "capable_task",
         ] {
             let model = |ids: &[&str], waiting| ModelInfraSignals {
@@ -292,7 +228,8 @@ mod tests {
                 "future" => {
                     destination.workers.get_mut("c").unwrap().sampled_at += Duration::from_secs(2)
                 }
-                "no_saving" => source.workers.get_mut("b").unwrap().waiting = 4,
+                "below_threshold" => source.workers.get_mut("b").unwrap().waiting = 3,
+                "at_threshold" => source.workers.values_mut().for_each(|w| w.waiting = 4),
                 _ => {}
             }
             let signals = [
@@ -325,8 +262,8 @@ mod tests {
                 .unwrap()
                 .apply(&mut outcome, &models, &signals)
                 .unwrap();
-            assert_eq!(moved, case == "busy", "{case}");
-            let expected = if matches!(case, "busy" | "capable_task") {
+            assert_eq!(moved, matches!(case, "busy" | "at_threshold"), "{case}");
+            let expected = if matches!(case, "busy" | "at_threshold" | "capable_task") {
                 "large"
             } else {
                 "small"
@@ -340,11 +277,7 @@ mod tests {
             assert_eq!(outcome.request.llm_request, request.llm_request);
         }
         let mut invalid = config();
-        invalid
-            .efficient_workers
-            .get_mut("a")
-            .unwrap()
-            .batch_time_ms = f64::NAN;
+        invalid.min_waiting_requests = 0;
         assert!(InfraPolicy::new(invalid).is_err());
     }
 }

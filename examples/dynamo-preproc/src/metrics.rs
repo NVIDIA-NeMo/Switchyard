@@ -322,7 +322,7 @@ mod tests {
                 async move {
                     if load == 99 && worker == "small-b" { return "broken scrape".to_owned(); }
                     let waiting = if worker == "large" { 0 } else { load };
-                    format!("# TYPE vllm:num_requests_running gauge\nvllm:num_requests_running{{engine=\"0\"}} 0\n# TYPE vllm:num_requests_waiting gauge\nvllm:num_requests_waiting{{engine=\"0\"}} {waiting}\n")
+                    format!("# TYPE sglang:num_running_reqs gauge\nsglang:num_running_reqs{{engine=\"0\"}} 0\n# TYPE sglang:num_queue_reqs gauge\nsglang:num_queue_reqs{{engine=\"0\"}} {waiting}\n")
                 }
             }))
             .route("/v1/chat/completions", post(move || {
@@ -351,7 +351,7 @@ mod tests {
             ("small-b", "Qwen/Qwen3-0.6B"),
             ("large", "Qwen/Qwen3-1.7B"),
         ] {
-            config.push_str(&format!("[[workers]]\nid=\"{id}\"\nmodel=\"{model}\"\nurl=\"http://{address}/metrics/{id}\"\nbackend=\"vllm\"\nlabels={{engine=\"0\"}}\n"));
+            config.push_str(&format!("[[workers]]\nid=\"{id}\"\nmodel=\"{model}\"\nurl=\"http://{address}/metrics/{id}\"\nbackend=\"sglang\"\nlabels={{engine=\"0\"}}\n"));
         }
         let path = std::env::temp_dir().join(format!("switchyard-queues-{}.toml", address.port()));
         std::fs::write(&path, config).unwrap();

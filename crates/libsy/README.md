@@ -45,8 +45,8 @@ contracts come from `switchyard-protocol`.
 ## Queue-based infrastructure policy
 
 `InfraPolicy` applies after a tier router finishes. It can move an efficient-model
-choice to the capable model when every efficient worker has a queue and calibrated
-service times predict a saving. Missing or stale worker observations keep the task
+choice to the capable model when every efficient worker reaches the queue threshold
+and the capable model has spare capacity. Missing or stale worker observations keep the task
 choice. The policy does not change task affinity or choose a worker.
 
 The host periodically collects `switchyard_protocol::InfraSignals`, then calls
