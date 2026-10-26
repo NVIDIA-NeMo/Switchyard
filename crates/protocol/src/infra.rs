@@ -16,8 +16,6 @@ pub struct ModelInfraSignals {
     pub workers: BTreeMap<String, WorkerLoad>,
     /// All requests sent to this model that have not completed at this host.
     pub local_inflight: u64,
-    /// Subset of local requests moved from the efficient tier.
-    pub local_spillovers: u64,
 }
 
 /// Running and waiting gauges from one worker scrape.

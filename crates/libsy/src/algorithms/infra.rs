@@ -21,8 +21,6 @@ pub struct InfraPolicyConfig {
     pub min_waiting_requests: u64,
     /// Stop moving requests when observed running or locally tracked capable work reaches this limit.
     pub max_capable_inflight: u64,
-    /// Limit concurrent moved requests through the host.
-    pub max_spillovers: u64,
     /// Complete set of efficient worker IDs in the host's metrics inventory.
     pub efficient_workers: BTreeSet<String>,
     /// Complete set of capable worker IDs in the host's metrics inventory.
@@ -40,7 +38,6 @@ impl InfraPolicy {
         if config.max_signal_age_ms == 0
             || config.min_waiting_requests == 0
             || config.max_capable_inflight == 0
-            || config.max_spillovers == 0
             || config.efficient_workers.is_empty()
             || config.capable_workers.is_empty()
             || !config
@@ -97,7 +94,6 @@ impl InfraPolicy {
             || running.is_none_or(|n| {
                 n.max(destination.local_inflight) >= self.config.max_capable_inflight
             })
-            || destination.local_spillovers >= self.config.max_spillovers
         {
             return (false, "protect_capable_capacity");
         }
@@ -138,20 +134,6 @@ impl InfraPolicy {
             (Some(source), Some(destination)) => self.evaluate(source, destination),
             _ => (false, "unknown_or_stale_signals"),
         };
-        if let Some(metadata) = &mut outcome.metadata {
-            let evidence = metadata
-                .evidence
-                .get_or_insert_with(|| serde_json::json!({}));
-            if let Some(object) = evidence.as_object_mut() {
-                object.insert(
-                    "infra".into(),
-                    serde_json::json!({
-                        "task_model": efficient, "alternate_model": capable, "spillover": spillover,
-                        "reason": reason,
-                    }),
-                );
-            }
-        }
         tracing::info!(task_model = %efficient, alternate_model = %capable, spillover, reason,
             "queue routing decision");
         if spillover {
@@ -173,7 +155,6 @@ mod tests {
             max_signal_age_ms: 1000,
             min_waiting_requests: 4,
             max_capable_inflight: 2,
-            max_spillovers: 2,
             efficient_workers: ["a".into(), "b".into()].into(),
             capable_workers: ["c".into()].into(),
         }
@@ -187,7 +168,6 @@ mod tests {
             "capable_queued",
             "capable_running",
             "local_limit",
-            "spillover_limit",
             "missing",
             "stale",
             "future",
@@ -218,7 +198,6 @@ mod tests {
                 "capable_queued" => destination.workers.get_mut("c").unwrap().waiting = 1,
                 "capable_running" => destination.workers.get_mut("c").unwrap().running = 2,
                 "local_limit" => destination.local_inflight = 2,
-                "spillover_limit" => destination.local_spillovers = 2,
                 "missing" => {
                     source.workers.remove("a");
                 }

@@ -204,7 +204,6 @@ impl Metrics {
                 for (model, counts) in current.iter() {
                     let entry = next.entry(model.clone()).or_default();
                     entry.local_inflight = counts.local_inflight;
-                    entry.local_spillovers = counts.local_spillovers;
                 }
                 *current = next;
             }
@@ -218,15 +217,13 @@ impl Metrics {
         outcome: &mut switchyard_runner::RoutingOutcome,
     ) -> anyhow::Result<InFlight> {
         let mut signals = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        let spillover = route.apply_infra(outcome, &signals)?;
+        route.apply_infra(outcome, &signals)?;
         let model = outcome.selected_model_id()?.clone();
         let counts = signals.entry(model.clone()).or_default();
         counts.local_inflight += 1;
-        counts.local_spillovers += u64::from(spillover);
         Ok(InFlight {
             state: self.state.clone(),
             model,
-            spillover,
         })
     }
 }
@@ -242,7 +239,6 @@ impl Drop for Metrics {
 pub struct InFlight {
     state: Arc<Mutex<InfraSignals>>,
     model: ModelId,
-    spillover: bool,
 }
 
 impl Drop for InFlight {
@@ -250,7 +246,6 @@ impl Drop for InFlight {
         let mut signals = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(counts) = signals.get_mut(&self.model) {
             counts.local_inflight -= 1;
-            counts.local_spillovers -= u64::from(self.spillover);
         }
     }
 }
@@ -277,15 +272,10 @@ impl Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{
-        Json, Router,
-        extract::Path as HttpPath,
-        routing::{get, post},
-    };
-    use serde_json::json;
+    use axum::{Router, extract::Path as HttpPath, routing::get};
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use switchyard_protocol::Request;
-    use switchyard_runner::Runner;
+    use switchyard_protocol::{Request, text_request};
+    use switchyard_runner::{RoutingOutcome, Runner};
 
     #[test]
     fn scheduler_gauges_require_one_finite_nonnegative_integer_series() {
@@ -311,11 +301,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn metrics_refresh_and_atomic_tracking_preserve_task_affinity() {
+    async fn metrics_refresh_and_tracking_enforce_capacity() {
         let load = Arc::new(AtomicUsize::new(8));
-        let judge_calls = Arc::new(AtomicUsize::new(0));
         let serving_load = load.clone();
-        let calls = judge_calls.clone();
         let app = Router::new()
             .route("/metrics/{worker}", get(move |HttpPath(worker): HttpPath<String>| {
                 let load = serving_load.load(Ordering::SeqCst);
@@ -324,26 +312,26 @@ mod tests {
                     let waiting = if worker == "large" { 0 } else { load };
                     format!("# TYPE sglang:num_running_reqs gauge\nsglang:num_running_reqs{{engine=\"0\"}} 0\n# TYPE sglang:num_queue_reqs gauge\nsglang:num_queue_reqs{{engine=\"0\"}} {waiting}\n")
                 }
-            }))
-            .route("/v1/chat/completions", post(move || {
-                calls.fetch_add(1, Ordering::SeqCst);
-                async {
-                    Json(json!({"id":"judge", "object":"chat.completion", "created":0, "model":"Qwen/Qwen3-1.7B",
-                        "choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":
-                            json!({"crux":"bounded task","primary_rule":"SUP-1","capability_boundary":"supported","p_solve":0.99}).to_string()
-                        }}]}))
-                }
             }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        let routes = include_str!("../config/task-classifier.toml").replace(
-            "http://qwen-large-frontend:8000/v1",
-            &format!("http://{address}/v1"),
+        let routes = include_str!("../config/task-classifier.toml");
+        let infra = routes.split_once("[routes.task.infra]").unwrap().1;
+        let stage = format!(
+            "{}\n[routes.stage.infra]\n{infra}",
+            include_str!("../config/routes.toml")
         );
-        let runner = Runner::from_toml(&routes).unwrap();
+        assert!(
+            Runner::from_toml(&stage)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("infra requires capability llm_classifier")
+        );
+        let runner = Runner::from_toml(routes).unwrap();
         let route = runner.route("auto").unwrap();
         let mut config = "poll_interval_ms=100\ntimeout_ms=80\nmax_concurrent=4\n".to_owned();
         for (id, model) in [
@@ -357,11 +345,6 @@ mod tests {
         std::fs::write(&path, config).unwrap();
         let metrics = Metrics::load(&path).unwrap();
         std::fs::remove_file(path).unwrap();
-        let body =
-            json!({"model":"auto","messages":[{"role":"user","content":"hello"}],"stream":true});
-        let mut headers = http::HeaderMap::new();
-        headers.insert("x-switchyard-session-id", "task".parse().unwrap());
-        let request: Request = crate::request::decode(&body, &headers).unwrap();
         for waiting in [8, 0, 99] {
             load.store(waiting, Ordering::SeqCst);
             tokio::time::timeout(Duration::from_secs(3), async {
@@ -388,16 +371,19 @@ mod tests {
             })
             .await
             .unwrap();
-            let mut outcomes = Vec::new();
-            for _ in 0..8 {
-                outcomes.push(route.decide(request.clone()).await.unwrap());
-            }
             let results = std::thread::scope(|scope| {
-                let handles: Vec<_> = outcomes
-                    .into_iter()
-                    .map(|mut outcome| {
+                let handles: Vec<_> = (0..8)
+                    .map(|_| {
                         let metrics = &metrics;
                         scope.spawn(move || {
+                            let mut outcome = RoutingOutcome::route_to(
+                                "Qwen/Qwen3-0.6B".into(),
+                                vec![],
+                                Request {
+                                    llm_request: text_request(None, "hello"),
+                                    ..Default::default()
+                                },
+                            );
                             let guard = metrics.track(route, &mut outcome).unwrap();
                             (outcome.selected_model_id().unwrap().to_string(), guard)
                         })
@@ -415,13 +401,8 @@ mod tests {
             assert_eq!(moved, if waiting == 8 { 2 } else { 0 });
             drop(results);
             let state = metrics.state.lock().unwrap();
-            assert!(
-                state
-                    .values()
-                    .all(|v| v.local_inflight == 0 && v.local_spillovers == 0)
-            );
+            assert!(state.values().all(|v| v.local_inflight == 0));
         }
-        assert_eq!(judge_calls.load(Ordering::SeqCst), 1);
         server.abort();
     }
 }

@@ -64,14 +64,11 @@ on restart. The default StageRouter configuration does not use infrastructure si
 
 ## Task classification and queue-based routing
 
-[task-classifier.toml](config/task-classifier.toml) asks a judge whether the smaller
-model can handle the task and retains that classification for the session. The judge
-endpoint must bypass PreProc to avoid a routing loop. Replace the example URLs and
-model IDs with your deployed services.
-
-The optional `infra` table lets the larger model help when **all small-model workers
-have queues**. It uses backend `/metrics`; no EPP probe endpoint or per-request
-preprocessing is needed. EPP still selects the worker.
+[task-classifier.toml](config/task-classifier.toml) classifies the task once per session.
+Its optional `infra` table lets the larger model help when every small worker reaches
+`min_waiting_requests`. The larger model must have no queued requests and remain below
+`max_capable_inflight`, using the greater of running and locally tracked requests.
+EPP still selects the worker. This rule does not estimate waiting time or cache reuse.
 
 Mount the routing file and [metrics.toml](config/metrics.toml), then set:
 
@@ -80,38 +77,23 @@ ROUTES_CONFIG=/etc/switchyard/task-classifier.toml
 METRICS_CONFIG=/etc/switchyard/metrics.toml
 ```
 
-Configure one direct metrics endpoint per independently scheduled worker. Use labels
-to select exactly one series for that worker/rank. Do not use a load-balanced Service
-URL that returns an arbitrary replica. Include every worker for each model and keep
-these IDs consistent with the routing file's worker lists. This version uses
-an explicit worker list; scaling or replacing workers requires updating that list.
+Replace the model IDs and URLs with your deployed services. The classifier's judge
+endpoint must bypass PreProc to avoid a routing loop. Configure a direct `/metrics`
+endpoint for every worker, with labels selecting one independently scheduled engine.
+Keep the worker IDs consistent in both files and update them when workers change.
 
-The example scrapes every 500 ms with a 250 ms timeout and bounded concurrency.
-`backend = "vllm"` reads `vllm:num_requests_running` and `vllm:num_requests_waiting`;
-`backend = "sglang"` reads `sglang:num_running_reqs` and `sglang:num_queue_reqs`.
-The sample uses SGLang. Set `DYN_SYSTEM_PORT=8081` and `--enable-metrics` on each
-Dynamo SGLang worker, then inspect `/metrics` and select its worker/rank labels.
-See [Dynamo's engine metrics documentation](https://docs.nvidia.com/dynamo/reference/observability/metrics-comparison).
+The sample uses SGLang: enable `DYN_SYSTEM_PORT=8081` and `--enable-metrics` on each
+worker. It reads `sglang:num_running_reqs` and `sglang:num_queue_reqs`.
+For vLLM, set `backend = "vllm"`; it reads `vllm:num_requests_running` and
+`vllm:num_requests_waiting`. See [Dynamo's metrics documentation](https://docs.nvidia.com/dynamo/reference/observability/metrics-comparison).
 
-It moves an eligible request only when every small worker has at least
-`min_waiting_requests` queued and no capable worker has a queue. This is a congestion
-rule; queue counts do not predict how long requests will take.
+Collection runs in the background. Missing, ambiguous, invalid or stale metrics
+preserve the classifier's decision. Removing `METRICS_CONFIG` or the `infra` table
+also leaves task routing unchanged. StageRouter does not use this adjustment.
 
-`max_capable_inflight` limits moves using the larger of observed running requests and
-all locally tracked capable-model requests. `max_spillovers` separately limits moved
-requests. PreProc checks and increments these counts atomically, then holds each count
-until the response finishes, times out or is cancelled. Requests whose tasks require
-the capable model still go there. A temporary move does not change task classification.
-
-Missing, ambiguous, invalid or stale metrics keep the task decision. Collection runs
-in the background, so routing never waits for a scrape. Without `METRICS_CONFIG`, or
-without the `infra` table, routing stays task-only. The same table also works with
-`stage_router` and `auto`; delegated sub-agent requests skip the adjustment.
-
-Run one PreProc replica for the local limits and session state. These limits only
-coordinate requests passing through that process. Metrics can lag external traffic,
-and the policy does not reserve worker capacity. Logs record the original task model,
-the selected alternate model and the adjustment reason. No request/session IDs are metric labels.
+Use one PreProc replica. The capacity check and local increment are atomic; counts
+are released when responses finish or are cancelled. Metrics can lag other traffic,
+and local counts do not reserve backend capacity. Logs record the routing reason.
 
 ## Concurrency and timeouts
 

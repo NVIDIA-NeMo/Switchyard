@@ -307,17 +307,12 @@ impl DeploymentConfig {
                 .build_with_runtime_models(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             let infra = if let Some(infra) = &config.infra {
-                let supported = match &config.algorithm {
-                    AlgorithmSpec::StageRouter { .. } | AlgorithmSpec::Auto { .. } => true,
-                    AlgorithmSpec::LlmClassifier { config } => {
-                        matches!(config.mode, None | Some(crate::ClassifierMode::Capability))
-                            && config.escalation.is_none()
-                    }
-                    _ => false,
-                };
-                if !supported {
+                if !matches!(&config.algorithm, AlgorithmSpec::LlmClassifier { config }
+                    if matches!(config.mode, None | Some(crate::ClassifierMode::Capability))
+                        && config.escalation.is_none())
+                {
                     return Err(RunnerError::configuration(format!(
-                        "route {route_name}: infra supports stage_router, auto or capability llm_classifier"
+                        "route {route_name}: infra requires capability llm_classifier without escalation"
                     )));
                 }
                 Some(libsy::InfraPolicy::new(infra.clone()).map_err(|error| {

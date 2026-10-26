@@ -190,8 +190,7 @@ Every route takes the common keys below, plus the keys for its type.
 
 ### Optional infrastructure check
 
-A `stage_router`, `auto`, or capability `llm_classifier` route without escalation may
-include `[routes.<name>.infra]`. Both tiers must have one model; each model may have
+A capability `llm_classifier` route without escalation may include `[routes.<name>.infra]`. Both tiers must have one model; each model may have
 multiple workers. A host applies the policy explicitly with `Route::apply_infra`
 after `Route::decide`, using periodically collected worker metrics and local in-flight
 counts. Plain `decide` and `execute` retain task routing. Sub-agent routing is unchanged.
@@ -201,7 +200,6 @@ counts. Plain `decide` and `execute` retain task routing. Sub-agent routing is u
 max_signal_age_ms = 1000
 min_waiting_requests = 4
 max_capable_inflight = 2
-max_spillovers = 2
 efficient_workers = ["small-a", "small-b"]
 capable_workers = ["large"]
 ```

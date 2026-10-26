@@ -40,6 +40,5 @@ max_output_tokens = 256
 max_signal_age_ms = 1000
 min_waiting_requests = 4
 max_capable_inflight = 2
-max_spillovers = 2
 efficient_workers = ["small-a", "small-b"]
 capable_workers = ["large"]
