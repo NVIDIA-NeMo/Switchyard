@@ -540,10 +540,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#read-a-request" class="md-nav__link">
+  <a href="#protocol-and-api-mappings" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Read a request
+        Protocol and API mappings
       
     </span>
   </a>
@@ -551,41 +551,13 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#map-the-request-to-a-provider-api" class="md-nav__link">
+  <a href="#read-a-request" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Map the request to a provider API
+        Read a request
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Map the request to a provider API">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#conversation-and-tools" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Conversation and tools
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#generation-settings" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Generation settings
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -1171,6 +1143,55 @@
   
   
   
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_1" id="__nav_7_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Algorithms
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Algorithms
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
     <li class="md-nav__item">
       <a href="../../routing_algorithms/overview/" class="md-nav__link">
         
@@ -1468,6 +1489,14 @@
   
 
       </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
     </li>
   
 
@@ -1938,10 +1967,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#read-a-request" class="md-nav__link">
+  <a href="#protocol-and-api-mappings" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Read a request
+        Protocol and API mappings
       
     </span>
   </a>
@@ -1949,41 +1978,13 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#map-the-request-to-a-provider-api" class="md-nav__link">
+  <a href="#read-a-request" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Map the request to a provider API
+        Read a request
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="Map the request to a provider API">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#conversation-and-tools" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Conversation and tools
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#generation-settings" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Generation settings
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -2057,88 +2058,128 @@ generation settings. Switchyard represents these in
 <a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html"><code>LlmRequest</code></a>.
 The same type works whether the next call goes to Anthropic Messages, OpenAI
 Responses, or Chat Completions.</p>
-<h2 id="read-a-request">Read a request<a class="headerlink" href="#read-a-request" title="Permanent link">&para;</a></h2>
+<h2 id="protocol-and-api-mappings">Protocol and API mappings<a class="headerlink" href="#protocol-and-api-mappings" title="Permanent link">&para;</a></h2>
 <p><code>LlmRequest</code> separates instructions from conversation turns. A turn is a
 <code>Message</code> with a <code>Role</code> and an ordered list of <code>ContentBlock</code> values. That list
-can mix text, reasoning, media, tool calls, and tool results.
-Select a protocol field or type in the tables to open its crate reference.</p>
+can mix text, reasoning, media, tool calls, and tool results. Responses use
+<code>LlmResponse</code> for a buffered answer or a stream of events.</p>
+<p>The table combines each field's meaning with the built-in codecs' API mappings.
+Select a field or type to open its crate reference for the full definition.
+See the provider references for
+<a href="https://platform.claude.com/docs/en/api/messages/create">Anthropic Messages</a>,
+<a href="https://developers.openai.com/api/reference/resources/responses/methods/create">OpenAI Responses</a>,
+and <a href="https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create">Chat Completions</a>
+for their complete wire contracts.</p>
 <table>
 <thead>
 <tr>
-<th>Field</th>
-<th>Rust type</th>
+<th>Protocol field and type</th>
 <th>Meaning</th>
+<th>Anthropic Messages</th>
+<th>OpenAI Responses</th>
+<th>Chat Completions</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.model"><code>LlmRequest.model</code></a></td>
-<td><code>Option&lt;String&gt;</code></td>
-<td>The addressed model. A host can replace it with the selected target.</td>
+<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.model"><code>LlmRequest.model: Option&lt;String&gt;</code></a></td>
+<td>Model addressed by the request.</td>
+<td><code>model</code></td>
+<td><code>model</code></td>
+<td><code>model</code></td>
 </tr>
 <tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.instructions"><code>LlmRequest.instructions</code></a></td>
-<td><a href="../../rust/switchyard_protocol/llm/struct.InstructionBlock.html"><code>Vec&lt;InstructionBlock&gt;</code></a></td>
-<td>System and developer instructions, each with a role and content blocks.</td>
+<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.instructions"><code>LlmRequest.instructions</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.InstructionBlock.html"><code>Vec&lt;InstructionBlock&gt;</code></a></td>
+<td>System and developer instructions.</td>
+<td>Top-level <code>system</code>; no separate developer role</td>
+<td><code>instructions</code> and system/developer messages in <code>input</code></td>
+<td>System/developer messages in <code>messages</code></td>
 </tr>
 <tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.messages"><code>LlmRequest.messages</code></a></td>
-<td><a href="../../rust/switchyard_protocol/llm/struct.Message.html"><code>Vec&lt;Message&gt;</code></a></td>
-<td>Ordered conversation turns.</td>
+<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.messages"><code>LlmRequest.messages</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.Message.html"><code>Vec&lt;Message&gt;</code></a></td>
+<td>Ordered turns containing text, media, or tool activity.</td>
+<td><code>messages[].content</code>, including <code>tool_use</code> and <code>tool_result</code></td>
+<td>Messages, <code>function_call</code>, and <code>function_call_output</code> in <code>input</code></td>
+<td><code>messages[]</code>, assistant <code>tool_calls</code>, and tool messages</td>
 </tr>
 <tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.Message.html#structfield.role"><code>Message.role</code></a></td>
-<td><a href="../../rust/switchyard_protocol/llm/enum.Role.html"><code>Role</code></a></td>
-<td>Who produced the message.</td>
+<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.tools"><code>LlmRequest.tools</code></a>: <a href="../../rust/switchyard_protocol/llm/enum.Tool.html"><code>Vec&lt;Tool&gt;</code></a></td>
+<td>Tools available to the model; function definitions contain an argument schema.</td>
+<td><code>tools[]</code>, with <code>input_schema</code> for functions</td>
+<td><code>tools[]</code>, with <code>parameters</code> for functions</td>
+<td><code>tools[].function</code>, with <code>parameters</code></td>
 </tr>
 <tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.Message.html#structfield.content"><code>Message.content</code></a></td>
-<td><a href="../../rust/switchyard_protocol/llm/enum.ContentBlock.html"><code>Vec&lt;ContentBlock&gt;</code></a></td>
-<td>Ordered text, reasoning, media, tool calls, tool results, MCP activity, refusals, or unknown provider blocks.</td>
+<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.tool_choice"><code>LlmRequest.tool_choice</code></a>: <a href="../../rust/switchyard_protocol/llm/enum.ToolChoice.html"><code>Option&lt;ToolChoice&gt;</code></a></td>
+<td>Whether the model may, must, or must not use tools.</td>
+<td><code>tool_choice</code></td>
+<td><code>tool_choice</code></td>
+<td><code>tool_choice</code></td>
 </tr>
 <tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.tools"><code>LlmRequest.tools</code></a></td>
-<td><a href="../../rust/switchyard_protocol/llm/enum.Tool.html"><code>Vec&lt;Tool&gt;</code></a></td>
-<td>Available function tools, MCP servers, or provider tools.</td>
+<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.sampling"><code>LlmRequest.sampling</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.SamplingParams.html"><code>SamplingParams</code></a></td>
+<td>Sampling controls, where supported.</td>
+<td><code>temperature</code>, <code>top_p</code>, <code>top_k</code></td>
+<td><code>temperature</code>, <code>top_p</code>; no standard <code>top_k</code></td>
+<td><code>temperature</code>, <code>top_p</code>; no standard <code>top_k</code></td>
 </tr>
 <tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.tool_choice"><code>LlmRequest.tool_choice</code></a></td>
-<td><a href="../../rust/switchyard_protocol/llm/enum.ToolChoice.html"><code>Option&lt;ToolChoice&gt;</code></a></td>
-<td>How the model may select tools.</td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.sampling"><code>LlmRequest.sampling</code></a></td>
-<td><a href="../../rust/switchyard_protocol/llm/struct.SamplingParams.html"><code>SamplingParams</code></a></td>
-<td>Sampling settings such as temperature.</td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.output"><code>LlmRequest.output</code></a></td>
-<td><a href="../../rust/switchyard_protocol/llm/struct.OutputParams.html"><code>OutputParams</code></a></td>
+<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.output"><code>LlmRequest.output</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.OutputParams.html"><code>OutputParams</code></a></td>
 <td>Output budget, format, and schema enforcement.</td>
+<td><code>max_tokens</code>, <code>output_config.format</code></td>
+<td><code>max_output_tokens</code>, <code>text.format</code></td>
+<td><code>max_completion_tokens</code> or <code>max_tokens</code>, <code>response_format</code></td>
 </tr>
 <tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.reasoning"><code>LlmRequest.reasoning</code></a></td>
-<td><a href="../../rust/switchyard_protocol/llm/struct.ReasoningParams.html"><code>ReasoningParams</code></a></td>
+<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.reasoning"><code>LlmRequest.reasoning</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.ReasoningParams.html"><code>ReasoningParams</code></a></td>
 <td>Reasoning effort and provider-specific controls.</td>
+<td><code>thinking</code>, <code>output_config.effort</code></td>
+<td><code>reasoning</code></td>
+<td><code>reasoning_effort</code>; other controls are provider-specific</td>
 </tr>
 <tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.stream"><code>LlmRequest.stream</code></a></td>
-<td><code>bool</code></td>
-<td>Whether a streamed response is requested.</td>
+<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.stream"><code>LlmRequest.stream: bool</code></a>; <a href="../../rust/switchyard_protocol/stream/enum.LlmResponse.html#variant.Stream"><code>LlmResponse::Stream</code></a></td>
+<td>Request and receive incremental output.</td>
+<td><code>stream</code>; <code>message_*</code> and <code>content_block_*</code> events</td>
+<td><code>stream</code>; <code>response.*</code> events</td>
+<td><code>stream</code>; <code>chat.completion.chunk</code> objects</td>
 </tr>
 <tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.extensions"><code>LlmRequest.extensions</code></a></td>
-<td><a href="../../rust/switchyard_protocol/llm/struct.ProviderExtensions.html"><code>ProviderExtensions</code></a></td>
-<td>Fields without neutral equivalents.</td>
+<td><a href="../../rust/switchyard_protocol/llm/struct.AggLlmResponse.html#structfield.outputs"><code>AggLlmResponse.outputs</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.ResponseOutput.html"><code>Vec&lt;ResponseOutput&gt;</code></a></td>
+<td>Completed output content and stop reasons.</td>
+<td>Assistant <code>content</code> and <code>stop_reason</code></td>
+<td><code>output</code>, <code>status</code>, and <code>incomplete_details</code></td>
+<td><code>choices[].message</code> and <code>finish_reason</code></td>
 </tr>
 <tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.preservation"><code>LlmRequest.preservation</code></a></td>
-<td><a href="../../rust/switchyard_protocol/llm/struct.PreservationMetadata.html"><code>PreservationMetadata</code></a></td>
-<td>Original payloads retained for round trips.</td>
+<td><a href="../../rust/switchyard_protocol/llm/struct.AggLlmResponse.html#structfield.usage"><code>AggLlmResponse.usage</code></a>: <a href="../../rust/switchyard_protocol/llm/struct.Usage.html"><code>Usage</code></a></td>
+<td>Available token counts, including cache and reasoning detail.</td>
+<td>Input/output and separate cache counts</td>
+<td>Input/output totals and token details</td>
+<td>Prompt/completion totals and token details</td>
+</tr>
+<tr>
+<td><a href="../../rust/switchyard_protocol/llm/struct.ProviderExtensions.html"><code>extensions: ProviderExtensions</code></a>; <a href="../../rust/switchyard_protocol/llm/struct.PreservationMetadata.html"><code>preservation: PreservationMetadata</code></a></td>
+<td>Provider-only fields and original JSON, retained on requests and buffered responses.</td>
+<td>Source fields and original body</td>
+<td>Source fields and original body</td>
+<td>Source fields and original body</td>
 </tr>
 </tbody>
 </table>
-<p>For example, this constructs the neutral request passed to an algorithm. It
+<p><code>Message.content</code> holds
+<a href="../../rust/switchyard_protocol/llm/enum.ContentBlock.html"><code>ContentBlock</code></a>
+values. A
+<a href="../../rust/switchyard_protocol/llm/struct.ToolCall.html"><code>ToolCall</code></a>
+and its
+<a href="../../rust/switchyard_protocol/llm/struct.ToolResult.html"><code>ToolResult</code></a>
+stay paired by ID. Tool arguments are JSON values in the protocol; the codecs
+handle the JSON-encoded strings used by the OpenAI formats.</p>
+<p>Support varies by API and model. For example, Anthropic has no separate developer
+role, while the OpenAI formats have no dedicated <code>ToolResult.is_error</code> field.
+Preserving a field does not give another API an equivalent feature.</p>
+<h2 id="read-a-request">Read a request<a class="headerlink" href="#read-a-request" title="Permanent link">&para;</a></h2>
+<p>This example constructs the neutral request passed to an algorithm. It
 uses the <a href="../../getting_started/#install">quickstart's dependencies</a>.</p>
 <div class="language-rust highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_protocol</span><span class="p">::{</span><span class="n">ContentBlock</span><span class="p">,</span><span class="w"> </span><span class="n">InstructionBlock</span><span class="p">,</span><span class="w"> </span><span class="n">LlmRequest</span><span class="p">,</span><span class="w"> </span><span class="n">Message</span><span class="p">,</span><span class="w"> </span><span class="n">Request</span><span class="p">,</span><span class="w"> </span><span class="n">Role</span><span class="p">};</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
@@ -2157,240 +2198,14 @@ uses the <a href="../../getting_started/#install">quickstart's dependencies</a>.
 <p><code>Request</code> is the host-facing envelope. It adds optional correlation metadata
 and <code>raw_request</code>, a host-owned JSON body. <strong>Codecs use
 <code>LlmRequest::preservation</code> for replay</strong>, not <code>Request::raw_request</code>.</p>
-<h2 id="map-the-request-to-a-provider-api">Map the request to a provider API<a class="headerlink" href="#map-the-request-to-a-provider-api" title="Permanent link">&para;</a></h2>
-<p>These are the main mappings in the built-in codecs. Each column names fields
-or items in that API; it does not imply every provider or model supports every
-feature. Fields without a type prefix below belong to <code>LlmRequest</code>.
-For the full wire contracts, see
-<a href="https://platform.claude.com/docs/en/api/messages/create">Anthropic Messages</a>,
-<a href="https://developers.openai.com/api/reference/resources/responses/methods/create">OpenAI Responses</a>,
-and <a href="https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create">Chat Completions</a>.</p>
-<h3 id="conversation-and-tools">Conversation and tools<a class="headerlink" href="#conversation-and-tools" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Switchyard field and type</th>
-<th>Anthropic Messages</th>
-<th>OpenAI Responses</th>
-<th>Chat Completions</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.model"><code>model: Option&lt;String&gt;</code></a></td>
-<td><code>model</code></td>
-<td><code>model</code></td>
-<td><code>model</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.instructions"><code>instructions: Vec&lt;InstructionBlock&gt;</code></a></td>
-<td>Top-level <code>system</code>; no separate developer role</td>
-<td>Top-level <code>instructions</code> and system/developer messages in <code>input</code></td>
-<td>System/developer messages in <code>messages</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.messages"><code>messages: Vec&lt;Message&gt;</code></a></td>
-<td><code>messages[]</code>, with text in <code>content</code> blocks</td>
-<td>Messages in <code>input</code>, with text strings or <code>input_text</code> / <code>output_text</code> content</td>
-<td><code>messages[]</code>, with text or content parts in <code>content</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.tools"><code>tools: Vec&lt;Tool&gt;</code></a> (function tools)</td>
-<td><code>tools[]</code>: <code>name</code>, <code>description</code>, <code>input_schema</code></td>
-<td>Function entries in <code>tools[]</code>: <code>name</code>, <code>description</code>, <code>parameters</code></td>
-<td><code>tools[].function</code>: <code>name</code>, <code>description</code>, <code>parameters</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.tool_choice"><code>tool_choice: Option&lt;ToolChoice&gt;</code></a></td>
-<td><code>auto</code>, <code>any</code>, <code>none</code>, or a named <code>tool</code></td>
-<td><code>auto</code>, <code>required</code>, <code>none</code>, or a named <code>function</code></td>
-<td><code>auto</code>, <code>required</code>, <code>none</code>, or a named <code>function</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.ToolCall.html#structfield.id"><code>ToolCall.id: String</code></a></td>
-<td><code>tool_use.id</code></td>
-<td><code>function_call.call_id</code></td>
-<td><code>tool_calls[].id</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.ToolCall.html#structfield.name"><code>ToolCall.name: String</code></a></td>
-<td><code>tool_use.name</code></td>
-<td><code>function_call.name</code></td>
-<td><code>tool_calls[].function.name</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.ToolCall.html#structfield.arguments"><code>ToolCall.arguments: Value</code></a></td>
-<td><code>tool_use.input</code></td>
-<td><code>function_call.arguments</code></td>
-<td><code>tool_calls[].function.arguments</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.ToolResult.html#structfield.tool_call_id"><code>ToolResult.tool_call_id: String</code></a></td>
-<td><code>tool_result.tool_use_id</code></td>
-<td><code>function_call_output.call_id</code></td>
-<td>Tool message <code>tool_call_id</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.ToolResult.html#structfield.content"><code>ToolResult.content: Vec&lt;ContentBlock&gt;</code></a></td>
-<td><code>tool_result.content</code></td>
-<td><code>function_call_output.output</code></td>
-<td>Tool message <code>content</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.ToolResult.html#structfield.is_error"><code>ToolResult.is_error: Option&lt;bool&gt;</code></a></td>
-<td><code>tool_result.is_error</code></td>
-<td>No dedicated error flag</td>
-<td>No standard error flag</td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/enum.ContentBlock.html#variant.Image"><code>ContentBlock::Image { source }</code></a>, <a href="../../rust/switchyard_protocol/llm/enum.ImageSource.html"><code>source: ImageSource</code></a></td>
-<td><code>image.source</code></td>
-<td><code>input_image</code></td>
-<td><code>image_url</code> content part</td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/enum.ContentBlock.html#variant.File"><code>ContentBlock::File { source }</code></a>, <a href="../../rust/switchyard_protocol/llm/enum.FileSource.html"><code>source: FileSource</code></a></td>
-<td><code>document.source</code></td>
-<td><code>input_file</code></td>
-<td><code>file</code> content part</td>
-</tr>
-</tbody>
-</table>
-<p>Tool arguments are JSON values in the protocol. The OpenAI formats commonly carry
-function arguments as JSON-encoded strings; the codecs handle that encoding.
-Tool calls and their results stay paired by ID.</p>
-<h3 id="generation-settings">Generation settings<a class="headerlink" href="#generation-settings" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Switchyard field and type</th>
-<th>Anthropic Messages</th>
-<th>OpenAI Responses</th>
-<th>Chat Completions</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.SamplingParams.html#structfield.temperature"><code>sampling.temperature: Option&lt;f64&gt;</code></a></td>
-<td><code>temperature</code></td>
-<td><code>temperature</code></td>
-<td><code>temperature</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.SamplingParams.html#structfield.top_p"><code>sampling.top_p: Option&lt;f64&gt;</code></a></td>
-<td><code>top_p</code></td>
-<td><code>top_p</code></td>
-<td><code>top_p</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.SamplingParams.html#structfield.top_k"><code>sampling.top_k: Option&lt;i64&gt;</code></a></td>
-<td><code>top_k</code></td>
-<td>No standard field</td>
-<td>No standard field</td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.OutputParams.html#structfield.max_output_tokens"><code>output.max_output_tokens: Option&lt;u64&gt;</code></a></td>
-<td><code>max_tokens</code></td>
-<td><code>max_output_tokens</code></td>
-<td><code>max_completion_tokens</code>, or legacy <code>max_tokens</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.OutputParams.html#structfield.response_format"><code>output.response_format: Option&lt;Value&gt;</code></a></td>
-<td><code>output_config.format</code></td>
-<td><code>text.format</code></td>
-<td><code>response_format</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.ReasoningParams.html#structfield.effort"><code>reasoning.effort: Option&lt;String&gt;</code></a></td>
-<td><code>output_config.effort</code></td>
-<td><a href="../../rust/switchyard_protocol/llm/struct.ReasoningParams.html#structfield.effort"><code>reasoning.effort</code></a></td>
-<td><code>reasoning_effort</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.ReasoningParams.html#structfield.raw"><code>reasoning.raw: Option&lt;Value&gt;</code></a></td>
-<td><code>thinking</code> controls</td>
-<td>Provider <code>reasoning</code> object</td>
-<td>No standard reasoning-control object</td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.stream"><code>stream: bool</code></a></td>
-<td><code>stream</code></td>
-<td><code>stream</code></td>
-<td><code>stream</code></td>
-</tr>
-</tbody>
-</table>
-<p><strong>A missing feature is not just a different field name.</strong> For example,
-<code>ToolResult.is_error</code> has no dedicated field in the OpenAI formats, and their
-standard sampling settings have no <code>top_k</code>. Anthropic's <code>system</code> field cannot
-express separate system and developer authority. A provider-compatible server
-may offer extra fields, but those extensions are specific to that server.</p>
 <h2 id="read-a-response">Read a response<a class="headerlink" href="#read-a-response" title="Permanent link">&para;</a></h2>
 <p>The host returns a <code>Response</code> envelope containing
 <a href="../../rust/switchyard_protocol/stream/enum.LlmResponse.html"><code>LlmResponse</code></a>.
 <code>LlmResponse::Agg</code> holds a completed <code>AggLlmResponse</code>. <code>LlmResponse::Stream</code>
-holds a single-consumption stream of <code>LlmResponseStreamEvent</code> values.</p>
-<table>
-<thead>
-<tr>
-<th>Switchyard field and type</th>
-<th>Anthropic Messages</th>
-<th>OpenAI Responses</th>
-<th>Chat Completions</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.AggLlmResponse.html#structfield.id"><code>AggLlmResponse.id: Option&lt;String&gt;</code></a></td>
-<td><code>id</code></td>
-<td><code>id</code></td>
-<td><code>id</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.AggLlmResponse.html#structfield.model"><code>AggLlmResponse.model: Option&lt;String&gt;</code></a></td>
-<td><code>model</code></td>
-<td><code>model</code></td>
-<td><code>model</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.AggLlmResponse.html#structfield.outputs"><code>AggLlmResponse.outputs: Vec&lt;ResponseOutput&gt;</code></a></td>
-<td>Assistant <code>content</code> blocks</td>
-<td>Items in <code>output</code></td>
-<td><code>choices[].message</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.ResponseOutput.html#structfield.content"><code>ResponseOutput.content: Vec&lt;ContentBlock&gt;</code></a></td>
-<td><code>text</code>, <code>tool_use</code>, and other blocks</td>
-<td><code>output_text</code> content, <code>function_call</code> items, and other output</td>
-<td>Message <code>content</code> and <code>tool_calls</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/enum.ContentBlock.html#variant.Reasoning"><code>ContentBlock::Reasoning { text, signature, details }</code></a>: <code>String</code>, <code>Option&lt;String&gt;</code>, <code>Vec&lt;Value&gt;</code></td>
-<td><code>thinking</code>, signature, and opaque reasoning data</td>
-<td>Reasoning summaries and encrypted content</td>
-<td>Provider-specific reasoning fields; no standard equivalent for all reasoning data</td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.ResponseOutput.html#structfield.stop_reason"><code>ResponseOutput.stop_reason: Option&lt;StopReason&gt;</code></a></td>
-<td><code>stop_reason</code></td>
-<td>Response <code>status</code> and <code>incomplete_details</code></td>
-<td><code>choices[].finish_reason</code></td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/llm/struct.AggLlmResponse.html#structfield.usage"><code>AggLlmResponse.usage: Usage</code></a></td>
-<td>Input/output counts and separate cache counts</td>
-<td>Input/output totals and token details</td>
-<td>Prompt/completion totals and token details</td>
-</tr>
-<tr>
-<td><a href="../../rust/switchyard_protocol/stream/enum.LlmResponse.html#variant.Stream"><code>LlmResponse::Stream(LlmResponseStream)</code></a>; items are <a href="../../rust/switchyard_protocol/stream/struct.LlmResponseStreamEvent.html"><code>LlmResponseStreamEvent</code></a></td>
-<td><code>message_*</code> and <code>content_block_*</code> events</td>
-<td><code>response.*</code> events</td>
-<td><code>chat.completion.chunk</code> objects</td>
-</tr>
-</tbody>
-</table>
-<p>Each stream event exposes neutral chunks through <code>normalized()</code>. Chunks describe
+holds a single-consumption stream of
+<a href="../../rust/switchyard_protocol/stream/struct.LlmResponseStreamEvent.html"><code>LlmResponseStreamEvent</code></a>
+values.
+Each stream event exposes neutral chunks through <code>normalized()</code>. Chunks describe
 message starts, text deltas, tool arguments, usage, and completion. An event may
 also retain parsed provider JSON for same-format replay.</p>
 <p><code>Usage::input_tokens</code> counts <strong>non-cached input</strong>. The codecs separate cache-read
@@ -2416,8 +2231,8 @@ still support the requested features.</p>
 <div class="admonition warning">
 <p class="admonition-title">Encoding an edited request</p>
 <p>A preserved same-format body takes precedence over normalized fields. If you
-change the protocol fields and want those edits encoded, remove that format's entry from
-<code>preservation.requests</code>, or encode with <code>PreservationPolicy::Disabled</code>.
+change the protocol fields and want those edits encoded, remove that format's
+entry from <code>preservation.requests</code>, or encode with <code>PreservationPolicy::Disabled</code>.
 The same rule applies to <code>preservation.responses</code> for buffered responses.</p>
 </div>
 <p>For streams, pass the original events through when replay matters.
@@ -2425,7 +2240,7 @@ The same rule applies to <code>preservation.responses</code> for buffered respon
 Aggregating a stream retains its normalized content, not its original event
 sequence or all provider-only data.</p>
 <h2 id="use-the-translation-crate">Use the translation crate<a class="headerlink" href="#use-the-translation-crate" title="Permanent link">&para;</a></h2>
-<p><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e2c9471e5479f6d703646208e6f02fcdc2f637d6/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a> supplies
+<p><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/65508f1a2ee1c4ba04e11843346e7e05597e1adf/crates/switchyard-translation/README.md"><code>switchyard-translation</code></a> supplies
 the LLM codecs without making network calls. Add it at the same API revision as
 libsy and <code>switchyard-protocol</code>, following the
 <a href="../../getting_started/#use-libsy-with-your-client">quickstart's translation setup</a>.</p>
@@ -2471,7 +2286,7 @@ is an optional shared interface used by Switchyard's clients and execution
 helpers. Direct <code>run_stream</code> handling works with your own functions or clients;
 it does not require implementing that trait.</p>
 <p>If you want Switchyard to handle HTTP and translation, use
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e2c9471e5479f6d703646208e6f02fcdc2f637d6/crates/libsy-llm-client/README.md"><code>TranslatingLlmClient</code> in <code>switchyard-llm-client</code></a>.
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/65508f1a2ee1c4ba04e11843346e7e05597e1adf/crates/libsy-llm-client/README.md"><code>TranslatingLlmClient</code> in <code>switchyard-llm-client</code></a>.
 The <a href="../../getting_started/#use-libsy-with-your-client">quickstart</a> shows how to
 keep your own HTTP client. Typed decisions use the separate contract described
 in <a href="../decisions/">Decision Model-Related Protocols</a>.</p>

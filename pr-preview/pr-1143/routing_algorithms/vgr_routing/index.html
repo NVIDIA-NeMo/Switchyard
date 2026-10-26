@@ -1024,6 +1024,57 @@
                 
   
   
+    
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_1" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7_1" id="__nav_7_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Algorithms
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_1_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Algorithms
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
   
   
     <li class="md-nav__item">
@@ -1402,10 +1453,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#verification-and-cloud-outages" class="md-nav__link">
+  <a href="#verification-and-capable-tier-outages" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Verification and cloud outages
+        Verification and capable-tier outages
       
     </span>
   </a>
@@ -1426,6 +1477,14 @@
     </ul>
   
 </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
       
     </li>
   
@@ -1930,10 +1989,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#verification-and-cloud-outages" class="md-nav__link">
+  <a href="#verification-and-capable-tier-outages" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Verification and cloud outages
+        Verification and capable-tier outages
       
     </span>
   </a>
@@ -1972,24 +2031,24 @@
 
 
 <h1 id="verification-gated-routing">Verification-Gated Routing<a class="headerlink" href="#verification-gated-routing" title="Permanent link">&para;</a></h1>
-<p>Verification-Gated Routing (VGR) generates a candidate on a local tier. For a
+<p>Verification-Gated Routing (VGR) generates a candidate on an efficient tier. For a
 final answer, it gathers bounded evidence about that exact candidate and serves
-it only when the policy allows it. All other final-answer outcomes use the cloud
+it only when the policy allows it. All other final-answer outcomes use the capable
 tier. Missing context, unavailable verifiers, malformed verdicts, and expired
-decision deadlines fail closed to cloud for final answers.</p>
-<p>Tool-calling turns continue on the local tier unless the turn judge provides
+decision deadlines fail closed to the capable tier for final answers.</p>
+<p>Tool-calling turns continue on the efficient tier unless the turn judge provides
 evidence to escalate. An unavailable or inconclusive turn judge leaves the tool
-turn on the local tier. A local endpoint failure triggers cloud fallback.</p>
+turn on the efficient tier. An efficient endpoint failure triggers capable fallback.</p>
 <h2 id="configure-a-route">Configure a route<a class="headerlink" href="#configure-a-route" title="Permanent link">&para;</a></h2>
-<p>Declare local, cloud, and optional verifier targets using the normal deployment
+<p>Declare efficient, capable, and optional verifier targets using the normal deployment
 schema, then reference their target names:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">[routes.assistant]</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;assistant&quot;</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;vgr&quot;</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">local_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;local&quot;</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">cloud_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;cloud&quot;</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">judge_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;local&quot;</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">cloud_judge_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;cloud&quot;</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">efficient_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;efficient&quot;</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="n">capable_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;capable&quot;</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="n">judge_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;efficient&quot;</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="n">capable_judge_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;capable&quot;</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="n">mode</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;shadow&quot;</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="n">deadline_seconds</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">30</span>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="n">task_typing</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
@@ -1997,17 +2056,17 @@ schema, then reference their target names:</p>
 </span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="n">breaker_cooldown_seconds</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">30</span>
 </span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="n">confirmed_recovery_min_clean_tail</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">1</span>
 </span></code></pre></div>
-<p><code>judge_target</code> defaults to <code>local_target</code>. <code>cloud_judge_target</code> is optional.
-The local and cloud targets must resolve to distinct model IDs. Set the route's
+<p><code>judge_target</code> defaults to <code>efficient_target</code>. <code>capable_judge_target</code> is optional.
+The efficient and capable targets must resolve to distinct model IDs. Set the route's
 <code>context_window</code> to advertise a configured limit through <code>/v1/models</code>; this works
 with any supported local service and takes precedence over discovery.</p>
 <p>Context discovery is disabled by default. For llama.cpp, set
-<code>context_discovery = "llama_cpp"</code> on the local target's <code>[llm_clients.&lt;name&gt;]</code>
+<code>context_discovery = "llama_cpp"</code> on the efficient target's <code>[llm_clients.&lt;name&gt;]</code>
 entry and leave the route's <code>context_window</code> unset. Switchyard then reads the
 service's <code>/props</code> response and advertises a positive context capacity when
 available. Missing or invalid properties leave the capacity unknown; routing
 continues normally. Discovery does not configure the service or load a model.</p>
-<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e2c9471e5479f6d703646208e6f02fcdc2f637d6/examples/vgr-local-servers.toml">the local-server example</a>
+<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/65508f1a2ee1c4ba04e11843346e7e05597e1adf/examples/vgr-local-servers.toml">the local-server example</a>
 for an active llama.cpp configuration and commented Ollama/vLLM alternatives.
 For Ollama and vLLM, set <code>context_window</code> to match the running service; automatic
 discovery for those servers is not implemented.</p>
@@ -2015,20 +2074,20 @@ discovery for those servers is not implemented.</p>
 for one minute. Discovery probes run concurrently with a two-second total budget
 per refresh. Completed discoveries are retained when that budget expires.</p>
 <p><code>confirmed_recovery_min_clean_tail</code>, when set, lets an agentic
-run that recovered from tool errors commit locally once that many trailing tool
-results are clean and the cloud judge confirms the evidence.</p>
+run that recovered from tool errors commit on the efficient tier once that many trailing tool
+results are clean and the capable judge confirms the evidence.</p>
 <h2 id="agentic-handoff">Agentic handoff<a class="headerlink" href="#agentic-handoff" title="Permanent link">&para;</a></h2>
 <p>These settings are off by default:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">agentic_handoff</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">local_turn_budget_seconds</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">600</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">efficient_turn_budget_seconds</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">600</span>
 </span></code></pre></div>
-<p><code>agentic_handoff</code> tells the cloud tier when it takes over tool-using work that
-the local tier previously served. The notice can include the local tier's
+<p><code>agentic_handoff</code> tells the capable tier when it takes over tool-using work that
+the efficient tier previously served. The notice can include the efficient tier's
 unchecked final message. It is sent at most once per user turn, and only after
-new local work has been served since the previous handoff. The handoff preserves
-the conversation's existing messages and content. <code>local_turn_budget_seconds</code>
-escalates a user turn once the local tier has spent that much wall-clock time on it.</p>
-<p>Optional experimental compaction condenses local history into a cached digest
+new efficient work has been served since the previous handoff. The handoff preserves
+the conversation's existing messages and content. <code>efficient_turn_budget_seconds</code>
+escalates a user turn once the efficient tier has spent that much wall-clock time on it.</p>
+<p>Optional experimental compaction condenses history from the efficient tier into a cached digest
 when handing off. Enable it on the VGR route:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[routes.assistant]</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">agentic_handoff</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="kc">true</span>
@@ -2043,10 +2102,10 @@ clears it. An <code>x-initiator: agent</code> message keeps the digest, while
 results become <code>[non-text content]</code>; non-text user updates, including images,
 are omitted without a marker. Cache savings and task-success effects have not
 been measured in a matched evaluation.</p>
-<p>The notice covers the current request and asks the cloud tier to preserve earlier
+<p>The notice covers the current request and asks the capable tier to preserve earlier
 work, inspect its effects, and repeat or undo steps only when needed.</p>
-<p>Escalations release when a new user turn is decided locally. Set
-<code>latch_escalation = true</code> to retain the cloud tier across later user turns instead.
+<p>Escalations release when a new user turn is decided on the efficient tier. Set
+<code>latch_escalation = true</code> to retain the capable tier across later user turns instead.
 Shadow mode always releases the hold at the next user turn.
 All configured VGR durations must be positive.</p>
 <h2 id="hermes-session-headers">Hermes session headers<a class="headerlink" href="#hermes-session-headers" title="Permanent link">&para;</a></h2>
@@ -2067,23 +2126,23 @@ must stay the same throughout a conversation; each conversation needs its own ID
 automatic continuations. Retries retain the original call's tag. Without a
 recognized tag, Switchyard uses the message shape to identify a user turn.
 <code>x-session-id</code> is also accepted as a session-header alias.</p>
-<h2 id="verification-and-cloud-outages">Verification and cloud outages<a class="headerlink" href="#verification-and-cloud-outages" title="Permanent link">&para;</a></h2>
-<p>Coding without tool history can commit locally on a clean readout of at least
-0.6, or a readout of at least 0.2 plus cloud-judge affirmation. Other final-answer
-branches can use a separate scored verdict after local deliberation.</p>
-<p>In <code>active</code> mode, an unavailable cloud tier can fall back to an unverified local
-answer. That call receives the original request without the cloud handoff note.
-Fallback is disabled by the kill switch, an open local circuit breaker, or an
-image request the local tier cannot serve.</p>
+<h2 id="verification-and-capable-tier-outages">Verification and capable-tier outages<a class="headerlink" href="#verification-and-capable-tier-outages" title="Permanent link">&para;</a></h2>
+<p>Coding without tool history can serve the efficient attempt with a clean readout of at least
+0.6, or a readout of at least 0.2 plus capable-judge affirmation. Other final-answer
+branches can use a separate scored verdict after efficient deliberation.</p>
+<p>In <code>active</code> mode, an unavailable capable tier can fall back to an unverified efficient
+answer. That call receives the original request without the capable handoff note.
+Fallback is disabled by the kill switch, an open efficient circuit breaker, or an
+image request the efficient tier cannot serve.</p>
 <h2 id="serving-modes">Serving modes<a class="headerlink" href="#serving-modes" title="Permanent link">&para;</a></h2>
 <ul>
-<li><code>off</code> skips candidate generation and serves cloud. This is the default.</li>
-<li><code>shadow</code> computes a decision but serves cloud.</li>
+<li><code>off</code> skips candidate generation and serves the capable tier. This is the default.</li>
+<li><code>shadow</code> computes a decision but serves the capable tier.</li>
 <li><code>evaluate</code> serves the policy decision for isolated evaluation.</li>
 <li><code>active</code> serves the policy decision in production and requires
   <code>active_approval = "prospective-validation-and-canary-approved"</code>.</li>
 </ul>
-<p>VGR buffers a local candidate before releasing it. A streamed candidate that is
+<p>VGR buffers an efficient candidate before releasing it. A streamed candidate that is
 licensed is replayed as a stream; a rejected candidate is not sent to the
 client.</p>
 <p><code>x-model-router-selected-model</code> on each response names the tier that served it.</p>

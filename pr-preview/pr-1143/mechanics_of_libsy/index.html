@@ -1158,6 +1158,55 @@
   
   
   
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_1" id="__nav_7_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Algorithms
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Algorithms
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
     <li class="md-nav__item">
       <a href="../routing_algorithms/overview/" class="md-nav__link">
         
@@ -1455,6 +1504,14 @@
   
 
       </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
     </li>
   
 
@@ -2333,7 +2390,7 @@ Only calls requested concurrently by the algorithm can overlap. The returned
 <code>outcome</code> is handled as shown in <a href="#stepdone"><code>Step::Done</code></a>.</p>
 <p>For a ready-made version, see
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/fn.drive.html"><code>libsy::drive</code></a>
-and its <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e2c9471e5479f6d703646208e6f02fcdc2f637d6/crates/libsy/src/core/algorithm.rs#L593">reference execution loop</a>.</p>
+and its <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/65508f1a2ee1c4ba04e11843346e7e05597e1adf/crates/libsy/src/core/algorithm.rs#L593">reference execution loop</a>.</p>
 <p>If the algorithm stops waiting, <code>respond</code> drops that call's work future. The
 explicit drops stop the remaining handlers and abort the algorithm task. Returning
 an error or cancelling the enclosing future also drops these local values. Your
