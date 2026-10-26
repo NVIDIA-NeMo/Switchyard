@@ -18,7 +18,7 @@ pub struct ModelCallObservation {
     pub is_success: bool,
     /// Time spent waiting for the model call to resolve.
     pub duration: Duration,
-    /// Normalized usage for a buffered successful response.
+    /// Normalized usage when reported, including terminal streamed usage.
     pub usage: Option<Usage>,
 }
 
@@ -31,7 +31,7 @@ pub enum RunObservation {
     LlmCall(ModelCallObservation),
     /// A completed decision call requested by the algorithm for routing work.
     DecisionCall(ModelCallObservation),
-    /// A completed terminal model call made from the routing outcome.
+    /// A completed call that supplied the answer, including routing-time work.
     AnswerCall(ModelCallObservation),
     /// Routing time recorded by the `switchyard.routing_overhead_ms` metric.
     RoutingOverhead(Duration),

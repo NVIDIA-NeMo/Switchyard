@@ -113,6 +113,8 @@ pub struct CallModel {
     pub models: Vec<ModelId>,
     /// Return client errors to the algorithm so it can apply its fallback policy.
     pub recover_errors: bool,
+    /// Deliver a live answer stream instead of buffering it for routing.
+    pub streaming: bool,
     /// How to send the response back to the algorithm. `None` once the call is recorded.
     reply: Option<oneshot::Sender<Result<Response>>>,
     started: Instant,
@@ -399,6 +401,25 @@ impl Driver {
     }
 
     /// Allows a routing policy to handle a failed call when recovery is enabled.
+    pub(crate) async fn call_model_with_error_recovery(
+        &self,
+        request: Request,
+        models: Vec<ModelId>,
+        recover_errors: bool,
+    ) -> Result<Response> {
+        self.call_model_inner(request, models, recover_errors, false)
+            .await
+    }
+
+    /// Offload an answer without draining its stream. The returned response owns cancellation.
+    pub async fn call_model_streaming(
+        &self,
+        request: Request,
+        models: Vec<ModelId>,
+    ) -> Result<Response> {
+        self.call_model_inner(request, models, true, true).await
+    }
+
     #[tracing::instrument(
         target = "libsy",
         name = "libsy.llm_call",
@@ -414,11 +435,12 @@ impl Driver {
             reasoning_tokens = tracing::field::Empty,
         )
     )]
-    pub(crate) async fn call_model_with_error_recovery(
+    async fn call_model_inner(
         &self,
         mut request: Request,
         models: Vec<ModelId>,
         recover_errors: bool,
+        streaming: bool,
     ) -> Result<Response> {
         let Some(selected_model_id) = models.first() else {
             return Err(LibsyError::NoTargets);
@@ -431,6 +453,7 @@ impl Driver {
             request,
             models,
             recover_errors,
+            streaming,
             reply: Some(reply),
             started,
             span: tracing::Span::current(),

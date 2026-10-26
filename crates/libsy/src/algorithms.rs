@@ -15,6 +15,7 @@ pub mod noop;
 pub mod passthrough;
 pub mod plan_execute;
 pub mod rand;
+pub mod speculative_tool_call;
 pub mod stage;
 pub mod subagent;
 pub mod vgr;

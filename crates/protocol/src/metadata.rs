@@ -199,6 +199,8 @@ pub struct Metadata {
     pub subagent_identity_unsupported: bool,
     /// Switchyard target that successfully served a response.
     pub served_model: Option<ModelId>,
+    /// The response was synthesized by a decision call.
+    pub served_by_decision: bool,
     /// Arbitrary host-defined key/value metadata.
     pub extra_metadata: Option<BTreeMap<String, String>>,
     /// HTTP headers to attach when forwarding the request/response, if any.

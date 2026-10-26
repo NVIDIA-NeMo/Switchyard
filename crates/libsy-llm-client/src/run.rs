@@ -40,6 +40,57 @@ use switchyard_translation::prepare_request_for_target;
 use crate::observation::{ModelCallObservation, RunObservation, RunObserver};
 use crate::{metrics, observability};
 
+struct RoutingObservations {
+    pending: Vec<RunObservation>,
+    observer: RunObserver,
+    finished: bool,
+    answered_model: Option<ModelId>,
+    answered_by_decision: bool,
+    answer_observed: bool,
+}
+
+impl RoutingObservations {
+    fn classify(&mut self, observation: RunObservation) -> RunObservation {
+        match observation {
+            RunObservation::LlmCall(call)
+                if !self.answer_observed
+                    && !self.answered_by_decision
+                    && self.answered_model.as_ref() == Some(&call.selected_model) =>
+            {
+                self.answer_observed = true;
+                RunObservation::AnswerCall(call)
+            }
+            RunObservation::DecisionCall(call)
+                if !self.answer_observed
+                    && self.answered_by_decision
+                    && self.answered_model.as_ref() == Some(&call.selected_model) =>
+            {
+                self.answer_observed = true;
+                RunObservation::AnswerCall(call)
+            }
+            observation => observation,
+        }
+    }
+}
+
+fn record_routing_observation(
+    observations: &Option<Arc<Mutex<RoutingObservations>>>,
+    observation: RunObservation,
+) {
+    let Some(observations) = observations else {
+        return;
+    };
+    let (observer, observation) = {
+        let mut state = observations.lock();
+        if !state.finished {
+            state.pending.push(observation);
+            return;
+        }
+        (state.observer.clone(), state.classify(observation))
+    };
+    observer(observation);
+}
+
 /// Run one request to completion, serving every offloaded model call with `client`.
 ///
 /// Returns the model selected by the algorithm and the final [`Response`]. `observer`, when
@@ -51,7 +102,7 @@ use crate::{metrics, observability};
 /// a per-call lookup, not one client for the whole run. Use
 /// [`ClientRouter::single`](ClientRouter::single) when one client serves every target.
 ///
-/// Routing calls are buffered; client failures stop the request unless the call enables recovery.
+/// Routing calls are buffered unless they opt into live delivery; failures stop the run unless recovery is enabled.
 /// Once routing completes, non-timeout failures may try the outcome's ordered fallback candidates.
 pub async fn run(
     algorithm: Arc<dyn Algorithm>,
@@ -65,7 +116,16 @@ pub async fn run(
     let routing_clients = clients.clone();
     // This says if we have an observer, put Some(..) in routing_observations.
     // No observer means we don't want any routing_observations.
-    let routing_observations = observer.as_ref().map(|_| Arc::new(Mutex::new(Vec::new())));
+    let routing_observations = observer.as_ref().map(|observer| {
+        Arc::new(Mutex::new(RoutingObservations {
+            pending: Vec::new(),
+            observer: observer.clone(),
+            finished: false,
+            answered_model: None,
+            answered_by_decision: false,
+            answer_observed: false,
+        }))
+    });
     let outcome = match clients.stored_state_owner(&request) {
         Some(owner) => Ok(continue_on(owner, &algorithm_name, request)),
         None => {
@@ -81,7 +141,18 @@ pub async fn run(
         .ok()
         .and_then(|outcome| outcome.response.as_ref())
         .and_then(Response::served_model);
-    emit_routing_observations(&observer, &routing_observations, answered_model);
+    let answered_by_decision = outcome
+        .as_ref()
+        .ok()
+        .and_then(|outcome| outcome.response.as_ref())
+        .and_then(|response| response.metadata.as_ref())
+        .is_some_and(|metadata| metadata.served_by_decision);
+    emit_routing_observations(
+        &observer,
+        &routing_observations,
+        answered_model,
+        answered_by_decision,
+    );
     let outcome = outcome?;
     let overhead = run_started.elapsed();
     metrics::record_routing_overhead(&algorithm_name, overhead);
@@ -161,7 +232,7 @@ pub async fn decide(
 async fn serve_decision(
     clients: &ClientRouter,
     call: CallDecision,
-    observations: &Option<Arc<Mutex<Vec<RunObservation>>>>,
+    observations: &Option<Arc<Mutex<RoutingObservations>>>,
 ) -> Result<()> {
     let client = clients.route_decision(&call.model);
     let model = call.model.clone();
@@ -170,16 +241,15 @@ async fn serve_decision(
         let started = Instant::now();
         let result = async { client?.call(request).await }.await;
         tracing::Span::current().record("outcome", if result.is_ok() { "ok" } else { "error" });
-        if let Some(observations) = observations {
-            observations
-                .lock()
-                .push(RunObservation::DecisionCall(ModelCallObservation {
-                    selected_model: model.clone(),
-                    is_success: result.is_ok(),
-                    duration: started.elapsed(),
-                    usage: result.as_ref().ok().map(|response| response.usage.clone()),
-                }));
-        }
+        record_routing_observation(
+            observations,
+            RunObservation::DecisionCall(ModelCallObservation {
+                selected_model: model.clone(),
+                is_success: result.is_ok(),
+                duration: started.elapsed(),
+                usage: result.as_ref().ok().map(|response| response.usage.clone()),
+            }),
+        );
         result.map_err(|error| LibsyError::client_call(model, error))
     })
     .await
@@ -188,23 +258,25 @@ async fn serve_decision(
 /// Emits completed routing calls after the outcome reveals whether one response became the answer.
 fn emit_routing_observations(
     observer: &Option<RunObserver>,
-    observations: &Option<Arc<Mutex<Vec<RunObservation>>>>,
+    observations: &Option<Arc<Mutex<RoutingObservations>>>,
     answered_model: Option<&ModelId>,
+    answered_by_decision: bool,
 ) {
     let (Some(observer), Some(observations)) = (observer, observations) else {
         return;
     };
-    let mut answer_observed = false;
-    for observation in observations.lock().drain(..) {
-        observer(match observation {
-            RunObservation::LlmCall(call)
-                if !answer_observed && answered_model == Some(&call.selected_model) =>
-            {
-                answer_observed = true;
-                RunObservation::AnswerCall(call)
-            }
-            observation => observation,
-        });
+    let pending = {
+        let mut state = observations.lock();
+        state.finished = true;
+        state.answered_model = answered_model.cloned();
+        state.answered_by_decision = answered_by_decision;
+        std::mem::take(&mut state.pending)
+            .into_iter()
+            .map(|observation| state.classify(observation))
+            .collect::<Vec<_>>()
+    };
+    for observation in pending {
+        observer(observation);
     }
 }
 
@@ -215,34 +287,116 @@ fn emit_routing_observations(
 async fn serve(
     clients: ClientRouter,
     call: Call,
-    observations: Option<Arc<Mutex<Vec<RunObservation>>>>,
+    observations: Option<Arc<Mutex<RoutingObservations>>>,
 ) -> Result<()> {
     let call = match call {
         Call::Model(call) => *call,
         Call::Decision(call) => return serve_decision(&clients, *call, &observations).await,
     };
     let observe = |observation| {
-        if let Some(observations) = &observations {
-            observations
-                .lock()
-                .push(RunObservation::LlmCall(observation));
-        }
+        record_routing_observation(&observations, RunObservation::LlmCall(observation));
     };
     let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
     let request = clients.prepare_routing_request(call.request.clone(), &target);
     let algorithm = call.algorithm.clone();
     let candidates = call.models.len();
-    call.respond(call_one(
-        &clients,
-        &target,
-        request,
-        &algorithm,
-        &observe,
-        0,
-        candidates,
-        CallPhase::Routing,
-    ))
-    .await
+    let streaming = call.streaming;
+    let started = Instant::now();
+    let work = async {
+        let mut response = call_one(
+            &clients,
+            &target,
+            request,
+            &algorithm,
+            &observe,
+            0,
+            candidates,
+            if streaming {
+                CallPhase::LiveRouting
+            } else {
+                CallPhase::Routing
+            },
+        )
+        .await?;
+        if streaming && let LlmResponse::Stream(chunks) = response.llm_response {
+            response.llm_response = LlmResponse::Stream(observe_routing_stream(
+                chunks,
+                target,
+                started,
+                observations.clone(),
+            ));
+        }
+        Ok(response)
+    };
+    call.respond(work).await
+}
+
+struct RoutingStreamObservation {
+    observations: Option<Arc<Mutex<RoutingObservations>>>,
+    model: ModelId,
+    started: Instant,
+    usage: Option<Usage>,
+    success: Option<bool>,
+}
+
+impl Drop for RoutingStreamObservation {
+    fn drop(&mut self) {
+        record_routing_observation(
+            &self.observations,
+            RunObservation::LlmCall(ModelCallObservation {
+                selected_model: self.model.clone(),
+                is_success: self.success.unwrap_or(false),
+                duration: self.started.elapsed(),
+                usage: self.usage.take(),
+            }),
+        );
+    }
+}
+
+fn observe_routing_stream(
+    chunks: LlmResponseStream,
+    model: ModelId,
+    started: Instant,
+    observations: Option<Arc<Mutex<RoutingObservations>>>,
+) -> LlmResponseStream {
+    let observation = RoutingStreamObservation {
+        observations,
+        model,
+        started,
+        usage: None,
+        success: None,
+    };
+    stream::unfold(
+        (chunks, observation),
+        |(mut chunks, mut observation)| async move {
+            let Some(item) = chunks.next().await else {
+                observation.success.get_or_insert(true);
+                return None;
+            };
+            match &item {
+                Err(_) => observation.success = Some(false),
+                Ok(event) => {
+                    for chunk in event.normalized() {
+                        match chunk {
+                            LlmResponseChunk::Usage(usage) => {
+                                observation.usage = Some(usage.clone())
+                            }
+                            LlmResponseChunk::MessageStop { .. } => {
+                                observation.success.get_or_insert(true);
+                            }
+                            LlmResponseChunk::StreamError { .. }
+                            | LlmResponseChunk::DecodeError { .. } => {
+                                observation.success = Some(false)
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Some((item, (chunks, observation)))
+        },
+    )
+    .boxed()
 }
 
 /// Try candidates in order until one succeeds or a failure stops fallback.
@@ -303,13 +457,14 @@ async fn call_first_available<'a>(
 #[derive(Clone, Copy)]
 enum CallPhase {
     Routing,
+    LiveRouting,
     Completion,
 }
 
 impl CallPhase {
     const fn as_str(self) -> &'static str {
         match self {
-            Self::Routing => "routing",
+            Self::Routing | Self::LiveRouting => "routing",
             Self::Completion => "completion",
         }
     }
@@ -368,7 +523,7 @@ async fn call_one(
     count: usize,
     phase: CallPhase,
 ) -> Result<Response> {
-    let is_routing = matches!(phase, CallPhase::Routing);
+    let is_routing = !matches!(phase, CallPhase::Completion);
     let span = tracing::Span::current();
     observability::record_gen_ai_request(&span, &request.llm_request);
     if let Some(session_id) = request
@@ -385,7 +540,9 @@ async fn call_one(
     let mut routing_usage = None;
     let result = async {
         let mut response = client?.call(request).await?;
-        if is_routing && let LlmResponse::Stream(chunks) = response.llm_response {
+        if matches!(phase, CallPhase::Routing)
+            && let LlmResponse::Stream(chunks) = response.llm_response
+        {
             let (chunks, usage) = buffer_routing_stream(chunks).await?;
             routing_usage = usage;
             response.llm_response = LlmResponse::Stream(chunks);
@@ -406,17 +563,23 @@ async fn call_one(
     } else {
         metrics::observe_routed_request(algorithm, model_id, Some(duration), result)
     };
-    observe(ModelCallObservation {
-        selected_model: model_id.clone(),
-        is_success: result.is_ok(),
-        duration,
-        usage: result
+    if !matches!(phase, CallPhase::LiveRouting)
+        || !result
             .as_ref()
-            .ok()
-            .and_then(|response| response.llm_response.as_agg())
-            .map(|response| response.usage.clone())
-            .or(routing_usage),
-    });
+            .is_ok_and(|response| matches!(response.llm_response, LlmResponse::Stream(_)))
+    {
+        observe(ModelCallObservation {
+            selected_model: model_id.clone(),
+            is_success: result.is_ok(),
+            duration,
+            usage: result
+                .as_ref()
+                .ok()
+                .and_then(|response| response.llm_response.as_agg())
+                .map(|response| response.usage.clone())
+                .or(routing_usage),
+        });
+    }
     result
 }
 
@@ -839,6 +1002,16 @@ impl ClientRouter {
     fn remember_state_owner(&self, request: &Request, mut response: Response) -> Result<Response> {
         let Some(model) = response.served_model().cloned() else {
             return Ok(response);
+        };
+        // A synthesized decision answer continues on the route's completion target.
+        let model = if response
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.served_by_decision)
+        {
+            request.model_id().unwrap_or(model)
+        } else {
+            model
         };
         let fields = &request.llm_request.extensions.fields;
         let store = fields.get("store").and_then(Value::as_bool) != Some(false);
@@ -1542,8 +1715,11 @@ mod tests {
 
     #[test]
     fn answer_observation_keeps_call_order() {
-        let pending = Some(Arc::new(Mutex::new(
-            ["answer", "judge"]
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&emitted);
+        let observer: RunObserver = Arc::new(move |event| captured.lock().push(event));
+        let pending = Some(Arc::new(Mutex::new(RoutingObservations {
+            pending: ["answer", "judge"]
                 .map(|model| ModelCallObservation {
                     selected_model: model.into(),
                     is_success: true,
@@ -1551,14 +1727,17 @@ mod tests {
                     usage: None,
                 })
                 .map(RunObservation::LlmCall)
-                .into(),
-        )));
-        let emitted = Arc::new(Mutex::new(Vec::new()));
-        let captured = Arc::clone(&emitted);
-        let observer: RunObserver = Arc::new(move |event| captured.lock().push(event));
+                .into_iter()
+                .collect(),
+            observer: observer.clone(),
+            finished: false,
+            answered_model: None,
+            answered_by_decision: false,
+            answer_observed: false,
+        })));
         let answer = ModelId::from("answer");
 
-        emit_routing_observations(&Some(observer), &pending, Some(&answer));
+        emit_routing_observations(&Some(observer), &pending, Some(&answer), false);
 
         assert!(matches!(
             &emitted.lock()[..],

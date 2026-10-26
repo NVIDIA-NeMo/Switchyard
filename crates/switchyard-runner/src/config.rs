@@ -14,7 +14,7 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    OpenAiDecisionClient, SystemOneClient, TranslatingLlmClient,
+    OpenAiDecisionClient, SystemOneClient, TranslatingLlmClient, VllmChoiceClient,
 };
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
@@ -269,8 +269,9 @@ impl DeploymentConfig {
         let mut model_properties_probes = BTreeMap::new();
         for (route_name, config) in &self.routes {
             let decision_judge = config.algorithm.decision_judge();
+            let decision_target = config.algorithm.decision_target_name();
             for name in config.callable_target_names() {
-                let (exists, kind) = if decision_judge.is_some_and(|(judge, _)| judge == name) {
+                let (exists, kind) = if decision_target == Some(name) {
                     (self.decision_targets.contains_key(name), "decision")
                 } else {
                     (self.targets.contains_key(name), "LLM")
@@ -298,9 +299,15 @@ impl DeploymentConfig {
                     "route {route_name} context_window must be greater than zero"
                 )));
             }
+            let target_prompt = config
+                .routing_target_names()
+                .into_iter()
+                .next()
+                .and_then(|target| self.targets.get(target))
+                .and_then(|target| target.system_prompt.as_deref());
             let (algorithm, models) = config
                 .algorithm
-                .build_with_runtime_models(route_name, &targets)
+                .build_with_runtime_models_and_prompt(route_name, &targets, target_prompt)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
                 && let Some(probe) = self.build_model_properties_probe(&vgr.local_target, &clients)
@@ -442,6 +449,10 @@ impl DeploymentConfig {
                         OpenAiDecisionClient::new(endpoint.0.clone(), api_key.clone(), timeout)
                             .map(|client| Arc::new(client) as Arc<dyn RoutedDecisionClient>)
                     }
+                    DecisionFormat::VllmChoice => {
+                        VllmChoiceClient::new(endpoint.0.clone(), api_key.clone(), timeout)
+                            .map(|client| Arc::new(client) as Arc<dyn RoutedDecisionClient>)
+                    }
                 }
                 .map_err(|error| RunnerError::configuration(error.to_string()))?;
                 provider_api_keys.push(api_key);
@@ -485,8 +496,8 @@ impl DeploymentConfig {
         for name in route.callable_target_names() {
             if route
                 .algorithm
-                .decision_judge()
-                .is_some_and(|(judge, _)| judge == name)
+                .decision_target_name()
+                .is_some_and(|judge| judge == name)
             {
                 let target = &self.decision_targets[name];
                 decisions_by_model.insert(
@@ -603,6 +614,10 @@ impl DeploymentConfig {
             RunnerError::configuration(format!("route references unknown target {response_name}"))
         })?;
         if !policy.prompts.contains_key(&response.id) {
+            return Ok(policy);
+        }
+        if self.decision_targets.contains_key(dependency_name) {
+            policy.routing_answer_target = Some(response.id.clone());
             return Ok(policy);
         }
         let dependency = self.targets.get(dependency_name).ok_or_else(|| {
@@ -782,6 +797,7 @@ struct DecisionClientConfig {
 enum DecisionFormat {
     SystemOne,
     OpenaiDecisions,
+    VllmChoice,
 }
 
 #[derive(Debug, Deserialize)]

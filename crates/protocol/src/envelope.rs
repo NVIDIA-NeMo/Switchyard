@@ -64,7 +64,9 @@ impl Response {
 
     /// Records the Switchyard target that successfully served this response.
     pub fn set_served_model(&mut self, model: &ModelId) {
-        self.metadata.get_or_insert_default().served_model = Some(model.clone());
+        let metadata = self.metadata.get_or_insert_default();
+        metadata.served_model = Some(model.clone());
+        metadata.served_by_decision = false;
     }
 }
 
