@@ -333,6 +333,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#try-with-a-local-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Try With a Local Agent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#explore" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2361,6 +2372,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#try-with-a-local-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Try With a Local Agent
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#explore" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2404,62 +2426,49 @@
 
 <h1 id="switchyard">Switchyard<a class="headerlink" href="#switchyard" title="Permanent link">&para;</a></h1>
 <p>Switchyard helps an AI agent choose which model handles each request. Embed its Rust core, <strong>libsy</strong>, in your gateway or agent harness. Your application keeps its model clients, credentials, and service.</p>
-<p><strong><a href="getting_started/">Start with the Rust quickstart</a></strong>: add the crates, run a routing example, and send the selected request through your model client.</p>
+<p>Choose where routing belongs in your application. Use an existing integration,
+or embed libsy and keep your current model clients.</p>
 <h2 id="choose-a-path">Choose a Path<a class="headerlink" href="#choose-a-path" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
 <th>Goal</th>
-<th>Path</th>
 <th>Start here</th>
+<th>What you own</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Add routing to your Rust gateway or application</td>
-<td>libsy</td>
-<td><a href="getting_started/">Rust quickstart</a></td>
+<td>Use routing through an inference provider</td>
+<td><a href="https://openrouter.ai/docs/guides/routing/routers/switchyard-router">Switchyard on OpenRouter</a></td>
+<td>Your API requests and provider account. Follow the provider's available algorithms and controls.</td>
 </tr>
 <tr>
-<td>Use libsy from Python</td>
-<td>Python Bindings</td>
-<td><a href="reference/host_integration/#python-bindings">Python embedding</a></td>
+<td>Add routing to your gateway</td>
+<td><a href="integrations/nemo_relay/">NeMo Relay</a> or the experimental <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9d4646ef5d580f1c48d75b7431a0cdc927175e73/examples/litellm/README.md">LiteLLM integration</a></td>
+<td>Gateway deployment, credentials, and operation. Check each integration's limits.</td>
 </tr>
 <tr>
-<td>Evaluate routing locally with your own models</td>
-<td>Local Evaluation</td>
-<td><a href="operations/local_evaluation/">Run the demo server</a></td>
-</tr>
-<tr>
-<td>Route Codex or Claude Code using your existing login</td>
-<td>Server Path</td>
-<td><a href="recipes/single_provider_coding_agents/">Single-provider coding agents</a></td>
-</tr>
-<tr>
-<td>Add Switchyard routing to NeMo Relay</td>
-<td>Native Plugin Path</td>
-<td><a href="integrations/nemo_relay/">Use Switchyard with NeMo Relay</a></td>
-</tr>
-<tr>
-<td>Point the pi coding agent at the standalone proxy</td>
-<td>Server Path</td>
-<td><a href="integrations/pi/">Use Switchyard with pi</a></td>
-</tr>
-<tr>
-<td>Point Oh My Pi at the standalone proxy</td>
-<td>Server Path</td>
-<td><a href="integrations/oh_my_pi/">Use Switchyard with Oh My Pi</a></td>
+<td>Embed routing in a gateway, harness, or application</td>
+<td><a href="getting_started/">Rust quickstart</a>, then <a href="mechanics_of_libsy/">Mechanics of Libsy</a></td>
+<td>Model execution and application lifecycle. <a href="reference/host_integration/#python-bindings">Python bindings</a> use the same core.</td>
 </tr>
 </tbody>
 </table>
-<p>The standalone server is for demos, evaluation, and personal use. It is not a supported production deployment path. Its HTTP API supports OpenAI Chat Completions, OpenAI Responses, and Anthropic Messages.</p>
+<h2 id="try-with-a-local-agent">Try With a Local Agent<a class="headerlink" href="#try-with-a-local-agent" title="Permanent link">&para;</a></h2>
+<p>The <a href="operations/local_evaluation/">reference server</a> gives you a quick way to
+try routing with your own models. It demonstrates libsy, protocol conversion, and
+configured execution. It is for local demos and personal use, not a supported
+production deployment or a service to scale.</p>
+<p>Use it with <a href="recipes/single_provider_coding_agents/">Claude Code or Codex</a>,
+<a href="integrations/pi/">pi</a>, or <a href="integrations/oh_my_pi/">Oh My Pi</a>.</p>
 <h2 id="explore">Explore<a class="headerlink" href="#explore" title="Permanent link">&para;</a></h2>
 <ul>
 <li><a href="benchmarks/">Benchmarks</a>: compare Terminal-Bench 2.1 and DeepSWE results and open their routing configs</li>
-<li><a href="core_concepts/">Core Concepts</a>: learn the LLM client, target, and route layers</li>
+<li><a href="mechanics_of_libsy/">Mechanics of Libsy</a>: understand steps, calls, and outcomes</li>
+<li><a href="protocols/">Switchyard Protocols</a>: connect your model data to libsy</li>
 <li><a href="routing_algorithms/overview/">Routing Algorithms</a>: choose how requests select a model</li>
-<li><a href="architecture/">Architecture</a>: understand libsy and the proxy components</li>
-<li><a href="cli_reference/">Server CLI Reference</a>: inspect <code>switchyard-server</code> commands and options</li>
+<li><a href="reference/host_integration/">Host Integration</a>: connect your clients and application lifecycle</li>
 <li><a href="reference/rust_api/">Rust API</a>: browse libsy, protocol, and translation crate documentation</li>
 <li><a href="operations/context_window/">Context-Window Handling</a>: configure eviction and retry behavior</li>
 <li><a href="tuning/">Tuning</a>: the loop from verifying routing to recording a result</li>
@@ -2467,12 +2476,13 @@
 </ul>
 <h2 id="reference">Reference<a class="headerlink" href="#reference" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d9842e131e8181888d4435cf4343af374f150eeb/crates/switchyard-server/README.md"><code>switchyard-server</code></a>: server configuration, endpoints, and metrics</li>
 <li><a href="reference/rust_api/#switchyard-libsy"><code>switchyard-libsy</code></a>: embeddable routing algorithms</li>
 <li><a href="reference/rust_api/#switchyard-protocol"><code>switchyard-protocol</code></a>: provider-neutral API types</li>
 <li><a href="reference/rust_api/#switchyard-translation"><code>switchyard-translation</code></a>: protocol translation</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d9842e131e8181888d4435cf4343af374f150eeb/crates/switchyard-nemo-relay-plugin/README.md"><code>switchyard-nemo-relay-plugin</code></a>: native plugin build and configuration</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d9842e131e8181888d4435cf4343af374f150eeb/examples/dynamo-preproc/README.md">Dynamo / agentgateway</a>: Switchyard PreProc integration example</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9d4646ef5d580f1c48d75b7431a0cdc927175e73/crates/switchyard-nemo-relay-plugin/README.md"><code>switchyard-nemo-relay-plugin</code></a>: native plugin build and configuration</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9d4646ef5d580f1c48d75b7431a0cdc927175e73/examples/dynamo-preproc/README.md">Dynamo / agentgateway</a>: Switchyard PreProc integration example</li>
+<li><a href="reference/rust_api/#crate-boundary">Component responsibilities</a>: choose the crates your integration needs</li>
+<li><a href="cli_reference/">Demo server CLI</a>: local server commands and options</li>
 </ul>
 
 
