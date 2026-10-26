@@ -207,12 +207,12 @@ impl FormatCodec for AnthropicMessagesCodec {
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
         let mut diagnostics = Vec::new();
-        validate_request_capabilities(request, &mut diagnostics, policy)?;
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::AnthropicMessages, policy)
         {
             return Ok(EncodedRequest { body, diagnostics });
         }
+        validate_request_capabilities(request, &mut diagnostics, policy)?;
         let allowed = crate::codecs::common::allowed_function_tools(request)?;
         let (tools, tool_choice) = allowed.as_ref().map_or(
             (request.tools.as_slice(), request.tool_choice.as_ref()),
@@ -728,21 +728,7 @@ fn decode_anthropic_content_block(
             })]
         }
         Some("mcp_tool_result") => {
-            let content = block.get("content").unwrap_or(&Value::Null);
-            match content {
-                Value::String(_) => {}
-                Value::Array(blocks) => {
-                    for block in blocks {
-                        validate_mcp_result_block(block)?;
-                    }
-                }
-                _ => {
-                    return Err(TranslationError::InvalidValue {
-                        path: "mcp_tool_result.content".into(),
-                        message: "expected a string or array of content blocks".into(),
-                    });
-                }
-            }
+            let content = block.get("content");
             if block
                 .get("is_error")
                 .is_some_and(|value| !value.is_boolean())
@@ -754,7 +740,7 @@ fn decode_anthropic_content_block(
             }
             vec![ContentBlock::Mcp(McpContent::Result(ToolResult {
                 tool_call_id: required_mcp_string(block, "tool_use_id", "mcp_tool_result")?,
-                content: decode_tool_result_content(content),
+                content: content.map(decode_tool_result_content).unwrap_or_default(),
                 is_error: block.get("is_error").and_then(Value::as_bool),
             }))]
         }
@@ -808,33 +794,6 @@ fn validate_mcp_input(input: &Value) -> Result<()> {
             path: "mcp_tool_use.input".into(),
             message: "expected an object".into(),
         });
-    }
-    Ok(())
-}
-
-fn validate_mcp_result_block(block: &Value) -> Result<()> {
-    let kind = block
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if kind.is_empty()
-        || (kind == "text" && !block.get("text").is_some_and(Value::is_string))
-        || (matches!(kind, "image" | "document")
-            && !block.get("source").is_some_and(Value::is_object))
-    {
-        return Err(TranslationError::InvalidValue {
-            path: "mcp_tool_result.content".into(),
-            message: "expected typed content blocks with string text or object media sources"
-                .into(),
-        });
-    }
-    if matches!(kind, "tool_use" | "tool_result" | "mcp_tool_listing")
-        || kind.ends_with("_tool_use")
-        || kind.ends_with("_tool_result")
-    {
-        return Err(TranslationError::LossyConversion(
-            "nested tool activity is unsupported in Anthropic MCP results".into(),
-        ));
     }
     Ok(())
 }
@@ -1389,14 +1348,12 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Result<Vec<Value>> {
                         content.push(raw.clone());
                     }
                     _ => {
+                        // Reject unsupported typed blocks rather than silently dropping them.
                         return Err(TranslationError::LossyConversion(
                             "unsupported content in Anthropic MCP result".into(),
                         ));
                     }
                 }
-            }
-            for block in &content {
-                validate_mcp_result_block(block)?;
             }
             let mut item = json!({"type": "mcp_tool_result", "tool_use_id": result.tool_call_id, "content": content});
             if let Some(is_error) = result.is_error {
