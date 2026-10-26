@@ -94,9 +94,21 @@ fn router(algorithm: Value) -> Box<SyRouter> {
 }
 
 fn run(router: &SyRouter, input: Value) -> Box<SyRun> {
+    start(router, input, sy_run_new)
+}
+
+fn start(
+    router: &SyRouter,
+    input: Value,
+    constructor: unsafe extern "C" fn(
+        *const SyRouter,
+        *const c_char,
+        *mut *mut SyRun,
+    ) -> *mut c_char,
+) -> Box<SyRun> {
     let input = CString::new(input.to_string()).unwrap();
     let mut run = std::ptr::null_mut();
-    check(unsafe { sy_run_new(router, input.as_ptr(), &mut run) });
+    check(unsafe { constructor(router, input.as_ptr(), &mut run) });
     assert!(!run.is_null());
     unsafe { Box::from_raw(run) }
 }
@@ -216,6 +228,7 @@ fn streamed_outcomes_propagate_errors_and_cancellation() {
         let run = Box::new(SyRun::new(
             Box::pin(futures::stream::iter([Ok(Step::Done(Box::new(outcome)))])),
             Arc::clone(&router.engine),
+            None,
         ));
         let (sender, receiver) = mpsc::channel();
         next_async(&run, &sender).unwrap();
@@ -257,6 +270,7 @@ fn completed_runs_preserve_fallback_requests() {
         let run = SyRun::new(
             Box::pin(futures::stream::iter([Ok(Step::Done(Box::new(outcome)))])),
             Arc::clone(&router.engine),
+            None,
         );
         let done = next(&run);
         assert_eq!(done["selected_model_ids"], json!(["capable", "efficient"]));
@@ -444,6 +458,7 @@ fn free_waits_for_cancelled_callback_to_return() {
     let run = Box::new(SyRun::new(
         Box::pin(futures::stream::pending()),
         Arc::clone(&engine),
+        None,
     ));
     check(unsafe { sy_run_next_async(&*run, Some(complete_after_release), state as usize) });
     let run = Box::into_raw(run) as usize;
@@ -617,6 +632,7 @@ fn panics_return_owned_errors() {
             algorithm: Arc::new(switchyard_libsy::Noop {}),
             runtime: Runtime::new().unwrap(),
         }),
+        None,
     );
     let (sender, receiver) = mpsc::channel();
     next_async(&run, &sender).unwrap();
@@ -625,4 +641,96 @@ fn panics_return_owned_errors() {
         .unwrap()
         .unwrap_err();
     assert_eq!(error.to_str().unwrap(), "Switchyard binding panicked");
+}
+
+// C-only callers receive ordered, model-stamped requests without invoking the codec exports.
+#[test]
+fn wire_runs_prepare_all_formats_and_fallbacks() {
+    let router = router(json!({
+        "type": "stage_router", "picker": "efficient_first", "confidence_threshold": 0.5,
+        "capable_target": "capable", "efficient_target": "efficient",
+    }));
+    for (format, request, field, expected) in [
+        (
+            "openai_chat",
+            json!({"messages": [{"role": "user", "content": "hello"}], "store": false}),
+            "store",
+            json!(false),
+        ),
+        (
+            "openai_responses",
+            json!({"input": "hello", "previous_response_id": "resp_prev"}),
+            "previous_response_id",
+            json!("resp_prev"),
+        ),
+        (
+            "anthropic_messages",
+            json!({"messages": [{"role": "user", "content": "hello"}], "max_tokens": 64}),
+            "max_tokens",
+            json!(64),
+        ),
+    ] {
+        let run = start(
+            &router,
+            json!({
+                "format": format, "request": request,
+                "models": {"any": ["capable", "efficient"], "capable": ["capable"], "efficient": ["efficient"]},
+            }),
+            sy_decide_new,
+        );
+        let done = next(&run);
+        assert_eq!(done["type"], "done");
+        assert_eq!(done["selected_model_ids"], json!(["efficient", "capable"]));
+        assert_eq!(
+            done["request"]["messages"][0]["content"][0]["text"],
+            "hello"
+        );
+        for (index, model) in ["efficient", "capable"].iter().enumerate() {
+            let prepared = &done["requests"][index];
+            assert_eq!(prepared["model"], *model);
+            assert_eq!(prepared["format"], format);
+            assert_eq!(prepared["request"]["model"], *model);
+            assert_eq!(prepared["request"][field], expected);
+        }
+    }
+}
+
+// A corrected wire reply can retry the call, and the answering target selects its codec.
+#[test]
+fn wire_reply_validation_preserves_pending_calls() {
+    let router = advisor_router();
+    let run = start(
+        &router,
+        json!({
+            "format": "openai_chat", "request": {"messages": [{"role": "user", "content": "hello"}]},
+            "models": {"efficient": ["capable", "efficient"], "judge": ["judge"]},
+            "target_formats": {"efficient": "anthropic_messages"},
+        }),
+        sy_decide_new,
+    );
+    let call = next(&run);
+    assert_eq!(call["type"], "call_model");
+    assert!(call.get("request").is_none());
+    assert_eq!(call["requests"][1]["format"], "anthropic_messages");
+    let id = call["id"].as_u64().unwrap();
+    for reply in [
+        json!({"response": {}}),
+        json!({"response": {}, "served_model": "outside"}),
+        json!({"response": [], "served_model": "efficient"}),
+    ] {
+        let reply = CString::new(reply.to_string()).unwrap();
+        assert!(!error_message(unsafe { sy_run_respond(&*run, id, reply.as_ptr()) }).is_empty());
+    }
+    let reply = CString::new(json!({
+        "served_model": "efficient",
+        "response": {"model": "provider-model", "content": [{"type": "text", "text": "answer"}], "stop_reason": "end_turn"},
+    }).to_string()).unwrap();
+    check(unsafe { sy_run_respond(&*run, id, reply.as_ptr()) });
+    let done = next(&run);
+    assert_eq!(done["selected_model_ids"], json!(["efficient"]));
+    assert_eq!(
+        done["response"]["outputs"][0]["content"][0]["text"],
+        "answer"
+    );
+    assert!(done["metadata"].is_object());
 }

@@ -11,6 +11,7 @@ NUL-terminated JSON strings. Ownership and concurrency rules are in
 | --- | --- |
 | `sy_router_new` | `{algorithm, targets}`: an `AlgorithmSpec` and target-alias-to-model-ID map |
 | `sy_run_new` | `{request, models, subagent_models?, metadata?}` |
+| `sy_decide_new` | `{format, request, target_formats?, models, subagent_models?, metadata?}` |
 | `sy_run_respond` | `{response, served_model?}` or `{error}` |
 | `sy_decode_request`, `sy_decode_response` | `{format, body}` |
 | `sy_encode_request` | `{format, request, model}` |
@@ -41,3 +42,24 @@ Content-policy denials must not advance to those fallback candidates.
 
 Wire formats are `openai_chat`, `openai_responses`, and `anthropic_messages`.
 The translation functions use the existing Switchyard codecs.
+
+## Provider-shaped routing
+
+`sy_decide_new` accepts a provider request. `format` names its wire format and
+is also the default for outgoing calls. `target_formats` can override it per
+target ID. The host retains control of model eligibility and provider calls.
+
+Use the same read, reply, cancellation, and cleanup functions as `sy_run_new`.
+Model steps replace `request` with ordered `requests: [{model, format, request}]`.
+Successful model replies contain provider JSON; identify `served_model` when
+there is more than one candidate. Typed decision calls keep their existing
+request and reply protocol.
+
+The terminal outcome keeps its normalized request, optional answer, and evidence,
+and adds the prepared candidate `requests`. Algorithm-produced answers remain
+normalized. This interface does not serve the final provider request.
+
+Invalid model replies return an error without consuming the call ID. Request
+preparation errors end the run rather than following the algorithm's provider-error
+policy. Ordinary `{error}` replies still follow that policy. Candidate requests
+are prepared eagerly, including any large payloads.

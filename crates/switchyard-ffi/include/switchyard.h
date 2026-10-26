@@ -19,6 +19,8 @@ typedef void (*SyNextCallback)(uintptr_t user_data, char *error, char *step_json
 // Free all output strings, including callback strings, with sy_string_free.
 char *sy_router_new(const char *config_json, SyRouter **out);
 char *sy_run_new(const SyRouter *router, const char *input_json, SyRun **out);
+// Provider-shaped input and model replies; uses the same run lifecycle.
+char *sy_decide_new(const SyRouter *router, const char *input_json, SyRun **out);
 
 // One pending read per run; other runs execute independently. Replies and cancellation may overlap.
 // NULL accepts one read (one callback, even if cancelled); errors reject it (no callback).

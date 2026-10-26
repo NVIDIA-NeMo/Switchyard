@@ -24,6 +24,8 @@ use tokio_util::task::TaskTracker;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 type ModelGroups = HashMap<String, Option<Vec<ModelId>>>;
 
+mod wire;
+
 /// Returns the compatibility generation for C signatures and JSON payloads.
 #[unsafe(no_mangle)]
 pub extern "C" fn sy_abi_version() -> u32 {
@@ -39,6 +41,12 @@ struct RouterConfig {
 #[derive(Deserialize)]
 struct RunInput {
     request: LlmRequest,
+    #[serde(flatten)]
+    context: RunContext,
+}
+
+#[derive(Deserialize)]
+struct RunContext {
     models: ModelGroups,
     subagent_models: Option<ModelGroups>,
     metadata: Option<RequestMetadata>,
@@ -93,7 +101,10 @@ enum RunStep<'a> {
     CallModel {
         id: u64,
         models: &'a [ModelId],
-        request: &'a LlmRequest,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        request: Option<&'a LlmRequest>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        requests: Option<Vec<wire::PreparedRequest<'a>>>,
     },
     CallDecision {
         id: u64,
@@ -106,6 +117,8 @@ enum RunStep<'a> {
         fallback_request: Option<&'a LlmRequest>,
         response: Option<&'a AggLlmResponse>,
         metadata: Option<OutcomeMetadataRef<'a>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        requests: Option<Vec<wire::PreparedRequest<'a>>>,
     },
 }
 
@@ -152,6 +165,7 @@ struct RunState {
     reader: tokio::sync::Mutex<Reader>,
     lifecycle: Mutex<Lifecycle>,
     cancellation: CancellationToken,
+    wire: Option<wire::Options>,
 }
 
 /// Routing run that owns pending calls and callback cleanup.
@@ -163,7 +177,7 @@ pub struct SyRun {
 }
 
 impl SyRun {
-    fn new(stream: StepStream, engine: Arc<Engine>) -> Self {
+    fn new(stream: StepStream, engine: Arc<Engine>, wire: Option<wire::Options>) -> Self {
         Self {
             state: Arc::new(RunState {
                 reader: tokio::sync::Mutex::new(Reader {
@@ -176,6 +190,7 @@ impl SyRun {
                     pending: HashMap::new(),
                 }),
                 cancellation: CancellationToken::new(),
+                wire,
             }),
             tasks: TaskTracker::new(),
             engine,
@@ -202,6 +217,25 @@ impl Drop for ReadGuard {
 }
 
 impl RunState {
+    fn decode_response(
+        &self,
+        body: serde_json::Value,
+        served_model: Option<ModelId>,
+        models: &[ModelId],
+    ) -> Result<Response> {
+        if let Some(wire) = &self.wire {
+            return wire.decode_response(&body, served_model, models);
+        }
+        Ok(Response {
+            llm_response: LlmResponse::Agg(serde_json::from_value(body)?),
+            metadata: served_model.map(|model| Metadata {
+                served_model: Some(model),
+                ..Default::default()
+            }),
+            upstream_headers: Default::default(),
+        })
+    }
+
     fn begin_read(self: &Arc<Self>) -> Result<ReadGuard> {
         let mut lifecycle = self.lifecycle.lock();
         lifecycle.status.require_active()?;
@@ -246,7 +280,18 @@ impl RunState {
                 let output = encode_json(&RunStep::CallModel {
                     id,
                     models: &call.models,
-                    request: &call.request.llm_request,
+                    request: self.wire.is_none().then_some(&call.request.llm_request),
+                    requests: self
+                        .wire
+                        .as_ref()
+                        .map(|wire| {
+                            wire.prepare(
+                                &call.models,
+                                &call.request.llm_request,
+                                &self.cancellation,
+                            )
+                        })
+                        .transpose()?,
                 })?;
                 let mut lifecycle = self.lifecycle.lock();
                 lifecycle.status.require_active()?;
@@ -289,6 +334,17 @@ impl RunState {
                             algorithm: &metadata.algorithm,
                             evidence: metadata.evidence.as_ref(),
                         }),
+                    requests: self
+                        .wire
+                        .as_ref()
+                        .map(|wire| {
+                            wire.prepare(
+                                &outcome.selected_model_ids,
+                                &outcome.request.llm_request,
+                                &self.cancellation,
+                            )
+                        })
+                        .transpose()?,
                 })?;
                 let mut lifecycle = self.lifecycle.lock();
                 lifecycle.status.require_active()?;
@@ -418,6 +474,37 @@ fn parse_model_groups(groups: ModelGroups) -> Result<HashMap<Category, Vec<Model
         .collect()
 }
 
+fn start_run(
+    router: &SyRouter,
+    llm_request: LlmRequest,
+    context: RunContext,
+    wire: Option<wire::Options>,
+) -> Result<SyRun> {
+    let mut models = RuntimeModels::new(parse_model_groups(context.models)?);
+    if let Some(subagent_models) = context.subagent_models {
+        models = models.with_subagent(parse_model_groups(subagent_models)?);
+    }
+    let request = Request {
+        llm_request,
+        metadata: context.metadata.map(|metadata| Metadata {
+            session_id: metadata.session_id,
+            agent_id: metadata.agent_id,
+            is_subagent: metadata.is_subagent,
+            is_delegated_work: metadata.is_delegated_work,
+            session_final: metadata.session_final,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let _entered = router.engine.runtime.enter();
+    let stream = Arc::clone(&router.engine.algorithm).run_stream(
+        request,
+        Arc::new(models),
+        State::default(),
+    );
+    Ok(SyRun::new(stream, Arc::clone(&router.engine), wire))
+}
+
 /// Builds an algorithm without provider clients.
 /// # Safety
 /// JSON must be NUL-terminated and `out` writable. Free the returned handle with `sy_router_free`.
@@ -453,29 +540,37 @@ pub unsafe extern "C" fn sy_run_new(
         let out = unsafe { out.as_mut() }.ok_or("missing run output")?;
         *out = std::ptr::null_mut();
         let input: RunInput = unsafe { parse_json_input(input_json) }?;
-        let mut models = RuntimeModels::new(parse_model_groups(input.models)?);
-        if let Some(subagent_models) = input.subagent_models {
-            models = models.with_subagent(parse_model_groups(subagent_models)?);
-        }
-        let request = Request {
-            llm_request: input.request,
-            metadata: input.metadata.map(|metadata| Metadata {
-                session_id: metadata.session_id,
-                agent_id: metadata.agent_id,
-                is_subagent: metadata.is_subagent,
-                is_delegated_work: metadata.is_delegated_work,
-                session_final: metadata.session_final,
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        let _entered = router.engine.runtime.enter();
-        let stream = Arc::clone(&router.engine.algorithm).run_stream(
+        *out = Box::into_raw(Box::new(start_run(
+            router,
+            input.request,
+            input.context,
+            None,
+        )?));
+        Ok(())
+    })
+}
+
+/// Starts provider-shaped routing using the same read, reply, cancel, and free operations.
+/// # Safety
+/// Handles must be live, JSON NUL-terminated, and `out` writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_decide_new(
+    router: *const SyRouter,
+    input_json: *const c_char,
+    out: *mut *mut SyRun,
+) -> *mut c_char {
+    ffi_call(|| {
+        let router = unsafe { router.as_ref() }.ok_or("missing router")?;
+        let out = unsafe { out.as_mut() }.ok_or("missing run output")?;
+        *out = std::ptr::null_mut();
+        let input: wire::Input = unsafe { parse_json_input(input_json) }?;
+        let request = input.options.decode_request(&input.request)?;
+        *out = Box::into_raw(Box::new(start_run(
+            router,
             request,
-            Arc::new(models),
-            State::default(),
-        );
-        *out = Box::into_raw(Box::new(SyRun::new(stream, Arc::clone(&router.engine))));
+            input.context,
+            Some(input.options),
+        )?));
         Ok(())
     })
 }
@@ -540,22 +635,16 @@ pub unsafe extern "C" fn sy_run_respond(
                     CallReply::Response {
                         response,
                         served_model,
-                    } => serde_json::from_value(response).map(|response| {
-                        Ok(Response {
-                            llm_response: LlmResponse::Agg(response),
-                            metadata: served_model.map(|model| Metadata {
-                                served_model: Some(model),
-                                ..Default::default()
-                            }),
-                            upstream_headers: Default::default(),
-                        })
-                    }),
+                    } => run
+                        .state
+                        .decode_response(response, served_model, &call.models)
+                        .map(Ok),
                 };
                 let response = match response {
                     Ok(response) => response,
                     Err(error) => {
                         lifecycle.pending.insert(call_id, Call::Model(call));
-                        return Err(error.into());
+                        return Err(error);
                     }
                 };
                 run.engine
@@ -610,7 +699,8 @@ pub unsafe extern "C" fn sy_run_cancel(run: *const SyRun) {
 
 /// Cancels a run, waits for accepted callbacks to return, and frees it.
 /// # Safety
-/// Pass a handle from `sy_run_new` once, or NULL. Other calls using it must have returned.
+/// Pass a handle from `sy_run_new` or `sy_decide_new` once, or NULL.
+/// Other calls using it must have returned.
 /// Accepted callbacks may still be active; keep their state live until they return.
 /// Do not call from a completion callback or Tokio task.
 #[unsafe(no_mangle)]
