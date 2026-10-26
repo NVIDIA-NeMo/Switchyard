@@ -689,10 +689,21 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#development-api" class="md-nav__link">
+  <a href="#choose-the-integration-boundary" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Development API
+        Choose the integration boundary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#host-responsibilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Host responsibilities
       
     </span>
   </a>
@@ -708,27 +719,22 @@
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#concurrent-calls-and-cancellation" class="md-nav__link">
+    <nav class="md-nav" aria-label="Serve routing-time calls">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#development-api" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Concurrent calls and cancellation
+        Development API
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#metadata-and-telemetry" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Metadata and telemetry
-      
-    </span>
-  </a>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -740,6 +746,34 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="Python bindings">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#concurrent-calls-and-cancellation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Concurrent calls and cancellation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#metadata-and-telemetry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metadata and telemetry
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -2263,10 +2297,21 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#development-api" class="md-nav__link">
+  <a href="#choose-the-integration-boundary" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Development API
+        Choose the integration boundary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#host-responsibilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Host responsibilities
       
     </span>
   </a>
@@ -2282,27 +2327,22 @@
     </span>
   </a>
   
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#concurrent-calls-and-cancellation" class="md-nav__link">
+    <nav class="md-nav" aria-label="Serve routing-time calls">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#development-api" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Concurrent calls and cancellation
+        Development API
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#metadata-and-telemetry" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Metadata and telemetry
-      
-    </span>
-  </a>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -2314,6 +2354,34 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="Python bindings">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#concurrent-calls-and-cancellation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Concurrent calls and cancellation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#metadata-and-telemetry" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metadata and telemetry
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -2338,21 +2406,67 @@
 
 
 <h1 id="host-integration">Host Integration<a class="headerlink" href="#host-integration" title="Permanent link">&para;</a></h1>
-<p>Use this guide for shared client-trait adapters and Python bindings. For Rust
-project setup and a working model-client handoff, start with the
-<a href="../../getting_started/">libsy quickstart</a>.</p>
-<p>For an explanation of steps, call objects, and the request and response contracts,
-read <a href="../../mechanics_of_libsy/">Mechanics of Libsy</a>.</p>
-<h2 id="development-api">Development API<a class="headerlink" href="#development-api" title="Permanent link">&para;</a></h2>
-<p>The callback examples use the development API, including its asynchronous
-<code>respond</code> method. Use the <a href="../../getting_started/#install">quickstart's dependencies</a>
-for the Rust snippets. The released <code>v0.3.0</code> callback API is synchronous. Use
-matching source-built <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/2623f997f23bd1f0b1be7b970b1bfd1233148673/INSTALLATION.md#development">Python bindings</a> for
-the Python callback example below.</p>
+<p>Add libsy where your gateway or agent harness chooses and calls a model. Your
+application keeps its transport, credentials, and lifecycle.</p>
+<p>Start with the <strong><a href="../../getting_started/">Rust quickstart</a></strong> for a working example.
+Use <strong><a href="../../mechanics_of_libsy/">Mechanics of Libsy</a></strong> for execution and
+<strong><a href="../../protocols/">Switchyard Protocols</a></strong> for data conversion. This page
+covers the responsibilities specific to your host.</p>
+<h2 id="choose-the-integration-boundary">Choose the integration boundary<a class="headerlink" href="#choose-the-integration-boundary" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Host</th>
+<th>Insert routing here</th>
+<th>Preserve from the existing application</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Gateway</td>
+<td>After request admission and input decoding, before model dispatch.</td>
+<td>Authentication, tenant isolation, budgets, model inventory, provider credentials, and response delivery.</td>
+</tr>
+<tr>
+<td>Agent harness</td>
+<td>Before each model turn, after assembling conversation and tool history.</td>
+<td>Tool execution, task state, model clients, conversation storage, and the agent loop.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="host-responsibilities">Host responsibilities<a class="headerlink" href="#host-responsibilities" title="Permanent link">&para;</a></h2>
+<p><strong>Dispatch every requested call.</strong> Apply your credentials, budgets, and access
+policy to routing-time judge calls as well as answer calls. Send internal calls
+through model dispatch without entering the same router again. Supply only
+models your host can reach. See <a href="../../mechanics_of_libsy/#read-the-next-step">call handling</a>
+and <a href="../../mechanics_of_libsy/#stepdone">final-outcome handling</a>.</p>
+<p><strong>Keep history and state.</strong> Supply the tool history required by the algorithm;
+provider continuation IDs alone can hide that evidence. Scope session IDs to
+the tenant and conversation. Reuse algorithm instances when they retain session
+decisions, and decide how your host handles concurrent turns and multiple
+processes. State behavior is algorithm-specific; see <a href="../../routing_algorithms/composite_routing/#sessions">Composite sessions</a>
+and the <a href="../../routing_algorithms/plan_execute_routing/#responses-api-history-requirement">Plan/Execute history requirement</a>.</p>
+<p><strong>Observe the complete run.</strong> Include judge calls and final model work in your
+host's observations. Configure telemetry collection in your application and
+instrument model I/O performed by your own clients. See the
+<a href="../opentelemetry/#host-setup">OpenTelemetry reference</a>.</p>
+<p>For existing integrations, check <a href="../../integrations/nemo_relay/">NeMo Relay</a>
+or the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6366ac3cf3547674bad0be341bed63133acf4c8/examples/litellm/README.md#supported-algorithm-semantics">LiteLLM compatibility notes</a>.
+The experimental LiteLLM plugin supports decision-only routing and cannot serve
+intermediate model calls.</p>
 <h2 id="serve-routing-time-calls">Serve routing-time calls<a class="headerlink" href="#serve-routing-time-calls" title="Permanent link">&para;</a></h2>
-<p>The <a href="../../mechanics_of_libsy/#read-the-next-step">Step loop</a> uses adapters that
-return <code>switchyard_libsy::Result</code>. When using <code>RoutedLlmClient</code> or
-<code>RoutedDecisionClient</code>, map their errors to <code>LibsyError</code>:</p>
+<p>Use your existing client as shown in the <a href="../../mechanics_of_libsy/#read-the-next-step">Step loop</a>.
+The shared client traits below are optional.</p>
+<details>
+<summary>Optional: adapt the shared client traits</summary>
+<h3 id="development-api">Development API<a class="headerlink" href="#development-api" title="Permanent link">&para;</a></h3>
+<p>These adapters use the <a href="../../getting_started/#install">quickstart's development dependencies</a>.
+Their asynchronous reply method differs from the synchronous callback API in
+the released <code>v0.3.0</code> crates.</p>
+<p>When using
+<a href="../../rust/switchyard_protocol/client/trait.RoutedLlmClient.html"><code>RoutedLlmClient</code></a>
+or <a href="../../rust/switchyard_protocol/client/trait.RoutedDecisionClient.html"><code>RoutedDecisionClient</code></a>,
+adapt errors to <a href="../../rust/switchyard_libsy/enum.LibsyError.html"><code>LibsyError</code></a>:</p>
 <div class="language-rust highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_libsy</span><span class="p">::{</span><span class="n">CallDecision</span><span class="p">,</span><span class="w"> </span><span class="n">CallModel</span><span class="p">,</span><span class="w"> </span><span class="n">LibsyError</span><span class="p">,</span><span class="w"> </span><span class="nb">Result</span><span class="p">};</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="k">use</span><span class="w"> </span><span class="n">switchyard_protocol</span><span class="p">::{</span><span class="n">RoutedDecisionClient</span><span class="p">,</span><span class="w"> </span><span class="n">RoutedLlmClient</span><span class="p">};</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>
@@ -2372,48 +2486,56 @@ return <code>switchyard_libsy::Result</code>. When using <code>RoutedLlmClient</
 </span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a><span class="w">    </span><span class="p">}).</span><span class="k">await</span>
 </span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a><span class="p">}</span>
 </span></code></pre></div>
-<p>In Python, the client coroutine returns <code>LlmResponse.Agg</code> or <code>LlmResponse.Stream</code>:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">await</span> <span class="n">call</span><span class="o">.</span><span class="n">respond</span><span class="p">(</span><span class="n">client</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">call</span><span class="o">.</span><span class="n">request</span><span class="p">,</span> <span class="n">call</span><span class="o">.</span><span class="n">models</span><span class="p">[</span><span class="mi">0</span><span class="p">]))</span>
-</span></code></pre></div>
-<p>Pass the coroutine itself to <code>respond</code>. Python <code>call.fail(error)</code> is also
-awaitable. Decision calls use the same pattern with their decision response type.</p>
-<h2 id="concurrent-calls-and-cancellation">Concurrent calls and cancellation<a class="headerlink" href="#concurrent-calls-and-cancellation" title="Permanent link">&para;</a></h2>
-<p>See <a href="../../mechanics_of_libsy/#control-how-work-runs">Control how work runs</a> for
-Rust execution, cancellation behavior, and upstream limits.</p>
-<p>Python <code>respond</code> cancels and awaits the supplied provider work before returning. For concurrent algorithms, the host creates handler tasks with <code>asyncio.create_task</code> and must cancel and await remaining handlers when the run ends; see the complete <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/2623f997f23bd1f0b1be7b970b1bfd1233148673/examples/libsy.py">Python example</a>. Awaiting handlers one at a time inside the step loop serializes their execution.</p>
-<h2 id="metadata-and-telemetry">Metadata and telemetry<a class="headerlink" href="#metadata-and-telemetry" title="Permanent link">&para;</a></h2>
-<p>The <a href="../../mechanics_of_libsy/#stepdone">final outcome</a> carries
-routing metadata. In Python, read <code>outcome.metadata.outcome_id</code>,
-<code>outcome.metadata.algorithm</code>, and <code>outcome.metadata.evidence</code> after checking that
-<code>outcome.metadata</code> is present. Evidence is a normal Python value, usually a
-dictionary; algorithms without evidence return <code>None</code>.</p>
-<p>See the <a href="../opentelemetry/">OpenTelemetry reference</a> for field names, metrics,
-and host export setup.</p>
-<p>For plan/execute, supply conversation history, including tool calls and results, before routing. Responses API continuation IDs alone are not enough. See the <a href="../../routing_algorithms/plan_execute_routing/#responses-api-history-requirement">Responses API history requirement</a>.</p>
+</details>
 <h2 id="python-bindings">Python bindings<a class="headerlink" href="#python-bindings" title="Permanent link">&para;</a></h2>
-<p>Python bindings run the same Rust algorithms. With Python 3.10+ and <a href="https://docs.astral.sh/uv/getting-started/installation/">uv</a>, create a project and install the released package:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>uv<span class="w"> </span>init<span class="w"> </span>--bare<span class="w"> </span>switchyard-python-demo
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nb">cd</span><span class="w"> </span>switchyard-python-demo
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>uv<span class="w"> </span>add<span class="w"> </span><span class="s2">&quot;nemo-switchyard==0.3.0&quot;</span>
+<p>The bindings run the same Rust algorithms. The local routing example below works
+with the released package. For the asynchronous callbacks and cleanup described
+after it, build matching <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6366ac3cf3547674bad0be341bed63133acf4c8/INSTALLATION.md#development">development bindings</a>
+and follow the complete <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6366ac3cf3547674bad0be341bed63133acf4c8/examples/libsy.py">Python host example</a>.</p>
+<details>
+<summary>Python setup, callbacks, and metadata</summary>
+<p>With Python 3.10+ and <a href="https://docs.astral.sh/uv/getting-started/installation/">uv</a>,
+create a project and install the released package:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>uv<span class="w"> </span>init<span class="w"> </span>--bare<span class="w"> </span>switchyard-python-demo
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nb">cd</span><span class="w"> </span>switchyard-python-demo
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>uv<span class="w"> </span>add<span class="w"> </span><span class="s2">&quot;nemo-switchyard==0.3.0&quot;</span>
 </span></code></pre></div>
 <p>Save as <code>route.py</code>:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">switchyard.libsy</span><span class="w"> </span><span class="kn">import</span> <span class="n">Step</span><span class="p">,</span> <span class="n">algorithms</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">router</span> <span class="o">=</span> <span class="n">algorithms</span><span class="o">.</span><span class="n">stage_router</span><span class="p">(</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>        <span class="n">picker</span><span class="o">=</span><span class="s2">&quot;efficient_first&quot;</span><span class="p">,</span> <span class="n">confidence_threshold</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>    <span class="n">models</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;efficient&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;Efficient&quot;</span><span class="p">],</span> <span class="s2">&quot;capable&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;Capable&quot;</span><span class="p">]}</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="n">models</span><span class="p">[</span><span class="s2">&quot;any&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;Efficient&quot;</span><span class="p">,</span> <span class="s2">&quot;Capable&quot;</span><span class="p">]</span>
-</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>    <span class="n">text</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="s2">&quot;Hello&quot;</span><span class="p">}</span>
-</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>    <span class="n">request</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;messages&quot;</span><span class="p">:</span> <span class="p">[{</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span> <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">text</span><span class="p">]}]}</span>
-</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>    <span class="k">async</span> <span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="n">router</span><span class="o">.</span><span class="n">run_stream</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">models</span><span class="p">):</span>
-</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">step</span><span class="p">,</span> <span class="n">Step</span><span class="o">.</span><span class="n">Done</span><span class="p">):</span>
-</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>            <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Selected:&quot;</span><span class="p">,</span> <span class="n">step</span><span class="o">.</span><span class="n">outcome</span><span class="o">.</span><span class="n">selected_model_ids</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
-</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>
-</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">main</span><span class="p">())</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">asyncio</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">switchyard.libsy</span><span class="w"> </span><span class="kn">import</span> <span class="n">Step</span><span class="p">,</span> <span class="n">algorithms</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">main</span><span class="p">():</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="n">router</span> <span class="o">=</span> <span class="n">algorithms</span><span class="o">.</span><span class="n">stage_router</span><span class="p">(</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>        <span class="n">picker</span><span class="o">=</span><span class="s2">&quot;efficient_first&quot;</span><span class="p">,</span> <span class="n">confidence_threshold</span><span class="o">=</span><span class="mf">0.5</span><span class="p">)</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="n">models</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;efficient&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;Efficient&quot;</span><span class="p">],</span> <span class="s2">&quot;capable&quot;</span><span class="p">:</span> <span class="p">[</span><span class="s2">&quot;Capable&quot;</span><span class="p">]}</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="n">models</span><span class="p">[</span><span class="s2">&quot;any&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;Efficient&quot;</span><span class="p">,</span> <span class="s2">&quot;Capable&quot;</span><span class="p">]</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="n">text</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;text&quot;</span><span class="p">,</span> <span class="s2">&quot;text&quot;</span><span class="p">:</span> <span class="s2">&quot;Hello&quot;</span><span class="p">}</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>    <span class="n">request</span> <span class="o">=</span> <span class="p">{</span><span class="s2">&quot;messages&quot;</span><span class="p">:</span> <span class="p">[{</span><span class="s2">&quot;role&quot;</span><span class="p">:</span> <span class="s2">&quot;user&quot;</span><span class="p">,</span> <span class="s2">&quot;content&quot;</span><span class="p">:</span> <span class="p">[</span><span class="n">text</span><span class="p">]}]}</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    <span class="k">async</span> <span class="k">for</span> <span class="n">step</span> <span class="ow">in</span> <span class="n">router</span><span class="o">.</span><span class="n">run_stream</span><span class="p">(</span><span class="n">request</span><span class="p">,</span> <span class="n">models</span><span class="p">):</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>        <span class="k">if</span> <span class="nb">isinstance</span><span class="p">(</span><span class="n">step</span><span class="p">,</span> <span class="n">Step</span><span class="o">.</span><span class="n">Done</span><span class="p">):</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>            <span class="nb">print</span><span class="p">(</span><span class="s2">&quot;Selected:&quot;</span><span class="p">,</span> <span class="n">step</span><span class="o">.</span><span class="n">outcome</span><span class="o">.</span><span class="n">selected_model_ids</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">main</span><span class="p">())</span>
 </span></code></pre></div>
-<p><code>uv run route.py</code> prints <code>Selected: Efficient</code> without making a network call. This routing-only example works with the released package. For the development API's host callbacks and cancellation, build the matching bindings from source as described at the top of this page, then see <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/2623f997f23bd1f0b1be7b970b1bfd1233148673/examples/libsy.py">the complete host example</a>.</p>
+<p><code>uv run route.py</code> prints <code>Selected: Efficient</code> without making a network call.</p>
+<h3 id="concurrent-calls-and-cancellation">Concurrent calls and cancellation<a class="headerlink" href="#concurrent-calls-and-cancellation" title="Permanent link">&para;</a></h3>
+<p>The client coroutine returns <code>LlmResponse.Agg</code> or <code>LlmResponse.Stream</code>.
+Pass the coroutine itself to <code>respond</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">await</span> <span class="n">call</span><span class="o">.</span><span class="n">respond</span><span class="p">(</span><span class="n">client</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">call</span><span class="o">.</span><span class="n">request</span><span class="p">,</span> <span class="n">call</span><span class="o">.</span><span class="n">models</span><span class="p">[</span><span class="mi">0</span><span class="p">]))</span>
+</span></code></pre></div>
+<p><code>respond</code> cancels and awaits the supplied provider work before returning.
+For concurrent algorithms, create handler tasks and cancel and await the remaining
+handlers when the run ends, as in the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6366ac3cf3547674bad0be341bed63133acf4c8/examples/libsy.py">Python host example</a>.
+Awaiting one handler at a time serializes execution. <code>call.fail(error)</code> is also
+awaitable; decision calls use the same reply pattern.</p>
+<p>For the shared cancellation behavior and upstream limits, see
+<a href="../../mechanics_of_libsy/#control-how-work-runs">Mechanics</a>.</p>
+<h3 id="metadata-and-telemetry">Metadata and telemetry<a class="headerlink" href="#metadata-and-telemetry" title="Permanent link">&para;</a></h3>
+<p>After checking that <code>outcome.metadata</code> is present, read its <code>outcome_id</code>,
+<code>algorithm</code>, and <code>evidence</code> attributes. Evidence is a normal Python value, usually
+a dictionary; algorithms without evidence return <code>None</code>. See the
+<a href="../opentelemetry/">OpenTelemetry reference</a> for signals and export setup.</p>
+</details>
 
 
 
