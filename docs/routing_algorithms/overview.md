@@ -5,8 +5,9 @@ becomes a model ID available through OpenAI Chat Completions, Anthropic Messages
 and OpenAI Responses requests.
 
 Use this page to choose a routing strategy, then open its detailed page for
-configuration and tuning. For the vocabulary these pages use, see
-[Core Concepts](../core_concepts.md).
+configuration and tuning. [Mechanics of Libsy](../mechanics_of_libsy.md) explains
+the execution model; [Switchyard Protocols](../protocols/index.md) explains the
+request and response data.
 
 ## Choose a strategy
 

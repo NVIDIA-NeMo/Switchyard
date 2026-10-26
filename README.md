@@ -127,9 +127,9 @@ For latency and routing overhead testing, see [Soak Testing](docs/operations/soa
 ### Further reading
 
 - [Benchmark setup and profiles](benchmark/README.md): run your own baseline and routing comparisons.
-- [Core concepts](docs/core_concepts.md): clients, targets, routes, and model IDs.
+- [Mechanics of Libsy](docs/mechanics_of_libsy.md): steps, model calls, and routing outcomes.
 - [TOML schema](docs/reference/toml_schema.md): configuration fields and defaults.
-- [Architecture](docs/architecture.md): libsy and runtime components.
+- [Rust crate reference](docs/reference/rust_api.md): core and optional integration crates.
 - [Installation](INSTALLATION.md): package and platform requirements.
 
 ## Components

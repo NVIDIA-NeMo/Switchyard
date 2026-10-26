@@ -52,7 +52,7 @@ For latency and routing overhead testing, see [Soak Testing](https://nvidia-nemo
 ### Further reading
 
 - [Benchmark setup and profiles](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/benchmark/README.md): run your own baseline and routing comparisons.
-- [Core concepts](https://nvidia-nemo.github.io/Switchyard/core_concepts/): clients, targets, routes, and model IDs.
+- [Mechanics of Libsy](https://nvidia-nemo.github.io/Switchyard/mechanics_of_libsy/): steps, model calls, and routing outcomes.
 - [TOML schema](https://nvidia-nemo.github.io/Switchyard/reference/toml_schema/): configuration fields and defaults.
-- [Architecture](https://nvidia-nemo.github.io/Switchyard/architecture/): library and runtime components.
+- [Rust crate reference](https://nvidia-nemo.github.io/Switchyard/reference/rust_api/): core and optional integration crates.
 - [Installation](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/INSTALLATION.md): package and platform requirements.

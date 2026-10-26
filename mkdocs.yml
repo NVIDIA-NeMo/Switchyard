@@ -24,22 +24,14 @@ nav:
           - Overview: protocols/index.md
           - LLM-Related Protocols: protocols/llm.md
           - Decision Model-Related Protocols: protocols/decisions.md
-      - Evaluate Locally: operations/local_evaluation.md
       - Known Issues: known_issues.md
-  - Benchmarks: benchmarks.md
-  - Concepts:
-      - Core Concepts: core_concepts.md
-      - Architecture: architecture.md
-  - Integrations:
-      - NeMo Relay: integrations/nemo_relay.md
-      - pi: integrations/pi.md
-      - Oh My Pi: integrations/oh_my_pi.md
-  - Recipes:
-      - Single-provider coding agents: recipes/single_provider_coding_agents.md
+  - Integrate Switchyard:
+      - Embed in Your Gateway or Harness: reference/host_integration.md
+      - Gateways:
+          - NeMo Relay: integrations/nemo_relay.md
   - Routing:
       - Algorithms:
           - Overview: routing_algorithms/overview.md
-          - Model Selection: routing_algorithms/model_selection.md
           - Task (LLM Classifier): routing_algorithms/llm_classifier_routing.md
           - Execution (Stage Router): routing_algorithms/stage_router_routing.md
           - Plan/Execute Routing: routing_algorithms/plan_execute_routing.md
@@ -49,12 +41,16 @@ nav:
           - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md
           - Advisor-Gate Routing: routing_algorithms/advisor_gate_routing.md
           - Verification-Gated Routing: routing_algorithms/vgr_routing.md
-  - Tuning:
-      - Tuning Loop: tuning/index.md
-  - Operations:
-      - Troubleshooting: operations/troubleshooting.md
-      - Context-Window Handling: operations/context_window.md
-      - Soak Testing: operations/soak_test.md
+      - Choose Models: routing_algorithms/model_selection.md
+  - Evaluate Routing:
+      - Benchmarks: benchmarks.md
+      - Compare and Tune: tuning/index.md
+  - Local Demo:
+      - Run the Reference Server: operations/local_evaluation.md
+      - Local Agents:
+          - Claude Code and Codex: recipes/single_provider_coding_agents.md
+          - pi: integrations/pi.md
+          - Oh My Pi: integrations/oh_my_pi.md
   - Reference:
       - Protocols:
           - LLM:
@@ -64,11 +60,14 @@ nav:
           - Decision Models:
               - Questions: reference/protocols/decision_questions.md
               - Answers: reference/protocols/decision_answers.md
-      - Host Integration: reference/host_integration.md
-      - Server CLI Reference: cli_reference.md
-      - TOML Schema: reference/toml_schema.md
+      - Runner Configuration (TOML): reference/toml_schema.md
       - OpenTelemetry: reference/opentelemetry.md
       - Rust API: reference/rust_api.md
+      - Context-Window Handling: operations/context_window.md
+      - Troubleshooting: operations/troubleshooting.md
+      - Demo Server:
+          - CLI: cli_reference.md
+          - Soak Testing: operations/soak_test.md
 
 exclude_docs: |
   internal/**

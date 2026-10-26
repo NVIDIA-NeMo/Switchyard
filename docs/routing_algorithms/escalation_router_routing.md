@@ -256,5 +256,4 @@ retained nor logged.
   models, with measured pairs.
 - [LLM Classifier Routing](llm_classifier_routing.md): pick a tier up front
   instead of judging the run.
-- [Architecture](../architecture.md): the end-to-end request lifecycle and system
-  boundaries.
+- [Mechanics of Libsy](../mechanics_of_libsy.md): the execution model and host responsibilities.

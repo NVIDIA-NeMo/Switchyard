@@ -424,7 +424,6 @@ the `stage router override` log line carries it for overrides:
 
 - [Model Selection](model_selection.md): choose and check the two models before
   tuning the threshold.
-- [Architecture](../architecture.md): the end-to-end request lifecycle and
-  system boundaries.
+- [Mechanics of Libsy](../mechanics_of_libsy.md): the execution model and host responsibilities.
 - [TOML Schema](../reference/toml_schema.md#stage_router): the complete
   configuration reference.
