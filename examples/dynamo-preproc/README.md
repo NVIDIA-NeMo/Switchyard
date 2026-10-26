@@ -77,19 +77,30 @@ ROUTES_CONFIG=/etc/switchyard/task-classifier.toml
 METRICS_CONFIG=/etc/switchyard/metrics.toml
 ```
 
-Replace the model IDs and URLs with your deployed services. The classifier's judge
-endpoint must bypass PreProc to avoid a routing loop. Configure a direct `/metrics`
-endpoint for every worker, with labels selecting one independently scheduled engine.
-Keep the worker IDs consistent in both files and update them when workers change.
+Replace the model IDs and judge URL with your deployed services. The judge must
+bypass PreProc to avoid a routing loop. In `metrics.toml`, set one Prometheus query
+endpoint and a target-label selector per model pool. No worker addresses or IDs
+are configured in Switchyard; Prometheus handles target discovery.
 
-The sample uses SGLang: enable `DYN_SYSTEM_PORT=8081` and `--enable-metrics` on each
-worker. It reads `sglang:num_running_reqs` and `sglang:num_queue_reqs`.
-For vLLM, set `backend = "vllm"`; it reads `vllm:num_requests_running` and
-`vllm:num_requests_waiting`. See [Dynamo's metrics documentation](https://docs.nvidia.com/dynamo/reference/observability/metrics-comparison).
+This collector supports SGLang's `sglang:num_queue_reqs` and
+`sglang:num_running_reqs`. Enable SGLang metrics and Prometheus scraping through
+[Dynamo's monitoring setup](https://docs.nvidia.com/dynamo/dev/kubernetes/operations/observability).
+The sample selectors are placeholders: select only engine metrics targets, using
+labels present on both `up` and the SGLang gauges. Each target (`job`, `instance`)
+must expose one running and one queue series. Duplicate rank series are rejected;
+this version does not infer engine topology or deduplicate replicated metrics.
 
-Collection runs in the background. Missing, ambiguous, invalid or stale metrics
-preserve the classifier's decision. Removing `METRICS_CONFIG` or the `infra` table
-also leaves task routing unchanged. StageRouter does not use this adjustment.
+PreProc reads health, queues, running counts and oldest source-sample age at a
+common Prometheus evaluation time. It passes only minimum queue depth, maximum
+queue depth and total running requests to libsy. Missing, unhealthy, ambiguous or
+stale samples preserve the task decision. Source timestamps determine freshness;
+a successful query does not refresh an old observation. Start with one-second
+scrapes and a three-second freshness limit, then validate the engine update delay.
+
+Completeness is checked against Prometheus's discovered targets, not Kubernetes
+replicas. A misconfigured selector or an undiscovered target is outside that check.
+Removing `METRICS_CONFIG` or the `infra` table leaves task routing unchanged.
+StageRouter does not use this adjustment.
 
 Use one PreProc replica. The capacity check and local increment are atomic; counts
 are released when responses finish or are cancelled. Metrics can lag other traffic,

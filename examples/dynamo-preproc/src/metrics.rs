@@ -1,54 +1,58 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Periodic worker scrapes and process-local accounting for routed requests.
+//! Prometheus pool observations and process-local request accounting.
 
 use anyhow::{Context, ensure};
-use futures_util::{StreamExt, future::join_all};
 use serde::Deserialize;
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     path::Path,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use switchyard_protocol::{InfraSignals, ModelId, WorkerLoad};
+use switchyard_protocol::{InfraSignals, ModelId, PoolLoad};
 use switchyard_runner::Route;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
+    endpoint: String,
     poll_interval_ms: u64,
     timeout_ms: u64,
-    max_concurrent: usize,
-    workers: Vec<Worker>,
+    models: Vec<Model>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Worker {
-    id: String,
+struct Model {
     model: ModelId,
-    url: String,
-    backend: Backend,
-    labels: BTreeMap<String, String>,
+    /// Prometheus target labels shared by up and the engine gauges.
+    selector: String,
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Backend {
-    Vllm,
-    Sglang,
+struct Response {
+    status: String,
+    data: Vector,
+    #[serde(default)]
+    warnings: Vec<String>,
 }
 
-impl Backend {
-    fn names(&self) -> (&str, &str) {
-        match self {
-            Self::Vllm => ("vllm:num_requests_running", "vllm:num_requests_waiting"),
-            Self::Sglang => ("sglang:num_running_reqs", "sglang:num_queue_reqs"),
-        }
-    }
+#[derive(Deserialize)]
+struct Vector {
+    #[serde(rename = "resultType")]
+    kind: String,
+    result: Vec<Sample>,
 }
+
+#[derive(Deserialize)]
+struct Sample {
+    metric: BTreeMap<String, String>,
+    value: (f64, String),
+}
+
+type Targets = BTreeMap<(String, String), u64>;
 
 struct Collector {
     config: Config,
@@ -62,29 +66,23 @@ impl Collector {
             config.poll_interval_ms > 0
                 && config.timeout_ms > 0
                 && config.timeout_ms <= config.poll_interval_ms
-                && (1..=64).contains(&config.max_concurrent)
-                && !config.workers.is_empty(),
-            "invalid metrics collection limits"
+                && !config.models.is_empty(),
+            "invalid collection limits"
         );
-        let mut ids = BTreeSet::new();
-        let mut sources = BTreeSet::new();
-        for worker in &config.workers {
+        let mut models = std::collections::BTreeSet::new();
+        for model in &config.models {
             ensure!(
-                !worker.id.is_empty() && ids.insert(&worker.id),
-                "worker IDs must be nonempty and unique"
-            );
-            let url = reqwest::Url::parse(&worker.url)?;
-            ensure!(
-                matches!(url.scheme(), "http" | "https")
-                    && url.username().is_empty()
-                    && url.password().is_none(),
-                "worker metrics URLs must use HTTP without embedded credentials"
-            );
-            ensure!(
-                sources.insert((url.to_string(), &worker.labels)),
-                "duplicate worker metrics source"
+                !model.selector.trim().is_empty() && models.insert(&model.model),
+                "selectors must be nonempty and models unique"
             );
         }
+        let url = reqwest::Url::parse(&config.endpoint)?;
+        ensure!(
+            matches!(url.scheme(), "http" | "https")
+                && url.username().is_empty()
+                && url.password().is_none(),
+            "invalid Prometheus endpoint"
+        );
         let client = reqwest::Client::builder()
             .timeout(Duration::from_millis(config.timeout_ms))
             .redirect(reqwest::redirect::Policy::none())
@@ -92,51 +90,86 @@ impl Collector {
         Ok(Self { config, client })
     }
 
-    async fn scrape(&self, worker: &Worker) -> anyhow::Result<WorkerLoad> {
-        let sampled_at = Instant::now();
-        let response = self
-            .client
-            .get(&worker.url)
-            .header("accept", "text/plain; version=0.0.4")
-            .send()
-            .await?
-            .error_for_status()?;
+    async fn query(&self, query: &str, time: &str) -> anyhow::Result<Vec<Sample>> {
+        let mut url = reqwest::Url::parse(&self.config.endpoint)?;
+        url.query_pairs_mut()
+            .extend_pairs([("query", query), ("time", time)]);
+        let mut response = self.client.get(url).send().await?.error_for_status()?;
         let mut bytes = Vec::new();
-        let mut chunks = response.bytes_stream();
-        while let Some(chunk) = chunks.next().await {
-            let chunk = chunk?;
+        while let Some(chunk) = response.chunk().await? {
             ensure!(
                 bytes.len() + chunk.len() <= 1024 * 1024,
-                "worker metrics exceed 1 MiB"
+                "Prometheus response exceeds 1 MiB"
             );
             bytes.extend_from_slice(&chunk);
         }
-        let (_, scrape) = nom_openmetrics::parser::prometheus(std::str::from_utf8(&bytes)?)
-            .map_err(|_| anyhow::anyhow!("invalid Prometheus exposition"))?;
-        let (running, waiting) = worker.backend.names();
-        Ok(WorkerLoad {
-            sampled_at,
-            running: gauge(&scrape, running, &worker.labels)?,
-            waiting: gauge(&scrape, waiting, &worker.labels)?,
+        let response: Response = serde_json::from_slice(&bytes)?;
+        ensure!(
+            response.status == "success"
+                && response.data.kind == "vector"
+                && response.warnings.is_empty(),
+            "incomplete Prometheus response"
+        );
+        Ok(response.data.result)
+    }
+
+    async fn collect(&self, model: &Model) -> anyhow::Result<PoolLoad> {
+        let started = Instant::now();
+        let time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)?
+            .as_secs_f64()
+            .to_string();
+        let selector = &model.selector;
+        let up = format!("up{{{selector}}}");
+        let queue = format!("sglang:num_queue_reqs{{{selector}}}");
+        let running = format!("sglang:num_running_reqs{{{selector}}}");
+        // Use source timestamps: an instant-query result is stamped at evaluation time.
+        let timestamps = [(&up, "up"), (&queue, "queue"), (&running, "running")]
+            .map(|(metric, signal)| {
+                format!("label_replace(timestamp({metric}), \"signal\", \"{signal}\", \"\", \"\")")
+            })
+            .join(" or ");
+        let age = format!("time() - min({timestamps})");
+        let (up, queue, running, age) = tokio::try_join!(
+            self.query(&up, &time),
+            self.query(&queue, &time),
+            self.query(&running, &time),
+            self.query(&age, &time)
+        )?;
+        let [age] = age.as_slice() else {
+            anyhow::bail!("missing sample age");
+        };
+        let age = Duration::try_from_secs_f64(age.value.1.parse()?)?;
+        let up = targets(up)?;
+        let queue = targets(queue)?;
+        let running = targets(running)?;
+        ensure!(
+            !up.is_empty()
+                && up.values().all(|v| *v == 1)
+                && up.keys().eq(queue.keys())
+                && up.keys().eq(running.keys()),
+            "missing or unhealthy pool targets"
+        );
+        Ok(PoolLoad {
+            sampled_at: started.checked_sub(age).context("invalid sample age")?,
+            min_waiting: *queue.values().min().unwrap(),
+            max_waiting: *queue.values().max().unwrap(),
+            running: running
+                .values()
+                .try_fold(0u64, |sum, n| sum.checked_add(*n))
+                .context("running count overflow")?,
         })
     }
 
     async fn snapshot(&self) -> InfraSignals {
         let mut signals = InfraSignals::new();
-        for batch in self.config.workers.chunks(self.config.max_concurrent) {
-            let results = join_all(batch.iter().map(|worker| self.scrape(worker))).await;
-            for (worker, result) in batch.iter().zip(results) {
-                match result {
-                    Ok(load) => {
-                        signals
-                            .entry(worker.model.clone())
-                            .or_default()
-                            .workers
-                            .insert(worker.id.clone(), load);
-                    }
-                    Err(error) => {
-                        tracing::warn!(worker = %worker.id, %error, "worker metrics unavailable")
-                    }
+        for model in &self.config.models {
+            match self.collect(model).await {
+                Ok(load) => {
+                    signals.entry(model.model.clone()).or_default().load = Some(load);
+                }
+                Err(error) => {
+                    tracing::warn!(model = %model.model, %error, "pool metrics unavailable")
                 }
             }
         }
@@ -144,42 +177,32 @@ impl Collector {
     }
 }
 
-fn gauge(
-    scrape: &[nom_openmetrics::Family<'_>],
-    name: &str,
-    labels: &BTreeMap<String, String>,
-) -> anyhow::Result<u64> {
-    for descriptor in scrape.iter().flat_map(|family| &family.descriptors) {
-        if let nom_openmetrics::MetricDescriptor::Type { metric, r#type } = descriptor {
-            ensure!(
-                *metric != name || matches!(r#type, nom_openmetrics::MetricType::Gauge),
-                "scheduler metric must be a gauge"
-            );
-        }
+fn targets(samples: Vec<Sample>) -> anyhow::Result<Targets> {
+    let mut targets = Targets::new();
+    for sample in samples {
+        let key = (
+            sample
+                .metric
+                .get("job")
+                .context("missing job label")?
+                .clone(),
+            sample
+                .metric
+                .get("instance")
+                .context("missing instance label")?
+                .clone(),
+        );
+        let value: f64 = sample.value.1.parse()?;
+        ensure!(
+            value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value < u64::MAX as f64,
+            "invalid count"
+        );
+        ensure!(
+            targets.insert(key, value as u64).is_none(),
+            "multiple engine series per target"
+        );
     }
-    let mut samples = scrape
-        .iter()
-        .flat_map(|family| &family.samples)
-        .filter(|sample| {
-            sample.name() == name
-                && labels.iter().all(|(key, value)| {
-                    sample
-                        .labels()
-                        .iter()
-                        .any(|label| label.name == key && label.value == *value)
-                })
-        });
-    let sample = samples.next().context("required scheduler gauge missing")?;
-    ensure!(
-        samples.next().is_none(),
-        "ambiguous scheduler gauge; select one worker/rank with labels"
-    );
-    let value = sample.number();
-    ensure!(
-        value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value < u64::MAX as f64,
-        "invalid scheduler gauge value"
-    );
-    Ok(value as u64)
+    Ok(targets)
 }
 
 pub struct Metrics {
@@ -200,7 +223,7 @@ impl Metrics {
                 interval.tick().await;
                 let mut next = collector.snapshot().await;
                 let mut current = shared.lock().unwrap_or_else(|p| p.into_inner());
-                // Scrape failure removes the worker, while local request lifetimes survive refreshes.
+                // Failed collection clears observations, but in-flight counts survive refreshes.
                 for (model, counts) in current.iter() {
                     let entry = next.entry(model.clone()).or_default();
                     entry.local_inflight = counts.local_inflight;
@@ -268,110 +291,105 @@ impl Metrics {
             .sum()
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Router, extract::Path as HttpPath, routing::get};
+    use axum::{Json, Router, extract::Query, routing::get};
+    use serde_json::json;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use switchyard_protocol::{Request, text_request};
     use switchyard_runner::{RoutingOutcome, Runner};
 
-    #[test]
-    fn scheduler_gauges_require_one_finite_nonnegative_integer_series() {
-        let labels = [("engine".into(), "0".into())].into();
-        for backend in [Backend::Vllm, Backend::Sglang] {
-            let (running, _) = backend.names();
-            for (value, valid) in [
-                ("0", true),
-                ("8e0", true),
-                ("NaN", false),
-                ("-1", false),
-                ("1.5", false),
-            ] {
-                let text = format!(
-                    "# TYPE {running} gauge\n{running}{{engine=\"0\"}} {value}\n{running}{{engine=\"1\"}} 9\n"
-                );
-                let (_, scrape) = nom_openmetrics::parser::prometheus(&text).unwrap();
-                assert_eq!(gauge(&scrape, running, &labels).is_ok(), valid, "{value}");
-                assert!(gauge(&scrape, running, &BTreeMap::new()).is_err());
-                assert!(gauge(&scrape, "missing", &labels).is_err());
-            }
+    fn sample(instance: &str, value: &str) -> Sample {
+        Sample {
+            metric: [
+                ("job".into(), "engines".into()),
+                ("instance".into(), instance.into()),
+            ]
+            .into(),
+            value: (1.0, value.into()),
         }
     }
 
+    #[test]
+    fn target_counts_require_unique_finite_nonnegative_integers() {
+        for value in ["NaN", "-1", "1.5", "inf"] {
+            assert!(targets(vec![sample("a", value)]).is_err());
+        }
+        assert_eq!(
+            targets(vec![sample("a", "8e0")])
+                .unwrap()
+                .values()
+                .copied()
+                .sum::<u64>(),
+            8
+        );
+        assert!(targets(vec![sample("a", "1"), sample("a", "2")]).is_err());
+        let mut missing = sample("a", "1");
+        missing.metric.remove("job");
+        assert!(targets(vec![missing]).is_err());
+    }
+
     #[tokio::test]
-    async fn metrics_refresh_and_tracking_enforce_capacity() {
-        let load = Arc::new(AtomicUsize::new(8));
-        let serving_load = load.clone();
-        let app = Router::new()
-            .route("/metrics/{worker}", get(move |HttpPath(worker): HttpPath<String>| {
-                let load = serving_load.load(Ordering::SeqCst);
-                async move {
-                    if load == 99 && worker == "small-b" { return "broken scrape".to_owned(); }
-                    let waiting = if worker == "large" { 0 } else { load };
-                    format!("# TYPE sglang:num_running_reqs gauge\nsglang:num_running_reqs{{engine=\"0\"}} 0\n# TYPE sglang:num_queue_reqs gauge\nsglang:num_queue_reqs{{engine=\"0\"}} {waiting}\n")
-                }
-            }));
+    async fn prometheus_collection_and_tracking_preserve_unknown_and_capacity() {
+        let mode = Arc::new(AtomicUsize::new(0));
+        let serving = mode.clone();
+        let app = Router::new().route("/api/v1/query", get(move |Query(query): Query<BTreeMap<String, String>>| {
+            let mode = serving.load(Ordering::SeqCst);
+            async move {
+                assert!(query.contains_key("time"));
+                let q = &query["query"];
+                let age = q.starts_with("time()");
+                let small = q.contains("small");
+                let count = if mode == 1 && q.starts_with("sglang:num_queue") { 1 } else { 2 };
+                let result = if age {
+                    assert!(q.contains("label_replace(timestamp("));
+                    vec![json!({"metric":{}, "value":[1, if mode == 3 { "10" } else { "0.01" }]})]
+                } else {
+                    (0..count).map(|i| {
+                        let n = if q.starts_with("up") { if mode == 2 { 0 } else { 1 } }
+                            else if small && q.starts_with("sglang:num_queue") { 4 + i } else { 0 };
+                        json!({"metric":{"job":"engines","instance":i.to_string()},"value":[1,n.to_string()]})
+                    }).collect()
+                };
+                Json(json!({"status":"success","data":{"resultType":"vector","result":result},
+                    "warnings": if mode == 4 { vec!["partial response"] } else { vec![] }}))
+            }
+        }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        let routes = include_str!("../config/task-classifier.toml");
-        let infra = routes.split_once("[routes.task.infra]").unwrap().1;
-        let stage = format!(
-            "{}\n[routes.stage.infra]\n{infra}",
-            include_str!("../config/routes.toml")
+        let config = include_str!("../config/metrics.toml").replace(
+            "http://prometheus.monitoring.svc.cluster.local:9090",
+            &format!("http://{address}"),
         );
-        assert!(
-            Runner::from_toml(&stage)
-                .err()
-                .unwrap()
-                .to_string()
-                .contains("infra requires capability llm_classifier")
-        );
-        let runner = Runner::from_toml(routes).unwrap();
-        let route = runner.route("auto").unwrap();
-        let mut config = "poll_interval_ms=100\ntimeout_ms=80\nmax_concurrent=4\n".to_owned();
-        for (id, model) in [
-            ("small-a", "Qwen/Qwen3-0.6B"),
-            ("small-b", "Qwen/Qwen3-0.6B"),
-            ("large", "Qwen/Qwen3-1.7B"),
-        ] {
-            config.push_str(&format!("[[workers]]\nid=\"{id}\"\nmodel=\"{model}\"\nurl=\"http://{address}/metrics/{id}\"\nbackend=\"sglang\"\nlabels={{engine=\"0\"}}\n"));
-        }
-        let path = std::env::temp_dir().join(format!("switchyard-queues-{}.toml", address.port()));
+        let path =
+            std::env::temp_dir().join(format!("switchyard-prometheus-{}.toml", address.port()));
         std::fs::write(&path, config).unwrap();
-        let metrics = Metrics::load(&path).unwrap();
+        let collector = Collector::load(&path).unwrap();
         std::fs::remove_file(path).unwrap();
-        for waiting in [8, 0, 99] {
-            load.store(waiting, Ordering::SeqCst);
-            tokio::time::timeout(Duration::from_secs(3), async {
-                loop {
-                    let ready = {
-                        let state = metrics.state.lock().unwrap();
-                        state
-                            .get(&ModelId::from("Qwen/Qwen3-0.6B"))
-                            .is_some_and(|m| {
-                                if waiting == 99 {
-                                    !m.workers.contains_key("small-b")
-                                } else {
-                                    m.workers
-                                        .get("small-a")
-                                        .is_some_and(|w| w.waiting == waiting as u64)
-                                }
-                            })
-                    };
-                    if ready {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-            })
-            .await
-            .unwrap();
-            let results = std::thread::scope(|scope| {
+        let metrics = Metrics::empty_for_test();
+        let runner = Runner::from_toml(include_str!("../config/task-classifier.toml")).unwrap();
+        let route = runner.route("auto").unwrap();
+        for case in 0..5 {
+            mode.store(case, Ordering::SeqCst);
+            let snapshot = collector.snapshot().await;
+            if case == 0 {
+                let load = snapshot[&ModelId::from("Qwen/Qwen3-0.6B")]
+                    .load
+                    .as_ref()
+                    .unwrap();
+                assert_eq!(
+                    (load.min_waiting, load.max_waiting, load.running),
+                    (4, 5, 0)
+                );
+            } else if case != 3 {
+                assert!(snapshot.is_empty());
+            }
+            *metrics.state.lock().unwrap() = snapshot;
+            let guards = std::thread::scope(|scope| {
                 let handles: Vec<_> = (0..8)
                     .map(|_| {
                         let metrics = &metrics;
@@ -384,8 +402,7 @@ mod tests {
                                     ..Default::default()
                                 },
                             );
-                            let guard = metrics.track(route, &mut outcome).unwrap();
-                            (outcome.selected_model_id().unwrap().to_string(), guard)
+                            metrics.track(route, &mut outcome).unwrap()
                         })
                     })
                     .collect();
@@ -394,14 +411,15 @@ mod tests {
                     .map(|h| h.join().unwrap())
                     .collect::<Vec<_>>()
             });
-            let moved = results
-                .iter()
-                .filter(|(model, _)| model == "Qwen/Qwen3-1.7B")
-                .count();
-            assert_eq!(moved, if waiting == 8 { 2 } else { 0 });
-            drop(results);
-            let state = metrics.state.lock().unwrap();
-            assert!(state.values().all(|v| v.local_inflight == 0));
+            assert_eq!(
+                guards
+                    .iter()
+                    .filter(|g| g.model.as_str() == "Qwen/Qwen3-1.7B")
+                    .count(),
+                if case == 0 { 2 } else { 0 }
+            );
+            drop(guards);
+            assert_eq!(metrics.inflight_for_test(), 0);
         }
         server.abort();
     }

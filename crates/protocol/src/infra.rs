@@ -1,30 +1,32 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Serving observations supplied by the host for infrastructure-aware routing.
+//! Model-pool observations supplied by the serving integration.
 
 use crate::ModelId;
 use std::{collections::BTreeMap, time::Instant};
 
-/// Model observations. Missing models or workers mean unknown, never idle.
+/// Observations keyed by model, without worker identities.
 pub type InfraSignals = BTreeMap<ModelId, ModelInfraSignals>;
 
-/// Backend worker gauges and requests still in flight through this host.
+/// Pool observations and local request accounting.
 #[derive(Clone, Debug, Default)]
 pub struct ModelInfraSignals {
-    /// One entry per independently scheduled worker, keyed by configured worker ID.
-    pub workers: BTreeMap<String, WorkerLoad>,
-    /// All requests sent to this model that have not completed at this host.
+    /// Missing or incomplete collection is unknown, never idle.
+    pub load: Option<PoolLoad>,
+    /// Requests still in flight through this host.
     pub local_inflight: u64,
 }
 
-/// Running and waiting gauges from one worker scrape.
+/// Aggregated scheduler counts from a complete pool observation.
 #[derive(Clone, Debug)]
-pub struct WorkerLoad {
-    /// Local monotonic time at the start of collection.
+pub struct PoolLoad {
+    /// Oldest underlying observation, expressed in the host's monotonic clock.
     pub sampled_at: Instant,
-    /// Backend requests currently executing.
+    /// Lowest queue depth among the pool's engines.
+    pub min_waiting: u64,
+    /// Highest queue depth among the pool's engines.
+    pub max_waiting: u64,
+    /// Total running requests across the pool.
     pub running: u64,
-    /// Backend requests waiting for execution capacity.
-    pub waiting: u64,
 }

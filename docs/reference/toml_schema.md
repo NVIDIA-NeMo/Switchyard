@@ -192,20 +192,17 @@ Every route takes the common keys below, plus the keys for its type.
 
 A capability `llm_classifier` route without escalation may include `[routes.<name>.infra]`. Both tiers must have one model; each model may have
 multiple workers. A host applies the policy explicitly with `Route::apply_infra`
-after `Route::decide`, using periodically collected worker metrics and local in-flight
+after `Route::decide`, using periodically collected model-pool metrics and local in-flight
 counts. Plain `decide` and `execute` retain task routing. Sub-agent routing is unchanged.
 
 ```toml
 [routes.example.infra]
-max_signal_age_ms = 1000
+max_signal_age_ms = 3000
 min_waiting_requests = 4
 max_capable_inflight = 2
-efficient_workers = ["small-a", "small-b"]
-capable_workers = ["large"]
 ```
 
-All keys are required. Limits must be positive. Worker IDs must match the complete
-metrics inventory for each model. Missing, stale or incomplete observations retain
+All keys are required. Limits must be positive. Missing, stale or incomplete observations retain
 the task decision. See the
 [Dynamo PreProc example](../../examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing)
 for collection and capacity safeguards.

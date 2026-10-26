@@ -1,29 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-poll_interval_ms = 500
-timeout_ms = 250
-max_concurrent = 4
+endpoint = "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/query"
+poll_interval_ms = 1000
+timeout_ms = 500
 
-# Use a direct endpoint per worker, not a load-balanced Service address.
-# Inspect /metrics and set labels to select exactly one independently scheduled engine.
-[[workers]]
-id = "small-a"
+# Replace these with your Prometheus target labels, present on both up and SGLang gauges.
+# Each selector must include every engine metrics target for that pool, and no other ports.
+[[models]]
 model = "Qwen/Qwen3-0.6B"
-url = "http://small-a:8081/metrics"
-backend = "sglang"
-labels = { model_name = "Qwen/Qwen3-0.6B" }
+selector = 'namespace="switchyard", service="qwen-small-metrics"'
 
-[[workers]]
-id = "small-b"
-model = "Qwen/Qwen3-0.6B"
-url = "http://small-b:8081/metrics"
-backend = "sglang"
-labels = { model_name = "Qwen/Qwen3-0.6B" }
-
-[[workers]]
-id = "large"
+[[models]]
 model = "Qwen/Qwen3-1.7B"
-url = "http://large:8081/metrics"
-backend = "sglang"
-labels = { model_name = "Qwen/Qwen3-1.7B" }
+selector = 'namespace="switchyard", service="qwen-large-metrics"'

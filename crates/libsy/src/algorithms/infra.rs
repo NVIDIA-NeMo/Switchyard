@@ -5,26 +5,19 @@
 
 use crate::{LibsyError, Result, RoutingOutcome, RuntimeModels};
 use serde::Deserialize;
-use std::{
-    collections::BTreeSet,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 use switchyard_protocol::{Category, InfraSignals, ModelInfraSignals};
 
 /// Queue and capacity limits for moving requests to the capable model.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InfraPolicyConfig {
-    /// Maximum age of every required worker observation.
+    /// Maximum age of the pool observation.
     pub max_signal_age_ms: u64,
     /// Every efficient worker must have at least this many waiting requests.
     pub min_waiting_requests: u64,
     /// Stop moving requests when observed running or locally tracked capable work reaches this limit.
     pub max_capable_inflight: u64,
-    /// Complete set of efficient worker IDs in the host's metrics inventory.
-    pub efficient_workers: BTreeSet<String>,
-    /// Complete set of capable worker IDs in the host's metrics inventory.
-    pub capable_workers: BTreeSet<String>,
 }
 
 /// Applies a queue policy after task routing; the host owns collection and request lifetimes.
@@ -38,34 +31,12 @@ impl InfraPolicy {
         if config.max_signal_age_ms == 0
             || config.min_waiting_requests == 0
             || config.max_capable_inflight == 0
-            || config.efficient_workers.is_empty()
-            || config.capable_workers.is_empty()
-            || !config
-                .efficient_workers
-                .is_disjoint(&config.capable_workers)
-            || config
-                .efficient_workers
-                .iter()
-                .chain(&config.capable_workers)
-                .any(String::is_empty)
         {
             return Err(LibsyError::AlgorithmError {
-                message: "infra requires positive limits and distinct nonempty worker IDs".into(),
+                message: "infra requires positive limits".into(),
             });
         }
         Ok(Self { config })
-    }
-
-    fn fresh(&self, model: &ModelInfraSignals, expected: &BTreeSet<String>, now: Instant) -> bool {
-        expected.len() == model.workers.len()
-            && expected.iter().all(|id| {
-                model.workers.get(id).is_some_and(|worker| {
-                    now.checked_duration_since(worker.sampled_at)
-                        .is_some_and(|age| {
-                            age <= Duration::from_millis(self.config.max_signal_age_ms)
-                        })
-                })
-            })
     }
 
     fn evaluate(
@@ -73,31 +44,25 @@ impl InfraPolicy {
         source: &ModelInfraSignals,
         destination: &ModelInfraSignals,
     ) -> (bool, &'static str) {
+        let (Some(source), Some(load)) = (&source.load, &destination.load) else {
+            return (false, "unknown_or_stale_signals");
+        };
         let now = Instant::now();
-        if !self.fresh(source, &self.config.efficient_workers, now)
-            || !self.fresh(destination, &self.config.capable_workers, now)
-        {
+        if [source, load].iter().any(|pool| {
+            now.checked_duration_since(pool.sampled_at)
+                .is_none_or(|age| age > Duration::from_millis(self.config.max_signal_age_ms))
+        }) {
             return (false, "unknown_or_stale_signals");
         }
-        if source
-            .workers
-            .values()
-            .any(|w| w.waiting < self.config.min_waiting_requests)
-        {
-            return (false, "small_workers_not_all_queued");
+        if source.min_waiting < self.config.min_waiting_requests {
+            return (false, "small_pool_not_queued");
         }
-        let running = destination
-            .workers
-            .values()
-            .try_fold(0u64, |sum, w| sum.checked_add(w.running));
-        if destination.workers.values().any(|w| w.waiting > 0)
-            || running.is_none_or(|n| {
-                n.max(destination.local_inflight) >= self.config.max_capable_inflight
-            })
+        if load.max_waiting > 0
+            || load.running.max(destination.local_inflight) >= self.config.max_capable_inflight
         {
             return (false, "protect_capable_capacity");
         }
-        (true, "small_workers_queued")
+        (true, "small_pool_queued")
     }
 
     /// Adjust a decision-only task result. Returns true only when the model changes.
@@ -148,15 +113,13 @@ impl InfraPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use switchyard_protocol::{ModelId, Request, WorkerLoad, text_request};
+    use switchyard_protocol::{ModelId, PoolLoad, Request, text_request};
 
     fn config() -> InfraPolicyConfig {
         InfraPolicyConfig {
             max_signal_age_ms: 1000,
             min_waiting_requests: 4,
             max_capable_inflight: 2,
-            efficient_workers: ["a".into(), "b".into()].into(),
-            capable_workers: ["c".into()].into(),
         }
     }
 
@@ -175,40 +138,29 @@ mod tests {
             "at_threshold",
             "capable_task",
         ] {
-            let model = |ids: &[&str], waiting| ModelInfraSignals {
-                workers: ids
-                    .iter()
-                    .map(|id| {
-                        (
-                            id.to_string(),
-                            WorkerLoad {
-                                sampled_at: Instant::now(),
-                                running: 0,
-                                waiting,
-                            },
-                        )
-                    })
-                    .collect(),
+            let model = |waiting| ModelInfraSignals {
+                load: Some(PoolLoad {
+                    sampled_at: Instant::now(),
+                    running: 0,
+                    min_waiting: waiting,
+                    max_waiting: waiting,
+                }),
                 ..Default::default()
             };
-            let mut source = model(&["a", "b"], 8);
-            let mut destination = model(&["c"], 0);
+            let mut source = model(8);
+            let mut destination = model(0);
             match case {
-                "one_quiet" => source.workers.get_mut("b").unwrap().waiting = 0,
-                "capable_queued" => destination.workers.get_mut("c").unwrap().waiting = 1,
-                "capable_running" => destination.workers.get_mut("c").unwrap().running = 2,
+                "one_quiet" => source.load.as_mut().unwrap().min_waiting = 0,
+                "capable_queued" => destination.load.as_mut().unwrap().max_waiting = 1,
+                "capable_running" => destination.load.as_mut().unwrap().running = 2,
                 "local_limit" => destination.local_inflight = 2,
                 "missing" => {
-                    source.workers.remove("a");
+                    source.load = None;
                 }
-                "stale" => {
-                    source.workers.get_mut("a").unwrap().sampled_at -= Duration::from_secs(2)
-                }
-                "future" => {
-                    destination.workers.get_mut("c").unwrap().sampled_at += Duration::from_secs(2)
-                }
-                "below_threshold" => source.workers.get_mut("b").unwrap().waiting = 3,
-                "at_threshold" => source.workers.values_mut().for_each(|w| w.waiting = 4),
+                "stale" => source.load.as_mut().unwrap().sampled_at -= Duration::from_secs(2),
+                "future" => destination.load.as_mut().unwrap().sampled_at += Duration::from_secs(2),
+                "below_threshold" => source.load.as_mut().unwrap().min_waiting = 3,
+                "at_threshold" => source.load.as_mut().unwrap().min_waiting = 4,
                 _ => {}
             }
             let signals = [

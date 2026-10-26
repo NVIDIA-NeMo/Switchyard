@@ -34,11 +34,8 @@ base_threshold = 0.5
 fail_open = true
 max_output_tokens = 256
 
-# Worker IDs must match every worker in metrics.toml for the respective model.
 # Remove this table for task-only routing. Tune limits for your deployment.
 [routes.task.infra]
-max_signal_age_ms = 1000
+max_signal_age_ms = 3000
 min_waiting_requests = 4
 max_capable_inflight = 2
-efficient_workers = ["small-a", "small-b"]
-capable_workers = ["large"]
