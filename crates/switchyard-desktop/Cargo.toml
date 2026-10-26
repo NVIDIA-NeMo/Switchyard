@@ -55,7 +55,7 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 rfd = { version = "0.17", default-features = false }
-tauri = { version = "2", features = ["tray-icon", "custom-protocol"] }
+tauri = { version = "2", features = ["tray-icon", "custom-protocol", "macos-private-api"] }
 
 [target.'cfg(any(target_os = "macos", windows))'.build-dependencies]
 tauri-build = "2"

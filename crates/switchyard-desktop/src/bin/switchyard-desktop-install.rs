@@ -149,8 +149,16 @@ fn key_remove(name: &str) -> Result<(), String> {
 fn serve(file: &Path) -> Result<(), String> {
     use std::os::unix::process::CommandExt;
     let s = Settings::load(file)?;
-    let config = s.sy_home.join("composite.toml");
-    let mut server = s.server_command();
+    // The installed helper waits until setup atomically saves the app settings.
+    while !s
+        .desktop_settings()
+        .try_exists()
+        .map_err(|error| error.to_string())?
+    {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let config = switchyard_desktop::config::Config::load(&s.desktop_settings())?.config_file;
+    let mut server = s.server_command()?;
     #[cfg(target_os = "linux")]
     credentials::wait_for_keyring()?;
     credentials::configure(&mut server, &config)?;

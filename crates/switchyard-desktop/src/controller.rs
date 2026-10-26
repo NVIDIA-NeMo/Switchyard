@@ -163,6 +163,14 @@ pub enum Action {
     RemoveServerKey {
         name: String,
     },
+    SaveConfiguration {
+        config: Config,
+        create_server: bool,
+    },
+    PreviewResetSettings {},
+    ResetSettings {
+        preview_token: Option<String>,
+    },
     SavePreferences {
         baseline_model: String,
         refresh_seconds: u64,
@@ -173,6 +181,8 @@ pub enum Action {
 /// so adding a field requires an update to `draw`.
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
+    pub needs_setup: bool,
+    pub configuration_error: Option<String>,
     pub update_status: Value,
     /// Each value is the `session.json` file that `sessions::launch` wrote for a managed
     /// worktree session, plus `process_status`. The snapshot passes these files through as JSON.
@@ -440,10 +450,10 @@ struct ReviewedLaunch {
 }
 
 pub struct Controller {
-    health_probe: crate::health::Probe,
     settings: PathBuf,
     config: Config,
     reader: rollup::Reader,
+    health: crate::health::Probe,
     // The generation ties a draft to the server config file selected by the settings.
     generation: u64,
     route_reviews: std::collections::HashMap<String, Review>,
@@ -453,14 +463,15 @@ pub struct Controller {
     route_change: Option<Review>,
     update_review: Option<(String, Value)>,
     launch_review: Option<ReviewedLaunch>,
+    settings_review: Option<Review>,
 }
 impl Controller {
     pub fn new(config: Config, settings: PathBuf) -> Self {
         Self {
             config,
             settings,
-            health_probe: crate::health::Probe::default(),
             reader: rollup::Reader::default(),
+            health: crate::health::Probe::default(),
             generation: 0,
             route_reviews: Default::default(),
             tool_review: None,
@@ -469,6 +480,7 @@ impl Controller {
             route_change: None,
             update_review: None,
             launch_review: None,
+            settings_review: None,
         }
     }
     fn reload(&mut self) -> Result<(), String> {
@@ -520,9 +532,10 @@ impl Controller {
         revision
     }
     pub fn snapshot(&mut self) -> Result<Snapshot, String> {
-        self.reload()?;
-        let mut errors = Vec::new();
-        // One local date keeps the daily and weekly usage totals aligned across midnight.
+        let configuration_error = self.reload().err();
+        let mut errors: Vec<String> = configuration_error.iter().cloned().collect();
+        let needs_setup = crate::config::needs_setup(&self.settings)?;
+        // One local date keeps aggregate totals and frontend filters aligned across midnight.
         let today = chrono::Local::now().date_naive();
         let mut usage_state = Availability::Available;
         let usage = self
@@ -551,7 +564,7 @@ impl Controller {
         })
         .collect();
         let checked_at = chrono::Utc::now().to_rfc3339();
-        let mut health = self.health_probe.details(&self.config.server_url);
+        let mut health = self.health.details(&self.config.server_url);
         health["checked_at"] = json!(checked_at);
         health["url"] = json!(self.config.server_url);
         let server_status = if health["state"] == "running" {
@@ -693,6 +706,8 @@ impl Controller {
             .and_then(|path| switchyard_desktop::install::update_status(&path))
             .unwrap_or_else(|error| json!({"state":"unavailable","message":error}));
         Ok(Snapshot {
+            needs_setup,
+            configuration_error,
             update_status,
             settings: Some(AppSettings {
                 path: self.settings.clone(),
@@ -796,8 +811,59 @@ impl Controller {
             server::command("open", &[&self.settings.display().to_string()])?;
             return Ok(Reply::message("Opened app settings.".into()));
         }
+        // Configuration actions remain available while a saved file needs repair.
+        match &action {
+            Action::SaveConfiguration {
+                config,
+                create_server,
+            } => {
+                crate::config::save_configuration(&self.settings, config, *create_server)?;
+                self.reload()?;
+                return Ok(Reply::message("Saved configuration. The installed server loads these files when it starts. Check Server keys before restarting.".into()));
+            }
+            Action::PreviewResetSettings {} => {
+                let review = Review::capture(json!({}), vec![self.settings.clone()])?;
+                let data = json!({"preview_token":review.token,"file":self.settings,"message":"This removes only the app preferences. A recovery copy is kept. Server configs, keys, history, accounts, and tool settings are preserved."});
+                self.settings_review = Some(review);
+                return Ok(Reply {
+                    message: String::new(),
+                    data,
+                });
+            }
+            Action::ResetSettings { preview_token } => {
+                let review = self
+                    .settings_review
+                    .as_ref()
+                    .ok_or("Review app preference removal first.")?;
+                review.check(preview_token.as_deref(), &json!({}))?;
+                let backup = self
+                    .settings
+                    .with_extension(format!("removed-{}.toml", uuid::Uuid::now_v7()));
+                match self.settings.symlink_metadata() {
+                    Ok(_) => std::fs::rename(&self.settings, &backup)
+                        .map_err(|error| error.to_string())?,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.to_string()),
+                }
+                self.settings_review = None;
+                self.config = Config::defaults_for(&self.settings)?;
+                self.generation += 1;
+                self.route_reviews.clear();
+                self.route_change = None;
+                self.tool_review = None;
+                self.launch_review = None;
+                return Ok(Reply::message(format!(
+                    "Removed app preferences. Recovery copy: {}. Server files are preserved.",
+                    backup.display()
+                )));
+            }
+            _ => {}
+        }
         self.reload()?;
         match action {
+            Action::SaveConfiguration { .. }
+            | Action::PreviewResetSettings {}
+            | Action::ResetSettings { .. } => unreachable!(),
             Action::OpenLogs {} => {
                 server::command("open", &[&logs_dir()?.display().to_string()])?;
                 Ok(Reply::message("Opened Switchyard logs.".into()))
@@ -847,6 +913,7 @@ impl Controller {
                     .check(revision.as_deref(), &json!({"route":route}))?;
                 server::apply(
                     &self.config,
+                    &self.health,
                     &route,
                     algorithm,
                     &choices,
@@ -868,6 +935,7 @@ impl Controller {
                     .check(revision.as_deref(), &json!({"route":route}))?;
                 server::remove(
                     &self.config,
+                    &self.health,
                     &route,
                     &id,
                     self.route_reviews[&route].original()?,
@@ -927,7 +995,7 @@ impl Controller {
                     algorithm.as_deref().map(algorithm_by_id).transpose()?,
                     &choices,
                 )?;
-                server::save_route_change(&self.config, review.original()?, edited)
+                server::save_route_change(&self.config, &self.health, review.original()?, edited)
                     .map(Reply::saved_edit)
             }
             Action::Models {
@@ -1279,7 +1347,9 @@ impl Controller {
                 }
                 sessions::cleanup(&id, data).map(Reply::message)
             }
-            Action::Restart {} => server::restart_checked(&self.config).map(Reply::message),
+            Action::Restart {} => {
+                server::restart_checked(&self.config, &self.health).map(Reply::message)
+            }
             Action::CheckConfig {} => server::check_config(&self.config)
                 .map(|()| Reply::message("Server config check passed.".into())),
             Action::ServerKeys {} => Ok(Reply {
@@ -1594,6 +1664,98 @@ mod tests {
             controller.dispatch(update()).err().as_deref(),
             Some("Review the source update first.")
         );
+    }
+
+    #[test]
+    fn setup_and_settings_share_saves_and_removal_requires_the_reviewed_bytes() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let path = dir.path().join("desktop.toml");
+        let mut config = Config::defaults_for(&path).expect("defaults");
+        config.server_url = "http://127.0.0.1:1".into();
+        let mut controller = Controller::new(config.clone(), path.clone());
+        assert!(controller.snapshot().expect("initial snapshot").needs_setup);
+        let mut unknown = serde_json::to_value(&config).expect("config");
+        unknown["unknown_file"] = json!("ignored.toml");
+        assert!(
+            serde_json::from_value::<Action>(
+                json!({"kind":"save_configuration","config":unknown,"create_server":true})
+            )
+            .is_err()
+        );
+        assert!(!path.exists());
+        controller
+            .dispatch(Action::SaveConfiguration {
+                config: config.clone(),
+                create_server: true,
+            })
+            .expect("setup save");
+        assert!(!controller.snapshot().expect("saved snapshot").needs_setup);
+        let server_bytes = std::fs::read(&config.config_file).expect("server");
+        let selected = dir.path().join("selected.toml");
+        std::fs::write(&selected, &server_bytes).expect("another server config");
+        config.config_file = selected;
+        config.routing_log = dir.path().join("selected.jsonl");
+        controller
+            .dispatch(Action::SaveConfiguration {
+                config: config.clone(),
+                create_server: false,
+            })
+            .expect("settings save");
+        let snapshot = controller.snapshot().expect("changed snapshot");
+        assert_eq!(
+            snapshot.settings.expect("settings").config_file,
+            config.config_file
+        );
+        assert_eq!(
+            snapshot.generation, 1,
+            "selecting a different config invalidates route drafts"
+        );
+        let preview = controller
+            .dispatch(Action::PreviewResetSettings {})
+            .expect("preview");
+        let original = std::fs::read_to_string(&path).expect("preferences");
+        std::fs::write(&path, format!("{original}# external change\n")).expect("external edit");
+        assert!(
+            controller
+                .dispatch(Action::ResetSettings {
+                    preview_token: preview.data["preview_token"].as_str().map(str::to_owned)
+                })
+                .is_err()
+        );
+        assert!(path.exists());
+        let preview = controller
+            .dispatch(Action::PreviewResetSettings {})
+            .expect("new preview");
+        controller
+            .dispatch(Action::ResetSettings {
+                preview_token: preview.data["preview_token"].as_str().map(str::to_owned),
+            })
+            .expect("remove preferences");
+        assert!(!path.exists());
+        assert_eq!(
+            std::fs::read(&config.config_file).expect("server preserved"),
+            server_bytes
+        );
+        assert!(
+            std::fs::read_dir(dir.path())
+                .expect("files")
+                .flatten()
+                .any(|entry| entry.file_name().to_string_lossy().contains("removed-"))
+        );
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(dir.path().join("missing-settings.toml"), &path)
+                .expect("broken settings link");
+            let snapshot = controller.snapshot().expect("repair snapshot");
+            assert!(!snapshot.needs_setup);
+            assert!(snapshot.configuration_error.is_some());
+            assert!(controller.dispatch(Action::Restart {}).is_err());
+            assert!(
+                path.symlink_metadata()
+                    .expect("preserved link")
+                    .is_symlink()
+            );
+        }
     }
 
     // The subprocess isolates harness discovery and every launch destination.

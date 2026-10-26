@@ -1,0 +1,9 @@
+{
+  "identifier": "main-chrome",
+  "description": "The desktop titlebar supports dragging and double-click maximization.",
+  "windows": ["main"],
+  "permissions": [
+    "core:window:allow-start-dragging",
+    "core:window:allow-internal-toggle-maximize"
+  ]
+}

@@ -11,15 +11,19 @@
       {
         "label": "main",
         "title": "Switchyard",
-        "width": 680,
-        "height": 500,
-        "minWidth": 440,
-        "minHeight": 400
+        "width": 1080,
+        "height": 760,
+        "minWidth": 760,
+        "minHeight": 540,
+        "transparent": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
       }
     ],
     "security": {
       "csp": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data:; object-src 'none'; frame-src 'none'; base-uri 'none'"
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": false,
