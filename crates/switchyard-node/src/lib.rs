@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Composite routing with caller-owned decision calls and state.
+//! Routing algorithms with caller-owned model calls and state.
 
 use std::collections::BTreeMap;
 use std::future::ready;
@@ -11,15 +11,16 @@ use futures::StreamExt;
 use futures::future::{AbortHandle, Abortable};
 use napi_derive::napi;
 use parking_lot::Mutex;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use switchyard_libsy::{
-    Algorithm, CallDecision, CapabilityJudgeConfig, ClassifyTrigger, CompositeJudgeConfig,
-    CompositeRouter, CompositeRouterConfig, DecisionJudgeConfig, LibsyError, PickerMode,
-    RuntimeModels, StageRouterConfig, State, Step, StepStream, TaskClassifierConfig,
+    Algorithm, Call, CapabilityJudgeConfig, ClassifyTrigger, CompositeJudgeConfig, CompositeRouter,
+    CompositeRouterConfig, DecisionJudgeConfig, LibsyError, PickerMode, RuntimeModels,
+    StageRouterConfig, State, Step, StepStream, TaskClassifierConfig,
 };
 use switchyard_protocol::{
-    Category, DecisionResponse, LlmClientError, LlmRequest, ModelId, Request,
+    AggLlmResponse, Category, DecisionResponse, LlmClientError, LlmRequest, LlmResponse, Metadata,
+    ModelId, Request, Response,
 };
 
 // The JS wrapper turns these prefixes into public Error codes.
@@ -162,28 +163,13 @@ impl NativeComposite {
             },
             ..Default::default()
         };
-        let initial_state: State = state_json
-            .as_deref()
-            .map(parse)
-            .transpose()?
-            .unwrap_or_default();
-        let state = initial_state.clone();
-        let router = self.router.clone();
-        let models = self.models.clone();
-        // Defer run_stream until next() polls on napi's Tokio runtime.
-        let stream =
-            futures::stream::once(async move { router.run_stream(request, models, state) })
-                .flatten();
-        Ok(NativeRun {
-            slot: Mutex::new(RunSlot {
-                run: Some(Run {
-                    initial_state,
-                    stream: Box::pin(stream),
-                    pending: None,
-                }),
-                abort: None,
-            }),
-        })
+        NativeRun::new(
+            self.router.clone(),
+            request,
+            self.models.clone(),
+            state_json.as_deref(),
+            false,
+        )
     }
 }
 
@@ -193,13 +179,41 @@ pub struct NativeStep {
     pub kind: String,
     pub request: Option<String>,
     pub model: Option<String>,
+    /// Ordered candidates for a model-call step.
+    pub models: Option<Vec<String>>,
     pub state: Option<String>,
+    /// Full normalized outcome for configured algorithms.
+    pub outcome: Option<String>,
+}
+
+#[derive(Serialize)]
+struct OutcomeView<'a> {
+    selected_model_ids: &'a [ModelId],
+    request: &'a LlmRequest,
+    response: Option<&'a AggLlmResponse>,
+    metadata: Option<OutcomeMetadataView<'a>>,
+    state: &'a State,
+}
+
+#[derive(Serialize)]
+struct OutcomeMetadataView<'a> {
+    outcome_id: &'a str,
+    algorithm: &'a str,
+    evidence: &'a Option<Value>,
+}
+
+#[derive(Deserialize)]
+struct ModelReply {
+    response: AggLlmResponse,
+    #[serde(rename = "servedModel")]
+    served_model: ModelId,
 }
 
 struct Run {
-    initial_state: State,
+    // Composite's compact result reports state only when it changed.
+    initial_state: Option<State>,
     stream: StepStream,
-    pending: Option<Box<CallDecision>>,
+    pending: Option<Call>,
 }
 
 impl Run {
@@ -209,22 +223,61 @@ impl Run {
         failure: Option<String>,
     ) -> napi::Result<NativeStep> {
         if let Some(call) = self.pending.take() {
-            let result = match (response, failure) {
-                (Some(json), None) => Ok(parse::<DecisionResponse>(&json)?),
-                (None, Some(message)) => Err(LibsyError::client_call(
-                    call.model.clone(),
-                    LlmClientError::General(message),
-                )),
-                _ => {
-                    return Err(error(
-                        "ERR_INVALID_REQUEST",
-                        "Expected a decision response or error",
-                    ));
+            match call {
+                Call::Decision(call) => {
+                    let result = match (response, failure) {
+                        (Some(json), None) => Ok(parse::<DecisionResponse>(&json)?),
+                        (None, Some(message)) => Err(LibsyError::client_call(
+                            call.model.clone(),
+                            LlmClientError::General(message),
+                        )),
+                        _ => {
+                            return Err(error(
+                                "ERR_INVALID_REQUEST",
+                                "Expected a decision response or error",
+                            ));
+                        }
+                    };
+                    call.respond(ready(result)).await.map_err(routing_error)?;
                 }
-            };
-            call.respond(ready(result)).await.map_err(routing_error)?;
+                Call::Model(call) => {
+                    let result = match (response, failure) {
+                        (Some(json), None) => {
+                            let reply: ModelReply = parse(&json)?;
+                            if !call.models.contains(&reply.served_model) {
+                                return Err(error(
+                                    "ERR_INVALID_REQUEST",
+                                    "servedModel must be one of the model call's candidates",
+                                ));
+                            }
+                            Ok(Response {
+                                llm_response: LlmResponse::Agg(reply.response),
+                                metadata: Some(Metadata {
+                                    served_model: Some(reply.served_model),
+                                    ..Default::default()
+                                }),
+                                upstream_headers: http::HeaderMap::new(),
+                            })
+                        }
+                        (None, Some(message)) => Err(LibsyError::client_call(
+                            call.models
+                                .first()
+                                .cloned()
+                                .ok_or_else(|| routing_error("Model call has no candidates"))?,
+                            LlmClientError::General(message),
+                        )),
+                        _ => {
+                            return Err(error(
+                                "ERR_INVALID_REQUEST",
+                                "Expected a model response or error",
+                            ));
+                        }
+                    };
+                    call.respond(ready(result)).await.map_err(routing_error)?;
+                }
+            }
         } else if response.is_some() || failure.is_some() {
-            return Err(error("ERR_INVALID_REQUEST", "No decision is pending"));
+            return Err(error("ERR_INVALID_REQUEST", "No call is pending"));
         }
         let step = self
             .stream
@@ -237,22 +290,56 @@ impl Run {
             Step::CallDecision(call) => {
                 result.kind = "decision".into();
                 result.request = Some(serde_json::to_string(&call.request).map_err(routing_error)?);
-                self.pending = Some(call);
+                self.pending = Some(Call::Decision(call));
             }
             Step::Done(outcome) => {
                 result.kind = "done".into();
-                result.model = Some(
-                    outcome
-                        .selected_model_id()
-                        .map_err(routing_error)?
-                        .to_string(),
-                );
-                if outcome.state != self.initial_state {
-                    result.state =
-                        Some(serde_json::to_string(&outcome.state).map_err(routing_error)?);
+                if let Some(initial_state) = &self.initial_state {
+                    result.model = Some(
+                        outcome
+                            .selected_model_id()
+                            .map_err(routing_error)?
+                            .to_string(),
+                    );
+                    if &outcome.state != initial_state {
+                        result.state =
+                            Some(serde_json::to_string(&outcome.state).map_err(routing_error)?);
+                    }
+                } else {
+                    let response = match outcome.response.as_ref().map(|r| &r.llm_response) {
+                        Some(LlmResponse::Agg(response)) => Some(response),
+                        Some(LlmResponse::Stream(_)) => {
+                            return Err(routing_error(
+                                "Streaming model responses are not supported",
+                            ));
+                        }
+                        None => None,
+                    };
+                    result.outcome = Some(
+                        serde_json::to_string(&OutcomeView {
+                            selected_model_ids: &outcome.selected_model_ids,
+                            request: &outcome.request.llm_request,
+                            response,
+                            metadata: outcome.metadata.as_ref().map(|metadata| {
+                                OutcomeMetadataView {
+                                    outcome_id: metadata.outcome_id(),
+                                    algorithm: &metadata.algorithm,
+                                    evidence: &metadata.evidence,
+                                }
+                            }),
+                            state: &outcome.state,
+                        })
+                        .map_err(routing_error)?,
+                    );
                 }
             }
-            Step::CallModel(_) => return Err(error("ERR_ROUTING", "Unexpected model call")),
+            Step::CallModel(call) => {
+                result.kind = "model".into();
+                result.request =
+                    Some(serde_json::to_string(&call.request.llm_request).map_err(routing_error)?);
+                result.models = Some(call.models.iter().map(ToString::to_string).collect());
+                self.pending = Some(Call::Model(call));
+            }
         }
         Ok(result)
     }
@@ -266,6 +353,33 @@ struct RunSlot {
 #[napi]
 pub struct NativeRun {
     slot: Mutex<RunSlot>,
+}
+
+impl NativeRun {
+    fn new(
+        algorithm: Arc<dyn Algorithm>,
+        request: Request,
+        models: Arc<RuntimeModels>,
+        state_json: Option<&str>,
+        full_outcome: bool,
+    ) -> napi::Result<Self> {
+        let state: State = state_json.map(parse).transpose()?.unwrap_or_default();
+        let initial_state = (!full_outcome).then(|| state.clone());
+        // Defer run_stream until next() polls on napi's Tokio runtime.
+        let stream =
+            futures::stream::once(async move { algorithm.run_stream(request, models, state) })
+                .flatten();
+        Ok(Self {
+            slot: Mutex::new(RunSlot {
+                run: Some(Run {
+                    initial_state,
+                    stream: Box::pin(stream),
+                    pending: None,
+                }),
+                abort: None,
+            }),
+        })
+    }
 }
 
 #[napi]
@@ -303,7 +417,10 @@ impl NativeRun {
             return Err(error("ABORT_ERR", "Routing cancelled"));
         }
         slot.abort = None;
-        if result.as_ref().is_ok_and(|step| step.kind == "decision") {
+        if result
+            .as_ref()
+            .is_ok_and(|step| matches!(step.kind.as_str(), "decision" | "model"))
+        {
             slot.run = Some(run);
         }
         result
@@ -318,3 +435,6 @@ impl NativeRun {
         slot.run = None;
     }
 }
+
+#[cfg(test)]
+mod tests;

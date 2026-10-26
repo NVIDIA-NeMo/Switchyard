@@ -74,9 +74,29 @@ export interface DecisionAnswer {
   provider_confidence?: number | null;
 }
 
+interface ModelCall {
+  request: Readonly<Record<string, unknown>>;
+  models: readonly string[];
+}
+
+interface ModelReply {
+  response: Readonly<Record<string, unknown>>;
+  servedModel: string;
+}
+
+interface RoutingOptions {
+  call?(call: ModelCall): Promise<ModelReply>;
+  decide?(request: DecisionRequest): Promise<DecisionResponse>;
+  state?: CompositeState;
+  signal?: AbortSignal;
+}
+
 type NativeStep =
   | { kind: "decision"; request: string }
-  | { kind: "done"; model: string; state: string | null };
+  | { kind: "model"; request: string; models: string[] }
+  | { kind: "done"; model: string; state: string | null; outcome: string };
+
+type NativeOutcome = Extract<NativeStep, { kind: "done" }>;
 
 interface NativeRun {
   next(response: string | null, error: string | null): Promise<NativeStep>;
@@ -115,6 +135,62 @@ function json(value: unknown, code = "ERR_INVALID_REQUEST"): string {
   }
 }
 
+async function driveRun(start: () => NativeRun, options: RoutingOptions): Promise<NativeOutcome> {
+  const { signal } = options;
+  if (signal?.aborted) throw abortError();
+  let run: NativeRun | undefined;
+  let callbackError: unknown;
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => {
+      run?.close();
+      reject(abortError());
+    };
+  });
+  try {
+    run = start();
+    signal?.addEventListener("abort", onAbort, { once: true });
+    let response: string | null = null;
+    let failure: string | null = null;
+    for (;;) {
+      const step = await Promise.race([run.next(response, failure), aborted]);
+      if (signal?.aborted) throw abortError();
+      if (step.kind === "done") return step;
+      let invoke: () => Promise<unknown>;
+      if (step.kind === "decision") {
+        const { decide } = options;
+        if (decide === undefined) throw new Error("ERR_CONFIG: This algorithm requires a decide callback");
+        const request: DecisionRequest = JSON.parse(step.request);
+        invoke = () => decide.call(options, request);
+      } else {
+        const serve = options.call;
+        if (serve === undefined) throw new Error("ERR_CONFIG: This algorithm requires a call callback");
+        const request: ModelCall = { request: JSON.parse(step.request), models: step.models };
+        invoke = () => serve.call(options, request);
+      }
+      response = null;
+      failure = null;
+      let answer: unknown;
+      try {
+        answer = await Promise.race([invoke(), aborted]);
+      } catch (error) {
+        if (signal?.aborted) throw abortError();
+        callbackError = error;
+        failure = errorMessage(error);
+        continue;
+      }
+      if (signal?.aborted) throw abortError();
+      response = json(answer);
+    }
+  } catch (error) {
+    if (signal?.aborted) throw abortError();
+    throw publicError(error, callbackError);
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    run?.close();
+  }
+}
+
 /** Reusable composite router. The caller performs decision calls and stores branch state. */
 export class CompositeRouter {
   readonly #native: NativeComposite;
@@ -136,50 +212,11 @@ export class CompositeRouter {
     decide(request: DecisionRequest): Promise<DecisionResponse>;
     signal?: AbortSignal;
   }): Promise<Selection> {
-    const { signal } = options;
-    if (signal?.aborted) throw abortError();
-    let run: NativeRun | undefined;
-    let decisionError: unknown;
-    let onAbort!: () => void;
-    const aborted = new Promise<never>((_, reject) => {
-      onAbort = () => {
-        run?.close();
-        reject(abortError());
-      };
-    });
-    try {
-      run = this.#native.start(json(messages), options.state === undefined ? null : json(options.state));
-      signal?.addEventListener("abort", onAbort, { once: true });
-      let response: string | null = null;
-      let failure: string | null = null;
-      for (;;) {
-        const step = await Promise.race([run.next(response, failure), aborted]);
-        if (signal?.aborted) throw abortError();
-        if (step.kind === "done") {
-          return step.state === null
-            ? { model: step.model }
-            : { model: step.model, state: JSON.parse(step.state) };
-        }
-        response = null;
-        failure = null;
-        let answer: DecisionResponse;
-        try {
-          answer = await Promise.race([options.decide(JSON.parse(step.request)), aborted]);
-        } catch (error) {
-          if (signal?.aborted) throw abortError();
-          decisionError = error;
-          failure = errorMessage(error);
-          continue;
-        }
-        if (signal?.aborted) throw abortError();
-        response = json(answer);
-      }
-    } catch (error) {
-      if (signal?.aborted) throw abortError();
-      throw publicError(error, decisionError);
-    } finally {
-      signal?.removeEventListener("abort", onAbort);
-      run?.close();
-    }
+    const step = await driveRun(() => this.#native.start(
+      json(messages), options.state === undefined ? null : json(options.state),
+    ), options);
+    return step.state === null
+      ? { model: step.model }
+      : { model: step.model, state: JSON.parse(step.state) };
   }
 }
