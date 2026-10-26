@@ -91,17 +91,17 @@ impl InfraPolicy {
         if outcome.selected_model_id()? != efficient || efficient == capable {
             return Ok(false);
         }
-        let (spillover, reason) = self
+        let (is_spillover, reason) = self
             .evaluate(signals, efficient, capable)
             .unwrap_or((false, "unknown_or_stale_signals"));
-        tracing::info!(task_model = %efficient, alternate_model = %capable, spillover, reason,
+        tracing::info!(task_model = %efficient, alternate_model = %capable, spillover = is_spillover, reason,
             "queue routing decision");
-        if spillover {
+        if is_spillover {
             outcome.selected_model_ids.retain(|id| id != capable);
             outcome.selected_model_ids.insert(0, capable.clone());
             outcome.request.llm_request.model = Some(capable.to_string());
         }
-        Ok(spillover)
+        Ok(is_spillover)
     }
 }
 
@@ -176,15 +176,15 @@ mod tests {
                 "small"
             };
             let mut outcome = RoutingOutcome::route_to(initial.into(), vec![], request.clone());
-            let moved = matches!(case, "busy" | "at_threshold");
+            let is_spillover = matches!(case, "busy" | "at_threshold");
             assert_eq!(
                 policy.apply(&mut outcome, &models, &signals).unwrap(),
-                moved,
+                is_spillover,
                 "{case}"
             );
             assert_eq!(
                 outcome.selected_model_id().unwrap().as_str(),
-                if moved { "large" } else { initial },
+                if is_spillover { "large" } else { initial },
                 "{case}"
             );
             outcome.request.llm_request.model = None;

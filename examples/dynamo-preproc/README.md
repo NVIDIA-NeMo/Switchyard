@@ -20,29 +20,13 @@ sequenceDiagram
     participant Proc as Switchyard PreProc
     participant EPP as Dynamo EPP
     participant Worker
-    participant Prom as Prometheus
-    Note over Proc,Prom: Optional queue rule: PreProc polls pool metrics in the background
-    Client->>Gateway: Chat completion (model: auto)
-    Gateway->>Proc: Request headers and body
-    opt Task classifier: new session
-        Proc->>Gateway: Judge request with explicit large-model ID
-        Gateway->>Proc: Process judge request
-        Proc-->>Gateway: Passthrough: keep the explicit model
-        Gateway->>EPP: Select a large-model worker
-        EPP-->>Gateway: Worker endpoint
-        Gateway->>Worker: Classify task
-        Worker-->>Gateway: Verdict
-        Gateway-->>Proc: Verdict (response phases also pass through PreProc)
-    end
-    Note over Proc: Apply optional queue rule to the task choice
-    Proc-->>Gateway: Selected model header and updated body
-    Gateway->>EPP: Route to selected InferencePool
-    EPP-->>Gateway: Worker endpoint
+
+    Client->>Gateway: Request with model = auto
+    Gateway->>Proc: Choose a model
+    Proc-->>Gateway: Selected model and updated request
+    Gateway->>EPP: Choose a worker in that model's pool
+    EPP-->>Gateway: Selected worker
     Gateway->>Worker: Forward request
-    Worker-->>Gateway: JSON or SSE response
-    Gateway->>Proc: Response headers and chunks
-    Proc-->>Gateway: Pass through unchanged
-    Gateway-->>Client: JSON or SSE response
 ```
 
 This directory owns the service, tests and image build. The
