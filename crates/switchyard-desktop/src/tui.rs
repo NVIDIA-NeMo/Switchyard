@@ -104,9 +104,7 @@ const FILTER_KEYS: &[Key] = &[
 ];
 const POPUP_KEYS: &[Key] = &[("↑↓", "scroll", ""), ("esc", "close", "")];
 
-/// The Settings page lists one entry per controller action. A new controller action breaks the
-/// build until `App::start_action` runs it, and `every_controller_action_has_a_settings_key`
-/// fails until it has an entry here.
+/// The Settings page uses these entries for action labels, help text, and shortcut keys.
 const ACTIONS: &[(char, &str, &str, ActionKind)] = &[
     (
         'o',
@@ -476,7 +474,7 @@ impl App {
             }
             Err(error) => {
                 // Settings offers the actions needed to repair a failed initial load.
-                if self.refreshed.is_none() {
+                if self.refreshed.is_none() && self.data.errors.is_empty() {
                     self.tab = Tab::Settings;
                 }
                 // Overview keeps the error after the status message is dismissed.
@@ -502,8 +500,18 @@ impl App {
             }
             (_, Err(error)) => self.notify(error, true),
             (Some(ActionKind::ServerKeys), Ok(reply)) => {
+                let text = key_lines(self.theme, Some(&reply.data))
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 self.server_keys = Some(reply.data);
-                self.notify("Checked the saved server keys.".into(), false);
+                self.popup = Some(Popup::Message {
+                    title: "Server keys",
+                    text,
+                    error: false,
+                    scroll: 0,
+                });
             }
             (_, Ok(reply)) => {
                 let details: Vec<&str> = reply.data["details"]
@@ -939,8 +947,8 @@ fn block(theme: Theme, title: &str) -> Block<'static> {
 fn draw(frame: &mut Frame, app: &mut App) {
     // This exhaustive destructuring requires an update when Snapshot gains a field.
     let Snapshot {
-        update_status: _,   // draw_settings
-        settings: _,        // draw_settings
+        update_status: _,   // draw_settings shows the last update status.
+        settings: _,        // draw_settings shows the app settings.
         data_state: _,      // draw_overview shows health; draw_models checks usage
         metrics: _,         // draw_header and the Overview cards
         today: _,           // the Overview "Today" card title
@@ -1760,8 +1768,7 @@ fn draw_settings(frame: &mut Frame, app: &App, area: Rect) {
         );
         lines.push(Line::default());
     }
-    // This destructuring has no `..`, so adding an app setting breaks the build until the
-    // Settings page shows it.
+    // This destructuring has no `..`, so adding an app setting requires an update here.
     match &app.data.settings {
         Some(AppSettings {
             path,
@@ -2030,14 +2037,34 @@ fn editor() -> String {
         .unwrap_or_else(|| if cfg!(windows) { "notepad" } else { "vi" }.into())
 }
 
-/// This function runs the editor on an absolute path. The caller restores normal terminal input
-/// first. The path stays one literal argument, even if its name starts with '-'.
-fn edit_file(path: &Path) -> Result<(), String> {
-    let editor = editor();
-    let parts = shlex::split(&editor).ok_or("The editor command has an unmatched quote.")?;
+/// This function builds the editor command using Windows or POSIX quoting without starting it.
+/// The Windows file check keeps an existing unquoted executable path with spaces as one program.
+fn editor_command(editor: &str, windows: bool) -> Result<std::process::Command, String> {
+    let parts = if windows {
+        let whole = editor.trim();
+        if whole.is_empty() {
+            Vec::new()
+        } else if Path::new(whole).is_file() {
+            vec![whole.to_string()]
+        } else {
+            windows_args::Args::parse_cmd(whole).collect()
+        }
+    } else {
+        shlex::split(editor).ok_or("The editor command has an unmatched quote.")?
+    };
     let (program, arguments) = parts
         .split_first()
         .ok_or("Set VISUAL or EDITOR to an editor command.")?;
+    let mut command = std::process::Command::new(program);
+    command.args(arguments);
+    Ok(command)
+}
+
+/// This function runs the editor on an absolute path. The caller restores normal terminal input
+/// first. The path stays one literal argument, even if its name starts with '-'.
+fn edit_file(path: &Path) -> Result<(), String> {
+    let mut command = editor_command(&editor(), cfg!(windows))?;
+    let program = command.get_program().to_string_lossy().into_owned();
     let path = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -2045,8 +2072,7 @@ fn edit_file(path: &Path) -> Result<(), String> {
             .map_err(|error| error.to_string())?
             .join(path)
     };
-    let status = std::process::Command::new(program)
-        .args(arguments)
+    let status = command
         .arg(path)
         .status()
         .map_err(|error| format!("Could not start the editor {program}: {error}"))?;
@@ -2276,11 +2302,127 @@ mod tests {
         assert!(app.popup.is_none());
     }
 
+    // The last key must remain reachable when the results exceed the Settings pane's height.
+    #[test]
+    fn server_key_results_remain_readable_in_a_scrollable_popup() {
+        let mut app = App::new(Theme::new(false));
+        app.tab = Tab::Settings;
+        let request = app
+            .key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE))
+            .expect("key action");
+        let (jobs, _inbox) = mpsc::channel();
+        app.start(&jobs, request).expect("start key check");
+        let keys = json!({
+            "store": "test credential store",
+            "keys": (0..20).map(|index| json!({"name": format!("API_KEY_{index:02}"), "saved": index % 2 == 0})).collect::<Vec<_>>()
+        });
+        app.finish(
+            Some(Ok(super::Reply {
+                message: String::new(),
+                data: keys.clone(),
+            })),
+            Ok(Box::new(Snapshot::default())),
+        );
+        assert_eq!(app.server_keys, Some(keys));
+        assert!(matches!(app.popup, Some(Popup::Message { scroll: 0, .. })));
+        app.key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("API_KEY_19 not saved"), "{text}");
+    }
+
+    // These fixtures check the parsed arguments without requiring a Windows editor to run.
+    #[test]
+    fn editor_commands_preserve_platform_quoting_and_paths() {
+        for (windows, raw, program, arguments) in [
+            (
+                true,
+                r"C:\Windows\System32\notepad.exe",
+                r"C:\Windows\System32\notepad.exe",
+                vec![],
+            ),
+            (
+                true,
+                r#""C:\Program Files\Editor\editor.exe" --wait "two words""#,
+                r"C:\Program Files\Editor\editor.exe",
+                vec!["--wait", "two words"],
+            ),
+            (
+                true,
+                r#"C:\Tools\editor.exe --wait "\\server\share\file with spaces""#,
+                r"C:\Tools\editor.exe",
+                vec!["--wait", r"\\server\share\file with spaces"],
+            ),
+            (
+                true,
+                r#"C:\Tools\editor.exe --title "" --wait"#,
+                r"C:\Tools\editor.exe",
+                vec!["--title", "", "--wait"],
+            ),
+            (
+                true,
+                r#"C:\Tools\editor.exe --title "two words"#,
+                r"C:\Tools\editor.exe",
+                vec!["--title", "two words"],
+            ),
+            (
+                false,
+                "'editor with spaces' --wait 'two words'",
+                "editor with spaces",
+                vec!["--wait", "two words"],
+            ),
+        ] {
+            let command = super::editor_command(raw, windows).expect("editor command");
+            assert_eq!(
+                command.get_program(),
+                std::ffi::OsStr::new(program),
+                "{raw}"
+            );
+            assert_eq!(
+                command.get_args().collect::<Vec<_>>(),
+                arguments
+                    .iter()
+                    .map(std::ffi::OsStr::new)
+                    .collect::<Vec<_>>(),
+                "{raw}"
+            );
+        }
+        for (windows, raw, error) in [
+            (true, " ", "Set VISUAL or EDITOR to an editor command."),
+            (false, " ", "Set VISUAL or EDITOR to an editor command."),
+            (
+                false,
+                "'unterminated",
+                "The editor command has an unmatched quote.",
+            ),
+        ] {
+            assert_eq!(
+                super::editor_command(raw, windows).err().as_deref(),
+                Some(error)
+            );
+        }
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("editor with spaces.exe");
+        std::fs::write(&path, "").expect("editor file");
+        let command =
+            super::editor_command(path.to_str().expect("UTF-8 path"), true).expect("editor path");
+        assert_eq!(command.get_program(), path.as_os_str());
+        assert_eq!(command.get_args().count(), 0);
+    }
+
     // Esc dismisses the status message while Overview keeps the refresh error.
     #[test]
     fn refresh_errors_remain_in_overview_after_dismissing_the_toast() {
         let mut app = App::new(Theme::new(false));
         app.finish(None, Err("Could not read settings.".into()));
+        app.tab = Tab::Overview;
         app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
         terminal.draw(|frame| draw(frame, &mut app)).expect("draw");

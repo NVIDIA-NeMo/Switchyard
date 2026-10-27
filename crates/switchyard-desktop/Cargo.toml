@@ -29,6 +29,7 @@ uuid.workspace = true
 # Popups and the Data errors panel use Paragraph::line_count to size wrapped text.
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 shlex = "2"
+windows-args = "0.2"
 strum = { version = "0.28", features = ["derive"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]

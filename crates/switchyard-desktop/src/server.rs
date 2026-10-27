@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module validates server configs and restarts the server service.
+//! This module checks server configs and saved key status and opens files.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -104,7 +104,7 @@ fn check(binary: &Path, config: &Path) -> Result<(), String> {
     let output = validator.output().map_err(|error| {
         format!(
             "Could not run {}: {error}. \
-             Apply needs the installed server and credential helper. \
+             The config check needs the installed server and credential helper. \
              Run cargo desktop install from the Switchyard repository to install them.",
             helper.display()
         )

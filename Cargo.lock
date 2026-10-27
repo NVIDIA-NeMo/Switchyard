@@ -5407,6 +5407,7 @@ dependencies = [
  "url",
  "uuid",
  "windows",
+ "windows-args",
  "windows-sys 0.61.2",
 ]
 
@@ -7119,6 +7120,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "windows-args"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a461b757e38ae4fdf8cb97a017605010589ba4199486ced90a44ab3aade3d7e5"
+dependencies = [
+ "wtf8",
+]
+
+[[package]]
 name = "windows-collections"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7485,6 +7495,12 @@ dependencies = [
  "windows-version",
  "x11-dl",
 ]
+
+[[package]]
+name = "wtf8"
+version = "0.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6b9309a86639c488a8eb2b5331cb5127cc9feb0a94a0db4b5d1ab5b84977956"
 
 [[package]]
 name = "x11"

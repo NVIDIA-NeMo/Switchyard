@@ -22,8 +22,8 @@ pub enum Action {
     ServerKeys {},
 }
 
-/// Snapshot holds everything that the apps show. The terminal app destructures it without
-/// `..`, so adding a field breaks the build until the terminal app shows it.
+/// Snapshot holds the data shown by the apps. The terminal app destructures every field,
+/// so adding a field requires an update to `draw`.
 #[derive(Clone, Default, Serialize)]
 pub struct Snapshot {
     pub update_status: Value,
@@ -44,9 +44,8 @@ pub struct Snapshot {
     pub refresh_seconds: u64,
 }
 
-/// AppSettings holds every app setting and the file that stores them. `Controller::snapshot`
-/// destructures `Config` without `..`, so adding a setting to `Config` breaks the build until
-/// it is added here too.
+/// AppSettings holds the app settings and their file path. `Controller::snapshot` destructures
+/// every `Config` field, so adding a setting requires an update here too.
 #[derive(Clone, Default, Serialize)]
 pub struct AppSettings {
     pub path: PathBuf,
