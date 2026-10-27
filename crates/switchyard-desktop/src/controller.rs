@@ -6,8 +6,8 @@
 
 use crate::{
     config::Config,
-    history, pricing, rollup, server,
-    server_config::{Choice, ServerConfig},
+    history, models, pricing, rollup, server,
+    server_config::{ALGORITHMS, Choice, ServerConfig},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -54,7 +54,8 @@ pub struct Snapshot {
     pub data_state: DataState,
 
     pub routes: Vec<RouteInfo>,
-
+    pub clients: Vec<ClientInfo>,
+    pub algorithms: Vec<AlgorithmInfo>,
     pub metrics: Metrics,
     pub today: chrono::NaiveDate,
     pub analytics: rollup::Usage,
@@ -92,9 +93,48 @@ pub struct RouteInfo {
     /// This field holds the public model ID that harnesses send.
     pub id: String,
     pub kind: String,
-
+    /// Route edits send this token back. The controller rejects it after the file changes.
+    pub revision: String,
     pub label: String,
     pub choices: Vec<Choice>,
+    /// This field lists the tier of each role in role order. It is `None` when the apps
+    /// cannot edit the route's algorithm.
+    pub tiers: Option<Vec<Option<String>>>,
+    pub editable: bool,
+    /// This field holds the marker of the generated block that contains the route. The tool
+    /// that wrote the block replaces the route the next time it runs.
+    pub generated: Option<String>,
+}
+
+/// ClientInfo describes one endpoint under `[llm_clients]` in the server config.
+#[derive(Clone, Default, Serialize)]
+pub struct ClientInfo {
+    pub name: String,
+    pub host: String,
+    /// This field lists the model IDs that targets in the server config name on this endpoint.
+    pub models: Vec<String>,
+    /// This field is true when the app cannot ask the endpoint for its model list.
+    pub unlisted: bool,
+    pub accepts_key: bool,
+    /// This field explains why the endpoint cannot list models without a saved key.
+    pub note: Option<String>,
+}
+
+/// AlgorithmInfo describes one routing algorithm that the apps can write and the roles
+/// that a new route of that algorithm needs.
+#[derive(Clone, Default, Serialize)]
+pub struct AlgorithmInfo {
+    pub kind: &'static str,
+    pub title: &'static str,
+    pub summary: &'static str,
+    pub roles: Vec<RoleInfo>,
+}
+
+#[derive(Clone, Default, Serialize)]
+pub struct RoleInfo {
+    pub label: String,
+    pub hint: &'static str,
+    pub tier: Option<String>,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -150,6 +190,42 @@ impl Reply {
     }
 }
 
+// Review keeps exact file bytes in the controller so later edits require a new review.
+// Only the UUID token goes to the frontend; reviewed files can contain credentials.
+struct Review {
+    token: String,
+
+    files: Vec<(PathBuf, Option<std::sync::Arc<[u8]>>)>,
+}
+impl Review {
+    fn capture(paths: Vec<PathBuf>) -> Result<Self, String> {
+        let files = paths
+            .into_iter()
+            .map(|path| {
+                let bytes = match std::fs::read(&path) {
+                    Ok(bytes) => Some(std::sync::Arc::<[u8]>::from(bytes)),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(format!("Read {}: {error}", path.display())),
+                };
+                Ok((path, bytes))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Self {
+            token: uuid::Uuid::now_v7().to_string(),
+            files,
+        })
+    }
+    fn original(&self) -> Result<&str, String> {
+        std::str::from_utf8(
+            self.files
+                .first()
+                .and_then(|(_, bytes)| bytes.as_deref())
+                .ok_or("The reviewed server config is missing.")?,
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
 pub struct Controller {
     health_probe: crate::health::Probe,
     settings: PathBuf,
@@ -157,7 +233,7 @@ pub struct Controller {
     reader: rollup::Reader,
     // The generation ties a draft to the server config file selected by the settings.
     generation: u64,
-
+    route_reviews: std::collections::HashMap<String, Review>,
     update_review: Option<(String, Value)>,
 }
 impl Controller {
@@ -168,7 +244,7 @@ impl Controller {
             health_probe: crate::health::Probe::default(),
             reader: rollup::Reader::default(),
             generation: 0,
-
+            route_reviews: Default::default(),
             update_review: None,
         }
     }
@@ -176,6 +252,7 @@ impl Controller {
         let config = Config::load(&self.settings)?;
         if config.config_file != self.config.config_file {
             self.generation += 1;
+            self.route_reviews.clear();
         }
         self.config = config;
 
@@ -192,6 +269,17 @@ impl Controller {
                 "The server config does not name {name} with api_key_env. Refresh and try again."
             ))
         }
+    }
+    // Unchanged bytes keep the draft revision when the editor switches algorithms.
+    fn remember_route(&mut self, route: &str, mut review: Review) -> String {
+        if let Some(previous) = self.route_reviews.get(route)
+            && previous.files == review.files
+        {
+            review.token = previous.token.clone();
+        }
+        let revision = review.token.clone();
+        self.route_reviews.insert(route.to_string(), review);
+        revision
     }
     pub fn snapshot(&mut self) -> Result<Snapshot, String> {
         self.reload()?;
@@ -234,34 +322,74 @@ impl Controller {
             crate::health::ServerStatus::Stopped
         };
         let mut routes = Vec::new();
-        match std::fs::read_to_string(&self.config.config_file)
-            .map_err(|e| format!("Read {}: {e}", self.config.config_file.display()))
-            .and_then(|text| {
-                ServerConfig::parse(&text).map_err(|_| {
+        let mut clients = Vec::new();
+        let route_review = Review::capture(vec![self.config.config_file.clone()]);
+        let route_config = route_review
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|review| {
+                ServerConfig::parse(review.original()?).map_err(|_| {
                     "The server config contains invalid TOML. Open it in Settings to fix it."
                         .to_string()
                 })
-            }) {
+            });
+        match route_config {
             Ok(config) => {
-                for route in config.routes() {
+                let listed = config.routes();
+                self.route_reviews
+                    .retain(|key, _| listed.iter().any(|route| &route.key == key));
+                for route in listed {
+                    let original = route_review.as_ref().map_err(Clone::clone)?;
+                    let review = Review {
+                        token: uuid::Uuid::now_v7().to_string(),
+
+                        files: original.files.clone(),
+                    };
+                    let revision = self.remember_route(&route.key, review);
                     let choices = config.choices(&route.key);
                     let models = choices
                         .iter()
                         .map(|c| format!("{} / {}", c.client, c.model))
                         .collect::<Vec<_>>()
                         .join(" → ");
+                    let algorithm = config.algorithm(&route.key);
                     routes.push(RouteInfo {
                         label: format!("{} · {} · {}", route.id, route.kind, models),
+                        tiers: algorithm.map(|a| {
+                            config
+                                .roles(&route.key, a)
+                                .iter()
+                                .map(|r| r.tier.map(|t| format!("{t:?}")))
+                                .collect()
+                        }),
+                        editable: algorithm.is_some(),
+                        generated: config
+                            .generated_by("routes", &route.key)
+                            .map(str::to_string),
                         key: route.key,
                         id: route.id,
                         kind: route.kind,
+                        revision,
                         choices,
                     });
                 }
+                clients = config
+                    .clients()
+                    .iter()
+                    .map(|c| ClientInfo {
+                        name: c.name.clone(),
+                        host: c.host().to_string(),
+                        models: config.models_on(&c.name),
+                        unlisted: models::unlisted(c),
+                        accepts_key: cfg!(any(target_os = "macos", windows))
+                            && !models::unlisted(c)
+                            && (c.forward_auth || c.api_key_env.is_some()),
+                        note: models::missing_env(c).map(models::missing_env_note),
+                    })
+                    .collect();
             }
             Err(e) => errors.push(e),
         }
-
         let mut history_state = Availability::Available;
         let history = history::load(&self.config.routing_log).unwrap_or_else(|error| {
             history_state = Availability::Unavailable;
@@ -308,6 +436,16 @@ impl Controller {
             },
 
             routes,
+            clients,
+            algorithms: ALGORITHMS
+                .iter()
+                .map(|a| AlgorithmInfo {
+                    kind: a.kind,
+                    title: a.title,
+                    summary: a.summary,
+                    roles: a.new_route_roles().iter().map(role_info).collect(),
+                })
+                .collect(),
             metrics: Metrics {
                 server_url: server_url.clone(),
                 running: server_status == crate::health::ServerStatus::Running,
@@ -474,6 +612,13 @@ impl Controller {
 }
 fn logs_dir() -> Result<PathBuf, String> {
     crate::config::expand_home(std::path::Path::new("~/.switchyard/logs"))
+}
+fn role_info(role: &crate::server_config::Role) -> RoleInfo {
+    RoleInfo {
+        label: role.label.clone(),
+        hint: role.hint,
+        tier: role.tier.map(|t| format!("{t:?}")),
+    }
 }
 
 fn install_metadata(settings: &std::path::Path) -> Result<PathBuf, String> {
