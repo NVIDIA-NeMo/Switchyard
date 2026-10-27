@@ -5546,6 +5546,49 @@ mod tests {
         }
     }
 
+    // Model lists and preview replies must preserve edits in a form opened after the request.
+    #[test]
+    fn preview_and_model_replies_preserve_replacement_forms() {
+        let actions = [
+            Action::Models {
+                client: "endpoint".into(),
+                refresh: true,
+                key: None,
+            },
+            Action::PreviewRouteChange {
+                generation: 0,
+                operation: "create".into(),
+                route: String::new(),
+                name: "route".into(),
+                id: "public".into(),
+                algorithm: None,
+                choices: vec![],
+            },
+            Action::PreviewSessionCleanup {
+                id: "session".into(),
+            },
+        ];
+        for action in actions {
+            let mut app = App::new(Theme::new(false));
+            app.harnesses_key(KeyCode::Char('x'));
+            let (jobs, _inbox) = mpsc::channel();
+            app.start(&jobs, Request::run(action, "Refreshing"))
+                .expect("start");
+            app.harnesses_key(KeyCode::Char('x'));
+            app.paste("replacement");
+            app.finish(
+                Some(Ok(super::Reply {
+                    message: "Done".into(),
+                    data: json!({}),
+                })),
+                Ok(Box::new(Snapshot::default())),
+            );
+            let form = app.popup.as_mut().and_then(Popup::form_mut).expect("form");
+            assert_eq!(form.value(0), "replacement");
+            assert!(form.error.is_empty());
+        }
+    }
+
     // The automatic key check must preserve the form opened while the save was running.
     #[test]
     fn key_refresh_after_saving_does_not_replace_a_new_form() {
