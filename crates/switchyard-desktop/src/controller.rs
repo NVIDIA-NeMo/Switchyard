@@ -365,9 +365,11 @@ impl Controller {
                 })
             }
             Action::Update { preview_token } => {
+                // Each update attempt uses up the reviewed preview, so a second Update needs a new
+                // PreviewUpdate even when the checkout has not changed.
                 let (token, reviewed) = self
                     .update_review
-                    .as_ref()
+                    .take()
                     .ok_or("Review the source update first.")?;
                 let mut current = switchyard_desktop::install::preview_update(&install_metadata(
                     &self.settings,
@@ -376,7 +378,7 @@ impl Controller {
                     .as_object_mut()
                     .ok_or("Invalid update preview.")?
                     .remove("status");
-                if preview_token.as_deref() != Some(token.as_str()) || &current != reviewed {
+                if preview_token != Some(token) || current != reviewed {
                     return Err(
                         "The source checkout or installation changed. Review the update again."
                             .into(),
@@ -439,7 +441,7 @@ fn update(settings: &std::path::Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Config, Controller};
+    use super::{Action, Config, Controller};
 
     #[test]
     fn recent_call_read_errors_name_the_source_and_keep_the_io_details() {
@@ -466,5 +468,27 @@ mod tests {
             snapshot.errors
         );
         assert_eq!(snapshot.activity, [0; 24]);
+    }
+
+    // An update attempt uses up the reviewed preview, so the same token cannot start a second one.
+    #[test]
+    fn update_preview_tokens_work_once() {
+        let directory = tempfile::tempdir().expect("directory");
+        let settings = directory.path().join("desktop.toml");
+        std::fs::write(&settings, "server_url = 'http://127.0.0.1:9'\n").expect("settings");
+        let config = Config::load(&settings).expect("config");
+        let mut controller = Controller::new(config, settings);
+        // The temporary directory has no install.toml, so the first attempt fails after it takes
+        // the review.
+        controller.update_review = Some(("token".into(), serde_json::json!({})));
+        let update = || Action::Update {
+            preview_token: Some("token".into()),
+        };
+        let first = controller.dispatch(update()).err().expect("no install");
+        assert_ne!(first, "Review the source update first.");
+        assert_eq!(
+            controller.dispatch(update()).err().as_deref(),
+            Some("Review the source update first.")
+        );
     }
 }
