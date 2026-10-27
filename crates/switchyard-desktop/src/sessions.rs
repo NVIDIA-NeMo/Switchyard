@@ -242,6 +242,80 @@ pub fn cleanup(id: &str, reviewed: &serde_json::Value) -> Result<String, String>
         .into())
 }
 
+/// A harness opened in a directory that already exists.
+///
+/// `launch` creates a worktree and then opens the harness in it. A hand-off later opens
+/// another harness in the same directory, so the two steps stay separate.
+pub struct OpenRequest<'a> {
+    pub tool: Harness,
+    pub binary: std::path::PathBuf,
+    /// The directory the harness starts in.
+    pub directory: std::path::PathBuf,
+    /// The public route ID the harness uses as its model.
+    pub model: &'a str,
+    /// The validated server URL.
+    pub root: &'a str,
+    pub login: bool,
+    /// The login directory the script exports, when the harness must select one.
+    pub account: Option<&'a Path>,
+    /// The value of the `x-switchyard-session-id` header.
+    pub session_id: &'a str,
+    /// The private settings files written for Claude and Pi.
+    pub files: &'a [std::path::PathBuf],
+    /// Pi's private agent directory.
+    pub private: &'a Path,
+    /// Claude's session UUID. Choosing it here makes the transcript path known before the
+    /// session starts.
+    pub native_session_id: Option<&'a str>,
+}
+
+/// Claude Code accepts a UUID for `--session-id`. Its own session IDs are version 4, so the
+/// bytes of a time-ordered UUID are relabeled as version 4 rather than enabling another
+/// `uuid` feature.
+pub fn claude_session_id() -> String {
+    uuid::Builder::from_random_bytes(*uuid::Uuid::now_v7().as_bytes())
+        .into_uuid()
+        .to_string()
+}
+
+fn create_worktree(
+    project: &Path,
+    id: &str,
+    revision: &str,
+) -> Result<(std::path::PathBuf, std::path::PathBuf, PendingSession), String> {
+    let worktree = session_root()?.join(id);
+    let parent = worktree
+        .parent()
+        .ok_or("Worktree needs a parent directory")?
+        .to_path_buf();
+    std::fs::create_dir_all(&parent).map_err(|e| e.to_string())?;
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args(["worktree", "add", "-b"])
+        .arg(id)
+        .arg(&worktree)
+        .arg(revision)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "Could not create worktree: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let private = parent.join(format!("{id}-settings"));
+    let pending = PendingSession {
+        project: project.to_path_buf(),
+        worktree: worktree.clone(),
+        private: private.clone(),
+        branch: id.to_string(),
+        revision: revision.into(),
+        opened: false,
+    };
+    Ok((worktree, private, pending))
+}
+
 pub fn launch(
     tool: Harness,
     project: &Path,
@@ -289,40 +363,7 @@ pub fn launch(
     let id = format!("sy-{}", uuid::Uuid::now_v7());
     // Path resolution must succeed before launch creates directories or a worktree.
     let default_files = harness::paths(tool)?;
-    let worktree = session_root()?.join(&id);
-    std::fs::create_dir_all(
-        worktree
-            .parent()
-            .ok_or("Worktree needs a parent directory")?,
-    )
-    .map_err(|e| e.to_string())?;
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&project)
-        .args(["worktree", "add", "-b"])
-        .arg(&id)
-        .arg(&worktree)
-        .arg(revision)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        return Err(format!(
-            "Could not create worktree: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    let private = worktree
-        .parent()
-        .ok_or("Worktree needs a parent directory")?
-        .join(format!("{id}-settings"));
-    let mut pending = PendingSession {
-        project,
-        worktree: worktree.clone(),
-        private: private.clone(),
-        branch: id.clone(),
-        revision: revision.into(),
-        opened: false,
-    };
+    let (worktree, private, mut pending) = create_worktree(&project, &id, revision)?;
     let files = match tool {
         Harness::Pi => vec![private.join("models.json"), private.join("settings.json")],
         _ => vec![private.join("settings.json")],
@@ -331,7 +372,32 @@ pub fn launch(
     if matches!(tool, Harness::Claude | Harness::Pi) {
         harness::install(tool, &files, &root, model, None, login)?;
     }
-    let receipt = serde_json::json!({"id":id,"tool":tool,"route":model,"repository":repository,"revision":preview(&worktree)?["revision"],"worktree":worktree,"branch":id,"created_at":chrono::Utc::now().to_rfc3339(),"settings_directory":private,"account_directory":account});
+    let native_session_id = (tool == Harness::Claude).then(claude_session_id);
+    let created_at = chrono::Utc::now().to_rfc3339();
+    // `launches` records every harness opened in this worktree. The top-level `tool`,
+    // `route`, `account_directory`, and `settings_directory` mirror the latest launch.
+    let launched = serde_json::json!({
+        "tool": tool,
+        "route": model,
+        "account_directory": account,
+        "settings_directory": private,
+        "started_at": created_at,
+        "native_session_id": native_session_id,
+    });
+    let receipt = serde_json::json!({
+        "id": id,
+        "tool": tool,
+        "route": model,
+        "repository": repository,
+        "revision": preview(&worktree)?["revision"],
+        "worktree": worktree,
+        "branch": id,
+        "relative_directory": relative,
+        "created_at": created_at,
+        "settings_directory": private,
+        "account_directory": account,
+        "launches": [launched],
+    });
     std::fs::write(
         private.join("session.json"),
         serde_json::to_vec_pretty(&receipt).map_err(|error| error.to_string())?,
@@ -341,6 +407,46 @@ pub fn launch(
         Harness::Claude if std::env::var_os("CLAUDE_CONFIG_DIR").is_none() => None,
         _ => default_files[0].parent(),
     });
+    open_harness(&OpenRequest {
+        tool,
+        binary,
+        directory: worktree.join(&relative),
+        model,
+        root: &root,
+        login,
+        account,
+        session_id: &id,
+        files: &files,
+        private: &private,
+        native_session_id: native_session_id.as_deref(),
+    })?;
+    pending.opened = true;
+    Ok(format!(
+        "Opened Terminal to start the session.\n\
+         Worktree: {}\n\
+         Branch: {id}\n\
+         Model route: {model}\n\
+         Remove the worktree with git worktree remove after saving or discarding its changes.",
+        worktree.display()
+    ))
+}
+
+/// This opens the harness in `request.directory` through the user's terminal.
+pub fn open_harness(request: &OpenRequest) -> Result<(), String> {
+    let OpenRequest {
+        tool,
+        binary,
+        directory,
+        model,
+        root,
+        login,
+        account,
+        session_id,
+        files,
+        private,
+        native_session_id,
+    } = request;
+    let (tool, model, login, session_id) = (*tool, *model, *login, *session_id);
     let codex_args = [
         "-c".to_string(),
         format!("model={}", toml_edit::Value::from(model)),
@@ -352,9 +458,18 @@ pub fn launch(
              requires_openai_auth={login},http_headers={{\"x-switchyard-session-id\"={},\
              \"x-switchyard-origin\"=\"codex\"}}}}",
             toml_edit::Value::from(format!("{}/v1", root.trim_end_matches('/'))),
-            toml_edit::Value::from(id.as_str())
+            toml_edit::Value::from(session_id)
         ),
     ];
+    let mut claude_args = vec![
+        "--settings".to_string(),
+        files[0].display().to_string(),
+        "--model".into(),
+        model.into(),
+    ];
+    if let Some(native) = native_session_id {
+        claude_args.extend(["--session-id".to_string(), (*native).to_string()]);
+    }
     #[cfg(windows)]
     {
         let mut environment = Vec::new();
@@ -364,7 +479,7 @@ pub fn launch(
             Harness::Claude => {
                 environment.push((
                     "ANTHROPIC_CUSTOM_HEADERS".into(),
-                    format!("x-switchyard-session-id: {id}\nx-switchyard-origin: claude"),
+                    format!("x-switchyard-session-id: {session_id}\nx-switchyard-origin: claude"),
                 ));
                 if login {
                     remove_environment.extend(
@@ -376,12 +491,7 @@ pub fn launch(
                         .map(String::from),
                     );
                 }
-                vec![
-                    "--settings".into(),
-                    files[0].display().to_string(),
-                    "--model".into(),
-                    model.into(),
-                ]
+                claude_args
             }
             Harness::Pi => {
                 environment.push(("PI_CODING_AGENT_DIR".into(), private.display().to_string()));
@@ -406,9 +516,9 @@ pub fn launch(
             }
         }
         crate::windows::open_terminal(crate::windows::TerminalJob {
-            binary,
+            binary: binary.clone(),
             args,
-            directory: Some(worktree.join(&relative)),
+            directory: Some(directory.clone()),
             environment,
             remove_environment,
         })?;
@@ -426,12 +536,15 @@ pub fn launch(
                     .join(" ")
             ),
             Harness::Claude => format!(
-                "env ANTHROPIC_CUSTOM_HEADERS={} {program} --settings {} --model {}",
+                "env ANTHROPIC_CUSTOM_HEADERS={} {program} {}",
                 quote(&format!(
-                    "x-switchyard-session-id: {id}\nx-switchyard-origin: claude"
+                    "x-switchyard-session-id: {session_id}\nx-switchyard-origin: claude"
                 )),
-                quote(&files[0].display().to_string()),
-                quote(model)
+                claude_args
+                    .iter()
+                    .map(|arg| quote(arg))
+                    .collect::<Vec<_>>()
+                    .join(" ")
             ),
             Harness::Pi => format!(
                 "env PI_CODING_AGENT_DIR={} {program} --provider switchyard --model {}",
@@ -461,19 +574,405 @@ pub fn launch(
              rm -- \"$0\"\n\
              cd {} || exit 1\n\
              {account_env}{subscription_env}{command}",
-            quote(&worktree.join(relative).display().to_string())
+            quote(&directory.display().to_string())
         );
         crate::server::open_terminal_script("switchyard-session-", &script)?;
     }
-    pending.opened = true;
-    Ok(format!(
-        "Opened Terminal to start the session.\n\
-         Worktree: {}\n\
-         Branch: {id}\n\
-         Model route: {model}\n\
-         Remove the worktree with git worktree remove after saving or discarding its changes.",
-        worktree.display()
-    ))
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failed_session_setup_removes_its_worktree_branch_and_private_settings() {
+        let dir = tempfile::tempdir().expect("directory");
+        let project = dir.path().join("project");
+        std::fs::create_dir(&project).expect("project");
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&project)
+                .args(args)
+                .output()
+                .expect("git");
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output
+        };
+        git(&["init"]);
+        git(&[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ]);
+        let worktree = dir.path().join("worktree");
+        let private = dir.path().join("settings");
+        git(&[
+            "worktree",
+            "add",
+            "-b",
+            "session-fixture",
+            worktree.to_str().expect("path"),
+        ]);
+        std::fs::create_dir(&private).expect("private");
+        std::fs::write(private.join("settings.json"), "{}").expect("settings");
+        let revision = String::from_utf8_lossy(&git(&["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string();
+        // An unrelated HEAD in the original checkout makes `branch -d` refuse the session branch.
+        git(&["checkout", "--orphan", "unrelated"]);
+        git(&[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "unrelated",
+        ]);
+        drop(PendingSession {
+            project: project.clone(),
+            worktree: worktree.clone(),
+            private: private.clone(),
+            branch: "session-fixture".into(),
+            revision,
+            opened: false,
+        });
+        assert!(!worktree.exists());
+        assert!(!private.exists());
+        assert!(
+            !String::from_utf8_lossy(&git(&["branch", "--list", "session-fixture"]).stdout)
+                .contains("session-fixture")
+        );
+    }
+    // The subprocess isolates HOME and PATH.
+    // The Terminal stub injects a conflicting directory when the script must select one.
+    // Claude's default case requires an unset CLAUDE_CONFIG_DIR, not an explicit ~/.claude.
+    #[cfg(unix)]
+    #[test]
+    fn generated_sessions_use_explicit_accounts_without_changing_user_defaults() {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(fixture) = std::env::var("SWITCHYARD_SESSION_FIXTURE") {
+            let fixture = std::path::PathBuf::from(fixture);
+            let tool = if std::env::var("SWITCHYARD_SESSION_TOOL").expect("tool") == "codex" {
+                Harness::CodexCli
+            } else {
+                Harness::Claude
+            };
+            let account =
+                std::env::var_os("SWITCHYARD_SESSION_ACCOUNT").map(std::path::PathBuf::from);
+            let revision = preview(&fixture.join("project")).expect("preview")["revision"]
+                .as_str()
+                .expect("revision")
+                .to_string();
+            // Advancing the original checkout makes a launch from HEAD differ from the review.
+            if tool == Harness::CodexCli && account.is_none() {
+                let committed = std::process::Command::new("git")
+                    .arg("-C")
+                    .arg(fixture.join("project"))
+                    .args([
+                        "-c",
+                        "user.name=Fixture",
+                        "-c",
+                        "user.email=fixture@example.invalid",
+                        "-c",
+                        "commit.gpgsign=false",
+                        "commit",
+                        "--allow-empty",
+                        "-m",
+                        "advanced",
+                    ])
+                    .output()
+                    .expect("advance HEAD");
+                assert!(committed.status.success());
+            }
+            launch(
+                tool,
+                &fixture.join("project"),
+                "route'$(literal)",
+                "http://localhost:4123",
+                tool == Harness::Claude,
+                account.as_deref(),
+                &revision,
+            )
+            .expect("launch");
+            if tool == Harness::CodexCli && account.is_none() {
+                let records = inventory().expect("inventory");
+                assert_eq!(records.len(), 1);
+                assert_eq!(records[0]["revision"], revision);
+                assert_eq!(records[0]["relative_directory"], "");
+                let launches = records[0]["launches"].as_array().expect("launches");
+                assert_eq!(launches.len(), 1);
+                assert_eq!(launches[0]["tool"], "codex_cli");
+                assert_eq!(launches[0]["route"], records[0]["route"]);
+                assert_eq!(launches[0]["started_at"], records[0]["created_at"]);
+                assert!(launches[0]["native_session_id"].is_null());
+                assert_ne!(
+                    preview(&fixture.join("project")).expect("advanced project")["revision"],
+                    revision
+                );
+                let id = records[0]["id"].as_str().expect("session id");
+                let receipt = session_root()
+                    .expect("session root")
+                    .join(format!("{id}-settings/session.json"));
+                let original = std::fs::read(&receipt).expect("receipt");
+                // Valid JSON roots must still be objects before inventory adds process_status.
+                for malformed in ["null", "[]", "false", "42"] {
+                    std::fs::write(&receipt, malformed).expect("malformed receipt");
+                    assert!(inventory().is_err());
+                    assert!(cleanup_preview(id).is_err());
+                }
+                std::fs::write(&receipt, original).expect("restore receipt");
+                let clean = cleanup_preview(id).expect("preview cleanup");
+                let worktree = Path::new(records[0]["worktree"].as_str().expect("worktree"));
+                let unsaved = worktree.join("unsaved-user-work.txt");
+                std::fs::write(&unsaved, "keep this work").expect("user work");
+                assert!(cleanup(id, &clean).is_err());
+                assert!(unsaved.exists());
+                let dirty = cleanup_preview(id).expect("dirty preview");
+                assert!(cleanup(id, &dirty).is_err());
+                assert!(worktree.exists());
+                std::fs::remove_file(&unsaved).expect("save fixture work");
+                let clean = cleanup_preview(id).expect("clean preview");
+                // Cleanup deletes ignored files, so a new ignored file requires a new review.
+                let info = fixture.join("project/.git/info");
+                std::fs::create_dir_all(&info).expect("git info");
+                std::fs::write(info.join("exclude"), "ignored-notes.txt\n").expect("exclude");
+                std::fs::write(worktree.join("ignored-notes.txt"), "notes").expect("notes");
+                assert!(cleanup(id, &clean).is_err());
+                assert!(worktree.join("ignored-notes.txt").exists());
+                let reviewed = cleanup_preview(id).expect("ignored preview");
+                assert_eq!(
+                    reviewed["ignored"],
+                    serde_json::json!(["ignored-notes.txt"])
+                );
+                // An unrelated HEAD in the original checkout makes `branch -d` refuse the branch.
+                let project_git = |args: &[&str]| {
+                    let output = std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(fixture.join("project"))
+                        .args(args)
+                        .output()
+                        .expect("git");
+                    assert!(output.status.success());
+                    output
+                };
+                project_git(&["checkout", "--orphan", "unrelated"]);
+                project_git(&[
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "unrelated",
+                ]);
+                cleanup(id, &reviewed).expect("safe cleanup");
+                assert!(!worktree.exists());
+                assert!(inventory().expect("inventory after cleanup").is_empty());
+                assert!(project_git(&["branch", "--list", id]).stdout.is_empty());
+            }
+            return;
+        }
+        for (name, named, inherited_dir) in [
+            ("codex", false, true),
+            ("codex", true, true),
+            ("claude", false, true),
+            ("claude", true, true),
+            ("claude", false, false),
+            ("claude", true, false),
+        ] {
+            let fixture = tempfile::tempdir().expect("fixture");
+            let home = fixture.path().join("home");
+            let bin = fixture.path().join("bin");
+            let project = fixture.path().join("project");
+            for path in [&home, &bin, &project] {
+                std::fs::create_dir(path).expect("directory");
+            }
+            for args in [
+                vec!["init"],
+                vec![
+                    "-c",
+                    "user.name=Fixture",
+                    "-c",
+                    "user.email=fixture@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "fixture",
+                ],
+            ] {
+                assert!(
+                    std::process::Command::new("git")
+                        .arg("-C")
+                        .arg(&project)
+                        .args(args)
+                        .output()
+                        .expect("git")
+                        .status
+                        .success()
+                );
+            }
+            let default = home.join("default-login");
+            std::fs::create_dir(&default).expect("default");
+            std::fs::write(default.join("settings.json"), "{\"user\":true}").expect("settings");
+            let account = home.join(".switchyard/accounts").join(name).join("named");
+            if named {
+                std::fs::create_dir_all(&account).expect("account");
+            }
+            let output = fixture.path().join("arguments");
+            let captured = fixture.path().join("session.command");
+            // macOS runs the script through `open`; Linux runs it through the program in
+            // TERMINAL, which receives `-e` before the script path.
+            let open = bin.join(if cfg!(target_os = "linux") {
+                "terminal"
+            } else {
+                "open"
+            });
+            let terminal_claude = if inherited_dir || named {
+                "export CLAUDE_CONFIG_DIR=wrong-terminal-login"
+            } else {
+                "unset CLAUDE_CONFIG_DIR"
+            };
+            std::fs::write(
+                &open,
+                format!(
+                    "#!/bin/bash\n\
+                     [ \"$1\" = -e ] && shift\n\
+                     cp -- \"$1\" {}\n\
+                     export CODEX_HOME=wrong-terminal-login ANTHROPIC_AUTH_TOKEN=wrong-token\n\
+                     {terminal_claude}\n\
+                     bash \"$1\"\n",
+                    quote(&captured.display().to_string())
+                ),
+            )
+            .expect("open");
+            let tool = bin.join(name);
+            std::fs::write(
+                &tool,
+                format!(
+                    "#!/bin/bash\n\
+                     printf '%s\\n' \"${{CODEX_HOME:-}}\" \"${{CLAUDE_CONFIG_DIR:-}}\" \
+                     \"${{ANTHROPIC_AUTH_TOKEN:-}}\" \"$@\" > {0}.partial && mv {0}.partial {0}\n",
+                    quote(&output.display().to_string())
+                ),
+            )
+            .expect("tool");
+            for path in [&open, &tool] {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                    .expect("executable");
+            }
+            let mut child = std::process::Command::new(std::env::current_exe().expect("runner"));
+            child
+                .args([
+                    "--exact",
+                    "sessions::tests::\
+                     generated_sessions_use_explicit_accounts_without_changing_user_defaults",
+                ])
+                .env("SWITCHYARD_SESSION_FIXTURE", fixture.path())
+                .env("SWITCHYARD_SESSION_TOOL", name)
+                .env("HOME", &home)
+                .env("CODEX_HOME", &default)
+                .env("CLAUDE_CONFIG_DIR", &default)
+                .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                .env("TERMINAL", &open);
+            if named {
+                child.env("SWITCHYARD_SESSION_ACCOUNT", &account);
+            }
+            if !inherited_dir {
+                child.env_remove("CLAUDE_CONFIG_DIR");
+            }
+            let result = child.output().expect("child");
+            assert!(
+                result.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+            // A Linux terminal starts apart from the launch, so the arguments can arrive
+            // after the child exits. The tool stub renames the file into place when done.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !output.exists() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            let arguments = std::fs::read_to_string(output).expect("arguments");
+            let lines: Vec<_> = arguments.lines().collect();
+            let expected = if named {
+                account.to_str().expect("path")
+            } else if inherited_dir {
+                default.to_str().expect("path")
+            } else {
+                ""
+            };
+            assert_eq!(lines[usize::from(name == "claude")], expected);
+            if name == "claude" {
+                assert_eq!(lines[2], "");
+            }
+            assert!(arguments.contains("route'$(literal)"));
+            let script = std::fs::read_to_string(captured).expect("script");
+            assert!(script.contains("x-switchyard-session-id"));
+            // The receipt names the Claude session UUID that the launch passed on the command
+            // line, so the transcript path is known without reading any transcript.
+            let receipts: Vec<_> = std::fs::read_dir(home.join(".switchyard/worktrees"))
+                .expect("worktrees")
+                .filter_map(|entry| {
+                    let path = entry.expect("entry").path().join("session.json");
+                    std::fs::read(&path).ok().map(|bytes| {
+                        serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+                    })
+                })
+                .collect();
+            if name == "claude" {
+                assert_eq!(receipts.len(), 1);
+                let native = receipts[0]["launches"][0]["native_session_id"]
+                    .as_str()
+                    .expect("claude session id");
+                assert_eq!(
+                    uuid::Uuid::parse_str(native)
+                        .expect("uuid")
+                        .get_version_num(),
+                    4
+                );
+                assert!(arguments.contains(&format!("--session-id\n{native}\n")));
+            } else {
+                // The Codex case without an account cleans its session up in the child.
+                assert_eq!(receipts.len(), usize::from(named));
+                assert!(
+                    receipts
+                        .iter()
+                        .all(|receipt| { receipt["launches"][0]["native_session_id"].is_null() })
+                );
+                assert!(!arguments.contains("--session-id"));
+            }
+            if name == "claude" && !named && !inherited_dir {
+                assert!(!script.contains("export CLAUDE_CONFIG_DIR="));
+            }
+            assert_eq!(
+                std::fs::read_to_string(default.join("settings.json")).expect("settings"),
+                "{\"user\":true}"
+            );
+        }
+    }
 }
 
 #[cfg(test)]
