@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Keep RUST_VERSION in sync with rust-toolchain.toml.
-ARG RUST_VERSION=1.96.1
+ARG RUST_VERSION=1.99
 FROM rust:${RUST_VERSION}-bookworm AS builder
 
 WORKDIR /opt/switchyard
@@ -10,7 +10,7 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 # .cargo/config.toml carries the workspace rustflags (target-cpu, force-frame-pointers).
 COPY .cargo ./.cargo
 COPY crates ./crates
-COPY examples/dynamo-preproc ./examples/dynamo-preproc
+COPY examples ./examples
 
 RUN cargo build --locked --release -p switchyard-server
 
