@@ -47,6 +47,7 @@ test("decision request, cutoff, and branch-owned state", async () => {
       assert.deepEqual(request.context, {
         task: messages, candidates: ["a", "b"], comparison: { capable: "a", efficient: "b" },
         evidence: options.classifier.decision.evidence,
+        session: null,
       });
       assert.deepEqual(Object.keys(request.questions), ["route"]);
       assert.deepEqual(request.questions.route.instructions, instructions);
