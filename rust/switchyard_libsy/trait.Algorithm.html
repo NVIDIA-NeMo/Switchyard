@@ -7,14 +7,14 @@
 <span class="item-spacer"></span>    fn <a href="#tymethod.route" class="fn">route</a>&lt;'async_trait&gt;(
         self: <a class="struct" href="https://doc.rust-lang.org/1.99.1/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
         driver: <a class="struct" href="struct.Driver.html" title="struct switchyard_libsy::Driver">Driver</a>,
-        request: Request,
+        request: <a class="struct" href="../switchyard_protocol/envelope/struct.Request.html" title="struct switchyard_protocol::envelope::Request">Request</a>,
     ) -&gt; <a class="struct" href="https://doc.rust-lang.org/1.99.1/core/pin/struct.Pin.html" title="struct core::pin::Pin">Pin</a>&lt;<a class="struct" href="https://doc.rust-lang.org/1.99.1/alloc/boxed/struct.Box.html" title="struct alloc::boxed::Box">Box</a>&lt;dyn <a class="trait" href="https://doc.rust-lang.org/1.99.1/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type switchyard_libsy::Result">Result</a>&lt;<a class="struct" href="struct.RoutingOutcome.html" title="struct switchyard_libsy::RoutingOutcome">RoutingOutcome</a>&gt;&gt; + <a class="trait" href="https://doc.rust-lang.org/1.99.1/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + 'async_trait&gt;&gt;
        <span class="where">where Self: 'async_trait</span>;
 
     // Provided method
     fn <a href="#method.run_stream" class="fn">run_stream</a>(
         self: <a class="struct" href="https://doc.rust-lang.org/1.99.1/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
-        request: Request,
+        request: <a class="struct" href="../switchyard_protocol/envelope/struct.Request.html" title="struct switchyard_protocol::envelope::Request">Request</a>,
         models: <a class="struct" href="https://doc.rust-lang.org/1.99.1/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;<a class="struct" href="struct.RuntimeModels.html" title="struct switchyard_libsy::RuntimeModels">RuntimeModels</a>&gt;,
         state: <a class="struct" href="struct.State.html" title="struct switchyard_libsy::State">State</a>,
     ) -&gt; <a class="type" href="type.StepStream.html" title="type switchyard_libsy::StepStream">StepStream</a> { ... }
@@ -52,13 +52,13 @@ emits for its runs.</p>
 </div></details><details class="toggle method-toggle" open><summary><section id="tymethod.route" class="method"><a class="src rightside" href="../src/switchyard_libsy/core/algorithm.rs.html#741">Source</a><h4 class="code-header">fn <a href="#tymethod.route" class="fn">route</a>&lt;'async_trait&gt;(
     self: <a class="struct" href="https://doc.rust-lang.org/1.99.1/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
     driver: <a class="struct" href="struct.Driver.html" title="struct switchyard_libsy::Driver">Driver</a>,
-    request: Request,
+    request: <a class="struct" href="../switchyard_protocol/envelope/struct.Request.html" title="struct switchyard_protocol::envelope::Request">Request</a>,
 ) -&gt; <a class="struct" href="https://doc.rust-lang.org/1.99.1/core/pin/struct.Pin.html" title="struct core::pin::Pin">Pin</a>&lt;<a class="struct" href="https://doc.rust-lang.org/1.99.1/alloc/boxed/struct.Box.html" title="struct alloc::boxed::Box">Box</a>&lt;dyn <a class="trait" href="https://doc.rust-lang.org/1.99.1/core/future/future/trait.Future.html" title="trait core::future::future::Future">Future</a>&lt;Output = <a class="type" href="type.Result.html" title="type switchyard_libsy::Result">Result</a>&lt;<a class="struct" href="struct.RoutingOutcome.html" title="struct switchyard_libsy::RoutingOutcome">RoutingOutcome</a>&gt;&gt; + <a class="trait" href="https://doc.rust-lang.org/1.99.1/core/marker/trait.Send.html" title="trait core::marker::Send">Send</a> + 'async_trait&gt;&gt;<div class="where">where
     Self: 'async_trait,</div></h4></section></summary><div class="docblock"><p>Select a route, requesting external work through <a href="struct.Driver.html" title="struct switchyard_libsy::Driver"><code>Driver</code></a> as needed.
 <a href="trait.Algorithm.html#method.run_stream" title="method switchyard_libsy::Algorithm::run_stream"><code>run_stream</code></a> runs this method and exposes its work to the host.</p>
 </div></details></div><h2 id="provided-methods" class="section-header">Provided Methods<a href="#provided-methods" class="anchor">§</a></h2><div class="methods"><details class="toggle method-toggle" open><summary><section id="method.run_stream" class="method"><a class="src rightside" href="../src/switchyard_libsy/core/algorithm.rs.html#750-787">Source</a><h4 class="code-header">fn <a href="#method.run_stream" class="fn">run_stream</a>(
     self: <a class="struct" href="https://doc.rust-lang.org/1.99.1/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;Self&gt;,
-    request: Request,
+    request: <a class="struct" href="../switchyard_protocol/envelope/struct.Request.html" title="struct switchyard_protocol::envelope::Request">Request</a>,
     models: <a class="struct" href="https://doc.rust-lang.org/1.99.1/alloc/sync/struct.Arc.html" title="struct alloc::sync::Arc">Arc</a>&lt;<a class="struct" href="struct.RuntimeModels.html" title="struct switchyard_libsy::RuntimeModels">RuntimeModels</a>&gt;,
     state: <a class="struct" href="struct.State.html" title="struct switchyard_libsy::State">State</a>,
 ) -&gt; <a class="type" href="type.StepStream.html" title="type switchyard_libsy::StepStream">StepStream</a></h4></section></summary><div class="docblock"><p>Expose work requests and the final outcome so the host can control execution.</p>

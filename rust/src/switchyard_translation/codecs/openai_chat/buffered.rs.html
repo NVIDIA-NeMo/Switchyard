@@ -1294,7 +1294,7 @@
 <a href=#1294 id=1294 data-nosnippet>1294</a>    <span class="kw">if </span>usage.cached_input_tokens().is_some() || usage.cache_creation_input_tokens().is_some() {
 <a href=#1295 id=1295 data-nosnippet>1295</a>        value[<span class="string">"prompt_tokens_details"</span>] = <span class="macro">json!</span>({
 <a href=#1296 id=1296 data-nosnippet>1296</a>            <span class="string">"cached_tokens"</span>: usage.cached_input_tokens().unwrap_or(<span class="number">0</span>),
-<a href=#1297 id=1297 data-nosnippet>1297</a>            <span class="string">"cache_creation_tokens"</span>: usage.cache_creation_input_tokens().unwrap_or(<span class="number">0</span>),
+<a href=#1297 id=1297 data-nosnippet>1297</a>            <span class="string">"cache_write_tokens"</span>: usage.cache_creation_input_tokens().unwrap_or(<span class="number">0</span>),
 <a href=#1298 id=1298 data-nosnippet>1298</a>        });
 <a href=#1299 id=1299 data-nosnippet>1299</a>    }
 <a href=#1300 id=1300 data-nosnippet>1300</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>(reasoning_tokens) = usage.reasoning_tokens {
