@@ -2748,7 +2748,8 @@ flowchart TB
     class capable capable;
     class heldRoute,signalRoute,classifierRoute,defaultRoute outcome;</code></pre>
 <p>Both pickers support <code>capable_hold_turns</code> (default <code>2</code>) and
-<code>efficient_hold_turns</code> (default <code>0</code>). A positive value holds that tier for the
+<code>efficient_hold_turns</code> (default <code>0</code> on standalone routes; composite's
+capable-first policy defaults to <code>-1</code>). A positive value holds that tier for the
 specified number of requests after a switch, excluding the switch request.
 Held requests do not restart the counter. A finite capable hold also starts or
 restarts on a signal-driven capable decision. Active holds return the selected
@@ -2847,7 +2848,7 @@ These are the ones that matter when you choose a threshold:</p>
 the capable side stays below 0.46. An error in the window removes the
 clean-production bonus, so with a hard error the efficient side reaches at most
 0.24. The unit test <code>scorer_ceilings_match_the_documented_values</code> in
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/87235718297c450088e1b1c7323959b0823366bd/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/facded0fb61c08b7d3ea2ed95686cc13925db452/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
 pins these values, so a change to the scorer fails CI until this table is
 updated.</p>
 <h3 id="reachable-scores-per-picker">Reachable scores per picker<a class="headerlink" href="#reachable-scores-per-picker" title="Permanent link">&para;</a></h3>

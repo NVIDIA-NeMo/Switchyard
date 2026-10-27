@@ -2404,6 +2404,10 @@ Tool signals can still change the tier
 during execution. Both algorithms and the
 relationship between them are fixed, and the configuration below names them
 directly rather than composing arbitrary algorithms.</p>
+<p>Under capable-first, <code>stage.efficient_hold_turns</code> defaults to <code>-1</code>: after switching
+to efficient, it stays there until session state is cleared. Efficient-first
+defaults to <code>0</code>. Set this field explicitly to override either default; <code>0</code>
+disables the hold, and a positive value holds that many subsequent requests.</p>
 <p>The classifier can use an LLM judge or a decision model. A decision
 model is configured through a decision client and target, separately from the
 capable and efficient completion targets.</p>
