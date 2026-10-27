@@ -532,12 +532,18 @@ pub fn invocation(request: &OpenRequest) -> Result<Invocation, String> {
     if let Some(prompt) = first_prompt {
         codex_args.push((*prompt).to_string());
     }
-    let mut claude_args = vec![
+    // `--add-dir` takes every following word as a directory, so it goes first and a flag that
+    // takes one value closes it. The prompt is the last word.
+    let mut claude_args = Vec::new();
+    for dir in read_dirs.iter() {
+        claude_args.extend(["--add-dir".to_string(), dir.display().to_string()]);
+    }
+    claude_args.extend([
         "--settings".to_string(),
         files[0].display().to_string(),
         "--model".into(),
         model.into(),
-    ];
+    ]);
     if let Some(native) = native_session_id {
         claude_args.extend(["--session-id".to_string(), (*native).to_string()]);
     }
@@ -546,9 +552,6 @@ pub fn invocation(request: &OpenRequest) -> Result<Invocation, String> {
             "--append-system-prompt".to_string(),
             (*instructions).to_string(),
         ]);
-    }
-    for dir in read_dirs.iter() {
-        claude_args.extend(["--add-dir".to_string(), dir.display().to_string()]);
     }
     if let Some(prompt) = first_prompt {
         claude_args.push((*prompt).to_string());
@@ -674,6 +677,47 @@ pub fn open_harness(request: &OpenRequest) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Claude Code's `--add-dir` swallows every following word as a directory, which once made
+    // the first prompt a "path not found". Codex takes one value per `-c`.
+    #[test]
+    fn the_first_prompt_is_the_last_word_and_no_list_option_precedes_it() {
+        let dir = std::path::PathBuf::from("/tmp/hd-1");
+        let files = vec![dir.join("settings.json")];
+        let request = |tool: Harness| OpenRequest {
+            tool,
+            binary: std::path::PathBuf::from("/usr/bin/harness"),
+            directory: std::path::PathBuf::from("/work"),
+            model: "claude",
+            root: "http://127.0.0.1:4123",
+            login: true,
+            account: None,
+            session_id: "sy-1",
+            files: &files,
+            private: &dir,
+            native_session_id: Some("00000000-0000-4000-8000-000000000001"),
+            instructions: Some("Read the file first."),
+            read_dirs: std::slice::from_ref(&dir),
+            first_prompt: Some("Read the hand-off file and continue."),
+        };
+        let claude = invocation(&request(Harness::Claude)).expect("claude").args;
+        assert_eq!(&claude[..2], &["--add-dir", "/tmp/hd-1"]);
+        assert_eq!(claude[2], "--settings");
+        assert_eq!(
+            claude.last().map(String::as_str),
+            Some("Read the hand-off file and continue.")
+        );
+        assert_eq!(claude[claude.len() - 3], "--append-system-prompt");
+        let codex = invocation(&request(Harness::CodexCli)).expect("codex").args;
+        assert_eq!(
+            codex.last().map(String::as_str),
+            Some("Read the hand-off file and continue.")
+        );
+        assert!(
+            codex[codex.len() - 2].starts_with("developer_instructions="),
+            "{codex:?}"
+        );
+    }
 
     #[test]
     fn failed_session_setup_removes_its_worktree_branch_and_private_settings() {
