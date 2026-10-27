@@ -11,6 +11,7 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY .cargo ./.cargo
 COPY crates ./crates
 COPY examples/dynamo-preproc ./examples/dynamo-preproc
+COPY examples/claude ./examples/claude
 
 RUN cargo build --locked --release -p switchyard-server
 
