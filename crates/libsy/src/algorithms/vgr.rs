@@ -17,7 +17,7 @@ use self::text::ToolRecord;
 use crate::Result;
 use crate::algorithms::fall_through::FallThrough;
 use crate::algorithms::util::affinity::AffinityRouter;
-use crate::core::algorithm::{Algorithm, Driver, RoutingOutcome};
+use crate::core::algorithm::{Algorithm, AnswerSummary, Driver, RoutingOutcome};
 
 mod compaction;
 mod config;
@@ -101,6 +101,10 @@ impl Algorithm for Vgr {
             outcome.fallback_request = Some(arrived);
         }
         Ok(outcome)
+    }
+
+    async fn observe_answer(&self, session_id: &str, answer: AnswerSummary) {
+        self.route.observe_answer(session_id, answer).await;
     }
 }
 

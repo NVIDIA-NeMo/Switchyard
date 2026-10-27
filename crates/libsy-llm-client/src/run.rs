@@ -27,8 +27,8 @@ use http::StatusCode;
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 use switchyard_libsy::{
-    Algorithm, Call, CallDecision, LibsyError, OutcomeMetadata, Result, RoutingOutcome,
-    RuntimeModels, drive,
+    Algorithm, AnswerSummary, Call, CallDecision, LibsyError, OutcomeMetadata, Result,
+    RoutingOutcome, RuntimeModels, drive,
 };
 use switchyard_protocol::{
     AggLlmResponse, LlmClientError, LlmResponse, LlmResponseChunk, LlmResponseStream, Message,
@@ -69,7 +69,7 @@ pub async fn run(
     let outcome = match clients.stored_state_owner(&request) {
         Some(owner) => Ok(continue_on(owner, &algorithm_name, request)),
         None => {
-            drive(algorithm, request, models, {
+            drive(Arc::clone(&algorithm), request, models, {
                 let routing_observations = routing_observations.clone();
                 move |call| serve(routing_clients.clone(), call, routing_observations.clone())
             })
@@ -121,7 +121,71 @@ pub async fn run(
     if let Some(observer) = &observer {
         observer(RunObservation::RoutingOverhead(overhead));
     }
-    result.map(|response| (selected_model_id, response))
+    let response = match (result?, session_id(&outcome.request)) {
+        (response, Some(session)) => report_answer(algorithm, session, response).await,
+        (response, None) => response,
+    };
+    Ok((selected_model_id, response))
+}
+
+fn session_id(request: &Request) -> Option<String> {
+    let session = request.metadata.as_ref()?.session_id.as_deref()?;
+    (!session.is_empty()).then(|| session.to_string())
+}
+
+/// Reports the served answer to the algorithm; a stream reports it before its final chunk
+/// so the client cannot send its next request first.
+async fn report_answer(
+    algorithm: Arc<dyn Algorithm>,
+    session: String,
+    mut response: Response,
+) -> Response {
+    let stream = match response.llm_response {
+        LlmResponse::Agg(aggregate) => {
+            algorithm
+                .observe_answer(&session, AnswerSummary::of(&aggregate))
+                .await;
+            response.llm_response = LlmResponse::Agg(aggregate);
+            return response;
+        }
+        LlmResponse::Stream(stream) => stream,
+    };
+    algorithm
+        .observe_answer(&session, AnswerSummary { final_reply: false })
+        .await;
+    let report = (algorithm, session, Some(ResponseAccumulator::new()));
+    response.llm_response = LlmResponse::Stream(Box::pin(stream::unfold(
+        (stream, report),
+        |(mut stream, (algorithm, session, mut accumulator))| async move {
+            let item = stream.next().await?;
+            let failed = match &item {
+                Err(_) => true,
+                Ok(event) => event
+                    .normalized()
+                    .iter()
+                    .any(|chunk| matches!(chunk, LlmResponseChunk::StreamError { .. })),
+            };
+            if failed {
+                accumulator = None;
+                algorithm
+                    .observe_answer(&session, AnswerSummary { final_reply: false })
+                    .await;
+            }
+            let mut stopped = false;
+            if let (Ok(event), Some(answer)) = (&item, accumulator.as_mut()) {
+                for chunk in event.normalized() {
+                    stopped |= matches!(chunk, LlmResponseChunk::MessageStop { .. });
+                    answer.push(chunk.clone());
+                }
+            }
+            if stopped && let Some(answer) = accumulator.take() {
+                let answer = AnswerSummary::of(&answer.finish());
+                algorithm.observe_answer(&session, answer).await;
+            }
+            Some((item, (stream, (algorithm, session, accumulator))))
+        },
+    )));
+    response
 }
 
 /// Run an algorithm to a routing decision without serving its terminal completion.
@@ -1187,6 +1251,7 @@ mod tests {
                         LlmResponseChunk::StreamError {
                             message: "stream failed".to_string(),
                         },
+                        LlmResponseChunk::MessageStop { reason: Some("stop".into()) },
                     ])),
                 };
             }
@@ -1537,6 +1602,101 @@ mod tests {
             RunObservation::RoutingOverhead(_)
         ));
         assert_eq!(observations.len(), 3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn served_answer_is_reported_before_the_client_sees_it_end() -> Result<()> {
+        #[derive(Default)]
+        struct ReportingAlgorithm {
+            answers: Mutex<Vec<(String, bool)>>,
+        }
+
+        #[async_trait]
+        impl Algorithm for ReportingAlgorithm {
+            fn name(&self) -> &str {
+                "reporting_test"
+            }
+
+            async fn route(
+                self: Arc<Self>,
+                _driver: Driver,
+                request: Request,
+            ) -> Result<RoutingOutcome> {
+                Ok(RoutingOutcome::route_to("weak".into(), Vec::new(), request))
+            }
+
+            async fn observe_answer(&self, session_id: &str, answer: AnswerSummary) {
+                self.answers
+                    .lock()
+                    .push((session_id.to_string(), answer.final_reply));
+            }
+        }
+
+        for (first, final_reply, cancel) in [
+            (FirstOutcome::StreamSuccess, true, false),
+            (FirstOutcome::MidStreamError, false, false),
+            (FirstOutcome::StreamSuccess, false, true),
+        ] {
+            let algorithm = Arc::new(ReportingAlgorithm::default());
+            let client = Arc::new(CandidateClient {
+                calls: Mutex::new(Vec::new()),
+                requests: Mutex::new(Vec::new()),
+                first,
+            });
+            let request = Request {
+                metadata: Some(switchyard_protocol::Metadata {
+                    session_id: Some("session-1".to_string()),
+                    ..Default::default()
+                }),
+                ..request()
+            };
+            let (_, response) = run(
+                algorithm.clone(),
+                ClientRouter::single(client),
+                request,
+                to_category_map(&["weak"]),
+                None,
+            )
+            .await?;
+            let LlmResponse::Stream(mut stream) = response.llm_response else {
+                panic!("expected a streamed answer");
+            };
+            if cancel {
+                stream.next().await;
+                drop(stream);
+                assert_eq!(
+                    *algorithm.answers.lock(),
+                    [("session-1".to_string(), false)]
+                );
+                continue;
+            }
+            while let Some(item) = stream.next().await {
+                let stops = item.as_ref().is_ok_and(|event| {
+                    event
+                        .normalized()
+                        .iter()
+                        .any(|chunk| matches!(chunk, LlmResponseChunk::MessageStop { .. }))
+                });
+                if stops {
+                    assert_eq!(algorithm.answers.lock().len(), 2);
+                }
+            }
+            assert_eq!(
+                *algorithm.answers.lock(),
+                if final_reply {
+                    vec![
+                        ("session-1".to_string(), false),
+                        ("session-1".to_string(), true),
+                    ]
+                } else {
+                    vec![
+                        ("session-1".to_string(), false),
+                        ("session-1".to_string(), false),
+                    ]
+                }
+            );
+        }
         Ok(())
     }
 
