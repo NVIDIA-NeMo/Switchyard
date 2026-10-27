@@ -3069,7 +3069,7 @@ counts. Plain <code>decide</code> and <code>execute</code> retain task routing. 
 </span></code></pre></div>
 <p>All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/657870f321d89735e8f8c111d2fe26878bd058d0/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4430a512779d71d8037e7050a349a22e55127a43/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
 for collection and capacity safeguards.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
@@ -3450,7 +3450,9 @@ dependencies available in the active virtual environment.</p>
 policy selector, and routes to a runtime model group. A verdict names a group and
 the first model in it serves the turn. An eligible non-timeout failure tries the
 rest of that group, then any remaining models in <code>models.any</code>. A timeout stops
-the request without trying another model.</p>
+the request without trying another model. A connection that times out before it
+is established counts as a connection failure, not a timeout, so it tries the
+next model.</p>
 <p>The <code>[routes.&lt;name&gt;.models]</code> table takes any group name you choose. <code>any</code> and
 <code>judge</code> are reserved and required; <code>capable</code> and <code>efficient</code> are reserved for the
 tier meaning the other algorithms give them. Every other key is yours, which is
