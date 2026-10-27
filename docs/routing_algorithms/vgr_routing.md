@@ -110,6 +110,42 @@ Escalations release when a new user turn is decided on the efficient tier. Set
 Shadow mode always releases the hold at the next user turn.
 All configured VGR durations must be positive.
 
+## Execution limits
+
+`bounded_efficient` defaults to `true`. Set `bounded_efficient = false` on the
+VGR route to disable its decision deadline and `efficient_turn_budget_seconds`.
+Candidate generation, task typing, and verification then wait for completion.
+Client and upstream HTTP timeouts still apply. Configure those timeouts in the
+harness and Switchyard client for long-running decisions. Configured durations
+must remain positive even when these VGR limits are disabled.
+
+## Hermes auxiliary routing
+
+The [local-server example](../../examples/vgr-local-servers.toml) exposes
+`switchyard/only-efficient` through the existing passthrough router. Hermes can
+use it for titles and approval checks, independently of the conversation's VGR
+route. Configure Hermes against the same Switchyard server:
+
+```yaml
+auxiliary:
+  title_generation:
+    provider: custom
+    model: switchyard/only-efficient
+    base_url: http://localhost:4000/v1
+  approval:
+    provider: custom
+    model: switchyard/only-efficient
+    base_url: http://localhost:4000/v1
+    extra_body:
+      reasoning_effort: none
+      chat_template_kwargs:
+        enable_thinking: false
+```
+
+Use the approval thinking controls only with endpoints that support them.
+Adjust auxiliary timeouts for endpoint queueing and allow concurrent requests
+on the efficient server when titles must run alongside the conversation.
+
 ## Hermes session headers
 
 Use a Hermes build that supports both provider options below. The session header

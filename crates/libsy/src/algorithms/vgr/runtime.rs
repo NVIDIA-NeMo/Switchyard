@@ -5,10 +5,10 @@
 //!
 //! A proposed tool call is judged against the session's trajectory; a final
 //! answer is typed, judged by rungs that run cheapest-first and stop once the
-//! decision is settled, and then committed or escalated. Every call is bounded
-//! by what is left of the turn's deadline, and a call that fails or times out
-//! is evidence never gathered, which does not commit.
+//! decision is settled, and then committed or escalated. Bounded mode shares one
+//! deadline across calls. A failed or timed-out call supplies no evidence.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -165,25 +165,26 @@ impl Classifier for VgrClassifier {
             return Ok(self.escalate(driver, reason, None, request, state, None));
         }
 
-        let Some(budget) = self.remaining(started) else {
+        if self.config.bounded_efficient && self.remaining(started).is_none() {
             return Ok(self.escalate(driver, "efficient_timed_out", None, request, state, None));
-        };
+        }
         let Some(trial) = self.breaker.attempt() else {
             return Ok(self.escalate(driver, "breaker_open", None, request, state, None));
         };
-        let attempted = tokio::time::timeout(budget, async {
-            let response = driver
-                .call_model_with_error_recovery(request.clone(), vec![efficient.clone()], true)
-                .await?;
-            buffer_response(efficient.as_str(), response).await
-        })
-        .await;
+        let attempted = self
+            .within_budget(started, async {
+                let response = driver
+                    .call_model_with_error_recovery(request.clone(), vec![efficient.clone()], true)
+                    .await?;
+                buffer_response(efficient.as_str(), response).await
+            })
+            .await;
         let buffered = match attempted {
-            Ok(Ok(buffered)) => {
+            Some(Ok(buffered)) => {
                 trial.success();
                 buffered
             }
-            Ok(Err(error)) => {
+            Some(Err(error)) => {
                 if endpoint_failure(&error) {
                     trial.failure();
                 }
@@ -199,7 +200,7 @@ impl Classifier for VgrClassifier {
                     None,
                 ));
             }
-            Err(_) => {
+            None => {
                 trial.failure();
                 return Ok(self.escalate(
                     driver,
@@ -345,6 +346,9 @@ impl VgrClassifier {
     /// client's tool execution, since that is the time the client's own limit
     /// is spending.
     fn turn_budget_spent(&self, state: &mut State) -> bool {
+        if !self.config.bounded_efficient {
+            return false;
+        }
         let Some(budget) = self.config.efficient_turn_budget else {
             return false;
         };
@@ -561,8 +565,7 @@ impl VgrClassifier {
         call: Request,
         target: &ModelId,
     ) -> Option<Result<AggLlmResponse>> {
-        let budget = self.remaining(context.started)?;
-        let outcome = tokio::time::timeout(budget, async {
+        self.within_budget(context.started, async {
             let response = context
                 .driver
                 .call_model_with_error_recovery(call, vec![target.clone()], true)
@@ -573,8 +576,21 @@ impl VgrClassifier {
                 .await
                 .map_err(|source| LibsyError::client_call(target.clone(), source))
         })
-        .await;
-        outcome.ok()
+        .await
+    }
+
+    /// Waits for a candidate or verifier, enforcing a shared deadline only in bounded mode.
+    async fn within_budget<T>(
+        &self,
+        started: Instant,
+        operation: impl Future<Output = T>,
+    ) -> Option<T> {
+        if !self.config.bounded_efficient {
+            return Some(operation.await);
+        }
+        tokio::time::timeout(self.remaining(started)?, operation)
+            .await
+            .ok()
     }
 
     fn remaining(&self, started: Instant) -> Option<Duration> {
