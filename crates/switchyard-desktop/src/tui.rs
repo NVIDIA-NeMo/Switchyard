@@ -218,6 +218,8 @@ enum Popup {
         scroll: u16,
     },
     Detail {
+        // The popup owns this call because a refresh can remove it from recent history.
+        entry: Box<Entry>,
         scroll: u16,
     },
     Message {
@@ -230,9 +232,9 @@ enum Popup {
 impl Popup {
     fn scroll_mut(&mut self) -> &mut u16 {
         match self {
-            Popup::Help { scroll } | Popup::Detail { scroll } | Popup::Message { scroll, .. } => {
-                scroll
-            }
+            Popup::Help { scroll }
+            | Popup::Detail { scroll, .. }
+            | Popup::Message { scroll, .. } => scroll,
         }
     }
 }
@@ -506,8 +508,13 @@ impl App {
         }
         match code {
             KeyCode::Char('/') => self.filtering = true,
-            KeyCode::Enter if self.selected_entry().is_some() => {
-                self.popup = Some(Popup::Detail { scroll: 0 });
+            KeyCode::Enter => {
+                if let Some(entry) = self.selected_entry() {
+                    self.popup = Some(Popup::Detail {
+                        entry: Box::new(entry.clone()),
+                        scroll: 0,
+                    });
+                }
             }
             KeyCode::Char('s') => {
                 let sessions = &self.data.sessions;
@@ -1601,11 +1608,9 @@ fn draw_popup(frame: &mut Frame, app: &mut App, area: Rect) {
             let lines = help_lines(theme, usize::from(text_width));
             ("Help", lines, Vec::new(), theme.key, width, close)
         }
-        Popup::Detail { .. } => (
+        Popup::Detail { entry, .. } => (
             "Call details",
-            app.selected_entry()
-                .map(|entry| detail_lines(theme, entry))
-                .unwrap_or_default(),
+            detail_lines(theme, entry),
             Vec::new(),
             theme.key,
             72,
@@ -1829,6 +1834,53 @@ mod tests {
             app.selected_entry().expect("selected").turn_id.as_deref(),
             Some("second")
         );
+    }
+
+    #[test]
+    fn detail_popup_keeps_the_opened_call_across_refreshes() {
+        let entry = |turn: &str| -> Entry {
+            serde_json::from_value(json!({
+                "ts": "2026-10-21T12:00:00Z",
+                "model": "gemini-4-argon",
+                "route_id": "answer",
+                "turn_id": turn
+            }))
+            .expect("entry")
+        };
+        let mut app = App::new(Theme::new(false));
+        app.tab = Tab::Calls;
+        app.finish(Ok(Box::new(Snapshot {
+            entries: vec![entry("opened-turn")],
+            ..Snapshot::default()
+        })));
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        // The popup must retain its call when newer calls arrive or history no longer contains it.
+        for entries in [vec![entry("opened-turn"), entry("newer-turn")], vec![]] {
+            app.finish(Ok(Box::new(Snapshot {
+                entries,
+                ..Snapshot::default()
+            })));
+            assert!(matches!(app.popup, Some(Popup::Detail { scroll: 1, .. })));
+            let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+            terminal
+                .draw(|frame| super::draw_popup(frame, &mut app, frame.area()))
+                .expect("draw popup");
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(text.contains("opened-turn"), "{text}");
+            assert!(!text.contains("newer-turn"), "{text}");
+            app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.popup.is_none());
+        app.key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(app.popup.is_none());
     }
 
     // Esc dismisses the status message while Overview keeps the refresh error.
