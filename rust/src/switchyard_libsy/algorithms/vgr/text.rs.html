@@ -115,180 +115,176 @@
 <a href=#115 id=115 data-nosnippet>115</a>        })
 <a href=#116 id=116 data-nosnippet>116</a>}
 <a href=#117 id=117 data-nosnippet>117</a>
-<a href=#118 id=118 data-nosnippet>118</a><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>has_assistant_turn(turns: <span class="kw-2">&amp;</span>[Turn]) -&gt; bool {
-<a href=#119 id=119 data-nosnippet>119</a>    turns.iter().any(|turn| turn.role == Role::Assistant)
-<a href=#120 id=120 data-nosnippet>120</a>}
-<a href=#121 id=121 data-nosnippet>121</a>
-<a href=#122 id=122 data-nosnippet>122</a><span class="doccomment">/// Whether the conversation contains an executed or proposed tool step.
-<a href=#123 id=123 data-nosnippet>123</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>has_tool_trajectory(request: <span class="kw-2">&amp;</span>Request) -&gt; bool {
-<a href=#124 id=124 data-nosnippet>124</a>    request.llm_request.messages.iter().any(is_tool_step)
-<a href=#125 id=125 data-nosnippet>125</a>}
-<a href=#126 id=126 data-nosnippet>126</a>
-<a href=#127 id=127 data-nosnippet>127</a><span class="doccomment">/// Whether the user message at `index` answers a finished assistant reply.
-<a href=#128 id=128 data-nosnippet>128</a>///
-<a href=#129 id=129 data-nosnippet>129</a>/// Agent clients also inject user-role continuations (after context compaction,
-<a href=#130 id=130 data-nosnippet>130</a>/// at an iteration limit) that follow tool results, not a final reply; those
-<a href=#131 id=131 data-nosnippet>131</a>/// continue the current user turn.
-<a href=#132 id=132 data-nosnippet>132</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>starts_user_turn(messages: <span class="kw-2">&amp;</span>[Message], index: usize) -&gt; bool {
-<a href=#133 id=133 data-nosnippet>133</a>    <span class="kw">let </span>(<span class="prelude-val">Some</span>(message), <span class="prelude-val">Some</span>(previous)) = (
-<a href=#134 id=134 data-nosnippet>134</a>        messages.get(index),
-<a href=#135 id=135 data-nosnippet>135</a>        index.checked_sub(<span class="number">1</span>).and_then(|i| messages.get(i)),
-<a href=#136 id=136 data-nosnippet>136</a>    ) <span class="kw">else </span>{
-<a href=#137 id=137 data-nosnippet>137</a>        <span class="kw">return </span><span class="bool-val">false</span>;
-<a href=#138 id=138 data-nosnippet>138</a>    };
-<a href=#139 id=139 data-nosnippet>139</a>    is_user_turn(message)
-<a href=#140 id=140 data-nosnippet>140</a>        &amp;&amp; previous.role == Role::Assistant
-<a href=#141 id=141 data-nosnippet>141</a>        &amp;&amp; !previous
-<a href=#142 id=142 data-nosnippet>142</a>            .content
-<a href=#143 id=143 data-nosnippet>143</a>            .iter()
-<a href=#144 id=144 data-nosnippet>144</a>            .any(|block| <span class="macro">matches!</span>(block, ContentBlock::ToolCall(<span class="kw">_</span>)))
-<a href=#145 id=145 data-nosnippet>145</a>}
-<a href=#146 id=146 data-nosnippet>146</a>
-<a href=#147 id=147 data-nosnippet>147</a><span class="doccomment">/// The current turn's start, using the initiator header for the newest message.
-<a href=#148 id=148 data-nosnippet>148</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>turn_start(request: <span class="kw-2">&amp;</span>Request) -&gt; usize {
-<a href=#149 id=149 data-nosnippet>149</a>    <span class="kw">let </span>messages = <span class="kw-2">&amp;</span>request.llm_request.messages;
-<a href=#150 id=150 data-nosnippet>150</a>    <span class="kw">let </span>end = <span class="kw">match </span>initiated_by_user(request) {
-<a href=#151 id=151 data-nosnippet>151</a>        <span class="prelude-val">Some</span>(<span class="bool-val">true</span>) =&gt; <span class="kw">return </span>messages.len().saturating_sub(<span class="number">1</span>),
-<a href=#152 id=152 data-nosnippet>152</a>        <span class="prelude-val">Some</span>(<span class="bool-val">false</span>) =&gt; messages.len().saturating_sub(<span class="number">1</span>),
-<a href=#153 id=153 data-nosnippet>153</a>        <span class="prelude-val">None </span>=&gt; messages.len(),
-<a href=#154 id=154 data-nosnippet>154</a>    };
-<a href=#155 id=155 data-nosnippet>155</a>    (<span class="number">0</span>..end)
-<a href=#156 id=156 data-nosnippet>156</a>        .rev()
-<a href=#157 id=157 data-nosnippet>157</a>        .find(|<span class="kw-2">&amp;</span>index| starts_user_turn(messages, index))
-<a href=#158 id=158 data-nosnippet>158</a>        .unwrap_or(<span class="number">0</span>)
-<a href=#159 id=159 data-nosnippet>159</a>}
-<a href=#160 id=160 data-nosnippet>160</a>
-<a href=#161 id=161 data-nosnippet>161</a><span class="doccomment">/// Whether the current user turn contains an executed or proposed tool step.
-<a href=#162 id=162 data-nosnippet>162</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>turn_has_tool_trajectory(request: <span class="kw-2">&amp;</span>Request) -&gt; bool {
-<a href=#163 id=163 data-nosnippet>163</a>    request.llm_request.messages[turn_start(request)..]
-<a href=#164 id=164 data-nosnippet>164</a>        .iter()
-<a href=#165 id=165 data-nosnippet>165</a>        .any(is_tool_step)
-<a href=#166 id=166 data-nosnippet>166</a>}
-<a href=#167 id=167 data-nosnippet>167</a>
-<a href=#168 id=168 data-nosnippet>168</a><span class="kw">fn </span>is_tool_step(message: <span class="kw-2">&amp;</span>Message) -&gt; bool {
-<a href=#169 id=169 data-nosnippet>169</a>    message.role == Role::Tool
-<a href=#170 id=170 data-nosnippet>170</a>        || message.content.iter().any(|block| {
-<a href=#171 id=171 data-nosnippet>171</a>            <span class="macro">matches!</span>(
-<a href=#172 id=172 data-nosnippet>172</a>                block,
-<a href=#173 id=173 data-nosnippet>173</a>                ContentBlock::ToolCall(<span class="kw">_</span>) | ContentBlock::ToolResult(<span class="kw">_</span>)
-<a href=#174 id=174 data-nosnippet>174</a>            )
-<a href=#175 id=175 data-nosnippet>175</a>        })
-<a href=#176 id=176 data-nosnippet>176</a>}
-<a href=#177 id=177 data-nosnippet>177</a>
-<a href=#178 id=178 data-nosnippet>178</a><span class="doccomment">/// Idempotent secret and PII scrub applied before text reaches a verifier.
-<a href=#179 id=179 data-nosnippet>179</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>redact(text: <span class="kw-2">&amp;</span>str) -&gt; String {
-<a href=#180 id=180 data-nosnippet>180</a>    <span class="kw">let </span><span class="kw-2">mut </span>out = text.to_string();
-<a href=#181 id=181 data-nosnippet>181</a>    <span class="kw">for </span>pattern <span class="kw">in </span>REDACT_PATTERNS.iter() {
-<a href=#182 id=182 data-nosnippet>182</a>        <span class="kw">if let </span>Cow::Owned(redacted) = pattern.replace_all(<span class="kw-2">&amp;</span>out, <span class="string">"[REDACTED]"</span>) {
-<a href=#183 id=183 data-nosnippet>183</a>            out = redacted;
-<a href=#184 id=184 data-nosnippet>184</a>        }
-<a href=#185 id=185 data-nosnippet>185</a>    }
-<a href=#186 id=186 data-nosnippet>186</a>    out
+<a href=#118 id=118 data-nosnippet>118</a><span class="doccomment">/// Whether the conversation contains an executed or proposed tool step.
+<a href=#119 id=119 data-nosnippet>119</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>has_tool_trajectory(request: <span class="kw-2">&amp;</span>Request) -&gt; bool {
+<a href=#120 id=120 data-nosnippet>120</a>    request.llm_request.messages.iter().any(is_tool_step)
+<a href=#121 id=121 data-nosnippet>121</a>}
+<a href=#122 id=122 data-nosnippet>122</a>
+<a href=#123 id=123 data-nosnippet>123</a><span class="doccomment">/// Whether the user message at `index` answers a finished assistant reply.
+<a href=#124 id=124 data-nosnippet>124</a>///
+<a href=#125 id=125 data-nosnippet>125</a>/// Agent clients also inject user-role continuations (after context compaction,
+<a href=#126 id=126 data-nosnippet>126</a>/// at an iteration limit) that follow tool results, not a final reply; those
+<a href=#127 id=127 data-nosnippet>127</a>/// continue the current user turn.
+<a href=#128 id=128 data-nosnippet>128</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>starts_user_turn(messages: <span class="kw-2">&amp;</span>[Message], index: usize) -&gt; bool {
+<a href=#129 id=129 data-nosnippet>129</a>    <span class="kw">let </span>(<span class="prelude-val">Some</span>(message), <span class="prelude-val">Some</span>(previous)) = (
+<a href=#130 id=130 data-nosnippet>130</a>        messages.get(index),
+<a href=#131 id=131 data-nosnippet>131</a>        index.checked_sub(<span class="number">1</span>).and_then(|i| messages.get(i)),
+<a href=#132 id=132 data-nosnippet>132</a>    ) <span class="kw">else </span>{
+<a href=#133 id=133 data-nosnippet>133</a>        <span class="kw">return </span><span class="bool-val">false</span>;
+<a href=#134 id=134 data-nosnippet>134</a>    };
+<a href=#135 id=135 data-nosnippet>135</a>    is_user_turn(message)
+<a href=#136 id=136 data-nosnippet>136</a>        &amp;&amp; previous.role == Role::Assistant
+<a href=#137 id=137 data-nosnippet>137</a>        &amp;&amp; !previous
+<a href=#138 id=138 data-nosnippet>138</a>            .content
+<a href=#139 id=139 data-nosnippet>139</a>            .iter()
+<a href=#140 id=140 data-nosnippet>140</a>            .any(|block| <span class="macro">matches!</span>(block, ContentBlock::ToolCall(<span class="kw">_</span>)))
+<a href=#141 id=141 data-nosnippet>141</a>}
+<a href=#142 id=142 data-nosnippet>142</a>
+<a href=#143 id=143 data-nosnippet>143</a><span class="doccomment">/// The current turn's start, using the initiator header for the newest message.
+<a href=#144 id=144 data-nosnippet>144</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>turn_start(request: <span class="kw-2">&amp;</span>Request) -&gt; usize {
+<a href=#145 id=145 data-nosnippet>145</a>    <span class="kw">let </span>messages = <span class="kw-2">&amp;</span>request.llm_request.messages;
+<a href=#146 id=146 data-nosnippet>146</a>    <span class="kw">let </span>end = <span class="kw">match </span>initiated_by_user(request) {
+<a href=#147 id=147 data-nosnippet>147</a>        <span class="prelude-val">Some</span>(<span class="bool-val">true</span>) =&gt; <span class="kw">return </span>messages.len().saturating_sub(<span class="number">1</span>),
+<a href=#148 id=148 data-nosnippet>148</a>        <span class="prelude-val">Some</span>(<span class="bool-val">false</span>) =&gt; messages.len().saturating_sub(<span class="number">1</span>),
+<a href=#149 id=149 data-nosnippet>149</a>        <span class="prelude-val">None </span>=&gt; messages.len(),
+<a href=#150 id=150 data-nosnippet>150</a>    };
+<a href=#151 id=151 data-nosnippet>151</a>    (<span class="number">0</span>..end)
+<a href=#152 id=152 data-nosnippet>152</a>        .rev()
+<a href=#153 id=153 data-nosnippet>153</a>        .find(|<span class="kw-2">&amp;</span>index| starts_user_turn(messages, index))
+<a href=#154 id=154 data-nosnippet>154</a>        .unwrap_or(<span class="number">0</span>)
+<a href=#155 id=155 data-nosnippet>155</a>}
+<a href=#156 id=156 data-nosnippet>156</a>
+<a href=#157 id=157 data-nosnippet>157</a><span class="doccomment">/// Whether the current user turn contains an executed or proposed tool step.
+<a href=#158 id=158 data-nosnippet>158</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>turn_has_tool_trajectory(request: <span class="kw-2">&amp;</span>Request) -&gt; bool {
+<a href=#159 id=159 data-nosnippet>159</a>    request.llm_request.messages[turn_start(request)..]
+<a href=#160 id=160 data-nosnippet>160</a>        .iter()
+<a href=#161 id=161 data-nosnippet>161</a>        .any(is_tool_step)
+<a href=#162 id=162 data-nosnippet>162</a>}
+<a href=#163 id=163 data-nosnippet>163</a>
+<a href=#164 id=164 data-nosnippet>164</a><span class="kw">fn </span>is_tool_step(message: <span class="kw-2">&amp;</span>Message) -&gt; bool {
+<a href=#165 id=165 data-nosnippet>165</a>    message.role == Role::Tool
+<a href=#166 id=166 data-nosnippet>166</a>        || message.content.iter().any(|block| {
+<a href=#167 id=167 data-nosnippet>167</a>            <span class="macro">matches!</span>(
+<a href=#168 id=168 data-nosnippet>168</a>                block,
+<a href=#169 id=169 data-nosnippet>169</a>                ContentBlock::ToolCall(<span class="kw">_</span>) | ContentBlock::ToolResult(<span class="kw">_</span>)
+<a href=#170 id=170 data-nosnippet>170</a>            )
+<a href=#171 id=171 data-nosnippet>171</a>        })
+<a href=#172 id=172 data-nosnippet>172</a>}
+<a href=#173 id=173 data-nosnippet>173</a>
+<a href=#174 id=174 data-nosnippet>174</a><span class="doccomment">/// Idempotent secret and PII scrub applied before text reaches a verifier.
+<a href=#175 id=175 data-nosnippet>175</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>redact(text: <span class="kw-2">&amp;</span>str) -&gt; String {
+<a href=#176 id=176 data-nosnippet>176</a>    <span class="kw">let </span><span class="kw-2">mut </span>out = text.to_string();
+<a href=#177 id=177 data-nosnippet>177</a>    <span class="kw">for </span>pattern <span class="kw">in </span>REDACT_PATTERNS.iter() {
+<a href=#178 id=178 data-nosnippet>178</a>        <span class="kw">if let </span>Cow::Owned(redacted) = pattern.replace_all(<span class="kw-2">&amp;</span>out, <span class="string">"[REDACTED]"</span>) {
+<a href=#179 id=179 data-nosnippet>179</a>            out = redacted;
+<a href=#180 id=180 data-nosnippet>180</a>        }
+<a href=#181 id=181 data-nosnippet>181</a>    }
+<a href=#182 id=182 data-nosnippet>182</a>    out
+<a href=#183 id=183 data-nosnippet>183</a>}
+<a href=#184 id=184 data-nosnippet>184</a>
+<a href=#185 id=185 data-nosnippet>185</a><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>char_len(text: <span class="kw-2">&amp;</span>str) -&gt; usize {
+<a href=#186 id=186 data-nosnippet>186</a>    text.chars().count()
 <a href=#187 id=187 data-nosnippet>187</a>}
 <a href=#188 id=188 data-nosnippet>188</a>
-<a href=#189 id=189 data-nosnippet>189</a><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>char_len(text: <span class="kw-2">&amp;</span>str) -&gt; usize {
-<a href=#190 id=190 data-nosnippet>190</a>    text.chars().count()
-<a href=#191 id=191 data-nosnippet>191</a>}
-<a href=#192 id=192 data-nosnippet>192</a>
-<a href=#193 id=193 data-nosnippet>193</a><span class="doccomment">/// Head-and-tail clip to `budget` characters, keeping `head_frac` as head.
-<a href=#194 id=194 data-nosnippet>194</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>clip_mid(text: <span class="kw-2">&amp;</span>str, budget: usize, head_frac: f64) -&gt; String {
-<a href=#195 id=195 data-nosnippet>195</a>    <span class="kw">let </span>len = char_len(text);
-<a href=#196 id=196 data-nosnippet>196</a>    <span class="kw">if </span>len &lt;= budget {
-<a href=#197 id=197 data-nosnippet>197</a>        <span class="kw">return </span>text.to_string();
-<a href=#198 id=198 data-nosnippet>198</a>    }
-<a href=#199 id=199 data-nosnippet>199</a>    <span class="kw">let </span>head = ((budget <span class="kw">as </span>f64 * head_frac) <span class="kw">as </span>usize).max(<span class="number">1</span>).min(budget);
-<a href=#200 id=200 data-nosnippet>200</a>    <span class="kw">let </span>tail = budget.saturating_sub(head);
-<a href=#201 id=201 data-nosnippet>201</a>    <span class="kw">let </span>omitted = len - budget;
-<a href=#202 id=202 data-nosnippet>202</a>    <span class="kw">let </span>head_end = text
-<a href=#203 id=203 data-nosnippet>203</a>        .char_indices()
-<a href=#204 id=204 data-nosnippet>204</a>        .nth(head)
-<a href=#205 id=205 data-nosnippet>205</a>        .map_or(text.len(), |(index, <span class="kw">_</span>)| index);
-<a href=#206 id=206 data-nosnippet>206</a>    <span class="kw">let </span>tail_start = <span class="kw">if </span>tail == <span class="number">0 </span>{
-<a href=#207 id=207 data-nosnippet>207</a>        text.len()
-<a href=#208 id=208 data-nosnippet>208</a>    } <span class="kw">else </span>{
-<a href=#209 id=209 data-nosnippet>209</a>        text.char_indices()
-<a href=#210 id=210 data-nosnippet>210</a>            .rev()
-<a href=#211 id=211 data-nosnippet>211</a>            .nth(tail - <span class="number">1</span>)
-<a href=#212 id=212 data-nosnippet>212</a>            .map_or(<span class="number">0</span>, |(index, <span class="kw">_</span>)| index)
-<a href=#213 id=213 data-nosnippet>213</a>    };
-<a href=#214 id=214 data-nosnippet>214</a>    <span class="kw">let </span>head_text = <span class="kw-2">&amp;</span>text[..head_end];
-<a href=#215 id=215 data-nosnippet>215</a>    <span class="kw">let </span>tail_text = <span class="kw-2">&amp;</span>text[tail_start..];
-<a href=#216 id=216 data-nosnippet>216</a>    <span class="macro">format!</span>(<span class="string">"{head_text}\n...[{omitted} chars omitted]...\n{tail_text}"</span>)
-<a href=#217 id=217 data-nosnippet>217</a>}
-<a href=#218 id=218 data-nosnippet>218</a>
-<a href=#219 id=219 data-nosnippet>219</a><span class="doccomment">/// Detects heuristic code/test markers in the efficient attempt.
-<a href=#220 id=220 data-nosnippet>220</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>observed_hardening(attempt: <span class="kw-2">&amp;</span>str) -&gt; bool {
-<a href=#221 id=221 data-nosnippet>221</a>    CODE_ACTIVITY
-<a href=#222 id=222 data-nosnippet>222</a>        .as_ref()
-<a href=#223 id=223 data-nosnippet>223</a>        .is_some_and(|pattern| pattern.is_match(attempt))
-<a href=#224 id=224 data-nosnippet>224</a>}
-<a href=#225 id=225 data-nosnippet>225</a>
-<a href=#226 id=226 data-nosnippet>226</a><span class="doccomment">/// Detects tool transcript labels and JSON tool-call fields in the efficient attempt.
-<a href=#227 id=227 data-nosnippet>227</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>observed_tool_activity(attempt: <span class="kw-2">&amp;</span>str) -&gt; bool {
-<a href=#228 id=228 data-nosnippet>228</a>    TOOL_ACTIVITY
-<a href=#229 id=229 data-nosnippet>229</a>        .as_ref()
-<a href=#230 id=230 data-nosnippet>230</a>        .is_some_and(|pattern| pattern.is_match(attempt))
-<a href=#231 id=231 data-nosnippet>231</a>}
-<a href=#232 id=232 data-nosnippet>232</a>
-<a href=#233 id=233 data-nosnippet>233</a><span class="doccomment">/// The router's own summary of every tool result in the conversation.
-<a href=#234 id=234 data-nosnippet>234</a></span><span class="attr">#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-<a href=#235 id=235 data-nosnippet>235</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">struct </span>ToolRecord {
-<a href=#236 id=236 data-nosnippet>236</a>    <span class="kw">pub</span>(<span class="kw">super</span>) errors: i32,
-<a href=#237 id=237 data-nosnippet>237</a>    <span class="kw">pub</span>(<span class="kw">super</span>) results: i32,
-<a href=#238 id=238 data-nosnippet>238</a>    <span class="doccomment">/// Consecutive clean results ending the conversation.
-<a href=#239 id=239 data-nosnippet>239</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) clean_tail: i32,
-<a href=#240 id=240 data-nosnippet>240</a>}
-<a href=#241 id=241 data-nosnippet>241</a>
-<a href=#242 id=242 data-nosnippet>242</a><span class="doccomment">/// Uses executor status and inferred failures, with a successful exit taking precedence.
-<a href=#243 id=243 data-nosnippet>243</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>tool_result_failed(result: <span class="kw-2">&amp;</span>ToolResult) -&gt; bool {
-<a href=#244 id=244 data-nosnippet>244</a>    <span class="kw">let </span>text = result
-<a href=#245 id=245 data-nosnippet>245</a>        .content
-<a href=#246 id=246 data-nosnippet>246</a>        .iter()
-<a href=#247 id=247 data-nosnippet>247</a>        .filter_map(|block| <span class="kw">match </span>block {
-<a href=#248 id=248 data-nosnippet>248</a>            ContentBlock::Text { text } | ContentBlock::Refusal { text } =&gt; <span class="prelude-val">Some</span>(text),
-<a href=#249 id=249 data-nosnippet>249</a>            <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#250 id=250 data-nosnippet>250</a>        })
-<a href=#251 id=251 data-nosnippet>251</a>        .map(String::as_str)
-<a href=#252 id=252 data-nosnippet>252</a>        .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;()
-<a href=#253 id=253 data-nosnippet>253</a>        .join(<span class="string">"\n"</span>);
-<a href=#254 id=254 data-nosnippet>254</a>    <span class="kw">let </span>body = serde_json::from_str::&lt;Value&gt;(<span class="kw-2">&amp;</span>text).ok();
-<a href=#255 id=255 data-nosnippet>255</a>    <span class="kw">let </span>object = body.as_ref().and_then(Value::as_object);
-<a href=#256 id=256 data-nosnippet>256</a>    <span class="comment">// The executor's own `exit_code: 0` overrules every inferred failure:
-<a href=#257 id=257 data-nosnippet>257</a>    // harnesses send `"error": null` on success, and negative checks print
-<a href=#258 id=258 data-nosnippet>258</a>    // error-shaped text.
-<a href=#259 id=259 data-nosnippet>259</a>    </span><span class="kw">let </span>exit_ok = object
-<a href=#260 id=260 data-nosnippet>260</a>        .and_then(|object| object.get(<span class="string">"exit_code"</span>))
-<a href=#261 id=261 data-nosnippet>261</a>        .and_then(Value::as_i64)
-<a href=#262 id=262 data-nosnippet>262</a>        == <span class="prelude-val">Some</span>(<span class="number">0</span>);
-<a href=#263 id=263 data-nosnippet>263</a>    (result.is_error == <span class="prelude-val">Some</span>(<span class="bool-val">true</span>)
-<a href=#264 id=264 data-nosnippet>264</a>        || object.is_some_and(|object| object.contains_key(<span class="string">"error"</span>))
-<a href=#265 id=265 data-nosnippet>265</a>        || classify_text(<span class="kw-2">&amp;</span>text).<span class="number">0 </span>&gt; <span class="number">0.0</span>)
-<a href=#266 id=266 data-nosnippet>266</a>        &amp;&amp; !exit_ok
-<a href=#267 id=267 data-nosnippet>267</a>}
-<a href=#268 id=268 data-nosnippet>268</a>
-<a href=#269 id=269 data-nosnippet>269</a><span class="kw">impl </span>ToolRecord {
-<a href=#270 id=270 data-nosnippet>270</a>    <span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>from_request(request: <span class="kw-2">&amp;</span>Request) -&gt; <span class="self">Self </span>{
-<a href=#271 id=271 data-nosnippet>271</a>        <span class="kw">let </span><span class="kw-2">mut </span>record = <span class="self">Self</span>::default();
-<a href=#272 id=272 data-nosnippet>272</a>        <span class="kw">let </span>results = request
-<a href=#273 id=273 data-nosnippet>273</a>            .llm_request
-<a href=#274 id=274 data-nosnippet>274</a>            .messages
-<a href=#275 id=275 data-nosnippet>275</a>            .iter()
-<a href=#276 id=276 data-nosnippet>276</a>            .flat_map(|message| <span class="kw-2">&amp;</span>message.content)
-<a href=#277 id=277 data-nosnippet>277</a>            .filter_map(|block| <span class="kw">match </span>block {
-<a href=#278 id=278 data-nosnippet>278</a>                ContentBlock::ToolResult(result) =&gt; <span class="prelude-val">Some</span>(result),
-<a href=#279 id=279 data-nosnippet>279</a>                <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
-<a href=#280 id=280 data-nosnippet>280</a>            });
-<a href=#281 id=281 data-nosnippet>281</a>        <span class="kw">for </span>result <span class="kw">in </span>results {
-<a href=#282 id=282 data-nosnippet>282</a>            <span class="kw">let </span>failed = tool_result_failed(result);
-<a href=#283 id=283 data-nosnippet>283</a>            record.results = record.results.saturating_add(<span class="number">1</span>);
-<a href=#284 id=284 data-nosnippet>284</a>            record.errors = record.errors.saturating_add(i32::from(failed));
-<a href=#285 id=285 data-nosnippet>285</a>            record.clean_tail = <span class="kw">if </span>failed {
-<a href=#286 id=286 data-nosnippet>286</a>                <span class="number">0
-<a href=#287 id=287 data-nosnippet>287</a>            </span>} <span class="kw">else </span>{
-<a href=#288 id=288 data-nosnippet>288</a>                record.clean_tail.saturating_add(<span class="number">1</span>)
-<a href=#289 id=289 data-nosnippet>289</a>            };
-<a href=#290 id=290 data-nosnippet>290</a>        }
-<a href=#291 id=291 data-nosnippet>291</a>        record
-<a href=#292 id=292 data-nosnippet>292</a>    }
-<a href=#293 id=293 data-nosnippet>293</a>}
+<a href=#189 id=189 data-nosnippet>189</a><span class="doccomment">/// Head-and-tail clip to `budget` characters, keeping `head_frac` as head.
+<a href=#190 id=190 data-nosnippet>190</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>clip_mid(text: <span class="kw-2">&amp;</span>str, budget: usize, head_frac: f64) -&gt; String {
+<a href=#191 id=191 data-nosnippet>191</a>    <span class="kw">let </span>len = char_len(text);
+<a href=#192 id=192 data-nosnippet>192</a>    <span class="kw">if </span>len &lt;= budget {
+<a href=#193 id=193 data-nosnippet>193</a>        <span class="kw">return </span>text.to_string();
+<a href=#194 id=194 data-nosnippet>194</a>    }
+<a href=#195 id=195 data-nosnippet>195</a>    <span class="kw">let </span>head = ((budget <span class="kw">as </span>f64 * head_frac) <span class="kw">as </span>usize).max(<span class="number">1</span>).min(budget);
+<a href=#196 id=196 data-nosnippet>196</a>    <span class="kw">let </span>tail = budget.saturating_sub(head);
+<a href=#197 id=197 data-nosnippet>197</a>    <span class="kw">let </span>omitted = len - budget;
+<a href=#198 id=198 data-nosnippet>198</a>    <span class="kw">let </span>head_end = text
+<a href=#199 id=199 data-nosnippet>199</a>        .char_indices()
+<a href=#200 id=200 data-nosnippet>200</a>        .nth(head)
+<a href=#201 id=201 data-nosnippet>201</a>        .map_or(text.len(), |(index, <span class="kw">_</span>)| index);
+<a href=#202 id=202 data-nosnippet>202</a>    <span class="kw">let </span>tail_start = <span class="kw">if </span>tail == <span class="number">0 </span>{
+<a href=#203 id=203 data-nosnippet>203</a>        text.len()
+<a href=#204 id=204 data-nosnippet>204</a>    } <span class="kw">else </span>{
+<a href=#205 id=205 data-nosnippet>205</a>        text.char_indices()
+<a href=#206 id=206 data-nosnippet>206</a>            .rev()
+<a href=#207 id=207 data-nosnippet>207</a>            .nth(tail - <span class="number">1</span>)
+<a href=#208 id=208 data-nosnippet>208</a>            .map_or(<span class="number">0</span>, |(index, <span class="kw">_</span>)| index)
+<a href=#209 id=209 data-nosnippet>209</a>    };
+<a href=#210 id=210 data-nosnippet>210</a>    <span class="kw">let </span>head_text = <span class="kw-2">&amp;</span>text[..head_end];
+<a href=#211 id=211 data-nosnippet>211</a>    <span class="kw">let </span>tail_text = <span class="kw-2">&amp;</span>text[tail_start..];
+<a href=#212 id=212 data-nosnippet>212</a>    <span class="macro">format!</span>(<span class="string">"{head_text}\n...[{omitted} chars omitted]...\n{tail_text}"</span>)
+<a href=#213 id=213 data-nosnippet>213</a>}
+<a href=#214 id=214 data-nosnippet>214</a>
+<a href=#215 id=215 data-nosnippet>215</a><span class="doccomment">/// Detects heuristic code/test markers in the efficient attempt.
+<a href=#216 id=216 data-nosnippet>216</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>observed_hardening(attempt: <span class="kw-2">&amp;</span>str) -&gt; bool {
+<a href=#217 id=217 data-nosnippet>217</a>    CODE_ACTIVITY
+<a href=#218 id=218 data-nosnippet>218</a>        .as_ref()
+<a href=#219 id=219 data-nosnippet>219</a>        .is_some_and(|pattern| pattern.is_match(attempt))
+<a href=#220 id=220 data-nosnippet>220</a>}
+<a href=#221 id=221 data-nosnippet>221</a>
+<a href=#222 id=222 data-nosnippet>222</a><span class="doccomment">/// Detects tool transcript labels and JSON tool-call fields in the efficient attempt.
+<a href=#223 id=223 data-nosnippet>223</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>observed_tool_activity(attempt: <span class="kw-2">&amp;</span>str) -&gt; bool {
+<a href=#224 id=224 data-nosnippet>224</a>    TOOL_ACTIVITY
+<a href=#225 id=225 data-nosnippet>225</a>        .as_ref()
+<a href=#226 id=226 data-nosnippet>226</a>        .is_some_and(|pattern| pattern.is_match(attempt))
+<a href=#227 id=227 data-nosnippet>227</a>}
+<a href=#228 id=228 data-nosnippet>228</a>
+<a href=#229 id=229 data-nosnippet>229</a><span class="doccomment">/// The router's own summary of every tool result in the conversation.
+<a href=#230 id=230 data-nosnippet>230</a></span><span class="attr">#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+<a href=#231 id=231 data-nosnippet>231</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">struct </span>ToolRecord {
+<a href=#232 id=232 data-nosnippet>232</a>    <span class="kw">pub</span>(<span class="kw">super</span>) errors: i32,
+<a href=#233 id=233 data-nosnippet>233</a>    <span class="kw">pub</span>(<span class="kw">super</span>) results: i32,
+<a href=#234 id=234 data-nosnippet>234</a>    <span class="doccomment">/// Consecutive clean results ending the conversation.
+<a href=#235 id=235 data-nosnippet>235</a>    </span><span class="kw">pub</span>(<span class="kw">super</span>) clean_tail: i32,
+<a href=#236 id=236 data-nosnippet>236</a>}
+<a href=#237 id=237 data-nosnippet>237</a>
+<a href=#238 id=238 data-nosnippet>238</a><span class="doccomment">/// Uses executor status and inferred failures, with a successful exit taking precedence.
+<a href=#239 id=239 data-nosnippet>239</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>tool_result_failed(result: <span class="kw-2">&amp;</span>ToolResult) -&gt; bool {
+<a href=#240 id=240 data-nosnippet>240</a>    <span class="kw">let </span>text = result
+<a href=#241 id=241 data-nosnippet>241</a>        .content
+<a href=#242 id=242 data-nosnippet>242</a>        .iter()
+<a href=#243 id=243 data-nosnippet>243</a>        .filter_map(|block| <span class="kw">match </span>block {
+<a href=#244 id=244 data-nosnippet>244</a>            ContentBlock::Text { text } | ContentBlock::Refusal { text } =&gt; <span class="prelude-val">Some</span>(text),
+<a href=#245 id=245 data-nosnippet>245</a>            <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#246 id=246 data-nosnippet>246</a>        })
+<a href=#247 id=247 data-nosnippet>247</a>        .map(String::as_str)
+<a href=#248 id=248 data-nosnippet>248</a>        .collect::&lt;Vec&lt;<span class="kw">_</span>&gt;&gt;()
+<a href=#249 id=249 data-nosnippet>249</a>        .join(<span class="string">"\n"</span>);
+<a href=#250 id=250 data-nosnippet>250</a>    <span class="kw">let </span>body = serde_json::from_str::&lt;Value&gt;(<span class="kw-2">&amp;</span>text).ok();
+<a href=#251 id=251 data-nosnippet>251</a>    <span class="kw">let </span>object = body.as_ref().and_then(Value::as_object);
+<a href=#252 id=252 data-nosnippet>252</a>    <span class="comment">// The executor's own `exit_code: 0` overrules every inferred failure:
+<a href=#253 id=253 data-nosnippet>253</a>    // harnesses send `"error": null` on success, and negative checks print
+<a href=#254 id=254 data-nosnippet>254</a>    // error-shaped text.
+<a href=#255 id=255 data-nosnippet>255</a>    </span><span class="kw">let </span>exit_ok = object
+<a href=#256 id=256 data-nosnippet>256</a>        .and_then(|object| object.get(<span class="string">"exit_code"</span>))
+<a href=#257 id=257 data-nosnippet>257</a>        .and_then(Value::as_i64)
+<a href=#258 id=258 data-nosnippet>258</a>        == <span class="prelude-val">Some</span>(<span class="number">0</span>);
+<a href=#259 id=259 data-nosnippet>259</a>    (result.is_error == <span class="prelude-val">Some</span>(<span class="bool-val">true</span>)
+<a href=#260 id=260 data-nosnippet>260</a>        || object.is_some_and(|object| object.contains_key(<span class="string">"error"</span>))
+<a href=#261 id=261 data-nosnippet>261</a>        || classify_text(<span class="kw-2">&amp;</span>text).<span class="number">0 </span>&gt; <span class="number">0.0</span>)
+<a href=#262 id=262 data-nosnippet>262</a>        &amp;&amp; !exit_ok
+<a href=#263 id=263 data-nosnippet>263</a>}
+<a href=#264 id=264 data-nosnippet>264</a>
+<a href=#265 id=265 data-nosnippet>265</a><span class="kw">impl </span>ToolRecord {
+<a href=#266 id=266 data-nosnippet>266</a>    <span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">fn </span>from_request(request: <span class="kw-2">&amp;</span>Request) -&gt; <span class="self">Self </span>{
+<a href=#267 id=267 data-nosnippet>267</a>        <span class="kw">let </span><span class="kw-2">mut </span>record = <span class="self">Self</span>::default();
+<a href=#268 id=268 data-nosnippet>268</a>        <span class="kw">let </span>results = request
+<a href=#269 id=269 data-nosnippet>269</a>            .llm_request
+<a href=#270 id=270 data-nosnippet>270</a>            .messages
+<a href=#271 id=271 data-nosnippet>271</a>            .iter()
+<a href=#272 id=272 data-nosnippet>272</a>            .flat_map(|message| <span class="kw-2">&amp;</span>message.content)
+<a href=#273 id=273 data-nosnippet>273</a>            .filter_map(|block| <span class="kw">match </span>block {
+<a href=#274 id=274 data-nosnippet>274</a>                ContentBlock::ToolResult(result) =&gt; <span class="prelude-val">Some</span>(result),
+<a href=#275 id=275 data-nosnippet>275</a>                <span class="kw">_ </span>=&gt; <span class="prelude-val">None</span>,
+<a href=#276 id=276 data-nosnippet>276</a>            });
+<a href=#277 id=277 data-nosnippet>277</a>        <span class="kw">for </span>result <span class="kw">in </span>results {
+<a href=#278 id=278 data-nosnippet>278</a>            <span class="kw">let </span>failed = tool_result_failed(result);
+<a href=#279 id=279 data-nosnippet>279</a>            record.results = record.results.saturating_add(<span class="number">1</span>);
+<a href=#280 id=280 data-nosnippet>280</a>            record.errors = record.errors.saturating_add(i32::from(failed));
+<a href=#281 id=281 data-nosnippet>281</a>            record.clean_tail = <span class="kw">if </span>failed {
+<a href=#282 id=282 data-nosnippet>282</a>                <span class="number">0
+<a href=#283 id=283 data-nosnippet>283</a>            </span>} <span class="kw">else </span>{
+<a href=#284 id=284 data-nosnippet>284</a>                record.clean_tail.saturating_add(<span class="number">1</span>)
+<a href=#285 id=285 data-nosnippet>285</a>            };
+<a href=#286 id=286 data-nosnippet>286</a>        }
+<a href=#287 id=287 data-nosnippet>287</a>        record
+<a href=#288 id=288 data-nosnippet>288</a>    }
+<a href=#289 id=289 data-nosnippet>289</a>}
 </code></pre></div></section></main></body></html>

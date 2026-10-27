@@ -2403,10 +2403,16 @@ entry and leave the route's <code>context_window</code> unset. Switchyard then r
 service's <code>/props</code> response and advertises a positive context capacity when
 available. Missing or invalid properties leave the capacity unknown; routing
 continues normally. Discovery does not configure the service or load a model.</p>
-<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/56c538e2427cd447ab40f88f80ee82c378dae915/examples/vgr-local-servers.toml">the local-server example</a>
+<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9ed588b4d0a982e3d0f6a77f5ae5c274f37f3df3/examples/vgr-local-servers.toml">the local-server example</a>
 for an active llama.cpp configuration and commented Ollama/vLLM alternatives.
 For Ollama and vLLM, set <code>context_window</code> to match the running service; automatic
 discovery for those servers is not implemented.</p>
+<p>The judge reads its verdicts from the first token's logprobs, so its scored calls
+turn thinking off: they send <code>reasoning_effort = "none"</code> and
+<code>chat_template_kwargs = {"enable_thinking": false}</code> on <code>openai_chat</code> targets.
+Candidates and the judge's deliberation keep the target's own setting. A backend
+that rejects <code>chat_template_kwargs</code> can drop it with the target's
+<code>omit_body_fields</code>.</p>
 <p>The server caches the model catalog, including unavailable discovery results,
 for one minute. Discovery probes run concurrently with a two-second total budget
 per refresh. Completed discoveries are retained when that budget expires.</p>
@@ -2464,6 +2470,10 @@ automatic continuations. Retries retain the original call's tag. Without a
 recognized tag, Switchyard uses the message shape to identify a user turn.
 <code>x-session-id</code> is also accepted as a session-header alias.</p>
 <h2 id="verification-and-capable-tier-outages">Verification and capable-tier outages<a class="headerlink" href="#verification-and-capable-tier-outages" title="Permanent link">&para;</a></h2>
+<p>Policy version <code>1.1</code> verifies typed factual answers on the answer itself, including
+later user turns without tool work. A readout of at least 0.9 can serve the
+efficient answer; lower scores require capable-tier verification. Scored verdicts
+require yes and no together to hold at least half the first token's probability.</p>
 <p>Coding without tool history can serve the efficient attempt with a clean readout of at least
 0.6, or a readout of at least 0.2 plus capable-judge affirmation. Other final-answer
 branches can use a separate scored verdict after efficient deliberation.</p>
