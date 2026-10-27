@@ -154,7 +154,7 @@ stage router with these settings. It does not compare strategies at runtime.
 | `picker` | `efficient_first` | The efficient tier serves a turn when the tool signals are not confident. |
 | `confidence_threshold` | `0.5` | How strongly the tool signals must agree before they pick a tier on their own. |
 | `recent_turn_window` | `3` | How many recent tool results the signals are computed over. |
-| `capable_hold_turns` | `2` | How many turns stay on the capable tier after an escalation. A clean test pass ends the hold early. |
+| `capable_hold_turns` | `2` | How many turns stay on the capable tier after an escalation, skipping signal processing and classification. |
 | Classifier | none | No LLM judge is called. |
 
 Auto accepts no tuning keys. To change a setting, write the equivalent

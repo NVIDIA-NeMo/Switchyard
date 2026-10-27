@@ -20,7 +20,7 @@ A tool-using agent's run moves through stages that call for different amounts of
 model capability. The built-in vocabulary is calibrated for coding agents: it
 recognizes file observation, mutation, planning, shell activity, and test results.
 
-For each LLM call, stage-router estimates the agent's state from the
+For each LLM call without an active hold, stage-router estimates the agent's state from the
 conversation's **tool-result history**, scoring signals in two directions:
 
 - **RECOVERY → capable**: `severity` (windowed error severity), `spinning` (deep
@@ -37,7 +37,7 @@ The axes are **corroborative**: the signed score is `tanh`-squashed to a
 confidence in `[0, 1]`. One maxed scoring dimension produces about `0.46`;
 corroborating evidence pushes confidence decisively past a `0.5` threshold.
 Repeated failures, critical-error severity, and context compaction are hard
-overrides to the capable tier. An active capable hold also bypasses the scorer.
+overrides to the capable tier. Active holds bypass signal extraction and scoring.
 Severity and test results come from tool output that ran something. The contents
 returned by the built-in read and search tools do not count, unless the tool
 reports a failure.
@@ -53,8 +53,10 @@ The routing decision for one turn:
 %%{init: {"flowchart": {"curve": "linear", "nodeSpacing": 36, "rankSpacing": 38}}}%%
 flowchart TB
     start(["New turn"])
+    hold{"Active hold?"}
+    heldRoute(["Route to held tier<br/>confidence = 1.0"])
     history[/"Read tool-result history"/]
-    recovery{"Hard recovery signal<br/>or capable hold?"}
+    recovery{"Hard recovery signal?"}
     scorer["Compute signed tool-signal score"]
     band{"Outside the<br/>ambiguous band?"}
     classifier{"Usable classifier verdict?"}
@@ -63,7 +65,9 @@ flowchart TB
     classifierRoute(["Route by classifier verdict"])
     defaultRoute(["Route to picker default"])
 
-    start --> history
+    start --> hold
+    hold -->|Yes| heldRoute
+    hold -->|No| history
     history --> recovery
     recovery -->|Yes| capable
     recovery -->|No| scorer
@@ -81,14 +85,30 @@ flowchart TB
 
     class start,history input;
     class scorer process;
-    class recovery,band,classifier decision;
+    class hold,recovery,band,classifier decision;
     class capable capable;
-    class signalRoute,classifierRoute,defaultRoute outcome;
+    class heldRoute,signalRoute,classifierRoute,defaultRoute outcome;
 ```
 
-After a signal-driven capable decision, `capable_hold_turns` keeps recovery turns
-on that tier for up to two requests by default. A clean passing test clears the
-hold early. Set the value to `0` to disable it.
+Both pickers support `capable_hold_turns` (default `2`) and
+`efficient_hold_turns` (default `0`). A positive value holds that tier for the
+specified number of requests after a switch, excluding the switch request.
+Held requests do not restart the counter. A finite capable hold also starts or
+restarts on a signal-driven capable decision. Active holds return the selected
+tier at confidence `1.0` before extracting tool signals or scoring. The existing
+cascade then skips the fallback judge. Passing tests and errors do not end holds
+early, and held requests receive no handoff notes.
+
+Set either value to `0` to disable that hold, or `-1` to pin to that tier after
+switching into it. The initial selection does not activate a pin. Pins override
+later signals, including passing tests and critical errors, and skip the fallback
+judge. If both values are `-1`, the first tier switch pins its destination.
+Switches chosen by signals, the fallback judge, or the picker default all count.
+
+Holds use the existing session state and are separate for each agent ID. Supply
+a stable session ID across requests. A pin ends when that session state is cleared
+(including session completion, expiry, or a server restart). Values below `-1` or
+above `4294967295` are rejected.
 
 ## Pickers
 
@@ -230,7 +250,8 @@ required columns.
 | `confidence_threshold` | required | Corroboration a decisive pick needs, `0` to `1`. Alias `efficient_first_threshold`. |
 | `capable_first_threshold` | `0.0` | Used only after an outer `composite` classifier selects the capable tier. No effect on a standalone route. |
 | `recent_turn_window` | `3` | Trailing tool results the signals are computed over. |
-| `capable_hold_turns` | `2` | Requests kept on the capable tier after an escalation the signals or a hard override picked. `0` disables. |
+| `capable_hold_turns` | `2` | Requests kept on capable after switching to it; signal-driven capable decisions also start finite holds. `0` disables; `-1` pins after a switch. |
+| `efficient_hold_turns` | `0` | Requests kept on efficient after switching to it. `0` disables; `-1` pins after a switch. |
 | `tool_semantics.observe` | `[]` | Domain tool names that count as investigation. |
 | `tool_semantics.mutate` | `[]` | Domain tool names that count as production. |
 | `tool_semantics.plan` | `[]` | Domain tool names that count as planning. |
@@ -285,6 +306,7 @@ picker = "efficient_first"
 confidence_threshold = 0.5
 recent_turn_window = 3          # optional, defaults to 3
 capable_hold_turns = 2          # optional, defaults to 2
+efficient_hold_turns = 0        # optional; -1 pins after switching to efficient
 ```
 
 Save as `routes.toml` and start the server:
@@ -404,6 +426,7 @@ the `stage router override` log line carries it for overrides:
 |---|---|
 | `override` | A repeated failure, critical-error severity, or context-compaction marker forced the capable tier. Structured logs set `override_reason` to `repeated_failure`, `critical_error`, or `compaction`. |
 | `capable_hold` | A recent escalation kept this recovery turn on the capable tier. |
+| `efficient_hold` | A configured hold or pin kept this turn on the efficient tier. |
 | `dimensions` | The signed score fell outside the ambiguous band and selected a tier. |
 | `ambiguous` | The signed score stayed inside the band. This label never reaches `/v1/stats` or the logs: the turn continues to the classifier or the picker default, and that later source is recorded. |
 | `llm-classifier` | The signals were ambiguous and the classifier returned a usable verdict. |

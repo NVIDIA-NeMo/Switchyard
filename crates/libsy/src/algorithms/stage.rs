@@ -143,9 +143,12 @@ pub struct StageRouterConfig {
     pub recent_window: Option<usize>,
     /// Exact tool-name semantics added to the built-in coding vocabulary.
     pub tool_semantics: ToolSemantics,
-    /// Requests to keep on the capable tier after an escalation. A clean test
-    /// pass clears the hold early.
-    pub capable_hold_turns: u32,
+    /// Requests to keep on capable after an escalation. `0` disables the hold;
+    /// `-1` pins after switching to this tier.
+    pub capable_hold_turns: i64,
+    /// Requests to keep on the efficient tier after switching to it. `0`
+    /// disables the hold; `-1` pins until the session state is cleared.
+    pub efficient_hold_turns: i64,
     /// Note handed to the model on a signal-driven escalation, and on a
     /// hand-back to the efficient tier when a de-escalation note is configured.
     pub handoff_notes: Option<HandoffNoteConfig>,
@@ -169,6 +172,7 @@ impl StageRouterConfig {
             recent_window: None,
             tool_semantics: ToolSemantics::default(),
             capable_hold_turns: 2,
+            efficient_hold_turns: 0,
             handoff_notes: None,
             capable_system_prompt: None,
             efficient_system_prompt: None,
@@ -189,7 +193,8 @@ impl StageRouter {
     /// when configured, is called through the runtime `judge` model.
     ///
     /// Errors if either threshold in `config` is outside `[0.0, 1.0]`, or if the
-    /// fallback judge is asked to retain verdicts: it runs on every ambiguous
+    /// hold counts are outside `-1..=u32::MAX`. Also rejects a
+    /// fallback judge configured to retain verdicts: it runs on every ambiguous
     /// turn, so `classify_trigger` and `message_hash_fallback` would do nothing.
     pub fn new(config: StageRouterConfig) -> Result<Self> {
         if let Some(fallback) = &config.llm_fallback
@@ -238,12 +243,26 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
         }
     }
     config.tool_semantics.validate()?;
+    for (name, turns) in [
+        ("capable_hold_turns", config.capable_hold_turns),
+        ("efficient_hold_turns", config.efficient_hold_turns),
+    ] {
+        if !(-1..=i64::from(u32::MAX)).contains(&turns) {
+            return Err(LibsyError::AlgorithmError {
+                message: format!(
+                    "{name} must be -1 or between 0 and {}, got {turns}",
+                    u32::MAX
+                ),
+            });
+        }
+    }
     let default_tier = config.mode.default_tier();
     let fall_open = FallOpen { default_tier };
 
     let mut classifier = StageClassifier::new(config.mode, config.confidence_threshold)
         .with_capable_first_threshold(config.capable_first_threshold)
-        .with_capable_hold_turns(config.capable_hold_turns);
+        .with_capable_hold_turns(config.capable_hold_turns)
+        .with_efficient_hold_turns(config.efficient_hold_turns);
     if let Some(notes) = config.handoff_notes {
         classifier = classifier.with_handoff_notes(notes);
     }
@@ -251,10 +270,11 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
         recent_window: config.recent_window.unwrap_or(DEFAULT_RECENT_WINDOW),
         tool_semantics: config.tool_semantics,
     };
+    let classifier = Arc::new(classifier.with_signals(signals));
     let mut router = FallThrough::new_with_state()
         .with_name(STAGE_ROUTER)
-        .with_processor(Arc::new(signals))
-        .with_classifier(Arc::new(classifier));
+        .with_processor(classifier.clone())
+        .with_classifier(classifier);
     if let Some(fallback) = config.llm_fallback {
         router = router.with_classifier(Arc::new(SourceStamp {
             inner: Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
@@ -448,6 +468,192 @@ mod tests {
     fn builds() -> Result<()> {
         let router = StageRouter::new(config())?;
         assert_eq!(router.name(), STAGE_ROUTER);
+        Ok(())
+    }
+
+    #[test]
+    fn hold_turns_accept_pins_and_reject_invalid_counts() {
+        for capable in [true, false] {
+            for turns in [-2, -1, 0, 1, i64::from(u32::MAX), i64::from(u32::MAX) + 1] {
+                let mut config = config();
+                if capable {
+                    config.capable_hold_turns = turns;
+                } else {
+                    config.efficient_hold_turns = turns;
+                }
+                assert_eq!(
+                    StageRouter::new(config).is_ok(),
+                    (-1..=i64::from(u32::MAX)).contains(&turns)
+                );
+            }
+        }
+    }
+
+    /// A clean write selects efficient without ending finite capable holds early.
+    fn production_request() -> Request {
+        let mut request = turn_request(false);
+        if let switchyard_protocol::ContentBlock::ToolCall(call) =
+            &mut request.llm_request.messages[1].content[0]
+        {
+            call.name = "Write".to_string();
+        }
+        request
+    }
+
+    /// Both pickers honor both holds; the switch request is not one of the held turns.
+    #[tokio::test]
+    async fn holds_expire_or_pin_after_switching_in_both_pickers() -> Result<()> {
+        for mode in [PickerMode::EfficientFirst, PickerMode::CapableFirst] {
+            for capable in [true, false] {
+                for turns in [0, 1, 2, -1] {
+                    let mut config = StageRouterConfig::new(mode, 0.5);
+                    config.capable_hold_turns = if capable { turns } else { 0 };
+                    config.efficient_hold_turns = if capable { 0 } else { turns };
+                    let router = recording_router(config)?;
+                    let recorder = Arc::new(Recorder::default());
+                    let (switch, opposing, held_target, other_target) = if capable {
+                        (turn_request(true), production_request(), "strong", "weak")
+                    } else {
+                        (production_request(), turn_request(true), "weak", "strong")
+                    };
+                    let mut requests = vec![opposing.clone(), switch];
+                    requests.extend(std::iter::repeat_n(opposing, 4));
+                    for request in requests {
+                        test_drive_with_models(
+                            router.clone(),
+                            request,
+                            runtime_models(),
+                            recorder.serve(),
+                        )
+                        .await?;
+                    }
+                    let actual: Vec<_> = recorder
+                        .routed()
+                        .into_iter()
+                        .map(|call| call.target)
+                        .collect();
+                    let mut expected = vec![other_target, held_target];
+                    expected.extend((0..4).map(|i| {
+                        if turns == -1 || i < turns {
+                            held_target
+                        } else {
+                            other_target
+                        }
+                    }));
+                    assert_eq!(
+                        actual, expected,
+                        "{mode:?}, capable={capable}, turns={turns}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Initial selection does not pin. Once switched, pins survive missing signals,
+    /// passing tests, and critical errors, and remain scoped to one session/agent.
+    #[tokio::test]
+    async fn pins_survive_signals_and_remain_isolated() -> Result<()> {
+        for mode in [PickerMode::EfficientFirst, PickerMode::CapableFirst] {
+            for capable in [true, false] {
+                let mut config = StageRouterConfig::new(mode, 0.5);
+                config.capable_hold_turns = -1;
+                config.efficient_hold_turns = -1;
+                let router = recording_router(config)?;
+                let recorder = Arc::new(Recorder::default());
+                let (initial, switch, held, other) = if capable {
+                    (production_request(), turn_request(true), "strong", "weak")
+                } else {
+                    (turn_request(true), production_request(), "weak", "strong")
+                };
+                let mut no_signals = turn_request(false);
+                no_signals.llm_request.messages.truncate(1);
+                let mut passing = turn_request(false);
+                if let switchyard_protocol::ContentBlock::ToolResult(result) =
+                    &mut passing.llm_request.messages[2].content[0]
+                {
+                    result.content = vec![switchyard_protocol::ContentBlock::Text {
+                        text: "test result: ok. 1 passed; 0 failed".into(),
+                    }];
+                }
+                let mut child = initial.clone();
+                child.metadata.as_mut().unwrap().agent_id = Some("child".into());
+                let mut other_session = initial.clone();
+                other_session.metadata.as_mut().unwrap().session_id = Some("other".into());
+                let mut final_request = initial.clone();
+                final_request.metadata.as_mut().unwrap().session_final = Some(true);
+                let requests = [
+                    initial.clone(),
+                    switch,
+                    no_signals,
+                    passing,
+                    initial.clone(),
+                    child,
+                    other_session,
+                    final_request,
+                    initial,
+                ];
+                for request in requests {
+                    test_drive_with_models(
+                        router.clone(),
+                        request,
+                        runtime_models(),
+                        recorder.serve(),
+                    )
+                    .await?;
+                }
+                let actual: Vec<_> = recorder
+                    .routed()
+                    .into_iter()
+                    .map(|call| call.target)
+                    .collect();
+                assert_eq!(
+                    actual,
+                    [other, held, held, held, held, other, other, held, other]
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Judge-driven switches must arm the same pin as signal-driven switches.
+    #[tokio::test]
+    async fn judge_switches_arm_pins_and_held_turns_skip_the_judge() -> Result<()> {
+        for capable in [true, false] {
+            let recorder = Arc::new(Recorder::default());
+            let mut config = config_with_judge(&recorder, if capable { 1.0 } else { 0.0 });
+            config.capable_hold_turns = -1;
+            config.efficient_hold_turns = -1;
+            let router = recording_router(config)?;
+            for p_solve in [
+                if capable { 1.0 } else { 0.0 },
+                if capable { 0.0 } else { 1.0 },
+                if capable { 1.0 } else { 0.0 },
+            ] {
+                *recorder.judge_p_solve.lock() = p_solve;
+                test_drive_with_models(
+                    router.clone(),
+                    turn_request(false),
+                    runtime_models(),
+                    recorder.serve(),
+                )
+                .await?;
+            }
+            let actual: Vec<_> = recorder
+                .routed()
+                .into_iter()
+                .map(|call| call.target)
+                .collect();
+            assert_eq!(
+                actual,
+                if capable {
+                    ["weak", "strong", "strong"]
+                } else {
+                    ["strong", "weak", "weak"]
+                }
+            );
+            assert_eq!(recorder.judge_calls(), 2);
+        }
         Ok(())
     }
 

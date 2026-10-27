@@ -1358,6 +1358,34 @@ new = ["send_message"]
     }
 
     #[test]
+    fn stage_and_composite_validate_hold_turns() {
+        for source in [
+            stage_config(),
+            stage_config().replace("efficient_first", "capable_first"),
+            composite_config(),
+        ] {
+            for field in ["capable_hold_turns", "efficient_hold_turns"] {
+                for (turns, valid) in [
+                    (-2_i64, false),
+                    (-1, true),
+                    (0, true),
+                    (3, true),
+                    (i64::from(u32::MAX), true),
+                    (i64::from(u32::MAX) + 1, false),
+                ] {
+                    let configured =
+                        source.replace("capable_hold_turns = 2", &format!("{field} = {turns}"));
+                    let result = runner_from_toml(&configured);
+                    assert_eq!(result.is_ok(), valid, "{field} = {turns}");
+                    if let Err(error) = result {
+                        assert!(error.to_string().contains(field), "{error}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn composite_decision_judge_reuses_capability_validation() {
         let source = composite_config().replace(
             "[routes.composed.classifier]\ntarget = \"tier_judge\"\nbase_threshold = 0.5",
