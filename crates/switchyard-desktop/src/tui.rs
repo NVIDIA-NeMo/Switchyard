@@ -167,18 +167,22 @@ enum Done {
 struct Request {
     job: Job,
     label: &'static str,
+    automatic: bool,
 }
 impl Request {
-    fn refresh() -> Self {
+    fn refresh(automatic: bool) -> Self {
         Self {
             job: Job::Refresh,
             label: "Refreshing",
+            automatic,
         }
     }
 }
 struct Busy {
     label: &'static str,
     started: Instant,
+    /// The UI retains the refresh origin so automatic failures preserve the current popup.
+    automatic: bool,
 }
 struct Toast {
     text: String,
@@ -216,7 +220,7 @@ impl App {
         }
     }
 
-    /// Short messages appear in the status bar; long ones open a window so nothing is cut off.
+    /// Short single-line messages appear in the status bar; others open a scrollable window.
     fn notify(&mut self, text: String, error: bool) {
         if text.is_empty() {
             return;
@@ -238,7 +242,7 @@ impl App {
     }
 
     fn finish(&mut self, snapshot: Result<Box<Snapshot>, String>) {
-        self.busy = None;
+        let automatic = self.busy.take().is_some_and(|busy| busy.automatic);
         match snapshot {
             Ok(data) => {
                 self.data = *data;
@@ -247,7 +251,15 @@ impl App {
             Err(error) => {
                 // Overview keeps the error after the status message is dismissed.
                 self.data.errors = vec![error.clone()];
-                self.notify(error, true);
+                if automatic {
+                    self.toast = Some(Toast {
+                        text: error.lines().next().unwrap_or_default().into(),
+                        error: true,
+                        shown: Instant::now(),
+                    });
+                } else {
+                    self.notify(error, true);
+                }
             }
         }
     }
@@ -284,6 +296,7 @@ impl App {
         self.busy = Some(Busy {
             label: request.label,
             started: Instant::now(),
+            automatic: request.automatic,
         });
         Ok(())
     }
@@ -313,7 +326,7 @@ impl App {
             KeyCode::BackTab | KeyCode::Left => {
                 self.tab = TABS[(self.tab.index() + TABS.len() - 1) % TABS.len()];
             }
-            KeyCode::Char('r') | KeyCode::F(5) => return Some(Request::refresh()),
+            KeyCode::Char('r') | KeyCode::F(5) => return Some(Request::refresh(false)),
             KeyCode::Esc => self.toast = None,
             _ => {}
         }
@@ -512,33 +525,32 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(status), status_area);
 }
 
-fn draw_errors(frame: &mut Frame, app: &App, area: Rect) {
-    let lines: Vec<Line> = app
-        .data
-        .errors
-        .iter()
-        .map(|error| Line::styled(error.as_str(), app.theme.error))
-        .collect();
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(block(app.theme, "Data errors").border_style(app.theme.error)),
-        area,
-    );
-}
-
 fn draw_overview(frame: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme;
     let data = &app.data;
-    let errors = if data.errors.is_empty() {
+    let lines: Vec<Line> = data
+        .errors
+        .iter()
+        .flat_map(|error| error.lines())
+        .map(|line| Line::styled(line, theme.error))
+        .collect();
+    let errors = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let error_height = if data.errors.is_empty() {
         0
     } else {
-        (data.errors.len() as u16 + 2).min(area.height / 2)
+        // The panel needs rows for wrapped text as well as its top and bottom borders.
+        errors
+            .line_count(area.width.saturating_sub(2))
+            .saturating_add(2)
+            .min(usize::from(area.height / 2)) as u16
     };
     let [errors_area, rest] =
-        Layout::vertical([Constraint::Length(errors), Constraint::Fill(1)]).areas(area);
-    if errors > 0 {
-        draw_errors(frame, app, errors_area);
+        Layout::vertical([Constraint::Length(error_height), Constraint::Fill(1)]).areas(area);
+    if error_height > 0 {
+        frame.render_widget(
+            errors.block(block(theme, "Data errors").border_style(theme.error)),
+            errors_area,
+        );
     }
     let usage = data.data_state.usage.state == Availability::Available;
     let chart = if usage && rest.height >= 24 { 9 } else { 0 };
@@ -591,7 +603,7 @@ fn draw_card(frame: &mut Frame, theme: Theme, title: &str, lines: Vec<Line>, are
     );
 }
 
-/// This function draws one period's calls, spending, and savings for an Overview card.
+/// This function builds one period's calls, spending, and savings for an Overview card.
 fn period_lines(app: &App, period: Period, baseline: bool) -> Vec<Line<'static>> {
     let theme = app.theme;
     let counts = match period {
@@ -626,7 +638,7 @@ fn draw_activity(frame: &mut Frame, app: &App, area: Rect) {
         .title_bottom(Line::styled(" now ", theme.muted).right_aligned());
     if app.data.limited {
         outer = outer
-            .title_bottom(Line::styled(" from the latest 5,000 calls ", theme.muted).centered());
+            .title_bottom(Line::styled(" Recent history is limited. ", theme.muted).centered());
     }
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
@@ -678,8 +690,8 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(hints.right_aligned()), right_area);
 }
 
-/// This function lists the page's keys, then the global keys, and stops before a hint would be
-/// cut. It keeps room for the help key, so the status bar always says how to find every key.
+/// This function adds page and global key hints while they fit in the status bar.
+/// It reserves room for the help key when global hints are shown.
 fn fit_keys(theme: Theme, keys: &[Key], global: bool, room: usize) -> Line<'static> {
     let hint = |key: &'static str, label: &str| {
         [
@@ -723,8 +735,7 @@ fn draw_popup(frame: &mut Frame, app: &mut App, area: Rect) {
         Line::from(spans)
     };
     let close = footer(&[("esc", "close")]);
-    // A window that asks for a decision keeps its keys on the border and its text fields below
-    // the scrolling text, so both stay visible when the text is long.
+    // The close key stays on the border while the popup text scrolls.
     let (title, lines, pinned, border, preferred, footer) = match popup {
         Popup::Help { .. } => {
             let width = 76;
@@ -842,7 +853,7 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
     });
     let result = ratatui::run(|terminal| -> Result<(), String> {
         // The initial refresh starts after terminal setup so a blocked read cannot delay drawing.
-        app.start(&jobs, Request::refresh())?;
+        app.start(&jobs, Request::refresh(true))?;
         loop {
             app.poll_results(&results)?;
             if app.quit && app.busy.is_none() {
@@ -871,7 +882,7 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
                 }
             }
             if !app.quit && app.refresh_due() {
-                app.start(&jobs, Request::refresh())?;
+                app.start(&jobs, Request::refresh(true))?;
             }
         }
     });
@@ -887,7 +898,7 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{App, KeyCode, KeyEvent, KeyModifiers, Request, Theme, draw, mpsc};
+    use super::{App, Done, KeyCode, KeyEvent, KeyModifiers, Popup, Request, Theme, draw, mpsc};
     use ratatui::{Terminal, backend::TestBackend};
 
     // Esc dismisses the status message while Overview keeps the refresh error.
@@ -913,7 +924,7 @@ mod tests {
     fn worker_disconnect_returns_an_error_with_a_refresh_in_flight() {
         let mut app = App::new(Theme::new(false));
         let (jobs, _inbox) = mpsc::channel();
-        app.start(&jobs, Request::refresh()).expect("refresh");
+        app.start(&jobs, Request::refresh(false)).expect("refresh");
         let (done, results) = mpsc::channel();
         assert!(app.poll_results(&results).is_ok());
         drop(done);
@@ -921,5 +932,72 @@ mod tests {
             app.poll_results(&results),
             Err("The terminal operation worker stopped unexpectedly.".into())
         );
+    }
+
+    #[test]
+    fn automatic_refresh_errors_leave_dismissed_popups_and_help_alone() {
+        let mut app = App::new(Theme::new(false));
+        let error = "Could not read settings.\nCheck the TOML file.";
+        let (jobs, _inbox) = mpsc::channel();
+        let (done, results) = mpsc::channel();
+        app.start(&jobs, Request::refresh(false))
+            .expect("manual refresh");
+        done.send(Done::Finished {
+            snapshot: Err(error.into()),
+        })
+        .expect("result");
+        app.poll_results(&results).expect("manual result");
+        assert!(matches!(app.popup, Some(Popup::Message { .. })));
+        app.key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        for help in [false, true] {
+            if help {
+                app.key(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE));
+                app.key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+            }
+            app.start(&jobs, Request::refresh(true))
+                .expect("automatic refresh");
+            done.send(Done::Finished {
+                snapshot: Err(error.into()),
+            })
+            .expect("result");
+            app.poll_results(&results).expect("automatic result");
+            assert!(if help {
+                matches!(app.popup, Some(Popup::Help { scroll: 1 }))
+            } else {
+                app.popup.is_none()
+            });
+            assert_eq!(
+                app.toast.as_ref().expect("error toast").text,
+                "Could not read settings."
+            );
+            assert_eq!(app.data.errors, [error]);
+        }
+    }
+
+    #[test]
+    fn data_errors_split_newlines_and_reserve_wrapped_rows_at_minimum_size() {
+        for error in [
+            "Could not read model prices.\nSpecific cause".to_string(),
+            format!(
+                "Could not read model prices at {}: Specific cause",
+                "long-directory/".repeat(8)
+            ),
+        ] {
+            let mut app = App::new(Theme::new(false));
+            app.data.errors = vec![error.clone()];
+            let mut terminal = Terminal::new(TestBackend::new(60, 16)).expect("terminal");
+            terminal.draw(|frame| draw(frame, &mut app)).expect("draw");
+            let rows: Vec<String> = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(60)
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+                .collect();
+            assert!(
+                rows[3..].iter().any(|row| row.contains("Specific cause")),
+                "{error}: {rows:?}"
+            );
+        }
     }
 }

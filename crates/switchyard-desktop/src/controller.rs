@@ -120,8 +120,8 @@ impl Controller {
         } else {
             crate::health::ServerStatus::Stopped
         };
-        let history = history::load(&self.config.routing_log).unwrap_or_else(|e| {
-            errors.push(e);
+        let history = history::load(&self.config.routing_log).unwrap_or_else(|error| {
+            errors.push(format!("Could not read recent calls: {error}"));
             history::History::default()
         });
         let activity = history::hourly_calls(&history.entries, chrono::Utc::now());
@@ -156,5 +156,37 @@ impl Controller {
             errors,
             refresh_seconds: refresh_seconds.max(1),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, Controller};
+
+    #[test]
+    fn recent_call_read_errors_name_the_source_and_keep_the_io_details() {
+        let directory = tempfile::tempdir().expect("directory");
+        let settings = directory.path().join("desktop.toml");
+        let path = directory.path().to_str().expect("UTF-8 path");
+        std::fs::write(
+            &settings,
+            format!("routing_log = {path:?}\nserver_url = 'http://127.0.0.1:9'\n"),
+        )
+        .expect("settings");
+        let config = Config::load(&settings).expect("config");
+        let expected = crate::history::load(directory.path())
+            .err()
+            .expect("directory read fails");
+        let snapshot = Controller::new(config, settings)
+            .snapshot()
+            .expect("snapshot");
+        assert!(
+            snapshot
+                .errors
+                .contains(&format!("Could not read recent calls: {expected}")),
+            "{:?}",
+            snapshot.errors
+        );
+        assert_eq!(snapshot.activity, [0; 24]);
     }
 }

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module reads recent completed model calls and filters them by recorded IDs.
+//! This module reads recent completed model calls and counts them by hour.
 
 use serde::Deserialize;
 use std::collections::VecDeque;
@@ -119,7 +119,7 @@ fn parse(bytes: &[u8], truncated: bool) -> History {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{MAX_BYTES, MAX_RECORDS, load};
 
     #[test]
     fn retains_recent_records_and_complete_byte_limited_records() {
