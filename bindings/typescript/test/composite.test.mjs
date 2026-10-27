@@ -98,12 +98,37 @@ test("serialized state preserves capable holds until they expire", async () => {
   }
 });
 
+test("capable-first pins efficient by default and accepts an explicit opt-out", async () => {
+  for (const turns of [undefined, 0]) {
+    const config = structuredClone(options);
+    config.stage.efficient_hold_turns = turns;
+    const router = CompositeRouter.create(config);
+    const initial = await router.route(messages, { decide: async () => response(0.41) });
+    assert.equal(initial.model, options.targets.capable);
+    const write = structuredClone(continuation);
+    write[1].content[0].name = "write";
+    let selected = await router.route(write, { state: initial.state, decide: unexpectedDecision });
+    assert.equal(selected.model, options.targets.efficient);
+    const failed = structuredClone(continuation);
+    failed.at(-1).content[0].is_error = true;
+    failed.at(-1).content[0].content[0].text = "Out of memory: kill process 1234";
+    let state = selected.state;
+    for (let i = 0; i < 3; i++) {
+      assert.ok(state);
+      selected = await router.route(failed, { state: JSON.parse(JSON.stringify(state)), decide: unexpectedDecision });
+      assert.equal(selected.model, turns === 0 ? options.targets.capable : options.targets.efficient);
+      state = selected.state ?? state;
+    }
+  }
+});
+
 test("validation and decision failure policy", async () => {
   for (const change of [
     (config) => { config.targets.efficient = config.targets.capable; },
     (config) => { config.classifier.decision.cutoff = 2; },
     (config) => { config.classifier.decision.extra = true; },
     (config) => { config.classifier.classify_trigger = "every_request"; },
+    (config) => { config.stage.efficient_hold_turns = -2; },
   ]) {
     const config = structuredClone(options);
     change(config);

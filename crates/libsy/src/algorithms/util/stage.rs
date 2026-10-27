@@ -529,7 +529,7 @@ pub struct StageClassifier {
     confidence_threshold: f64,
     capable_first_threshold: f64,
     capable_hold_turns: i64,
-    efficient_hold_turns: i64,
+    efficient_hold_turns: Option<i64>,
     signals: ToolSignalProcessor,
     handoff_notes: Option<HandoffNoteConfig>,
 }
@@ -543,7 +543,7 @@ impl StageClassifier {
             confidence_threshold,
             capable_first_threshold: 0.0,
             capable_hold_turns: 2,
-            efficient_hold_turns: 0,
+            efficient_hold_turns: None,
             signals: ToolSignalProcessor::default(),
             handoff_notes: None,
         }
@@ -565,7 +565,7 @@ impl StageClassifier {
     /// Hold the efficient tier after a switch. Zero disables it; `-1` pins.
     /// Validated by the enclosing stage router.
     pub fn with_efficient_hold_turns(mut self, turns: i64) -> Self {
-        self.efficient_hold_turns = turns;
+        self.efficient_hold_turns = Some(turns);
         self
     }
 
@@ -677,7 +677,13 @@ impl Processor for StageClassifier {
                     Tier::Efficient,
                     EFFICIENT_HOLD_KEY,
                     CAPABLE_HOLD_KEY,
-                    self.efficient_hold_turns,
+                    self.efficient_hold_turns.unwrap_or_else(|| {
+                        if fall_open_tier(state) == Some(Tier::Capable) {
+                            -1
+                        } else {
+                            0
+                        }
+                    }),
                 ),
                 _ => return Ok(()),
             };

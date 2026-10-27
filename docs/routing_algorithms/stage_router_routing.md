@@ -91,7 +91,8 @@ flowchart TB
 ```
 
 Both pickers support `capable_hold_turns` (default `2`) and
-`efficient_hold_turns` (default `0`). A positive value holds that tier for the
+`efficient_hold_turns` (default `0` on standalone routes; composite's
+capable-first policy defaults to `-1`). A positive value holds that tier for the
 specified number of requests after a switch, excluding the switch request.
 Held requests do not restart the counter. A finite capable hold also starts or
 restarts on a signal-driven capable decision. Active holds return the selected

@@ -146,9 +146,10 @@ pub struct StageRouterConfig {
     /// Requests to keep on capable after an escalation. `0` disables the hold;
     /// `-1` pins after switching to this tier.
     pub capable_hold_turns: i64,
-    /// Requests to keep on the efficient tier after switching to it. `0`
-    /// disables the hold; `-1` pins until the session state is cleared.
-    pub efficient_hold_turns: i64,
+    /// Requests to keep on efficient after a switch. `None` defaults to `-1`
+    /// under composite's capable-first policy, otherwise `0`. `Some(0)` disables
+    /// the hold; `Some(-1)` pins until the session state is cleared.
+    pub efficient_hold_turns: Option<i64>,
     /// Note handed to the model on a signal-driven escalation, and on a
     /// hand-back to the efficient tier when a de-escalation note is configured.
     pub handoff_notes: Option<HandoffNoteConfig>,
@@ -172,7 +173,7 @@ impl StageRouterConfig {
             recent_window: None,
             tool_semantics: ToolSemantics::default(),
             capable_hold_turns: 2,
-            efficient_hold_turns: 0,
+            efficient_hold_turns: None,
             handoff_notes: None,
             capable_system_prompt: None,
             efficient_system_prompt: None,
@@ -244,9 +245,10 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
     }
     config.tool_semantics.validate()?;
     for (name, turns) in [
-        ("capable_hold_turns", config.capable_hold_turns),
+        ("capable_hold_turns", Some(config.capable_hold_turns)),
         ("efficient_hold_turns", config.efficient_hold_turns),
     ] {
+        let Some(turns) = turns else { continue };
         if !(-1..=i64::from(u32::MAX)).contains(&turns) {
             return Err(LibsyError::AlgorithmError {
                 message: format!(
@@ -261,8 +263,10 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
 
     let mut classifier = StageClassifier::new(config.mode, config.confidence_threshold)
         .with_capable_first_threshold(config.capable_first_threshold)
-        .with_capable_hold_turns(config.capable_hold_turns)
-        .with_efficient_hold_turns(config.efficient_hold_turns);
+        .with_capable_hold_turns(config.capable_hold_turns);
+    if let Some(turns) = config.efficient_hold_turns {
+        classifier = classifier.with_efficient_hold_turns(turns);
+    }
     if let Some(notes) = config.handoff_notes {
         classifier = classifier.with_handoff_notes(notes);
     }
@@ -479,7 +483,7 @@ mod tests {
                 if capable {
                     config.capable_hold_turns = turns;
                 } else {
-                    config.efficient_hold_turns = turns;
+                    config.efficient_hold_turns = Some(turns);
                 }
                 assert_eq!(
                     StageRouter::new(config).is_ok(),
@@ -500,6 +504,27 @@ mod tests {
         request
     }
 
+    #[tokio::test]
+    async fn standalone_pickers_default_to_no_efficient_hold() -> Result<()> {
+        for mode in [PickerMode::EfficientFirst, PickerMode::CapableFirst] {
+            let mut config = StageRouterConfig::new(mode, 0.5);
+            config.capable_hold_turns = 0;
+            let router = recording_router(config)?;
+            let recorder = Arc::new(Recorder::default());
+            for request in [turn_request(true), production_request(), turn_request(true)] {
+                test_drive_with_models(router.clone(), request, runtime_models(), recorder.serve())
+                    .await?;
+            }
+            let actual: Vec<_> = recorder
+                .routed()
+                .into_iter()
+                .map(|call| call.target)
+                .collect();
+            assert_eq!(actual, ["strong", "weak", "strong"]);
+        }
+        Ok(())
+    }
+
     /// Both pickers honor both holds; the switch request is not one of the held turns.
     #[tokio::test]
     async fn holds_expire_or_pin_after_switching_in_both_pickers() -> Result<()> {
@@ -508,7 +533,7 @@ mod tests {
                 for turns in [0, 1, 2, -1] {
                     let mut config = StageRouterConfig::new(mode, 0.5);
                     config.capable_hold_turns = if capable { turns } else { 0 };
-                    config.efficient_hold_turns = if capable { 0 } else { turns };
+                    config.efficient_hold_turns = Some(if capable { 0 } else { turns });
                     let router = recording_router(config)?;
                     let recorder = Arc::new(Recorder::default());
                     let (switch, opposing, held_target, other_target) = if capable {
@@ -558,7 +583,7 @@ mod tests {
             for capable in [true, false] {
                 let mut config = StageRouterConfig::new(mode, 0.5);
                 config.capable_hold_turns = -1;
-                config.efficient_hold_turns = -1;
+                config.efficient_hold_turns = Some(-1);
                 let router = recording_router(config)?;
                 let recorder = Arc::new(Recorder::default());
                 let (initial, switch, held, other) = if capable {
@@ -623,7 +648,7 @@ mod tests {
             let recorder = Arc::new(Recorder::default());
             let mut config = config_with_judge(&recorder, if capable { 1.0 } else { 0.0 });
             config.capable_hold_turns = -1;
-            config.efficient_hold_turns = -1;
+            config.efficient_hold_turns = Some(-1);
             let router = recording_router(config)?;
             for p_solve in [
                 if capable { 1.0 } else { 0.0 },

@@ -523,7 +523,7 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `stage.capable_first_threshold` | No | `0.0` | Signal confidence required after a Capable classification. In `[0, 1]`. |
 | `stage.recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
 | `stage.capable_hold_turns` | No | `2` | Same capable hold as `stage_router`: `0` disables; `-1` pins after a switch. |
-| `stage.efficient_hold_turns` | No | `0` | Same efficient hold as `stage_router`: `0` disables; `-1` pins after a switch. |
+| `stage.efficient_hold_turns` | No | CF: `-1`; EF: `0` | Defaults to pinning efficient after a switch when the classifier selected capable-first. Explicit `0` disables; positive values hold that many requests. |
 | `stage.tool_semantics.observe` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as observation. |
 | `stage.tool_semantics.mutate` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as mutation. |
 | `stage.tool_semantics.plan` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as planning. |
