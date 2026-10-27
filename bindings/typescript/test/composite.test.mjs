@@ -64,13 +64,38 @@ test("decision request, cutoff, and branch-owned state", async () => {
     assert.deepEqual(await router.route(continuation, { state, decide: unexpectedDecision }), { model });
     assert.deepEqual(state, saved);
   }
-  assert.deepEqual(await router.route(continuation, { decide: unexpectedDecision }), { model: options.targets.efficient });
+  assert.deepEqual(await router.route(continuation, { decide: unexpectedDecision }), {
+    model: options.targets.efficient,
+    state: { stage_previous_tier: { string: "weak" } },
+  });
 
   const once = structuredClone(options);
   once.classifier.classify_trigger = "new_session";
   const sessionRouter = CompositeRouter.create(once);
   const { state } = await sessionRouter.route(messages, { decide: async () => response(0.41) });
   assert.deepEqual(await sessionRouter.route(messages, { state, decide: unexpectedDecision }), { model: options.targets.capable });
+});
+
+test("serialized state preserves capable holds until they expire", async () => {
+  const router = CompositeRouter.create(options);
+  let selected = await router.route(continuation, { decide: unexpectedDecision });
+  assert.equal(selected.model, options.targets.efficient);
+
+  const failed = structuredClone(continuation);
+  failed.at(-1).content[0].is_error = true;
+  failed.at(-1).content[0].content[0].text = "Out of memory: kill process 1234";
+  const requests = [failed, continuation, continuation, continuation];
+  const expected = [options.targets.capable, options.targets.capable, options.targets.capable, options.targets.efficient];
+  for (const [i, request] of requests.entries()) {
+    assert.ok(selected.state);
+    const state = JSON.parse(JSON.stringify(selected.state));
+    const saved = structuredClone(state);
+    selected = await router.route(request, { state, decide: unexpectedDecision });
+    assert.equal(selected.model, expected[i]);
+    assert.deepEqual(state, saved);
+    // A separate branch without the returned state has no hold.
+    assert.equal((await router.route(continuation, { decide: unexpectedDecision })).model, options.targets.efficient);
+  }
 });
 
 test("validation and decision failure policy", async () => {
@@ -104,7 +129,10 @@ test("validation and decision failure policy", async () => {
   const fallback = CompositeRouter.create(config);
   const { state } = await fallback.route(messages, { decide: async () => response(0.41) });
   assert.deepEqual(await fallback.route(messages, { state, decide }), { model: options.targets.capable });
-  assert.deepEqual(await fallback.route(messages, { decide }), { model: options.targets.efficient });
+  assert.deepEqual(await fallback.route(messages, { decide }), {
+    model: options.targets.efficient,
+    state: { stage_previous_tier: { string: "weak" } },
+  });
   assert.deepEqual(await router.route(messages, { state, decide: async () => ({ answers: {} }) }), { model: options.targets.capable });
 });
 

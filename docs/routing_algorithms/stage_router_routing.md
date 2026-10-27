@@ -258,7 +258,7 @@ required columns.
 | `tool_semantics.new` | `[]` | Domain tool names that count as neutral forward activity. |
 | `handoff_notes.escalation_note` | required in the table | Note handed to the capable tier when the signals or a hard override escalate. |
 | `handoff_notes.deescalation_note` | unset | Note handed to the efficient tier whenever the signals select it, with or without a capable turn before. |
-| `handoff_notes.only_on_wrong_signal_escalation` | `true` | `false` also adds the escalation note to capable-hold turns. |
+| `handoff_notes.only_on_wrong_signal_escalation` | `true` | When `true`, restricts escalation notes to signal-driven capable decisions. Held turns receive no notes with either setting. |
 | `classifier.target` | required in the table | Judge target. Not a routing destination. |
 | `classifier.base_threshold` | required for LLM judges | Lowest `p_solve` that still routes efficient. |
 | `classifier.threshold_step` | `0.0` | Added once for uncertain or unmatched verdicts, twice for unsupported. |
@@ -364,7 +364,7 @@ note accompanies a signal-driven efficient decision.
 [routes.stage.handoff_notes]
 escalation_note = "the previous model was stalling; pick up the diagnosis"
 # deescalation_note = "..."          # optional
-# only_on_wrong_signal_escalation = true  # default; false also includes capable holds
+# only_on_wrong_signal_escalation = true  # default; held turns never receive notes
 ```
 
 Classifier and picker-default decisions do not add handoff notes.
@@ -425,7 +425,7 @@ the `stage router override` log line carries it for overrides:
 | Source | When |
 |---|---|
 | `override` | A repeated failure, critical-error severity, or context-compaction marker forced the capable tier. Structured logs set `override_reason` to `repeated_failure`, `critical_error`, or `compaction`. |
-| `capable_hold` | A recent escalation kept this recovery turn on the capable tier. |
+| `capable_hold` | A hold or pin kept this turn on capable. Any switch to capable can start it; signal-driven capable decisions also start finite holds. |
 | `efficient_hold` | A configured hold or pin kept this turn on the efficient tier. |
 | `dimensions` | The signed score fell outside the ambiguous band and selected a tier. |
 | `ambiguous` | The signed score stayed inside the band. This label never reaches `/v1/stats` or the logs: the turn continues to the classifier or the picker default, and that later source is recorded. |
