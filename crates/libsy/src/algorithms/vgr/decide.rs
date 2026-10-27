@@ -9,12 +9,14 @@
 use super::{Branch, Capabilities};
 
 /// Version of these rules and dials, carried on every decision record.
-pub(super) const POLICY_VERSION: &str = "1.0";
+pub(super) const POLICY_VERSION: &str = "1.1";
 
 const READOUT: f64 = 0.9;
 const DELIBERATION: f64 = 0.5;
 /// Readout at which clean coding commits without the capable tier's affirmation.
 const CODING_CONFIDENT: f64 = 0.6;
+/// Readout required to serve a typed answer without capable-tier verification.
+const ANSWER_CONFIDENT: f64 = READOUT;
 /// Most tool results a run may contain and still recover without the capable tier.
 const SHORT_RUN_MAX_TOOL_RESULTS: i32 = 100;
 
@@ -80,7 +82,8 @@ pub(super) fn agentic_run(
 /// The readout bar that licenses a commit on each branch.
 fn dial(branch: Branch) -> Option<f64> {
     match branch {
-        Branch::Answer | Branch::DefaultVerified => Some(0.7),
+        Branch::Answer => Some(ANSWER_CONFIDENT),
+        Branch::DefaultVerified => Some(0.7),
         Branch::Chat => Some(0.3),
         Branch::Agentic | Branch::Coding => Some(0.2),
         Branch::Unknown => None,
@@ -121,7 +124,7 @@ pub(super) fn decide(
         Branch::Answer => {
             affirms(signals.answer_verifier)
                 || affirms(signals.evidence_verifier)
-                || clears(signals.readout, 0.7)
+                || clears(signals.readout, ANSWER_CONFIDENT)
         }
         Branch::Chat => {
             clean

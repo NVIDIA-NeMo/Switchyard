@@ -12,9 +12,21 @@ use switchyard_protocol::{AggLlmResponse, FormatId, Request, WireFormat};
 
 pub(super) const MAX_OUTPUT_TOKENS: u64 = 4;
 
+/// Minimum combined yes/no probability for the first token to count as a verdict.
+const MIN_VERDICT_MASS: f64 = 0.5;
+
+/// Disables reasoning for one verifier call, including llama.cpp thinking templates.
+pub(super) fn disable_thinking(request: &mut Request) {
+    request.llm_request.reasoning.effort = Some("none".to_string());
+    request.llm_request.extensions.fields.insert(
+        "chat_template_kwargs".to_string(),
+        json!({"enable_thinking": false}),
+    );
+}
+
 /// Asks for a direct verdict with its alternatives; reasoning stays request-local.
 pub(super) fn request_logprobs(request: &mut Request) {
-    request.llm_request.reasoning.effort = Some("none".to_string());
+    disable_thinking(request);
     let extensions = &mut request.llm_request.extensions.fields;
     extensions.insert("logprobs".to_string(), json!(true));
     extensions.insert("top_logprobs".to_string(), json!(8));
@@ -46,7 +58,7 @@ pub(super) fn p_yes(response: &AggLlmResponse) -> Option<f64> {
         *slot.get_or_insert(0.0) += probability.exp();
     }
     match (yes, no) {
-        (Some(yes), Some(no)) if yes + no > 0.0 => Some(yes / (yes + no)),
+        (Some(yes), Some(no)) if yes + no >= MIN_VERDICT_MASS => Some(yes / (yes + no)),
         _ => None,
     }
 }
@@ -77,6 +89,16 @@ mod tests {
         assert_eq!(scored(json!([{"token": "no", "logprob": -3.0}])), None);
         assert_eq!(scored(json!([{"token": "maybe", "logprob": 0.0}])), None);
         assert_eq!(p_yes(&AggLlmResponse::default()), None);
+    }
+
+    #[test]
+    fn a_first_token_spent_elsewhere_is_no_verdict() {
+        let stray = scored(json!([
+            {"token": "Okay", "logprob": -0.05},
+            {"token": "yes", "logprob": 0.05_f64.ln()},
+            {"token": "no", "logprob": 0.001_f64.ln()}
+        ]));
+        assert_eq!(stray, None);
     }
 
     #[test]

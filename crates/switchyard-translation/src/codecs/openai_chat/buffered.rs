@@ -1031,6 +1031,8 @@ fn copy_openai_chat_request_extensions(
     extensions: &Map<String, Value>,
 ) {
     for field in [
+        // Template switches for llama.cpp, vLLM and SGLang, such as `enable_thinking`.
+        "chat_template_kwargs",
         "metadata",
         "parallel_tool_calls",
         "prompt_cache_key",

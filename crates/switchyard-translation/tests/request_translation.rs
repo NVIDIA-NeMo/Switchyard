@@ -39,6 +39,24 @@ fn normalized_chat_requests_forward_logprobs_with_top_logprobs() -> TestResult {
 }
 
 #[test]
+fn normalized_chat_requests_forward_chat_template_kwargs() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut request = switchyard_translation::LlmRequest::default();
+    request.extensions.fields.insert(
+        "chat_template_kwargs".into(),
+        json!({"enable_thinking": false}),
+    );
+    let body = engine
+        .encode_request(WireFormat::OpenAiChat, &request, &normalized_policy())?
+        .body;
+    assert_eq!(
+        body["chat_template_kwargs"],
+        json!({"enable_thinking": false})
+    );
+    Ok(())
+}
+
+#[test]
 fn openai_chat_rejects_mcp_history_before_text_only_returns() {
     use switchyard_translation::{LlmRequest, McpContent, Message, Role};
 
@@ -2293,6 +2311,35 @@ fn chat_compatible_extensions_survive_to_responses() -> TestResult {
     // Chat-only fields are not in the Responses allowlist, so they stay dropped.
     assert!(output.get("stream_options").is_none());
     assert!(output.get("top_logprobs").is_none());
+    Ok(())
+}
+
+// Verifies a lone user text reaches Responses as an item list, which the Codex backend requires.
+#[test]
+fn chat_single_user_text_encodes_responses_input_as_a_list() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "gpt-4",
+        "messages": [
+            {"role": "system", "content": "Be terse."},
+            {"role": "user", "content": "What is 17*23?"}
+        ]
+    });
+
+    let output = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+
+    assert_eq!(output["instructions"], "Be terse.");
+    assert_eq!(
+        output["input"],
+        json!([{"type": "message", "role": "user", "content": "What is 17*23?"}])
+    );
     Ok(())
 }
 

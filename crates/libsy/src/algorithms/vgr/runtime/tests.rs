@@ -218,6 +218,76 @@ async fn final_answers_commit_only_on_a_verified_clean_record() -> Result<()> {
 }
 
 #[tokio::test]
+async fn a_typed_follow_up_answer_is_judged_on_the_answer_itself() -> Result<()> {
+    let route = route(|config| config.task_typing = true)?;
+    let conversation = session(vec![
+        Message::text(Role::User, "fix the build"),
+        call("c1"),
+        result("c1", "ok"),
+        Message::text(Role::Assistant, "The build passes."),
+        Message::text(Role::User, "What is 1+1?"),
+    ]);
+    // A confident readout serves on the efficient tier with no capable-tier call; a weak one asks the
+    // capable tier's answer verifier, with no efficient deliberation first.
+    for (readout, expected_calls) in [
+        (0.95, vec!["judge: typing", "judge: answer"]),
+        (
+            0.5,
+            vec!["judge: typing", "judge: answer", "capable-judge: answer"],
+        ),
+    ] {
+        let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&calls);
+        let (selected, _) = test_drive_with_models(
+            Arc::clone(&route),
+            conversation.clone(),
+            category_models(Category::Any, &["efficient", "capable"]),
+            move |target: ModelId, request: Request| {
+                let seen = Arc::clone(&seen);
+                async move {
+                    let system = request
+                        .llm_request
+                        .instructions
+                        .first()
+                        .and_then(|block| block.content.first())
+                        .and_then(|block| match block {
+                            ContentBlock::Text { text } => Some(text.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    let question = if system.starts_with("You are a strict answer verifier") {
+                        "answer"
+                    } else if request
+                        .llm_request
+                        .extensions
+                        .fields
+                        .contains_key("logprobs")
+                    {
+                        "evidence"
+                    } else {
+                        "typing"
+                    };
+                    if target.as_str().contains("judge") {
+                        seen.lock().push(format!("{}: {question}", target.as_str()));
+                    }
+                    Ok(match target.as_str() {
+                        "efficient" => reply("2"),
+                        "judge" if question == "typing" => reply("Answer"),
+                        "judge" => scored(readout),
+                        "capable-judge" => reply("yes"),
+                        _ => reply("capable answer"),
+                    })
+                }
+            },
+        )
+        .await?;
+        assert_eq!(selected.as_str(), "efficient", "readout {readout}");
+        assert_eq!(*calls.lock(), expected_calls, "readout {readout}");
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_unavailable_efficient_tier_escalates_and_other_failures_surface() -> Result<()> {
     let route = route(|_| {})?;
     for (status, escalates) in [(503, true), (400, false)] {
@@ -398,7 +468,7 @@ async fn decisions_attach_the_reason_and_exclude_efficient_capable_fallbacks() -
         assert_eq!(evidence["source"], "vgr");
         assert_eq!(evidence["reason_code"], reason);
         assert_eq!(evidence["verdict"], served);
-        assert_eq!(evidence["policy_version"], "1.0");
+        assert_eq!(evidence["policy_version"], "1.1");
         if reason == "decided" {
             assert_eq!(evidence["branch"], "DefaultVerified");
         }

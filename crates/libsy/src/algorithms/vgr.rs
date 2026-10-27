@@ -154,7 +154,9 @@ fn derive_capabilities(
         tools: Some(ToolRecord::from_request(request)),
     };
 
-    if task_type == Some(TaskType::Answer) && !text::has_assistant_turn(&turns) {
+    // Typing abstains on a request that leans on earlier context, so a typed answer stands
+    // on its own; only tool use in the current user turn takes it off this branch.
+    if task_type == Some(TaskType::Answer) && !text::turn_has_tool_trajectory(request) {
         return Capabilities {
             tools: None,
             ..caps(

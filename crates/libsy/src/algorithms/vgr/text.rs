@@ -115,10 +115,6 @@ pub(super) fn newest_prompt_is_blank(request: &Request) -> bool {
         })
 }
 
-pub(super) fn has_assistant_turn(turns: &[Turn]) -> bool {
-    turns.iter().any(|turn| turn.role == Role::Assistant)
-}
-
 /// Whether the conversation contains an executed or proposed tool step.
 pub(super) fn has_tool_trajectory(request: &Request) -> bool {
     request.llm_request.messages.iter().any(is_tool_step)

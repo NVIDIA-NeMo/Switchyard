@@ -107,6 +107,22 @@ fn router_typing_selects_the_verification_regime() {
     );
     assert_eq!(branch(&session, "done", Some(TaskType::Chat)), Branch::Chat);
     assert_eq!(branch(&single, "```\nx\n```", None), Branch::Coding);
+
+    // A typed answer keeps its branch after earlier turns, unless this turn used tools.
+    let mut follow_up = session.llm_request.messages.clone();
+    follow_up.extend([
+        Message::text(Role::Assistant, "The build passes."),
+        Message::text(Role::User, "What is 1+1?"),
+    ]);
+    let follow_up = request(follow_up);
+    assert_eq!(
+        branch(&follow_up, "2", Some(TaskType::Answer)),
+        Branch::Answer
+    );
+    assert_eq!(
+        branch(&session, "done", Some(TaskType::Answer)),
+        Branch::Chat
+    );
 }
 
 #[test]
@@ -405,5 +421,19 @@ mod decide {
         assert_eq!(decide(&coding, &signals, None), Route::Capable);
         assert_eq!(decide(&coding, &readout(0.6), None), Route::Efficient);
         assert_eq!(decide(&coding, &readout(0.59), None), Route::Capable);
+    }
+
+    #[test]
+    fn answers_commit_on_a_confident_readout_or_a_capable_tier_verdict() {
+        let answer = Capabilities {
+            branch: Branch::Answer,
+            transcript: Some("view".into()),
+            tools: None,
+        };
+        assert_eq!(decide(&answer, &readout(0.9), None), Route::Efficient);
+        let mut signals = readout(0.89);
+        assert_eq!(decide(&answer, &signals, None), Route::Capable);
+        signals.answer_verifier = Some(Tri::Yes);
+        assert_eq!(decide(&answer, &signals, None), Route::Efficient);
     }
 }

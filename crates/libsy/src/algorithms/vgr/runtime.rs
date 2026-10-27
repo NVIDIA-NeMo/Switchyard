@@ -401,9 +401,10 @@ impl VgrClassifier {
             self.ask(context, target, question, judged, max_output_tokens)
         };
 
-        // Coding here ran no tools, so its record holds no evidence: judge the code itself.
+        // Coding here ran no tools, and a typed answer cites none, so neither record holds
+        // evidence: judge the answer itself.
         let asked = match branch {
-            Branch::Coding => Question::Answer,
+            Branch::Coding | Branch::Answer => Question::Answer,
             _ => Question::Evidence,
         };
         signals.readout = self.readout(context, judged, asked).await;
@@ -420,7 +421,10 @@ impl VgrClassifier {
         if settled(&signals) {
             return signals;
         }
-        if !(capable_confirms && decide::efficient_verified(branch, &signals)) {
+        // A deliberation never commits a typed answer, so the answer branch goes to the capable tier.
+        if branch != Branch::Answer
+            && !(capable_confirms && decide::efficient_verified(branch, &signals))
+        {
             let metadata = || context.request.metadata.clone();
             let call = rungs::build_deliberation_request(judged, metadata());
             if let Some(Ok(deliberation)) = self.call(context, call, efficient).await {

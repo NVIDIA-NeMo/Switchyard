@@ -48,6 +48,13 @@ for an active llama.cpp configuration and commented Ollama/vLLM alternatives.
 For Ollama and vLLM, set `context_window` to match the running service; automatic
 discovery for those servers is not implemented.
 
+The judge reads its verdicts from the first token's logprobs, so its scored calls
+turn thinking off: they send `reasoning_effort = "none"` and
+`chat_template_kwargs = {"enable_thinking": false}` on `openai_chat` targets.
+Candidates and the judge's deliberation keep the target's own setting. A backend
+that rejects `chat_template_kwargs` can drop it with the target's
+`omit_body_fields`.
+
 The server caches the model catalog, including unavailable discovery results,
 for one minute. Discovery probes run concurrently with a two-second total budget
 per refresh. Completed discoveries are retained when that budget expires.
@@ -124,6 +131,11 @@ recognized tag, Switchyard uses the message shape to identify a user turn.
 `x-session-id` is also accepted as a session-header alias.
 
 ## Verification and capable-tier outages
+
+Policy version `1.1` verifies typed factual answers on the answer itself, including
+later user turns without tool work. A readout of at least 0.9 can serve the
+efficient answer; lower scores require capable-tier verification. Scored verdicts
+require yes and no together to hold at least half the first token's probability.
 
 Coding without tool history can serve the efficient attempt with a clean readout of at least
 0.6, or a readout of at least 0.2 plus capable-judge affirmation. Other final-answer
