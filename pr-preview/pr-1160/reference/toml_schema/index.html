@@ -3069,7 +3069,7 @@ counts. Plain <code>decide</code> and <code>execute</code> retain task routing. 
 </span></code></pre></div>
 <p>All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/25e8e393bc035c32c2f15d76a73aad341900f3f4/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/87235718297c450088e1b1c7323959b0823366bd/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
 for collection and capacity safeguards.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
@@ -3678,7 +3678,7 @@ the signals work and for tuning.</p>
 <td><code>handoff_notes.only_on_wrong_signal_escalation</code></td>
 <td style="text-align: center;">No</td>
 <td><code>true</code></td>
-<td>When <code>true</code>, only the escalating turn itself carries the escalation note. <code>false</code> also adds it to the capable-hold turns that follow.</td>
+<td>When <code>true</code>, restricts escalation notes to signal-driven capable decisions. Held turns receive no notes with either setting.</td>
 </tr>
 </tbody>
 </table>

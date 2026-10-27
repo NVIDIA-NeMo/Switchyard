@@ -2847,7 +2847,7 @@ These are the ones that matter when you choose a threshold:</p>
 the capable side stays below 0.46. An error in the window removes the
 clean-production bonus, so with a hard error the efficient side reaches at most
 0.24. The unit test <code>scorer_ceilings_match_the_documented_values</code> in
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/25e8e393bc035c32c2f15d76a73aad341900f3f4/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/87235718297c450088e1b1c7323959b0823366bd/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
 pins these values, so a change to the scorer fails CI until this table is
 updated.</p>
 <h3 id="reachable-scores-per-picker">Reachable scores per picker<a class="headerlink" href="#reachable-scores-per-picker" title="Permanent link">&para;</a></h3>
@@ -3026,7 +3026,7 @@ required columns.</p>
 <tr>
 <td><code>handoff_notes.only_on_wrong_signal_escalation</code></td>
 <td><code>true</code></td>
-<td><code>false</code> also adds the escalation note to capable-hold turns.</td>
+<td>When <code>true</code>, restricts escalation notes to signal-driven capable decisions. Held turns receive no notes with either setting.</td>
 </tr>
 <tr>
 <td><code>classifier.target</code></td>
@@ -3165,7 +3165,7 @@ note accompanies a signal-driven efficient decision.</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[routes.stage.handoff_notes]</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">escalation_note</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;the previous model was stalling; pick up the diagnosis&quot;</span>
 </span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1"># deescalation_note = &quot;...&quot;          # optional</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># only_on_wrong_signal_escalation = true  # default; false also includes capable holds</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># only_on_wrong_signal_escalation = true  # default; held turns never receive notes</span>
 </span></code></pre></div>
 <p>Classifier and picker-default decisions do not add handoff notes.</p>
 <h3 id="optional-llm-classifier-fallback">Optional: LLM classifier fallback<a class="headerlink" href="#optional-llm-classifier-fallback" title="Permanent link">&para;</a></h3>
@@ -3233,7 +3233,7 @@ the <code>stage router override</code> log line carries it for overrides:</p>
 </tr>
 <tr>
 <td><code>capable_hold</code></td>
-<td>A recent escalation kept this recovery turn on the capable tier.</td>
+<td>A hold or pin kept this turn on capable. Any switch to capable can start it; signal-driven capable decisions also start finite holds.</td>
 </tr>
 <tr>
 <td><code>efficient_hold</code></td>
