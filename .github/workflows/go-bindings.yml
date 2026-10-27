@@ -8,8 +8,12 @@ permissions:
 
 jobs:
   native:
-    name: Native
-    runs-on: ubuntu-latest
+    name: Native (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm]
     timeout-minutes: 30
     env:
       CGO_ENABLED: "1"
@@ -33,3 +37,10 @@ jobs:
       - name: go vet (native)
         working-directory: bindings/go
         run: go vet -tags switchyard_native ./...
+      - name: Build and run shared host
+        working-directory: bindings/go
+        run: |
+          go build -tags switchyard_native -buildmode=c-shared -o "$RUNNER_TEMP/libswitchyard_smoke.so" ./testdata/cshared
+          cc testdata/cshared.c -I "$RUNNER_TEMP" -L "$RUNNER_TEMP" \
+            -Wl,-rpath,"$RUNNER_TEMP" -lswitchyard_smoke -o "$RUNNER_TEMP/shared-host"
+          "$RUNNER_TEMP/shared-host"
