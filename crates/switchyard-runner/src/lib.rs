@@ -10,7 +10,7 @@ mod provider_key_redactor;
 mod route;
 mod runner;
 
-pub use config::api_key_variables;
+pub use config::{ConfiguredTarget, RouteTargets, TargetModel, api_key_variables, route_targets};
 
 pub use algorithm::{
     AdvisorTriggerConfig, AlgorithmConfigError, AlgorithmSpec, CategoryModelConfig, ClassifierMode,

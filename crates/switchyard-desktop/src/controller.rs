@@ -96,6 +96,13 @@ pub struct RouteInfo {
     /// Route edits send this token back. The controller rejects it after the file changes.
     pub revision: String,
     pub label: String,
+    /// This field lists the models that answer requests, as `client / model`. The runner
+    /// finds them, so it includes models the editor cannot change, such as sub-agent models.
+    pub models: Vec<String>,
+    /// This field lists the models the route calls only to decide, such as a judge or an advisor.
+    pub judges: Vec<String>,
+    /// This field lists the editor's current model for each role. It is empty when the apps
+    /// cannot edit the route's algorithm.
     pub choices: Vec<Choice>,
     /// This field lists the tier of each role in role order. It is `None` when the apps
     /// cannot edit the route's algorithm.
@@ -216,13 +223,19 @@ impl Review {
         })
     }
     fn original(&self) -> Result<&str, String> {
-        std::str::from_utf8(
-            self.files
-                .first()
-                .and_then(|(_, bytes)| bytes.as_deref())
-                .ok_or("The reviewed server config is missing.")?,
-        )
-        .map_err(|error| error.to_string())
+        let (path, bytes) = self
+            .files
+            .first()
+            .ok_or("The app did not read a server config.")?;
+        let bytes = bytes
+            .as_deref()
+            .ok_or_else(|| format!("The server config {} does not exist.", path.display()))?;
+        std::str::from_utf8(bytes).map_err(|error| {
+            format!(
+                "The server config {} is not valid UTF-8: {error}",
+                path.display()
+            )
+        })
     }
 }
 
@@ -281,6 +294,97 @@ impl Controller {
         self.route_reviews.insert(route.to_string(), review);
         revision
     }
+    /// This function reads the routes and endpoints in the server config. The runner lists each
+    /// route's targets, so the Routes page shows every model the server would call. The editor
+    /// fields come from the same text and do not limit which models the page shows.
+    fn server_config(&mut self, errors: &mut Vec<String>) -> (Vec<RouteInfo>, Vec<ClientInfo>) {
+        let review = match Review::capture(vec![self.config.config_file.clone()]) {
+            Ok(review) => review,
+            Err(error) => {
+                errors.push(error);
+                return Default::default();
+            }
+        };
+        let text = match review.original() {
+            Ok(text) => text,
+            Err(error) => {
+                errors.push(error);
+                return Default::default();
+            }
+        };
+        // Parse errors can quote config lines, and those lines can hold header credentials, so
+        // the snapshot names only the action that shows the full error.
+        let Ok(config) = ServerConfig::parse(text) else {
+            errors.push(
+                "The server config contains invalid TOML. Open it in Settings to fix it.".into(),
+            );
+            return Default::default();
+        };
+        let clients = config
+            .clients()
+            .iter()
+            .map(|c| ClientInfo {
+                name: c.name.clone(),
+                host: c.host().to_string(),
+                models: config.models_on(&c.name),
+                unlisted: models::unlisted(c),
+                accepts_key: cfg!(any(target_os = "macos", windows))
+                    && !models::unlisted(c)
+                    && (c.forward_auth || c.api_key_env.is_some()),
+                note: models::missing_env(c).map(models::missing_env_note),
+            })
+            .collect();
+        let Ok(listed) = switchyard_runner::route_targets(text) else {
+            errors.push(
+                "The server cannot read the routes in the server config. \
+                 Run Check server config in Settings to see why."
+                    .into(),
+            );
+            return (Vec::new(), clients);
+        };
+        self.route_reviews
+            .retain(|key, _| listed.iter().any(|route| &route.name == key));
+        let mut routes = Vec::with_capacity(listed.len());
+        for route in listed {
+            let revision = self.remember_route(
+                &route.name,
+                Review {
+                    token: uuid::Uuid::now_v7().to_string(),
+                    files: review.files.clone(),
+                },
+            );
+            let models: Vec<String> = route.answer_targets.iter().map(target_label).collect();
+            let judges: Vec<String> = route.judge_targets.iter().map(target_label).collect();
+            let algorithm = config.algorithm(&route.name);
+            routes.push(RouteInfo {
+                label: format!(
+                    "{} · {} · {}",
+                    route.id,
+                    route.kind,
+                    [models.as_slice(), judges.as_slice()].concat().join(" → ")
+                ),
+                tiers: algorithm.map(|a| {
+                    config
+                        .roles(&route.name, a)
+                        .iter()
+                        .map(|r| r.tier.map(|t| format!("{t:?}")))
+                        .collect()
+                }),
+                editable: algorithm.is_some(),
+                generated: config
+                    .generated_by("routes", &route.name)
+                    .map(str::to_string),
+                choices: config.choices(&route.name),
+                id: route.id.to_string(),
+                kind: route.kind.to_string(),
+                key: route.name,
+                revision,
+                models,
+                judges,
+            });
+        }
+        (routes, clients)
+    }
     pub fn snapshot(&mut self) -> Result<Snapshot, String> {
         self.reload()?;
         let mut errors = Vec::new();
@@ -321,75 +425,7 @@ impl Controller {
         } else {
             crate::health::ServerStatus::Stopped
         };
-        let mut routes = Vec::new();
-        let mut clients = Vec::new();
-        let route_review = Review::capture(vec![self.config.config_file.clone()]);
-        let route_config = route_review
-            .as_ref()
-            .map_err(Clone::clone)
-            .and_then(|review| {
-                ServerConfig::parse(review.original()?).map_err(|_| {
-                    "The server config contains invalid TOML. Open it in Settings to fix it."
-                        .to_string()
-                })
-            });
-        match route_config {
-            Ok(config) => {
-                let listed = config.routes();
-                self.route_reviews
-                    .retain(|key, _| listed.iter().any(|route| &route.key == key));
-                for route in listed {
-                    let original = route_review.as_ref().map_err(Clone::clone)?;
-                    let review = Review {
-                        token: uuid::Uuid::now_v7().to_string(),
-
-                        files: original.files.clone(),
-                    };
-                    let revision = self.remember_route(&route.key, review);
-                    let choices = config.choices(&route.key);
-                    let models = choices
-                        .iter()
-                        .map(|c| format!("{} / {}", c.client, c.model))
-                        .collect::<Vec<_>>()
-                        .join(" → ");
-                    let algorithm = config.algorithm(&route.key);
-                    routes.push(RouteInfo {
-                        label: format!("{} · {} · {}", route.id, route.kind, models),
-                        tiers: algorithm.map(|a| {
-                            config
-                                .roles(&route.key, a)
-                                .iter()
-                                .map(|r| r.tier.map(|t| format!("{t:?}")))
-                                .collect()
-                        }),
-                        editable: algorithm.is_some(),
-                        generated: config
-                            .generated_by("routes", &route.key)
-                            .map(str::to_string),
-                        key: route.key,
-                        id: route.id,
-                        kind: route.kind,
-                        revision,
-                        choices,
-                    });
-                }
-                clients = config
-                    .clients()
-                    .iter()
-                    .map(|c| ClientInfo {
-                        name: c.name.clone(),
-                        host: c.host().to_string(),
-                        models: config.models_on(&c.name),
-                        unlisted: models::unlisted(c),
-                        accepts_key: cfg!(any(target_os = "macos", windows))
-                            && !models::unlisted(c)
-                            && (c.forward_auth || c.api_key_env.is_some()),
-                        note: models::missing_env(c).map(models::missing_env_note),
-                    })
-                    .collect();
-            }
-            Err(e) => errors.push(e),
-        }
+        let (routes, clients) = self.server_config(&mut errors);
         let mut history_state = Availability::Available;
         let history = history::load(&self.config.routing_log).unwrap_or_else(|error| {
             history_state = Availability::Unavailable;
@@ -613,6 +649,14 @@ impl Controller {
 fn logs_dir() -> Result<PathBuf, String> {
     crate::config::expand_home(std::path::Path::new("~/.switchyard/logs"))
 }
+/// This function shows a target as `client / model`, or names it when no target entry has its
+/// name, which the server rejects at startup.
+fn target_label(target: &switchyard_runner::ConfiguredTarget) -> String {
+    match &target.model {
+        Some(model) => format!("{} / {}", model.client, model.id),
+        None => format!("{} (no target has this name)", target.name),
+    }
+}
 fn role_info(role: &crate::server_config::Role) -> RoleInfo {
     RoleInfo {
         label: role.label.clone(),
@@ -695,6 +739,103 @@ mod tests {
         assert_eq!(
             controller.dispatch(update()).err().as_deref(),
             Some("Review the source update first.")
+        );
+    }
+
+    // The editor supports only some route fields, so the page must not limit models to them:
+    // a sub-agent model, a stage router's judge, and a custom classifier's groups all show.
+    #[test]
+    fn routes_list_every_model_the_runner_calls() {
+        let directory = tempfile::tempdir().expect("directory");
+        let settings = directory.path().join("desktop.toml");
+        let server_config = directory.path().join("server.toml");
+        std::fs::write(
+            &settings,
+            format!("server_url = 'http://127.0.0.1:9'\nconfig_file = {server_config:?}\n"),
+        )
+        .expect("settings");
+        std::fs::write(
+            &server_config,
+            r#"schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[targets.strong]
+id = "strong/model"
+llm_client = "primary"
+
+[targets.weak]
+id = "weak/model"
+llm_client = "primary"
+
+[targets.judge]
+id = "judge/model"
+llm_client = "primary"
+
+[routes.direct]
+id = "direct"
+type = "passthrough"
+target = "strong"
+
+[routes.direct.subagents]
+type = "passthrough"
+target = "weak"
+
+[routes.stage]
+id = "stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+
+[routes.stage.classifier]
+target = "judge"
+
+[routes.custom]
+id = "custom"
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["judge"], capable = ["strong"], efficient = ["weak"], any = ["strong", "weak"] }
+default_target = "efficient"
+prompt = "Pick a target."
+response_schema = '{"type":"object"}'
+policy = { type = "target_selector", selector = "/target" }
+"#,
+        )
+        .expect("server config");
+        let config = Config::load(&settings).expect("config");
+        let snapshot = Controller::new(config, settings)
+            .snapshot()
+            .expect("snapshot");
+        let routes: Vec<_> = snapshot
+            .routes
+            .iter()
+            .map(|route| {
+                (
+                    route.key.as_str(),
+                    route.models.clone(),
+                    route.judges.clone(),
+                )
+            })
+            .collect();
+        let both = || {
+            vec![
+                "primary / strong/model".to_string(),
+                "primary / weak/model".to_string(),
+            ]
+        };
+        let judge = || vec!["primary / judge/model".to_string()];
+        assert_eq!(
+            routes,
+            [
+                ("custom", both(), judge()),
+                ("direct", both(), Vec::new()),
+                ("stage", both(), judge()),
+            ],
+            "{:?}",
+            snapshot.errors
         );
     }
 }

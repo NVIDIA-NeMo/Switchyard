@@ -2440,20 +2440,10 @@ fn draw_route_table(frame: &mut Frame, app: &mut App, area: Rect) {
         .take(height)
         .map(|&index| {
             let route = &app.data.routes[index];
-            let models = if route.editable {
-                let models: Vec<String> = route
-                    .choices
-                    .iter()
-                    .map(|choice| format!("{} / {}", choice.client, choice.model))
-                    .collect();
-                Span::raw(models.join(", "))
-            } else {
-                Span::styled("set in the server config", theme.muted)
-            };
             let cells = [
                 Cell::from(route.id.clone()),
                 Cell::from(algorithm_title(&app.data, &route.kind).to_string()),
-                Cell::from(models),
+                Cell::from(route.models.join(", ")),
             ];
             Row::new(
                 cells
@@ -2482,7 +2472,7 @@ fn draw_route_table(frame: &mut Frame, app: &mut App, area: Rect) {
     draw_scrollbar(frame, theme, area, visible, app.route_selected);
 }
 
-/// This function shows the selected route's algorithm and the model of each role first, so a
+/// This function shows the selected route's algorithm and every model it calls first, so a
 /// short terminal still shows them, then the notes that limit editing it here.
 fn route_lines(theme: Theme, data: &Snapshot, route: &RouteInfo) -> Vec<Line<'static>> {
     const WIDTH: usize = 11;
@@ -2501,21 +2491,18 @@ fn route_lines(theme: Theme, data: &Snapshot, route: &RouteInfo) -> Vec<Line<'st
             ),
         ),
     ];
-    // A random route can list more models than a new one starts with, so later roles are
-    // numbered the same way.
-    for (index, choice) in route.choices.iter().enumerate() {
-        let role = algorithm
-            .and_then(|known| known.roles.get(index))
-            .map_or_else(|| format!("Model {}", index + 1), |role| role.label.clone());
-        lines.push(if choice.model.is_empty() {
-            Line::from(vec![
-                Span::styled(format!("{role:<WIDTH$}"), theme.muted),
-                Span::styled("No target", theme.warn),
-            ])
-        } else {
-            field(&role, format!("{} / {}", choice.client, choice.model))
-        });
-    }
+    lines.extend(
+        route
+            .models
+            .iter()
+            .map(|model| field("Model", model.clone())),
+    );
+    lines.extend(
+        route
+            .judges
+            .iter()
+            .map(|judge| field("Judge", judge.clone())),
+    );
     if !route.editable {
         lines.push(Line::default());
         lines.push(Line::styled(

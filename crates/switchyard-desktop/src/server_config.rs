@@ -1,11 +1,12 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! This module reads the server config and rewrites one route's algorithm and models.
+//! This module reads the endpoints, generated blocks, and route editor fields in the server
+//! config.
 //!
-//! Edits go through `toml_edit`, so comments, formatting, and every table the
-//! edit does not touch stay as the user wrote them. The server's own
-//! `--dry-run` decides whether the result is valid; this module only builds it.
+//! `switchyard_runner::route_targets` lists each route and the models it calls, so the apps
+//! show what the server would run. This module keeps what the route editor needs: labels,
+//! hints, and the key path where each role names its target.
 
 use std::collections::HashMap;
 
@@ -199,16 +200,6 @@ pub const ALGORITHMS: &[Algorithm] = &[
     },
 ];
 
-/// Route describes one entry under `[routes]`.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Route {
-    /// This field names the route's table in this file. Callers never send it.
-    pub key: String,
-    /// This field sets the public model ID that callers send.
-    pub id: String,
-    pub kind: String,
-}
-
 /// Client describes one entry under `[llm_clients]`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Client {
@@ -257,8 +248,6 @@ enum Slot {
     /// Listed identifies an entry of a random route's `targets` list.
     Listed(usize),
 }
-
-impl Slot {}
 
 impl Algorithm {
     /// This function returns the roles that a new route of this type needs. A new
@@ -314,16 +303,6 @@ impl ServerConfig {
                      {error}"
                 )
             })
-    }
-
-    pub fn routes(&self) -> Vec<Route> {
-        entries(self.table("routes"))
-            .map(|(key, route)| Route {
-                key: key.to_string(),
-                id: text(route, "id").unwrap_or(key).to_string(),
-                kind: text(route, "type").unwrap_or_default().to_string(),
-            })
-            .collect()
     }
 
     pub fn clients(&self) -> Vec<Client> {
