@@ -12,6 +12,24 @@ fn abi_version_identifies_v1_contract() {
     assert_eq!(sy_abi_version(), 1);
 }
 
+// Success is NULL; errors and panics produce strings owned by the caller.
+#[test]
+fn ffi_call_contains_errors_and_panics() {
+    assert!(ffi_call(|| Ok(())).is_null());
+    for (error, expected) in [
+        (ffi_call(|| Err("test error".into())), "test error"),
+        (
+            ffi_call(|| panic!("test panic")),
+            "Switchyard binding panicked",
+        ),
+    ] {
+        assert!(!error.is_null());
+        let message = unsafe { CStr::from_ptr(error) }.to_str().unwrap();
+        assert_eq!(message, expected);
+        unsafe { sy_string_free(error) };
+    }
+}
+
 fn check(error: *mut c_char) {
     if !error.is_null() {
         panic!("{}", unsafe { CString::from_raw(error) }.to_string_lossy());

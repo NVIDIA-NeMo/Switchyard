@@ -39,6 +39,15 @@ fn error_string(message: String) -> *mut c_char {
     }
 }
 
+// Keep Rust panics and errors inside the C boundary.
+fn ffi_call(work: impl FnOnce() -> Result<()>) -> *mut c_char {
+    match catch_unwind(AssertUnwindSafe(work)) {
+        Ok(Ok(())) => std::ptr::null_mut(),
+        Ok(Err(error)) => error_string(error.to_string()),
+        Err(_) => error_string("Switchyard binding panicked".to_string()),
+    }
+}
+
 // The input must be NUL-terminated; parsed values do not borrow it.
 unsafe fn parse_json_input<T: serde::de::DeserializeOwned>(input: *const c_char) -> Result<T> {
     if input.is_null() {
@@ -60,7 +69,7 @@ pub unsafe extern "C" fn sy_decode_request(
     input_json: *const c_char,
     out_json: *mut *mut c_char,
 ) -> *mut c_char {
-    let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+    ffi_call(|| {
         let out = unsafe { out_json.as_mut() }.ok_or("missing request output")?;
         *out = std::ptr::null_mut();
         let input: DecodeInput = unsafe { parse_json_input(input_json) }?;
@@ -70,12 +79,7 @@ pub unsafe extern "C" fn sy_decode_request(
         )?)?
         .into_raw();
         Ok(())
-    }));
-    match result {
-        Ok(Ok(())) => std::ptr::null_mut(),
-        Ok(Err(error)) => error_string(error.to_string()),
-        Err(_) => error_string("Switchyard binding panicked".to_string()),
-    }
+    })
 }
 
 /// Applies the selected model and encodes the request.
@@ -86,7 +90,7 @@ pub unsafe extern "C" fn sy_encode_request(
     input_json: *const c_char,
     out_json: *mut *mut c_char,
 ) -> *mut c_char {
-    let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+    ffi_call(|| {
         let out = unsafe { out_json.as_mut() }.ok_or("missing request output")?;
         *out = std::ptr::null_mut();
         let mut input: EncodeInput = unsafe { parse_json_input(input_json) }?;
@@ -97,12 +101,7 @@ pub unsafe extern "C" fn sy_encode_request(
         )?)?
         .into_raw();
         Ok(())
-    }));
-    match result {
-        Ok(Ok(())) => std::ptr::null_mut(),
-        Ok(Err(error)) => error_string(error.to_string()),
-        Err(_) => error_string("Switchyard binding panicked".to_string()),
-    }
+    })
 }
 
 /// Decodes a buffered provider response.
@@ -113,7 +112,7 @@ pub unsafe extern "C" fn sy_decode_response(
     input_json: *const c_char,
     out_json: *mut *mut c_char,
 ) -> *mut c_char {
-    let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+    ffi_call(|| {
         let out = unsafe { out_json.as_mut() }.ok_or("missing response output")?;
         *out = std::ptr::null_mut();
         let input: DecodeInput = unsafe { parse_json_input(input_json) }?;
@@ -123,12 +122,7 @@ pub unsafe extern "C" fn sy_decode_response(
         )?)?
         .into_raw();
         Ok(())
-    }));
-    match result {
-        Ok(Ok(())) => std::ptr::null_mut(),
-        Ok(Err(error)) => error_string(error.to_string()),
-        Err(_) => error_string("Switchyard binding panicked".to_string()),
-    }
+    })
 }
 
 /// Frees a library-owned error or JSON string.
