@@ -19,9 +19,9 @@ use crate::core::state::{State, StateValue};
 use crate::core::testing::{category_models, reply, test_drive_with_models};
 
 fn route(configure: impl FnOnce(&mut VgrConfig)) -> Result<Arc<dyn Algorithm>> {
-    let mut config = VgrConfig::new(ModelId::new("local"), ModelId::new("cloud"));
+    let mut config = VgrConfig::new(ModelId::new("efficient"), ModelId::new("capable"));
     config.targets.judge = Some(ModelId::new("judge"));
-    config.targets.cloud_judge = Some(ModelId::new("cloud-judge"));
+    config.targets.capable_judge = Some(ModelId::new("capable-judge"));
     config.mode = ServingMode::Active {
         approval: ACTIVE_APPROVAL.into(),
     };
@@ -83,26 +83,26 @@ async fn drive(
     route: &Arc<dyn Algorithm>,
     request: Request,
     calls: Arc<Calls>,
-    local: fn() -> Response,
+    efficient: fn() -> Response,
     judge_p: f64,
 ) -> Result<String> {
     let (selected, _) = test_drive_with_models(
         Arc::clone(route),
         request,
-        category_models(Category::Any, &["local", "cloud"]),
+        category_models(Category::Any, &["efficient", "capable"]),
         move |target: ModelId, _| {
             let calls = Arc::clone(&calls);
             async move {
                 match target.as_str() {
-                    "local" => calls.0.fetch_add(1, Ordering::Relaxed),
-                    "cloud-judge" => calls.1.fetch_add(1, Ordering::Relaxed),
+                    "efficient" => calls.0.fetch_add(1, Ordering::Relaxed),
+                    "capable-judge" => calls.1.fetch_add(1, Ordering::Relaxed),
                     _ => 0,
                 };
                 Ok(match target.as_str() {
-                    "local" => local(),
+                    "efficient" => efficient(),
                     "judge" => scored(judge_p),
-                    "cloud-judge" => reply("yes"),
-                    _ => reply("cloud answer"),
+                    "capable-judge" => reply("yes"),
+                    _ => reply("capable answer"),
                 })
             }
         },
@@ -123,17 +123,17 @@ async fn malformed_tool_calls_escalate_and_complete_ones_are_judged() -> Result<
     let task = || session(vec![Message::text(Role::User, "list files")]);
     assert_eq!(
         drive(&route, task(), calls.clone(), truncated, 0.0).await?,
-        "cloud"
+        "capable"
     );
     assert_eq!(
         drive(&route, task(), calls, complete_call, 0.1).await?,
-        "local"
+        "efficient"
     );
     Ok(())
 }
 
 #[tokio::test]
-async fn a_truncated_local_attempt_is_judged_before_it_escalates() -> Result<()> {
+async fn a_truncated_efficient_attempt_is_judged_before_it_escalates() -> Result<()> {
     let route = route(|config| config.targets.judge = None)?;
     let calls = Arc::new(Calls::default());
     let task = session(vec![Message::text(Role::User, "explain quicksort")]);
@@ -145,7 +145,7 @@ async fn a_truncated_local_attempt_is_judged_before_it_escalates() -> Result<()>
         response
     };
     let selected = drive(&route, task, calls.clone(), cut_off, 0.0).await?;
-    assert_eq!(selected, "cloud");
+    assert_eq!(selected, "capable");
     // Attempt, readout, deliberation and its verdict; read as absent, only the attempt runs.
     assert_eq!(calls.0.load(Ordering::Relaxed), 4);
     Ok(())
@@ -158,18 +158,18 @@ async fn two_consecutive_escalation_votes_latch_the_session() -> Result<()> {
     let task = || session(vec![Message::text(Role::User, "fix the build")]);
     assert_eq!(
         drive(&route, task(), calls.clone(), complete_call, 0.9).await?,
-        "local"
+        "efficient"
     );
     assert_eq!(
         drive(&route, task(), calls.clone(), complete_call, 0.9).await?,
-        "cloud"
+        "capable"
     );
     assert_eq!(calls.0.load(Ordering::Relaxed), 2);
 
-    // Latched past the user turn: no further local attempt is produced.
+    // Latched past the user turn: no further efficient attempt is produced.
     assert_eq!(
         drive(&route, task(), calls.clone(), complete_call, 0.0).await?,
-        "cloud"
+        "capable"
     );
     assert_eq!(calls.0.load(Ordering::Relaxed), 2);
     Ok(())
@@ -189,11 +189,11 @@ async fn final_answers_commit_only_on_a_verified_clean_record() -> Result<()> {
     let clean = route(|_| {})?;
     assert_eq!(
         drive(&clean, run("ok"), calls.clone(), answer, 0.3).await?,
-        "local"
+        "efficient"
     );
     assert_eq!(
         drive(&clean, run("ok"), calls.clone(), answer, 0.1).await?,
-        "cloud"
+        "capable"
     );
 
     // A failure longer ago than the clean tail is forgiven only on the capable judge.
@@ -205,39 +205,39 @@ async fn final_answers_commit_only_on_a_verified_clean_record() -> Result<()> {
     }
     assert_eq!(
         drive(&clean, session(long.clone()), calls.clone(), answer, 0.99).await?,
-        "cloud"
+        "capable"
     );
     assert_eq!(calls.1.load(Ordering::Relaxed), 0);
     let confirmed = route(|config| config.confirmed_recovery_min_clean_tail = Some(1))?;
     assert_eq!(
         drive(&confirmed, session(long), calls.clone(), answer, 0.99).await?,
-        "local"
+        "efficient"
     );
     assert_eq!(calls.1.load(Ordering::Relaxed), 1);
     Ok(())
 }
 
 #[tokio::test]
-async fn an_unavailable_local_tier_escalates_and_other_failures_surface() -> Result<()> {
+async fn an_unavailable_efficient_tier_escalates_and_other_failures_surface() -> Result<()> {
     let route = route(|_| {})?;
     for (status, escalates) in [(503, true), (400, false)] {
         let outcome = test_drive_with_models(
             Arc::clone(&route),
             session(vec![Message::text(Role::User, "task")]),
-            category_models(Category::Any, &["local", "cloud"]),
+            category_models(Category::Any, &["efficient", "capable"]),
             move |target: ModelId, _| async move {
                 match target.as_str() {
-                    "local" => Err(LlmClientError::UpstreamHttp {
+                    "efficient" => Err(LlmClientError::UpstreamHttp {
                         status: http::StatusCode::from_u16(status).unwrap_or_default(),
                         body: String::new(),
                     }),
-                    _ => Ok(reply("cloud answer")),
+                    _ => Ok(reply("capable answer")),
                 }
             },
         )
         .await;
         assert_eq!(
-            outcome.is_ok_and(|(selected, _)| selected == "cloud"),
+            outcome.is_ok_and(|(selected, _)| selected == "capable"),
             escalates
         );
     }
@@ -245,7 +245,7 @@ async fn an_unavailable_local_tier_escalates_and_other_failures_surface() -> Res
 }
 
 fn recovering_classifier() -> super::VgrClassifier {
-    let mut config = VgrConfig::new(ModelId::new("local"), ModelId::new("cloud"));
+    let mut config = VgrConfig::new(ModelId::new("efficient"), ModelId::new("capable"));
     config.mode = ServingMode::Evaluate;
     config.breaker.threshold = 1;
     config.breaker.cooldown = std::time::Duration::ZERO;
@@ -263,7 +263,7 @@ async fn verifier_budget_exhaustion_is_not_an_endpoint_failure() -> Result<()> {
 
     use crate::core::algorithm::{Driver, RuntimeModels, Step};
 
-    let mut config = VgrConfig::new(ModelId::new("local"), ModelId::new("cloud"));
+    let mut config = VgrConfig::new(ModelId::new("efficient"), ModelId::new("capable"));
     config.deadline = Duration::from_millis(100);
     config.breaker.threshold = 1;
     config.breaker.cooldown = Duration::from_secs(60);
@@ -289,7 +289,7 @@ async fn verifier_budget_exhaustion_is_not_an_endpoint_failure() -> Result<()> {
     else {
         unreachable!();
     };
-    assert_eq!(pending_call.models, vec![ModelId::new("local")]);
+    assert_eq!(pending_call.models, vec![ModelId::new("efficient")]);
     let escalates = judging.await;
     drop(pending_call);
     assert!(!escalates);
@@ -344,7 +344,7 @@ async fn skipped_requests_leave_the_recovery_trial_available() -> Result<()> {
 }
 
 #[tokio::test]
-async fn cancelling_local_generation_releases_the_recovery_trial() -> Result<()> {
+async fn cancelling_efficient_generation_releases_the_recovery_trial() -> Result<()> {
     use crate::core::algorithm::{Driver, RuntimeModels};
     use crate::core::classifier::Classifier;
 
@@ -361,24 +361,24 @@ async fn cancelling_local_generation_releases_the_recovery_trial() -> Result<()>
 }
 
 #[tokio::test]
-async fn decisions_attach_the_reason_and_exclude_local_cloud_fallbacks() -> Result<()> {
+async fn decisions_attach_the_reason_and_exclude_efficient_capable_fallbacks() -> Result<()> {
     use crate::core::algorithm::Call;
     use crate::core::testing::serve_decision;
 
     for (mode, reason, served) in [
-        (ServingMode::Off, "mode_off", "cloud"),
-        (ServingMode::Evaluate, "decided", "local"),
-        (ServingMode::Shadow, "decided", "cloud"),
+        (ServingMode::Off, "mode_off", "capable"),
+        (ServingMode::Evaluate, "decided", "efficient"),
+        (ServingMode::Shadow, "decided", "capable"),
     ] {
         let algorithm = route(|config| config.mode = mode)?;
         let outcome = crate::drive(
             algorithm,
             request(vec![Message::text(Role::User, "task")]),
-            Arc::new(category_models(Category::Any, &["local", "cloud"]).into()),
+            Arc::new(category_models(Category::Any, &["efficient", "capable"]).into()),
             |call| async move {
                 match call {
                     Call::Model(call) => {
-                        let response = if call.models[0] == ModelId::new("local") {
+                        let response = if call.models[0] == ModelId::new("efficient") {
                             reply("done")
                         } else {
                             scored(0.9)
@@ -407,8 +407,8 @@ async fn decisions_attach_the_reason_and_exclude_local_cloud_fallbacks() -> Resu
 }
 
 #[tokio::test]
-async fn cloud_only_work_does_not_get_a_local_handoff_notice() -> Result<()> {
-    for scenario in ["shadow", "kill_switch", "local_turn_budget"] {
+async fn capable_only_work_does_not_get_an_efficient_handoff_notice() -> Result<()> {
+    for scenario in ["shadow", "kill_switch", "efficient_turn_budget"] {
         let route = route(|config| {
             config.agentic_handoff = true;
             match scenario {
@@ -418,7 +418,7 @@ async fn cloud_only_work_does_not_get_a_local_handoff_notice() -> Result<()> {
                     switch.engage();
                     config.kill_switch = Some(switch);
                 }
-                _ => config.local_turn_budget = Some(std::time::Duration::ZERO),
+                _ => config.efficient_turn_budget = Some(std::time::Duration::ZERO),
             }
         })?;
         let task = session(vec![
@@ -429,22 +429,22 @@ async fn cloud_only_work_does_not_get_a_local_handoff_notice() -> Result<()> {
         let (selected, _) = test_drive_with_models(
             route,
             task,
-            category_models(Category::Any, &["local", "cloud"]),
+            category_models(Category::Any, &["efficient", "capable"]),
             move |target: ModelId, request: Request| async move {
                 Ok(match target.as_str() {
-                    "local" => complete_call(),
+                    "efficient" => complete_call(),
                     "judge" => scored(0.0),
                     _ => {
                         let text = serde_json::to_string(&request.llm_request.messages)
                             .unwrap_or_default();
                         assert!(!text.contains("Routing notice"), "{scenario}");
-                        reply("cloud answer")
+                        reply("capable answer")
                     }
                 })
             },
         )
         .await?;
-        assert_eq!(selected, "cloud");
+        assert_eq!(selected, "capable");
     }
     Ok(())
 }
@@ -461,7 +461,7 @@ async fn latched_sessions_do_not_repeat_the_handoff_on_later_user_turns() -> Res
             0.9,
         )
         .await?,
-        "local"
+        "efficient"
     );
     let sent = Arc::new(parking_lot::Mutex::new(Vec::new()));
     for new_user_turn in [false, true] {
@@ -477,26 +477,26 @@ async fn latched_sessions_do_not_repeat_the_handoff_on_later_user_turns() -> Res
         let (selected, _) = test_drive_with_models(
             Arc::clone(&route),
             session(messages),
-            category_models(Category::Any, &["local", "cloud"]),
+            category_models(Category::Any, &["efficient", "capable"]),
             move |target: ModelId, request: Request| {
                 let sent = Arc::clone(&sent);
                 async move {
                     Ok(match target.as_str() {
-                        "local" => complete_call(),
+                        "efficient" => complete_call(),
                         "judge" => scored(0.9),
                         _ => {
                             sent.lock().push(
                                 serde_json::to_string(&request.llm_request.messages)
                                     .unwrap_or_default(),
                             );
-                            reply("cloud answer")
+                            reply("capable answer")
                         }
                     })
                 }
             },
         )
         .await?;
-        assert_eq!(selected, "cloud");
+        assert_eq!(selected, "capable");
     }
     let sent = sent.lock();
     assert_eq!(sent.len(), 2);
@@ -506,7 +506,7 @@ async fn latched_sessions_do_not_repeat_the_handoff_on_later_user_turns() -> Res
 }
 
 #[tokio::test]
-async fn compact_handoff_is_optional_and_replays_before_retained_cloud_routing() -> Result<()> {
+async fn compact_handoff_is_optional_and_replays_before_retained_capable_routing() -> Result<()> {
     let previous = vec![
         Message::text(Role::User, "inspect the repository"),
         call("old"),
@@ -535,10 +535,10 @@ async fn compact_handoff_is_optional_and_replays_before_retained_cloud_routing()
                 0.0,
             )
             .await?,
-            "local"
+            "efficient"
         );
         let sent = Arc::new(parking_lot::Mutex::new(Vec::new()));
-        let local_calls = Arc::new(AtomicUsize::new(0));
+        let efficient_calls = Arc::new(AtomicUsize::new(0));
         for follow_up in [false, true] {
             let mut messages = previous.clone();
             messages.extend([
@@ -547,27 +547,27 @@ async fn compact_handoff_is_optional_and_replays_before_retained_cloud_routing()
                 result("c1", "ok"),
             ]);
             if follow_up {
-                messages.extend([call("cloud-1"), result("cloud-1", "cloud output")]);
+                messages.extend([call("capable-1"), result("capable-1", "capable output")]);
             }
             let sent = Arc::clone(&sent);
-            let local_calls = Arc::clone(&local_calls);
+            let efficient_calls = Arc::clone(&efficient_calls);
             let (selected, _) = test_drive_with_models(
                 Arc::clone(&route),
                 session(messages),
-                category_models(Category::Any, &["local", "cloud"]),
+                category_models(Category::Any, &["efficient", "capable"]),
                 move |target: ModelId, request: Request| {
                     let sent = Arc::clone(&sent);
-                    let local_calls = Arc::clone(&local_calls);
+                    let efficient_calls = Arc::clone(&efficient_calls);
                     async move {
                         Ok(match target.as_str() {
-                            "local" => {
-                                local_calls.fetch_add(1, Ordering::Relaxed);
+                            "efficient" => {
+                                efficient_calls.fetch_add(1, Ordering::Relaxed);
                                 reply("the build passes")
                             }
                             "judge" => scored(0.0),
-                            "cloud" => {
+                            "capable" => {
                                 sent.lock().push(request.llm_request.messages);
-                                reply("cloud answer")
+                                reply("capable answer")
                             }
                             _ => reply("no"),
                         })
@@ -575,9 +575,9 @@ async fn compact_handoff_is_optional_and_replays_before_retained_cloud_routing()
                 },
             )
             .await?;
-            assert_eq!(selected, "cloud");
+            assert_eq!(selected, "capable");
         }
-        assert_eq!(local_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(efficient_calls.load(Ordering::Relaxed), 1);
         let sent = sent.lock();
         assert_eq!(sent.len(), 2);
         if compact_handoff == Some(true) {
@@ -590,8 +590,8 @@ async fn compact_handoff_is_optional_and_replays_before_retained_cloud_routing()
             assert!(digest.contains("<condensed_history>"));
             assert!(digest.contains("the build passes"));
             assert!(digest.contains("Routing notice"));
-            assert_eq!(sent[1][5], call("cloud-1"));
-            assert_eq!(sent[1][6], result("cloud-1", "cloud output"));
+            assert_eq!(sent[1][5], call("capable-1"));
+            assert_eq!(sent[1][6], result("capable-1", "capable output"));
         } else {
             let mut original = previous.clone();
             original.extend([
@@ -608,7 +608,7 @@ async fn compact_handoff_is_optional_and_replays_before_retained_cloud_routing()
                     .contains("Routing notice")
             );
             let mut follow_up = original;
-            follow_up.extend([call("cloud-1"), result("cloud-1", "cloud output")]);
+            follow_up.extend([call("capable-1"), result("capable-1", "capable output")]);
             assert_eq!(sent[1], follow_up);
         }
     }
@@ -627,7 +627,7 @@ async fn an_escalated_agentic_run_hands_off_once_with_the_unverified_claim() -> 
             0.0,
         )
         .await?,
-        "local"
+        "efficient"
     );
     let sent = Arc::new(parking_lot::Mutex::new(Vec::new()));
     let task = || {
@@ -642,18 +642,18 @@ async fn an_escalated_agentic_run_hands_off_once_with_the_unverified_claim() -> 
         test_drive_with_models(
             Arc::clone(&route),
             task(),
-            category_models(Category::Any, &["local", "cloud"]),
+            category_models(Category::Any, &["efficient", "capable"]),
             move |target: ModelId, request: Request| {
                 let sent = Arc::clone(&sent);
                 async move {
                     Ok(match target.as_str() {
-                        "local" => reply("the build passes"),
+                        "efficient" => reply("the build passes"),
                         "judge" => scored(0.0),
-                        "cloud" => {
+                        "capable" => {
                             let text = serde_json::to_string(&request.llm_request.messages)
                                 .unwrap_or_default();
                             sent.lock().push(text);
-                            reply("cloud answer")
+                            reply("capable answer")
                         }
                         _ => reply("no"),
                     })
@@ -673,13 +673,13 @@ async fn an_escalated_agentic_run_hands_off_once_with_the_unverified_claim() -> 
 }
 
 #[tokio::test]
-async fn a_spent_local_turn_budget_skips_the_local_attempt() -> Result<()> {
-    let route = route(|config| config.local_turn_budget = Some(std::time::Duration::ZERO))?;
+async fn a_spent_efficient_turn_budget_skips_the_efficient_attempt() -> Result<()> {
+    let route = route(|config| config.efficient_turn_budget = Some(std::time::Duration::ZERO))?;
     let calls = Arc::new(Calls::default());
     let task = session(vec![Message::text(Role::User, "fix the build")]);
     assert_eq!(
         drive(&route, task, calls.clone(), complete_call, 0.0).await?,
-        "cloud"
+        "capable"
     );
     assert_eq!(calls.0.load(Ordering::Relaxed), 0);
     Ok(())
@@ -710,7 +710,7 @@ fn handoff_preserves_existing_messages_and_non_text_content() {
     }
     let original = task.llm_request.messages.clone();
     let mut state = State::default();
-    super::set_flag(&mut state, super::LOCAL_SERVED_KEY, true);
+    super::set_flag(&mut state, super::EFFICIENT_SERVED_KEY, true);
     classifier.hand_off(&mut task, &mut state, Some("unchecked result"));
     // A notice may be appended, but all original content stays unchanged.
     let messages = &task.llm_request.messages;
@@ -738,7 +738,7 @@ fn handoff_preserves_existing_messages_and_non_text_content() {
 }
 
 #[tokio::test]
-async fn a_blank_prompt_escalates_without_a_local_attempt() -> Result<()> {
+async fn a_blank_prompt_escalates_without_an_efficient_attempt() -> Result<()> {
     let continuing = route(|_| {})?;
     let route = route(|_| {})?;
     let calls = Arc::new(Calls::default());
@@ -754,7 +754,7 @@ async fn a_blank_prompt_escalates_without_a_local_attempt() -> Result<()> {
     ] {
         assert_eq!(
             drive(&route, session(messages), calls.clone(), complete_call, 0.0).await?,
-            "cloud"
+            "capable"
         );
     }
     assert_eq!(calls.0.load(Ordering::Relaxed), 0);
@@ -773,7 +773,7 @@ async fn a_blank_prompt_escalates_without_a_local_attempt() -> Result<()> {
 }
 
 #[tokio::test]
-async fn an_agent_marked_nudge_keeps_a_single_escalation_on_cloud() -> Result<()> {
+async fn an_agent_marked_nudge_keeps_a_single_escalation_on_capable() -> Result<()> {
     let route = route(|_| {})?;
     let calls = Arc::new(Calls::default());
     let truncated = || tool_call(json!(r#"{"command":"l"#), StopReason::MaxTokens);
@@ -787,7 +787,7 @@ async fn an_agent_marked_nudge_keeps_a_single_escalation_on_cloud() -> Result<()
     let nudge = initiated_by(session(nudge), "agent");
     assert_eq!(
         drive(&route, nudge, calls.clone(), complete_call, 0.0).await?,
-        "cloud"
+        "capable"
     );
     assert_eq!(calls.0.load(Ordering::Relaxed), 1);
     Ok(())
@@ -808,7 +808,7 @@ async fn a_held_follow_up_records_the_latch_as_its_reason() -> Result<()> {
     use crate::core::testing::serve_decision;
 
     let algorithm = route(|config| config.mode = ServingMode::Shadow)?;
-    let models = Arc::new(category_models(Category::Any, &["local", "cloud"]).into());
+    let models = Arc::new(category_models(Category::Any, &["efficient", "capable"]).into());
     let serve = |call| async move {
         match call {
             Call::Model(call) => call.respond(std::future::ready(Ok(reply("done")))).await,
@@ -822,7 +822,7 @@ async fn a_held_follow_up_records_the_latch_as_its_reason() -> Result<()> {
         serve,
     )
     .await?;
-    assert_eq!(escalated.selected_model_ids, vec![ModelId::new("cloud")]);
+    assert_eq!(escalated.selected_model_ids, vec![ModelId::new("capable")]);
 
     let held = crate::drive(
         algorithm,
@@ -835,14 +835,14 @@ async fn a_held_follow_up_records_the_latch_as_its_reason() -> Result<()> {
         serve,
     )
     .await?;
-    assert_eq!(held.selected_model_ids, vec![ModelId::new("cloud")]);
+    assert_eq!(held.selected_model_ids, vec![ModelId::new("capable")]);
     let evidence = held
         .metadata
         .and_then(|metadata| metadata.evidence)
         .unwrap_or_default();
     assert_eq!(evidence["source"], "vgr");
     assert_eq!(evidence["reason_code"], "turn_verification_latched");
-    assert_eq!(evidence["verdict"], "cloud");
+    assert_eq!(evidence["verdict"], "capable");
     Ok(())
 }
 
@@ -863,7 +863,7 @@ async fn shadow_rechecks_new_user_turns_with_session_latching_enabled() -> Resul
     ] {
         assert_eq!(
             drive(&route, session(messages), calls.clone(), complete_call, 0.0).await?,
-            "cloud"
+            "capable"
         );
     }
     assert_eq!(calls.0.load(Ordering::Relaxed), 2);
@@ -878,7 +878,7 @@ async fn an_escalation_latch_holds_the_session_past_new_questions() -> Result<()
     let task = session(vec![Message::text(Role::User, "fix the build")]);
     assert_eq!(
         drive(&route, task, calls.clone(), truncated, 0.0).await?,
-        "cloud"
+        "capable"
     );
     let follow_up = session(vec![
         Message::text(Role::User, "fix the build"),
@@ -887,7 +887,7 @@ async fn an_escalation_latch_holds_the_session_past_new_questions() -> Result<()
     ]);
     assert_eq!(
         drive(&route, follow_up, calls.clone(), complete_call, 0.0).await?,
-        "cloud"
+        "capable"
     );
     assert_eq!(calls.0.load(Ordering::Relaxed), 1);
     Ok(())
@@ -917,7 +917,7 @@ async fn an_initiator_header_decides_when_the_turn_latch_releases() -> Result<()
             0.0
         )
         .await?,
-        "cloud"
+        "capable"
     );
     assert_eq!(calls.0.load(Ordering::Relaxed), 2);
 
@@ -937,7 +937,7 @@ async fn an_initiator_header_decides_when_the_turn_latch_releases() -> Result<()
             0.0
         )
         .await?,
-        "local"
+        "efficient"
     );
     assert_eq!(calls.0.load(Ordering::Relaxed), 3);
     Ok(())
@@ -955,11 +955,11 @@ async fn tool_work_from_an_earlier_user_turn_is_not_handed_off() -> Result<()> {
             Message::text(Role::Assistant, "the build passes"),
             Message::text(Role::User, "What is 41 plus 42?"),
         ]),
-        category_models(Category::Any, &["local", "cloud"]),
+        category_models(Category::Any, &["efficient", "capable"]),
         |target: ModelId, request: Request| async move {
             Ok(match target.as_str() {
-                "local" => reply("83"),
-                "cloud" => {
+                "efficient" => reply("83"),
+                "capable" => {
                     let text =
                         serde_json::to_string(&request.llm_request.messages).unwrap_or_default();
                     assert!(text.contains("41 plus 42"));
@@ -971,12 +971,12 @@ async fn tool_work_from_an_earlier_user_turn_is_not_handed_off() -> Result<()> {
         },
     )
     .await?;
-    assert_eq!(selected, "cloud");
+    assert_eq!(selected, "capable");
     Ok(())
 }
 
 #[tokio::test]
-async fn a_cloud_decision_falls_back_to_local_without_the_handoff_note() -> Result<()> {
+async fn a_capable_decision_falls_back_to_efficient_without_the_handoff_note() -> Result<()> {
     use crate::core::algorithm::Call;
     use crate::core::testing::serve_decision;
 
@@ -1011,12 +1011,12 @@ async fn a_cloud_decision_falls_back_to_local_without_the_handoff_note() -> Resu
         let outcome = crate::drive(
             algorithm,
             task(),
-            Arc::new(category_models(Category::Any, &["local", "cloud"]).into()),
+            Arc::new(category_models(Category::Any, &["efficient", "capable"]).into()),
             |call| async move {
                 match call {
                     Call::Model(call) => {
                         let response = match call.models[0].as_str() {
-                            "local" => reply("the build passes"),
+                            "efficient" => reply("the build passes"),
                             "judge" => scored(0.0),
                             _ => reply("no"),
                         };
@@ -1029,14 +1029,16 @@ async fn a_cloud_decision_falls_back_to_local_without_the_handoff_note() -> Resu
         .await?;
         assert!(noted(&outcome.request));
         if killed {
-            assert_eq!(outcome.selected_model_ids, vec![ModelId::new("cloud")]);
+            assert_eq!(outcome.selected_model_ids, vec![ModelId::new("capable")]);
             assert!(outcome.fallback_request.is_none());
         } else {
             assert_eq!(
                 outcome.selected_model_ids,
-                vec![ModelId::new("cloud"), ModelId::new("local")]
+                vec![ModelId::new("capable"), ModelId::new("efficient")]
             );
-            let fallback = outcome.fallback_request.expect("a local fallback request");
+            let fallback = outcome
+                .fallback_request
+                .expect("an efficient fallback request");
             assert_eq!(fallback.llm_request.messages, task().llm_request.messages);
         }
     }

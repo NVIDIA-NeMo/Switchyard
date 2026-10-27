@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Condenses local history into a recorded handoff digest.
+//! Condenses history from the efficient tier into a recorded handoff digest.
 //!
 //! Later requests reuse the digest only when their original history prefix
 //! matches. User updates and tool content are clipped, so the digest is lossy.
@@ -45,7 +45,7 @@ const RECENT_USER_TEXTS: usize = 2;
 /// requests of this user turn can be rewritten identically.
 ///
 /// Returns `false`, leaving the request untouched, when there is no task
-/// message with local work after it.
+/// message followed by work from the efficient tier.
 pub(super) fn compact(request: &mut Request, state: &mut State, note: &str) -> bool {
     let messages = &request.llm_request.messages;
     let start = turn_start(request);
@@ -339,11 +339,11 @@ mod tests {
         let mut state: State = serde_json::from_str(&saved).expect("restored routing state");
 
         let mut follow_up = session(12);
-        follow_up.llm_request.messages.push(call("cloud-1", "ls"));
+        follow_up.llm_request.messages.push(call("capable-1", "ls"));
         follow_up
             .llm_request
             .messages
-            .push(result("cloud-1", "a b"));
+            .push(result("capable-1", "a b"));
         reapply(&mut state, &mut follow_up).await;
 
         let messages = &follow_up.llm_request.messages;

@@ -22,10 +22,11 @@ use opentelemetry::KeyValue;
 use serde::Deserialize;
 
 use super::prompts;
-use super::tool_signals::ToolSignals;
+use super::tool_signals::{ToolSignalProcessor, ToolSignals};
 use crate::Result;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
+use crate::core::processor::{Event, Processor};
 use crate::core::state::{State, StateValue};
 use crate::observability::meter;
 use switchyard_protocol::{Category, Request};
@@ -53,6 +54,8 @@ const CLEAN_PRODUCTION_WEIGHT: f64 = 1.2;
 const SEVERITY_CRITICAL: f32 = 1.0;
 /// Session-state key for the remaining capable-tier recovery turns.
 const CAPABLE_HOLD_KEY: &str = "capable_hold_turns";
+const EFFICIENT_HOLD_KEY: &str = "efficient_hold_turns";
+const PREVIOUS_TIER_KEY: &str = "stage_previous_tier";
 
 /// Counts final stage-router choices by decision source and semantic target.
 const ROUTING_DECISIONS_METRIC: &str = "switchyard.stage_router.routing_decisions";
@@ -158,6 +161,8 @@ pub enum DecisionSource {
     Override,
     /// A recent escalation is being held on the capable tier.
     CapableHold,
+    /// A recent switch is being held on the efficient tier.
+    EfficientHold,
     /// Scorer crossed `confidence_threshold`.
     Dimensions,
     /// Scorer was not confident, so the signals did not decide this turn.
@@ -174,6 +179,7 @@ impl DecisionSource {
         match self {
             Self::Override => "override",
             Self::CapableHold => "capable_hold",
+            Self::EfficientHold => "efficient_hold",
             Self::Dimensions => "dimensions",
             Self::Ambiguous => "ambiguous",
             Self::LlmClassifier => "llm-classifier",
@@ -522,7 +528,9 @@ pub struct StageClassifier {
     mode: PickerMode,
     confidence_threshold: f64,
     capable_first_threshold: f64,
-    capable_hold_turns: u32,
+    capable_hold_turns: i64,
+    efficient_hold_turns: Option<i64>,
+    signals: ToolSignalProcessor,
     handoff_notes: Option<HandoffNoteConfig>,
 }
 
@@ -535,6 +543,8 @@ impl StageClassifier {
             confidence_threshold,
             capable_first_threshold: 0.0,
             capable_hold_turns: 2,
+            efficient_hold_turns: None,
+            signals: ToolSignalProcessor::default(),
             handoff_notes: None,
         }
     }
@@ -545,10 +555,23 @@ impl StageClassifier {
         self
     }
 
-    /// Keep the capable tier for this many requests after an escalation. A
-    /// clean passing test clears the hold early. Set to zero to disable.
-    pub fn with_capable_hold_turns(mut self, turns: u32) -> Self {
+    /// Keep capable for this many requests after an escalation. Zero disables
+    /// it; `-1` pins after a switch. Validated by the enclosing stage router.
+    pub fn with_capable_hold_turns(mut self, turns: i64) -> Self {
         self.capable_hold_turns = turns;
+        self
+    }
+
+    /// Hold the efficient tier after a switch. Zero disables it; `-1` pins.
+    /// Validated by the enclosing stage router.
+    pub fn with_efficient_hold_turns(mut self, turns: i64) -> Self {
+        self.efficient_hold_turns = Some(turns);
+        self
+    }
+
+    /// Extract signals only on requests that need a new classification.
+    pub(crate) fn with_signals(mut self, signals: ToolSignalProcessor) -> Self {
+        self.signals = signals;
         self
     }
 
@@ -574,18 +597,19 @@ impl StageClassifier {
         }
     }
 
-    fn capable_hold_key(request: &Request) -> String {
+    fn agent_key(request: &Request, key: &str) -> String {
         request
             .metadata
             .as_ref()
             .and_then(|metadata| metadata.agent_id.as_deref())
-            .map_or_else(
-                || CAPABLE_HOLD_KEY.to_string(),
-                |agent_id| format!("{CAPABLE_HOLD_KEY}:{agent_id}"),
-            )
+            .map_or_else(|| key.to_string(), |agent_id| format!("{key}:{agent_id}"))
     }
 
-    fn consume_capable_hold(state: &mut State, key: &str) -> bool {
+    fn consume_hold(state: &mut State, key: &str) -> bool {
+        // Reuse the existing state values: a true flag is an unbounded hold.
+        if matches!(state.extra.get(key), Some(StateValue::Bool(true))) {
+            return true;
+        }
         let Some(StateValue::Count(remaining)) = state.extra.get_mut(key) else {
             return false;
         };
@@ -600,14 +624,80 @@ impl StageClassifier {
         true
     }
 
-    fn set_capable_hold(&self, state: &mut State, key: &str) {
-        if self.capable_hold_turns == 0 {
-            state.extra.remove(key);
-        } else {
-            state
-                .extra
-                .insert(key.to_string(), StateValue::Count(self.capable_hold_turns));
+    fn set_hold(state: &mut State, key: &str, turns: i64) {
+        match turns {
+            -1 => {
+                state.extra.insert(key.to_string(), StateValue::Bool(true));
+            }
+            1..=0xffff_ffff => {
+                state
+                    .extra
+                    .insert(key.to_string(), StateValue::Count(turns as u32));
+            }
+            _ => {
+                state.extra.remove(key);
+            }
         }
+    }
+}
+
+/// Observe the final cascade choice, including judge and fall-open decisions.
+#[async_trait]
+impl Processor for StageClassifier {
+    async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
+        if let Event::Request { request, driver } = event {
+            let held = [CAPABLE_HOLD_KEY, EFFICIENT_HOLD_KEY].iter().any(|key| {
+                match state.extra.get(&Self::agent_key(request, key)) {
+                    Some(StateValue::Bool(true)) => true,
+                    Some(StateValue::Count(remaining)) => *remaining > 0,
+                    _ => false,
+                }
+            });
+            if held {
+                state.tool_signals = None;
+                return Ok(());
+            }
+            return self
+                .signals
+                .process(state, Event::Request { request, driver })
+                .await;
+        }
+        if let Event::Decision {
+            request, category, ..
+        } = event
+        {
+            let (tier, hold_key, other_key, turns) = match category {
+                Some(Category::Capable) => (
+                    Tier::Capable,
+                    CAPABLE_HOLD_KEY,
+                    EFFICIENT_HOLD_KEY,
+                    self.capable_hold_turns,
+                ),
+                Some(Category::Efficient) => (
+                    Tier::Efficient,
+                    EFFICIENT_HOLD_KEY,
+                    CAPABLE_HOLD_KEY,
+                    self.efficient_hold_turns.unwrap_or_else(|| {
+                        if fall_open_tier(state) == Some(Tier::Capable) {
+                            -1
+                        } else {
+                            0
+                        }
+                    }),
+                ),
+                _ => return Ok(()),
+            };
+            let previous_key = Self::agent_key(request, PREVIOUS_TIER_KEY);
+            let previous = state
+                .extra
+                .insert(previous_key, StateValue::String(tier.label().to_string()));
+            // The initial choice is not a switch. Held turns must not rearm themselves.
+            if matches!(previous, Some(StateValue::String(ref label)) if label != tier.label()) {
+                state.extra.remove(&Self::agent_key(request, other_key));
+                Self::set_hold(state, &Self::agent_key(request, hold_key), turns);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -619,27 +709,44 @@ impl Classifier for StageClassifier {
         request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<switchyard_protocol::Response>)> {
+        let capable_hold_key = Self::agent_key(request, CAPABLE_HOLD_KEY);
+        for (key, category, source) in [
+            (
+                CAPABLE_HOLD_KEY,
+                Category::Capable,
+                DecisionSource::CapableHold,
+            ),
+            (
+                EFFICIENT_HOLD_KEY,
+                Category::Efficient,
+                DecisionSource::EfficientHold,
+            ),
+        ] {
+            if Self::consume_hold(state, &Self::agent_key(request, key)) {
+                let target = driver.first_model_for(&category)?.clone();
+                record_routing_decision(source, &target);
+                driver.set_evidence(serde_json::json!({"source": source.as_str()}));
+                return Ok((
+                    Classification::Scores(vec![Score {
+                        target,
+                        confidence: 1.0,
+                        category: Some(category),
+                    }]),
+                    None,
+                ));
+            }
+        }
         let Some(signal) = state.tool_signals.clone() else {
             // No tool activity yet — nothing to score, so the signals have no
             // opinion, same as a below-threshold turn.
             return Ok((Self::abstain(), None));
         };
-
-        let capable_hold_key = Self::capable_hold_key(request);
-        let clean_test_pass = signal.tests_passed && signal.no_error_streak > 0;
-        if clean_test_pass {
-            state.extra.remove(&capable_hold_key);
-        }
         let (mode, threshold) = match fall_open_tier(state) {
             Some(Tier::Capable) => (PickerMode::CapableFirst, self.capable_first_threshold),
             Some(Tier::Efficient) => (PickerMode::EfficientFirst, self.confidence_threshold),
             None => (self.mode, self.confidence_threshold),
         };
-        let outcome = if !clean_test_pass && Self::consume_capable_hold(state, &capable_hold_key) {
-            resolved(Tier::Capable, DecisionSource::CapableHold, 0.5, Some(1.0))
-        } else {
-            pick_tier(&signal, mode, threshold)
-        };
+        let outcome = pick_tier(&signal, mode, threshold);
         record_score_metrics(&signal, &outcome);
         match outcome {
             PickOutcome::Resolved {
@@ -654,12 +761,13 @@ impl Classifier for StageClassifier {
                 };
                 let target = driver.first_model_for(&category)?;
                 if tier == Tier::Capable
+                    && self.capable_hold_turns > 0
                     && matches!(
                         source,
                         DecisionSource::Override | DecisionSource::Dimensions
                     )
                 {
-                    self.set_capable_hold(state, &capable_hold_key);
+                    Self::set_hold(state, &capable_hold_key, self.capable_hold_turns);
                 }
                 record_routing_decision(source, target);
                 if source == DecisionSource::Override
@@ -1144,7 +1252,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn passing_tests_clear_the_capable_hold() -> Result<()> {
+    async fn passing_tests_do_not_interrupt_the_capable_hold() -> Result<()> {
         let classifier = StageClassifier::new(PickerMode::EfficientFirst, 0.5);
         let mut state = state_with(critical());
         let driver = driver();
@@ -1161,8 +1269,11 @@ mod tests {
         let classification = classifier
             .score(&mut state, &mut Request::default(), &driver)
             .await?;
-        assert!(classification.0.argmax(false)?.is_none());
-        assert!(!state.extra.contains_key(CAPABLE_HOLD_KEY));
+        assert_eq!(classification.0.argmax(false)?.unwrap().target, "strong");
+        assert_eq!(
+            state.extra.get(CAPABLE_HOLD_KEY),
+            Some(&StateValue::Count(1))
+        );
         Ok(())
     }
 
@@ -1213,6 +1324,49 @@ mod tests {
             .score(&mut state, &mut Request::default(), &driver)
             .await?;
         assert!(classification.0.argmax(false)?.is_none());
+        Ok(())
+    }
+
+    /// Holds skip signal extraction and notes, then resolve at full confidence.
+    #[tokio::test]
+    async fn held_decisions_have_full_confidence_without_tool_signals() -> Result<()> {
+        for (key, target, category) in [
+            (CAPABLE_HOLD_KEY, "strong", Category::Capable),
+            (EFFICIENT_HOLD_KEY, "weak", Category::Efficient),
+        ] {
+            for value in [StateValue::Count(1), StateValue::Bool(true)] {
+                let mut state = State::default();
+                state.extra.insert(key.to_string(), value);
+                let classifier = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
+                    .with_handoff_notes(config(false));
+                let mut request = crate::algorithms::util::tier_fixtures::turn_request(true);
+                let original = request.llm_request.clone();
+                let driver = driver();
+                classifier
+                    .process(
+                        &mut state,
+                        Event::Request {
+                            request: &mut request,
+                            driver: &driver,
+                        },
+                    )
+                    .await?;
+                assert!(
+                    state.tool_signals.is_none(),
+                    "held turns must not extract signals"
+                );
+                let (classification, _) =
+                    classifier.score(&mut state, &mut request, &driver).await?;
+                let winner = classification.argmax(false)?.expect("a hold must resolve");
+                assert_eq!(winner.target, target);
+                assert_eq!(winner.category, Some(category.clone()));
+                assert_eq!(winner.confidence, 1.0);
+                assert_eq!(
+                    request.llm_request, original,
+                    "held turns must not add handoff notes"
+                );
+            }
+        }
         Ok(())
     }
 

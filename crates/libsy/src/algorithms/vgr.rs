@@ -4,7 +4,7 @@
 //! Verification-gated routing: fail-closed capability derivation.
 //!
 //! Capabilities are never client-declared. They come from the router's own
-//! typing of the request, the attempt it produced locally, and its own reading
+//! typing of the request, the attempt it produced on the efficient tier, and its own reading
 //! of the tool results in the conversation. No client-reachable input selects
 //! a weaker regime than the default one; unsupported content and missing
 //! evidence select [`Branch::Unknown`], which never commits.
@@ -35,7 +35,7 @@ pub use safety::{BreakerConfig, KillSwitch};
 #[cfg(test)]
 mod tests;
 
-/// A verification-gated route between a local and a capable tier.
+/// A verification-gated route between an efficient and a capable tier.
 pub struct Vgr {
     route: FallThrough,
     classifier: Arc<runtime::VgrClassifier>,
@@ -45,7 +45,7 @@ impl Vgr {
     /// Validates and constructs a verification-gated route.
     pub fn new(config: VgrConfig) -> Result<Self> {
         config.validate()?;
-        let mut affinity = AffinityRouter::new().with_latch_only([config.targets.cloud.clone()]);
+        let mut affinity = AffinityRouter::new().with_latch_only([config.targets.capable.clone()]);
         let reason = if config.latch_escalation && config.mode != ServingMode::Shadow {
             "session_latched"
         } else {
@@ -76,25 +76,25 @@ impl Algorithm for Vgr {
     }
 
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
-        // The handoff note is written for the cloud tier, so a local stand-in gets the request
+        // The handoff note is written for the capable tier, so an efficient stand-in gets the request
         // as it arrived.
         let arrived = self
             .classifier
-            .local_may_stand_in(&request)
+            .efficient_may_stand_in(&request)
             .then(|| request.clone());
         let mut outcome = self.route.execute(driver, request).await?;
-        // Local answers are already buffered and have no fallback.
+        // Efficient answers are already buffered and have no fallback.
         outcome.selected_model_ids.truncate(1);
         let config = &self.classifier.config;
         if let Some(arrived) = arrived
             && outcome.response.is_none()
-            && outcome.selected_model_ids.first() == Some(&config.targets.cloud)
-            // The local tier may have failed while this request was routed.
-            && self.classifier.local_may_stand_in(&arrived)
+            && outcome.selected_model_ids.first() == Some(&config.targets.capable)
+            // The efficient tier may have failed while this request was routed.
+            && self.classifier.efficient_may_stand_in(&arrived)
         {
             outcome
                 .selected_model_ids
-                .push(config.targets.local.clone());
+                .push(config.targets.efficient.clone());
             outcome.fallback_request = Some(arrived);
         }
         Ok(outcome)

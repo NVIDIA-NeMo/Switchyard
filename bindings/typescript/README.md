@@ -4,6 +4,10 @@ TypeScript bindings for composite routing. Rust builds a Decision request and us
 the caller's answer with local tool signals to select a model. The caller handles
 classifier calls, completion requests, and branch state.
 
+Capable-first routing defaults to pinning the efficient tier after switching to
+it. Set `stage.efficient_hold_turns: 0` to disable this hold. Efficient-first
+defaults to no efficient hold. Persist the returned state to retain holds.
+
 Requires Node.js 22.19 or newer and the repository's Rust toolchain. The package
 is private. Its native addon is built for the local host. Linux is covered in CI.
 

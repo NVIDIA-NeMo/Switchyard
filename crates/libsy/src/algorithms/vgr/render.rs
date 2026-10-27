@@ -11,7 +11,7 @@ use switchyard_protocol::{ContentBlock, Request, Role};
 use super::text::{Turn, clip_mid, content_text, redact, tool_result_failed};
 
 const ASSISTANT_TURN_BUDGET: usize = 1200;
-// Agent frameworks send system prompts of many thousand tokens; each local rung would re-read them.
+// Agent frameworks send system prompts of many thousand tokens; each efficient rung would re-read them.
 const SYSTEM_TURN_BUDGET: usize = 1000;
 pub(super) const ATTEMPT_BUDGET: usize = 2200;
 const AGENTIC_TRAJECTORY_BUDGET: usize = 12_000;

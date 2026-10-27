@@ -18,8 +18,8 @@ Each strategy names its models by role. The TOML keys differ by route type:
 | `advisor` | `executor_target` | `advisor_target` reviews. It does not serve turns. | The gate rules. |
 
 A role is not a property of a model. The same model can be the capable tier in
-one route and the efficient tier in another. See
-[Core Concepts](../core_concepts.md#routing-algorithms).
+one route and the efficient tier in another. See the
+[model pool example](../mechanics_of_libsy.md#start-with-a-request).
 
 What each role needs:
 

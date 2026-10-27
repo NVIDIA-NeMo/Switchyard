@@ -1,28 +1,28 @@
 # Verification-Gated Routing
 
-Verification-Gated Routing (VGR) generates a candidate on a local tier. For a
+Verification-Gated Routing (VGR) generates a candidate on an efficient tier. For a
 final answer, it gathers bounded evidence about that exact candidate and serves
-it only when the policy allows it. All other final-answer outcomes use the cloud
+it only when the policy allows it. All other final-answer outcomes use the capable
 tier. Missing context, unavailable verifiers, malformed verdicts, and expired
-decision deadlines fail closed to cloud for final answers.
+decision deadlines fail closed to the capable tier for final answers.
 
-Tool-calling turns continue on the local tier unless the turn judge provides
+Tool-calling turns continue on the efficient tier unless the turn judge provides
 evidence to escalate. An unavailable or inconclusive turn judge leaves the tool
-turn on the local tier. A local endpoint failure triggers cloud fallback.
+turn on the efficient tier. An efficient endpoint failure triggers capable fallback.
 
 ## Configure a route
 
-Declare local, cloud, and optional verifier targets using the normal deployment
+Declare efficient, capable, and optional verifier targets using the normal deployment
 schema, then reference their target names:
 
 ```toml
 [routes.assistant]
 id = "assistant"
 type = "vgr"
-local_target = "local"
-cloud_target = "cloud"
-judge_target = "local"
-cloud_judge_target = "cloud"
+efficient_target = "efficient"
+capable_target = "capable"
+judge_target = "efficient"
+capable_judge_target = "capable"
 mode = "shadow"
 deadline_seconds = 30
 task_typing = true
@@ -31,13 +31,13 @@ breaker_cooldown_seconds = 30
 confirmed_recovery_min_clean_tail = 1
 ```
 
-`judge_target` defaults to `local_target`. `cloud_judge_target` is optional.
-The local and cloud targets must resolve to distinct model IDs. Set the route's
+`judge_target` defaults to `efficient_target`. `capable_judge_target` is optional.
+The efficient and capable targets must resolve to distinct model IDs. Set the route's
 `context_window` to advertise a configured limit through `/v1/models`; this works
 with any supported local service and takes precedence over discovery.
 
 Context discovery is disabled by default. For llama.cpp, set
-`context_discovery = "llama_cpp"` on the local target's `[llm_clients.<name>]`
+`context_discovery = "llama_cpp"` on the efficient target's `[llm_clients.<name>]`
 entry and leave the route's `context_window` unset. Switchyard then reads the
 service's `/props` response and advertises a positive context capacity when
 available. Missing or invalid properties leave the capacity unknown; routing
@@ -53,8 +53,8 @@ for one minute. Discovery probes run concurrently with a two-second total budget
 per refresh. Completed discoveries are retained when that budget expires.
 
 `confirmed_recovery_min_clean_tail`, when set, lets an agentic
-run that recovered from tool errors commit locally once that many trailing tool
-results are clean and the cloud judge confirms the evidence.
+run that recovered from tool errors commit on the efficient tier once that many trailing tool
+results are clean and the capable judge confirms the evidence.
 
 ## Agentic handoff
 
@@ -62,17 +62,17 @@ These settings are off by default:
 
 ```toml
 agentic_handoff = true
-local_turn_budget_seconds = 600
+efficient_turn_budget_seconds = 600
 ```
 
-`agentic_handoff` tells the cloud tier when it takes over tool-using work that
-the local tier previously served. The notice can include the local tier's
+`agentic_handoff` tells the capable tier when it takes over tool-using work that
+the efficient tier previously served. The notice can include the efficient tier's
 unchecked final message. It is sent at most once per user turn, and only after
-new local work has been served since the previous handoff. The handoff preserves
-the conversation's existing messages and content. `local_turn_budget_seconds`
-escalates a user turn once the local tier has spent that much wall-clock time on it.
+new efficient work has been served since the previous handoff. The handoff preserves
+the conversation's existing messages and content. `efficient_turn_budget_seconds`
+escalates a user turn once the efficient tier has spent that much wall-clock time on it.
 
-Optional experimental compaction condenses local history into a cached digest
+Optional experimental compaction condenses history from the efficient tier into a cached digest
 when handing off. Enable it on the VGR route:
 
 ```toml
@@ -92,11 +92,11 @@ results become `[non-text content]`; non-text user updates, including images,
 are omitted without a marker. Cache savings and task-success effects have not
 been measured in a matched evaluation.
 
-The notice covers the current request and asks the cloud tier to preserve earlier
+The notice covers the current request and asks the capable tier to preserve earlier
 work, inspect its effects, and repeat or undo steps only when needed.
 
-Escalations release when a new user turn is decided locally. Set
-`latch_escalation = true` to retain the cloud tier across later user turns instead.
+Escalations release when a new user turn is decided on the efficient tier. Set
+`latch_escalation = true` to retain the capable tier across later user turns instead.
 Shadow mode always releases the hold at the next user turn.
 All configured VGR durations must be positive.
 
@@ -123,26 +123,26 @@ automatic continuations. Retries retain the original call's tag. Without a
 recognized tag, Switchyard uses the message shape to identify a user turn.
 `x-session-id` is also accepted as a session-header alias.
 
-## Verification and cloud outages
+## Verification and capable-tier outages
 
-Coding without tool history can commit locally on a clean readout of at least
-0.6, or a readout of at least 0.2 plus cloud-judge affirmation. Other final-answer
-branches can use a separate scored verdict after local deliberation.
+Coding without tool history can serve the efficient attempt with a clean readout of at least
+0.6, or a readout of at least 0.2 plus capable-judge affirmation. Other final-answer
+branches can use a separate scored verdict after efficient deliberation.
 
-In `active` mode, an unavailable cloud tier can fall back to an unverified local
-answer. That call receives the original request without the cloud handoff note.
-Fallback is disabled by the kill switch, an open local circuit breaker, or an
-image request the local tier cannot serve.
+In `active` mode, an unavailable capable tier can fall back to an unverified efficient
+answer. That call receives the original request without the capable handoff note.
+Fallback is disabled by the kill switch, an open efficient circuit breaker, or an
+image request the efficient tier cannot serve.
 
 ## Serving modes
 
-- `off` skips candidate generation and serves cloud. This is the default.
-- `shadow` computes a decision but serves cloud.
+- `off` skips candidate generation and serves the capable tier. This is the default.
+- `shadow` computes a decision but serves the capable tier.
 - `evaluate` serves the policy decision for isolated evaluation.
 - `active` serves the policy decision in production and requires
   `active_approval = "prospective-validation-and-canary-approved"`.
 
-VGR buffers a local candidate before releasing it. A streamed candidate that is
+VGR buffers an efficient candidate before releasing it. A streamed candidate that is
 licensed is replayed as a stream; a rejected candidate is not sent to the
 client.
 

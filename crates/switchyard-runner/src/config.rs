@@ -107,6 +107,7 @@ struct RouteConfig {
     reasoning: Option<bool>,
     vision: Option<bool>,
     algorithm: AlgorithmSpec,
+    infra: Option<libsy::InfraPolicy>,
 }
 
 struct TargetPromptPolicy {
@@ -125,6 +126,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
         let tool_calling = take_optional(&mut table, "tool_calling")?;
         let reasoning = take_optional(&mut table, "reasoning")?;
         let vision = take_optional(&mut table, "vision")?;
+        let infra = take_optional(&mut table, "infra")?;
         let algorithm = AlgorithmSpec::deserialize(toml::Value::Table(table))
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
@@ -134,6 +136,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
             reasoning,
             vision,
             algorithm,
+            infra,
         })
     }
 }
@@ -302,8 +305,22 @@ impl DeploymentConfig {
                 .algorithm
                 .build_with_runtime_models(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+            if let Some(infra) = &config.infra {
+                if !matches!(&config.algorithm, AlgorithmSpec::LlmClassifier { config }
+                    if matches!(config.mode, None | Some(crate::ClassifierMode::Capability))
+                        && config.escalation.is_none())
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name}: infra requires capability llm_classifier without escalation"
+                    )));
+                }
+                infra.validate().map_err(|error| {
+                    RunnerError::configuration_source(format!("route {route_name}: {error}"), error)
+                })?;
+            }
             if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
-                && let Some(probe) = self.build_model_properties_probe(&vgr.local_target, &clients)
+                && let Some(probe) =
+                    self.build_model_properties_probe(&vgr.efficient_target, &clients)
             {
                 model_properties_probes.insert(config.id.clone(), probe);
             }
@@ -327,7 +344,8 @@ impl DeploymentConfig {
                 responses_auxiliary_target,
                 decision_targets,
                 models,
-            );
+            )
+            .with_infra(config.infra.clone());
             routes.push((config.id.clone(), route));
         }
         let runner = Runner::new(routes)
@@ -632,20 +650,20 @@ impl DeploymentConfig {
 
     fn build_model_properties_probe(
         &self,
-        local_target_name: &str,
+        efficient_target_name: &str,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
     ) -> Option<ModelPropertiesProbe> {
-        let local_target = self.targets.get(local_target_name)?;
-        let client_config = self.llm_clients.get(&local_target.llm_client)?;
+        let efficient_target = self.targets.get(efficient_target_name)?;
+        let client_config = self.llm_clients.get(&efficient_target.llm_client)?;
         if !matches!(
             client_config.context_discovery,
             Some(ContextDiscovery::LlamaCpp)
         ) {
             return None;
         }
-        let client = clients.get(&local_target.llm_client)?;
+        let client = clients.get(&efficient_target.llm_client)?;
         Some(ModelPropertiesProbe {
-            model: local_target.id.clone(),
+            model: efficient_target.id.clone(),
             format: client_config.format.wire_format(),
             client: Arc::clone(client),
         })
@@ -744,7 +762,7 @@ impl<'de> Deserialize<'de> for HttpBaseUrl {
 struct LlmClientConfig {
     format: ClientFormat,
     base_url: HttpBaseUrl,
-    /// Opt-in context discovery for VGR's local target. Unset disables discovery.
+    /// Opt-in context discovery for VGR's efficient target. Unset disables discovery.
     context_discovery: Option<ContextDiscovery>,
     api_key_env: Option<String>,
     #[serde(default)]
@@ -1053,7 +1071,17 @@ efficient_target = "weak"
 
     #[test]
     fn public_runner_from_toml_builds_a_deployment() -> RunnerResult<()> {
-        let runner = Runner::from_toml(VALID_CONFIG)?;
+        let config = format!(
+            "{VALID_CONFIG}\n[routes.classifier.infra]\n\
+             max_signal_age_ms = 1000\nmin_waiting_requests = 4\nmax_capable_inflight = 2"
+        );
+        let runner = Runner::from_toml(&config)?;
+        assert!(
+            Runner::from_toml(
+                &config.replace("min_waiting_requests = 4", "min_waiting_requests = 0")
+            )
+            .is_err()
+        );
 
         let classifier = runner
             .route("switchyard/classifier")
@@ -1155,8 +1183,8 @@ target = "strong"
 [routes.vgr]
 id = "switchyard/vgr"
 type = "vgr"
-local_target = "weak"
-cloud_target = "strong"
+efficient_target = "weak"
+capable_target = "strong"
 judge_target = "classifier"
 mode = "active"
 active_approval = "prospective-validation-and-canary-approved"
@@ -1193,16 +1221,20 @@ task_typing = false
                 .is_some()
         );
 
-        let identical_ids =
-            vgr_config().replace("local_target = \"weak\"", "local_target = \"strong\"");
-        assert!(error_message(&identical_ids).contains("distinct local and cloud model IDs"));
+        let identical_ids = vgr_config().replace(
+            "efficient_target = \"weak\"",
+            "efficient_target = \"strong\"",
+        );
+        assert!(error_message(&identical_ids).contains("distinct efficient and capable model IDs"));
 
         let bad_approval =
             vgr_config().replace("prospective-validation-and-canary-approved", "approved");
         assert!(error_message(&bad_approval).contains("approval attestation"));
 
-        let missing_target =
-            vgr_config().replace("local_target = \"weak\"", "local_target = \"missing\"");
+        let missing_target = vgr_config().replace(
+            "efficient_target = \"weak\"",
+            "efficient_target = \"missing\"",
+        );
         assert!(error_message(&missing_target).contains("unknown target missing"));
 
         let zero_cooldown = format!("{}breaker_cooldown_seconds = 0\n", vgr_config());
@@ -1323,6 +1355,34 @@ capable_hold_turns = 2
 new = ["send_message"]
 "#
         )
+    }
+
+    #[test]
+    fn stage_and_composite_validate_hold_turns() {
+        for source in [
+            stage_config(),
+            stage_config().replace("efficient_first", "capable_first"),
+            composite_config(),
+        ] {
+            for field in ["capable_hold_turns", "efficient_hold_turns"] {
+                for (turns, valid) in [
+                    (-2_i64, false),
+                    (-1, true),
+                    (0, true),
+                    (3, true),
+                    (i64::from(u32::MAX), true),
+                    (i64::from(u32::MAX) + 1, false),
+                ] {
+                    let configured =
+                        source.replace("capable_hold_turns = 2", &format!("{field} = {turns}"));
+                    let result = runner_from_toml(&configured);
+                    assert_eq!(result.is_ok(), valid, "{field} = {turns}");
+                    if let Err(error) = result {
+                        assert!(error.to_string().contains(field), "{error}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -158,8 +158,7 @@ at startup, and saved costs do not change when prices change. An unreadable or i
 `--pricing-file` stops startup; the server does not use bundled rates instead.
 
 The [pi guide](../../docs/integrations/pi.md#estimate-the-cost) explains how to supply
-rates for your own models. The menubar reads the same file through its `pricing_file`
-setting when you override the bundled rates; its actual spending comes from recorded costs.
+rates for your own models.
 
 Clients can send `x-switchyard-origin: codex-cli` (or another client label) to include an
 `origin` field in each routing record. Missing, empty, or non-text header values produce
