@@ -142,8 +142,9 @@ Without a session ID, the first user message is used, or requests are assigned r
 Guest calls are serialized within each instance; host callbacks can overlap.
 A trap fails runs sharing that instance. It is replaced and its retained state is lost.
 
-Each instance has its own algorithm state. Router-wide budgets and counters are
-not shared.
+Each instance has its own algorithm state. VGR's circuit breaker is not shared
+across the pool. Advisor's review budget is also per instance when no session ID
+is supplied. Enforce gateway-wide spending limits in the host.
 Message-based assignment does not give requests without session IDs persistent
 session state.
 
