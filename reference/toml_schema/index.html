@@ -3069,7 +3069,7 @@ counts. Plain <code>decide</code> and <code>execute</code> retain task routing. 
 </span></code></pre></div>
 <p>All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ea5f01b8f81d5fba7c523516da56f4e482cda4d7/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5f5a44f004bc7bdb4e3a842a0bd97bb874abcedf/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
 for collection and capacity safeguards.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
@@ -3599,7 +3599,13 @@ the signals work and for tuning.</p>
 <td><code>capable_hold_turns</code></td>
 <td style="text-align: center;">No</td>
 <td><code>2</code></td>
-<td>Requests kept on the capable tier after an escalation the signals or a hard override picked. A clean test pass clears the hold early; <code>0</code> disables it.</td>
+<td>Requests kept on capable after a switch. Signal-driven capable decisions also start finite holds. Active holds skip signal processing and classification; <code>0</code> disables; <code>-1</code> pins after a switch.</td>
+</tr>
+<tr>
+<td><code>efficient_hold_turns</code></td>
+<td style="text-align: center;">No</td>
+<td><code>0</code></td>
+<td>Requests kept on efficient after a switch, even when errors appear. <code>0</code> disables; <code>-1</code> pins after a switch.</td>
 </tr>
 <tr>
 <td><code>tool_semantics.observe</code></td>
@@ -3672,7 +3678,7 @@ the signals work and for tuning.</p>
 <td><code>handoff_notes.only_on_wrong_signal_escalation</code></td>
 <td style="text-align: center;">No</td>
 <td><code>true</code></td>
-<td>When <code>true</code>, only the escalating turn itself carries the escalation note. <code>false</code> also adds it to the capable-hold turns that follow.</td>
+<td>When <code>true</code>, restricts escalation notes to signal-driven capable decisions. Held turns receive no notes with either setting.</td>
 </tr>
 </tbody>
 </table>
@@ -3928,7 +3934,13 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 <td><code>stage.capable_hold_turns</code></td>
 <td style="text-align: center;">No</td>
 <td><code>2</code></td>
-<td>Requests kept on the capable tier after escalation. A clean test pass clears the hold early; <code>0</code> disables it.</td>
+<td>Same capable hold as <code>stage_router</code>: <code>0</code> disables; <code>-1</code> pins after a switch.</td>
+</tr>
+<tr>
+<td><code>stage.efficient_hold_turns</code></td>
+<td style="text-align: center;">No</td>
+<td>CF: <code>-1</code>; EF: <code>0</code></td>
+<td>Defaults to pinning efficient after a switch when the classifier selected capable-first. Explicit <code>0</code> disables; positive values hold that many requests.</td>
 </tr>
 <tr>
 <td><code>stage.tool_semantics.observe</code></td>
