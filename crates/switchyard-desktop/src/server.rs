@@ -48,10 +48,14 @@ fn key_command(args: &[&str], key: Option<&str>) -> Result<String, String> {
                 helper.display()
             )
         })?;
-    if let (Some(key), Some(mut stdin)) = (key, child.stdin.take()) {
-        stdin
-            .write_all(key.as_bytes())
-            .map_err(|error| format!("Could not pass the key to the helper: {error}"))?;
+    if let (Some(key), Some(mut stdin)) = (key, child.stdin.take())
+        && let Err(error) = stdin.write_all(key.as_bytes())
+    {
+        // The app tries to stop and reap the helper while preserving the original input error.
+        // Cleanup errors may occur if the helper already exited.
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("Could not pass the key to the helper: {error}"));
     }
     let output = child
         .wait_with_output()

@@ -145,7 +145,7 @@ const ACTIONS: &[(char, &str, &str, ActionKind)] = &[
     (
         'e',
         "Change preferences",
-        "Changes the baseline model that prices savings and the refresh interval.",
+        "Changes the refresh interval and the baseline model used to estimate savings.",
         ActionKind::SavePreferences,
     ),
     (
@@ -536,8 +536,11 @@ struct Busy {
     label: &'static str,
     /// This field names the running action, so its reply can update the right view.
     kind: Option<ActionKind>,
+    /// This field records the popup generation when the action starts.
+    popup_generation: u64,
     started: Instant,
-    /// The UI retains the refresh origin so automatic failures preserve the current popup.
+    /// Automatic refreshes report errors in the status bar, and automatic key checks update
+    /// Settings without opening a popup.
     automatic: bool,
 }
 struct Toast {
@@ -563,6 +566,8 @@ struct App {
     /// and a failed check clears it so the page never shows outdated key states.
     server_keys: Option<Value>,
     popup: Option<Popup>,
+    /// This counter changes whenever a popup opens, closes, or is replaced.
+    popup_generation: u64,
     toast: Option<Toast>,
     busy: Option<Busy>,
     /// A quit request waits for the active refresh to finish.
@@ -588,6 +593,7 @@ impl App {
             action: 0,
             server_keys: None,
             popup: None,
+            popup_generation: 0,
             toast: None,
             busy: None,
             quit: false,
@@ -621,18 +627,37 @@ impl App {
             .map(|&index| &self.data.entries[index])
     }
 
+    // Every replacement or dismissal changes the generation, even when the same form reopens.
+    fn set_popup(&mut self, popup: Option<Popup>) {
+        self.popup_generation += 1;
+        self.popup = popup;
+    }
+
+    /// A reply from a dismissed or replaced popup uses the status bar to preserve the current draft.
+    fn report(&mut self, text: String, error: bool, popup_matches: bool) {
+        if popup_matches {
+            self.notify(text, error);
+        } else if !text.is_empty() {
+            self.toast = Some(Toast {
+                text,
+                error,
+                shown: Instant::now(),
+            });
+        }
+    }
+
     /// Short single-line messages appear in the status bar; others open a scrollable window.
     fn notify(&mut self, text: String, error: bool) {
         if text.is_empty() {
             return;
         }
         if text.contains('\n') || text.chars().count() + 8 > usize::from(self.width) * 2 / 3 {
-            self.popup = Some(Popup::Message {
+            self.set_popup(Some(Popup::Message {
                 title: if error { "Error" } else { "Done" },
                 text,
                 error,
                 scroll: 0,
-            });
+            }));
         } else {
             self.toast = Some(Toast {
                 text,
@@ -649,7 +674,11 @@ impl App {
     ) -> Option<Request> {
         let busy = self.busy.take();
         let automatic = busy.as_ref().is_some_and(|busy| busy.automatic);
-        let kind = busy.and_then(|busy| busy.kind);
+        let kind = busy.as_ref().and_then(|busy| busy.kind);
+        // The reply's popup must be identified before snapshot errors can change the popup.
+        let popup_matches = busy
+            .as_ref()
+            .is_none_or(|busy| !busy.automatic && busy.popup_generation == self.popup_generation);
         match snapshot {
             Ok(data) => {
                 // A refresh follows the newest call or restores an older selection if it is still visible.
@@ -676,7 +705,7 @@ impl App {
                 }
                 // Overview keeps the error after the status message is dismissed.
                 self.data.errors = vec![error.clone()];
-                if automatic {
+                if automatic || !popup_matches || self.popup.is_some() {
                     self.toast = Some(Toast {
                         text: error.lines().next().unwrap_or_default().into(),
                         error: true,
@@ -687,21 +716,31 @@ impl App {
                 }
             }
         }
-        let Some(reply) = reply else {
-            return None;
-        };
+        let reply = reply?;
         match (kind, reply) {
             (Some(ActionKind::ServerKeys), Err(error)) => {
                 self.server_keys = None;
-                self.notify(error, true);
+                self.report(error, true, popup_matches);
             }
             // A form stays open with the error, so the user can fix the input and submit again.
-            (_, Err(error)) => match self.popup.as_mut().and_then(Popup::form_mut) {
-                Some(form) => form.error = error,
-                None => self.notify(error, true),
-            },
+            (_, Err(error)) => {
+                if popup_matches && let Some(form) = self.popup.as_mut().and_then(Popup::form_mut) {
+                    form.error = error;
+                } else {
+                    self.report(error, true, popup_matches);
+                }
+            }
             (Some(ActionKind::PreviewUpdate), Ok(reply)) => {
-                self.popup = Some(Popup::Update {
+                if !popup_matches {
+                    self.report(
+                        "The source update preview finished. Press u in Settings to review it."
+                            .into(),
+                        false,
+                        false,
+                    );
+                    return None;
+                }
+                self.set_popup(Some(Popup::Update {
                     preview: reply.data,
                     scroll: 0,
                     confirm: Form::new(
@@ -709,7 +748,7 @@ impl App {
                         "Update from source?",
                         vec![("Type UPDATE to start", String::new())],
                     ),
-                });
+                }));
             }
             (Some(ActionKind::ServerKeys), Ok(reply)) => {
                 let text = key_lines(self.theme, Some(&reply.data))
@@ -718,12 +757,18 @@ impl App {
                     .collect::<Vec<_>>()
                     .join("\n");
                 self.server_keys = Some(reply.data);
-                self.popup = Some(Popup::Message {
+                if !popup_matches {
+                    if !automatic {
+                        self.report("Checked the saved server keys.".into(), false, false);
+                    }
+                    return None;
+                }
+                self.set_popup(Some(Popup::Message {
                     title: "Server keys",
                     text,
                     error: false,
                     scroll: 0,
-                });
+                }));
             }
             (
                 Some(
@@ -733,30 +778,39 @@ impl App {
                 ),
                 Ok(reply),
             ) => {
-                self.popup = None;
-                self.notify(reply.message, false);
-                return Some(Request::run(
-                    Action::ServerKeys {},
-                    "Checking the server keys",
-                ));
+                if popup_matches {
+                    self.set_popup(None);
+                }
+                self.report(reply.message, false, popup_matches);
+                let mut request = Request::run(Action::ServerKeys {}, "Checking the server keys");
+                request.automatic = true;
+                return Some(request);
             }
             (_, Ok(reply)) => {
-                if matches!(self.popup, Some(Popup::Form(_) | Popup::Update { .. })) {
-                    self.popup = None;
+                if popup_matches
+                    && matches!(self.popup, Some(Popup::Form(_) | Popup::Update { .. }))
+                {
+                    self.set_popup(None);
                 }
                 let details: Vec<&str> = reply.data["details"]
                     .as_array()
                     .map(|items| items.iter().filter_map(Value::as_str).collect())
                     .unwrap_or_default();
                 if details.is_empty() {
-                    self.notify(reply.message, false);
+                    self.report(reply.message, false, popup_matches);
+                } else if !popup_matches {
+                    self.report(
+                        format!("{}\n\n{}", reply.message, details.join("\n")),
+                        false,
+                        false,
+                    );
                 } else {
-                    self.popup = Some(Popup::Message {
+                    self.set_popup(Some(Popup::Message {
                         title: "Details",
                         text: format!("{}\n\n{}", reply.message, details.join("\n")),
                         error: false,
                         scroll: 0,
-                    });
+                    }));
                 }
             }
         }
@@ -817,6 +871,7 @@ impl App {
             kind,
             started: Instant::now(),
             automatic: request.automatic,
+            popup_generation: self.popup_generation,
         });
         Ok(())
     }
@@ -859,7 +914,7 @@ impl App {
         }
         match key.code {
             KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('?') => self.popup = Some(Popup::Help { scroll: 0 }),
+            KeyCode::Char('?') => self.set_popup(Some(Popup::Help { scroll: 0 })),
             KeyCode::Char(digit @ '1'..='4') => {
                 self.tab = TABS[digit as usize - '1' as usize];
             }
@@ -899,10 +954,10 @@ impl App {
             KeyCode::Char('/') => self.filtering = true,
             KeyCode::Enter => {
                 if let Some(entry) = self.selected_entry() {
-                    self.popup = Some(Popup::Detail {
+                    self.set_popup(Some(Popup::Detail {
                         entry: Box::new(entry.clone()),
                         scroll: 0,
-                    });
+                    }));
                 }
             }
             KeyCode::Char('s') => {
@@ -980,7 +1035,7 @@ impl App {
                 request(Action::CheckConfig {}, "Checking the server config")
             }
             ActionKind::Restart => {
-                self.popup = Some(Popup::Restart);
+                self.set_popup(Some(Popup::Restart));
                 None
             }
             ActionKind::OpenSettings => {
@@ -993,40 +1048,40 @@ impl App {
                     .as_ref()
                     .map(|s| (s.baseline_model.clone(), s.refresh_seconds.to_string()))
                     .unwrap_or_default();
-                self.popup = form(
+                self.set_popup(form(
                     FormKind::Preferences,
                     "Change preferences",
                     vec![
                         ("Baseline model ID", baseline),
                         ("Refresh interval in seconds", refresh),
                     ],
-                );
+                ));
                 None
             }
             ActionKind::OpenPrices => request(Action::OpenPrices {}, "Opening the model prices"),
             ActionKind::ServerKeys => request(Action::ServerKeys {}, "Checking the server keys"),
             ActionKind::SaveServerKey => {
-                self.popup = form(
+                self.set_popup(form(
                     FormKind::SaveKey,
                     "Save a server key",
                     vec![("Key name", String::new()), ("Key", String::new())],
-                );
+                ));
                 None
             }
             ActionKind::ImportServerKey => {
-                self.popup = form(
+                self.set_popup(form(
                     FormKind::ImportKey,
                     "Import a server key from your login shell",
                     vec![("Key name", String::new())],
-                );
+                ));
                 None
             }
             ActionKind::RemoveServerKey => {
-                self.popup = form(
+                self.set_popup(form(
                     FormKind::RemoveKey,
                     "Remove a saved server key",
                     vec![("Key name", String::new())],
-                );
+                ));
                 None
             }
             // The update window submits Update after the user reads this preview.
@@ -1046,11 +1101,11 @@ impl App {
             Popup::Restart => {
                 match key.code {
                     KeyCode::Char('y' | 'Y') => {
-                        self.popup = None;
+                        self.set_popup(None);
                         return Some(Request::run(Action::Restart {}, "Restarting the server"));
                     }
                     KeyCode::Char('n' | 'N' | 'q') | KeyCode::Esc | KeyCode::Enter => {
-                        self.popup = None;
+                        self.set_popup(None);
                     }
                     _ => {}
                 }
@@ -1058,7 +1113,7 @@ impl App {
             }
             Popup::Form(form) | Popup::Update { confirm: form, .. } => {
                 match key.code {
-                    KeyCode::Esc => self.popup = None,
+                    KeyCode::Esc => self.set_popup(None),
                     KeyCode::Enter => {
                         let preview = match &self.popup {
                             Some(Popup::Update { preview, .. }) => Some(preview),
@@ -1093,7 +1148,7 @@ impl App {
             _ => {}
         }
         match key.code {
-            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | '?') => self.popup = None,
+            KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q' | '?') => self.set_popup(None),
             // Drawing clamps the scroll to the text, so the last line here has no fixed value.
             code => {
                 if let Some(scroll) = popup.scroll_mut()
@@ -2809,6 +2864,229 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(text.contains("API_KEY_19 not saved"), "{text}");
+    }
+
+    // A late reply must preserve a new draft even when the user reopens the same kind of form.
+    #[test]
+    fn action_replies_only_change_the_popup_that_submitted_them() {
+        for action in ['e', 's'] {
+            for success in [false, true] {
+                for replacement in [
+                    None,
+                    Some(None),
+                    Some(Some('e')),
+                    Some(Some('s')),
+                    Some(Some('?')),
+                ] {
+                    let mut app = App::new(Theme::new(false));
+                    app.tab = Tab::Settings;
+                    let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+                    app.key(key(KeyCode::Char(action)));
+                    app.paste("original");
+                    app.key(key(KeyCode::Tab));
+                    app.paste(if action == 'e' { "30" } else { "secret" });
+                    let request = app.key(key(KeyCode::Enter)).expect("submit form");
+                    let (jobs, _inbox) = mpsc::channel();
+                    let (done, results) = mpsc::channel();
+                    app.start(&jobs, request).expect("start action");
+                    if let Some(next) = replacement {
+                        app.key(key(KeyCode::Esc));
+                        if let Some(letter) = next {
+                            app.key(key(KeyCode::Char(letter)));
+                            app.paste("new draft");
+                        }
+                    }
+                    let message = "The original action completed with a result that is too long for a short status message.";
+                    done.send(Done::Finished {
+                        reply: Some(if success {
+                            Ok(super::Reply {
+                                message: message.into(),
+                                data: json!({"details": ["Original details"]}),
+                            })
+                        } else {
+                            Err(message.into())
+                        }),
+                        snapshot: Ok(Box::new(Snapshot::default())),
+                    })
+                    .expect("completion");
+                    app.poll_results(&results, &jobs).expect("result");
+                    match replacement {
+                        None if !success => {
+                            let form = app
+                                .popup
+                                .as_mut()
+                                .and_then(Popup::form_mut)
+                                .expect("original form");
+                            assert_eq!(form.error, message);
+                            assert_eq!(form.value(0), "original");
+                        }
+                        None => assert!(matches!(app.popup, Some(Popup::Message { .. }))),
+                        Some(None) => assert!(app.popup.is_none()),
+                        Some(Some('?')) => assert!(matches!(app.popup, Some(Popup::Help { .. }))),
+                        Some(Some(letter)) => {
+                            let form = app
+                                .popup
+                                .as_mut()
+                                .and_then(Popup::form_mut)
+                                .expect("replacement form");
+                            assert_eq!(form.value(0), "new draft");
+                            assert!(form.error.is_empty(), "{letter}: {}", form.error);
+                            let text = screen(&mut app, Tab::Settings);
+                            assert!(text.contains("new draft"), "{text}");
+                        }
+                    }
+                    if replacement.is_some() {
+                        let toast = app.toast.as_ref().expect("reported completion");
+                        assert!(toast.text.contains(message));
+                        assert_eq!(toast.error, !success);
+                    }
+                }
+            }
+        }
+    }
+
+    // The automatic key check must preserve the form opened while the save was running.
+    #[test]
+    fn key_refresh_after_saving_does_not_replace_a_new_form() {
+        let mut app = App::new(Theme::new(false));
+        app.tab = Tab::Settings;
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        app.key(key(KeyCode::Char('s')));
+        app.paste("API_KEY");
+        app.key(key(KeyCode::Tab));
+        app.paste("secret");
+        let request = app.key(key(KeyCode::Enter)).expect("save key");
+        let (jobs, inbox) = mpsc::channel();
+        let (done, results) = mpsc::channel();
+        app.start(&jobs, request).expect("start save");
+        inbox.recv().expect("save job");
+        app.key(key(KeyCode::Esc));
+        app.key(key(KeyCode::Char('e')));
+        app.paste("new draft");
+        for reply in [
+            super::Reply {
+                message: "Saved the key.".into(),
+                data: json!(null),
+            },
+            super::Reply {
+                message: String::new(),
+                data: json!({"keys": [{"name": "API_KEY", "saved": true}]}),
+            },
+        ] {
+            done.send(Done::Finished {
+                reply: Some(Ok(reply)),
+                snapshot: Ok(Box::new(Snapshot::default())),
+            })
+            .expect("completion");
+            app.poll_results(&results, &jobs).expect("result");
+            let form = app
+                .popup
+                .as_mut()
+                .and_then(Popup::form_mut)
+                .expect("new form");
+            assert_eq!(form.value(0), "new draft");
+            assert!(form.error.is_empty());
+        }
+        assert!(matches!(
+            inbox.try_recv(),
+            Ok(super::Job::Run(Action::ServerKeys {}))
+        ));
+        assert_eq!(
+            app.server_keys.as_ref().expect("key status")["keys"][0]["saved"],
+            true
+        );
+    }
+
+    // A late preview must preserve a replacement popup instead of opening update confirmation.
+    #[test]
+    fn update_previews_preserve_replacement_popups_and_require_confirmation() {
+        for replacement in [None, Some('e'), Some('?')] {
+            let mut app = App::new(Theme::new(false));
+            app.tab = Tab::Settings;
+            let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+            let request = app.key(key(KeyCode::Char('u'))).expect("preview request");
+            let (jobs, _inbox) = mpsc::channel();
+            let (done, results) = mpsc::channel();
+            app.start(&jobs, request).expect("start preview");
+            if let Some(letter) = replacement {
+                app.key(key(KeyCode::Char(letter)));
+                app.paste("new draft");
+            }
+            done.send(Done::Finished {
+                reply: Some(Ok(super::Reply {
+                    message: String::new(),
+                    data: json!({"preview_token": "reviewed-token"}),
+                })),
+                snapshot: Ok(Box::new(Snapshot::default())),
+            })
+            .expect("preview result");
+            app.poll_results(&results, &jobs).expect("result");
+            match replacement {
+                None => {
+                    assert!(matches!(app.popup, Some(Popup::Update { .. })));
+                    assert!(app.key(key(KeyCode::Enter)).is_none());
+                    app.paste("UPDATE");
+                    let request = app.key(key(KeyCode::Enter)).expect("confirmed update");
+                    assert!(matches!(
+                        request.job,
+                        super::Job::Run(Action::Update { preview_token: Some(token) })
+                            if token == "reviewed-token"
+                    ));
+                }
+                Some('e') => {
+                    let form = app.popup.as_mut().and_then(Popup::form_mut).expect("draft");
+                    assert_eq!(form.value(0), "new draft");
+                    assert!(form.error.is_empty());
+                    assert!(app.toast.is_some());
+                }
+                Some('?') => {
+                    assert!(matches!(app.popup, Some(Popup::Help { .. })));
+                    assert!(app.toast.is_some());
+                }
+                Some(_) => unreachable!(),
+            }
+        }
+    }
+
+    // A snapshot failure must preserve a replacement draft and leave a dismissed popup closed.
+    #[test]
+    fn snapshot_and_action_errors_preserve_dismissed_and_replacement_forms() {
+        for replacement in [false, true] {
+            let mut app = App::new(Theme::new(false));
+            app.tab = Tab::Settings;
+            let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+            app.key(key(KeyCode::Char('e')));
+            app.paste("original");
+            app.key(key(KeyCode::Tab));
+            app.paste("30");
+            let request = app.key(key(KeyCode::Enter)).expect("preferences request");
+            let (jobs, _inbox) = mpsc::channel();
+            let (done, results) = mpsc::channel();
+            app.start(&jobs, request).expect("start preferences");
+            app.key(key(KeyCode::Esc));
+            if replacement {
+                app.key(key(KeyCode::Char('s')));
+                app.paste("new draft");
+            }
+            done.send(Done::Finished {
+                reply: Some(Err("The original action failed.".into())),
+                snapshot: Err("Could not read settings.\nCheck the TOML file.".into()),
+            })
+            .expect("failed result");
+            app.poll_results(&results, &jobs).expect("result");
+            if replacement {
+                let form = app.popup.as_mut().and_then(Popup::form_mut).expect("draft");
+                assert_eq!(form.value(0), "new draft");
+                assert!(form.error.is_empty());
+            } else {
+                assert!(app.popup.is_none());
+            }
+            assert_eq!(
+                app.data.errors,
+                ["Could not read settings.\nCheck the TOML file."]
+            );
+            assert!(app.toast.as_ref().expect("failure").error);
+        }
     }
 
     // These fixtures check the parsed arguments without requiring a Windows editor to run.
