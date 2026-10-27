@@ -774,18 +774,13 @@ fn decode_anthropic_content_block(
 
 fn required_mcp_string(block: &Map<String, Value>, key: &str, kind: &str) -> Result<String> {
     let value = block.get(key).and_then(Value::as_str).unwrap_or_default();
-    validate_nonempty_string(value, &format!("{kind}.{key}"))?;
-    Ok(value.to_owned())
-}
-
-fn validate_nonempty_string(value: &str, path: &str) -> Result<()> {
     if value.is_empty() {
         return Err(TranslationError::InvalidValue {
-            path: path.into(),
+            path: format!("{kind}.{key}"),
             message: "expected a nonempty string".into(),
         });
     }
-    Ok(())
+    Ok(value.to_owned())
 }
 
 fn validate_mcp_input(input: &Value) -> Result<()> {
@@ -1224,6 +1219,16 @@ fn encode_one_anthropic_response_block(block: &ContentBlock) -> Result<Vec<Value
     }
 }
 
+fn validate_nonempty_string(value: &str, path: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(TranslationError::InvalidValue {
+            path: path.into(),
+            message: "expected a nonempty string".into(),
+        });
+    }
+    Ok(())
+}
+
 // Encodes a single normalized content block into Anthropic block JSON.
 fn encode_one_anthropic_block(block: &ContentBlock) -> Result<Vec<Value>> {
     Ok(match block {
@@ -1323,37 +1328,19 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Result<Vec<Value>> {
             validate_nonempty_string(&call.id, "mcp_tool_use.id")?;
             validate_nonempty_string(&call.name, "mcp_tool_use.name")?;
             validate_mcp_input(&call.arguments)?;
-            vec![
-                json!({"type": "mcp_tool_use", "id": call.id, "name": call.name,
-                "server_name": server_name, "input": call.arguments}),
-            ]
+            vec![json!({
+                "type": "mcp_tool_use",
+                "id": call.id,
+                "name": call.name,
+                "server_name": server_name,
+                "input": call.arguments,
+            })]
         }
         ContentBlock::Mcp(McpContent::Result(result)) => {
             validate_nonempty_string(&result.tool_call_id, "mcp_tool_result.tool_use_id")?;
             let mut content = Vec::new();
             for block in &result.content {
-                match block {
-                    ContentBlock::Text { .. }
-                    | ContentBlock::Image { .. }
-                    | ContentBlock::File { .. } => {
-                        crate::codecs::openai_media::validate_media(
-                            block,
-                            WireFormat::AnthropicMessages,
-                        )?;
-                        content.extend(encode_one_anthropic_block(block)?);
-                    }
-                    ContentBlock::Unknown { provider, raw }
-                        if provider.as_str() == WireFormat::AnthropicMessages.as_str() =>
-                    {
-                        content.push(raw.clone());
-                    }
-                    _ => {
-                        // Reject unsupported typed blocks rather than silently dropping them.
-                        return Err(TranslationError::LossyConversion(
-                            "unsupported content in Anthropic MCP result".into(),
-                        ));
-                    }
-                }
+                content.extend(encode_one_anthropic_tool_result_block(block)?);
             }
             let mut item = json!({"type": "mcp_tool_result", "tool_use_id": result.tool_call_id, "content": content});
             if let Some(is_error) = result.is_error {
@@ -1363,7 +1350,7 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Result<Vec<Value>> {
         }
         ContentBlock::Mcp(McpContent::Listing { .. }) => {
             return Err(TranslationError::LossyConversion(
-                "MCP history encoding is not implemented".into(),
+                "MCP listing encoding is not implemented".into(),
             ));
         }
         ContentBlock::Unknown { raw, .. } => vec![raw.clone()],

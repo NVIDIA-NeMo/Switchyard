@@ -4,7 +4,7 @@
 //! Reject inputs that the selected route explicitly disables.
 
 use serde_json::Value;
-use switchyard_protocol::{ContentBlock, LlmRequest};
+use switchyard_protocol::{ContentBlock, LlmRequest, McpContent};
 use switchyard_runner::ModelCapabilities;
 
 /// Return the first explicitly disabled capability used by decoded or preserved input.
@@ -124,8 +124,7 @@ fn unsupported_content(
         {
             Some("tool_calling")
         }
-        ContentBlock::ToolResult(result)
-        | ContentBlock::Mcp(switchyard_protocol::McpContent::Result(result)) => {
+        ContentBlock::ToolResult(result) | ContentBlock::Mcp(McpContent::Result(result)) => {
             unsupported_content(capabilities, &result.content)
         }
         _ => None,
@@ -287,47 +286,33 @@ mod tests {
         ]}]});
         let mut request = decode_request(AnthropicMessages, &body)?;
         // Check the decoded IR without the raw-body fallback.
-        for (capabilities, expected) in [
-            (
+        let check = |request: &LlmRequest, tool_calling, vision| {
+            unsupported_capability(
                 ModelCapabilities {
-                    tool_calling: Some(false),
+                    tool_calling,
+                    vision,
                     ..Default::default()
                 },
-                Some("tool_calling"),
-            ),
-            (
-                ModelCapabilities {
-                    tool_calling: Some(true),
-                    vision: Some(false),
-                    ..Default::default()
-                },
-                Some("vision"),
-            ),
-            (
-                ModelCapabilities {
-                    tool_calling: Some(true),
-                    vision: Some(true),
-                    ..Default::default()
-                },
-                None,
-            ),
+                request,
+                &json!({}),
+            )
+        };
+        for (tool_calling, vision, expected) in [
+            (Some(false), None, Some("tool_calling")),
+            (Some(true), Some(false), Some("vision")),
+            (Some(true), Some(true), None),
         ] {
             assert_eq!(
-                unsupported_capability(capabilities, &request, &json!({})),
-                expected
+                check(&request, tool_calling, vision),
+                expected,
+                "tool_calling={tool_calling:?}, vision={vision:?}"
             );
         }
         request.messages[0].content.remove(0);
         assert_eq!(
-            unsupported_capability(
-                ModelCapabilities {
-                    tool_calling: Some(false),
-                    ..Default::default()
-                },
-                &request,
-                &json!({}),
-            ),
-            Some("tool_calling")
+            check(&request, Some(false), None),
+            Some("tool_calling"),
+            "MCP results alone require tool calling"
         );
         Ok(())
     }

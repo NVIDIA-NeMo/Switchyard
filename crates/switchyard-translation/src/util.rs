@@ -12,7 +12,9 @@ use switchyard_protocol::ModelId;
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
-use crate::llm::{ContentBlock, InstructionBlock, LlmRequest, Message, PreservationMetadata, Role};
+use crate::llm::{
+    ContentBlock, InstructionBlock, LlmRequest, McpContent, Message, PreservationMetadata, Role,
+};
 use crate::policy::{
     LossyConversionPolicy, PreservationPolicy, TranslationPolicy, UnknownFieldPolicy,
 };
@@ -268,7 +270,7 @@ fn content_has_block(
         predicate(block)
             || match block {
                 ContentBlock::ToolResult(result)
-                | ContentBlock::Mcp(crate::McpContent::Result(result)) => {
+                | ContentBlock::Mcp(McpContent::Result(result)) => {
                     content_has_block(&result.content, predicate)
                 }
                 _ => false,

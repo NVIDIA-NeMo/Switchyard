@@ -177,7 +177,7 @@ impl FormatCodec for OpenAiResponsesCodec {
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
         // Responses supports MCP history, but Switchyard does not yet encode it.
-        super::super::common::reject_mcp_content(
+        crate::codecs::common::reject_mcp_content(
             request
                 .instructions
                 .iter()
@@ -428,7 +428,7 @@ impl FormatCodec for OpenAiResponsesCodec {
         _policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
         // Responses supports MCP output, but Switchyard does not yet encode it.
-        super::super::common::reject_mcp_content(
+        crate::codecs::common::reject_mcp_content(
             response.outputs.iter().flat_map(|output| &output.content),
         )?;
         if let Some(body) =

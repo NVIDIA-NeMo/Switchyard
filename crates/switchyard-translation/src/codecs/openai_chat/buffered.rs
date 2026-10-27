@@ -191,7 +191,7 @@ impl FormatCodec for OpenAiChatCodec {
         request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
-        super::super::common::reject_mcp_content(
+        crate::codecs::common::reject_mcp_content(
             request
                 .instructions
                 .iter()
@@ -390,7 +390,7 @@ impl FormatCodec for OpenAiChatCodec {
         response: &AggLlmResponse,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
-        super::super::common::reject_mcp_content(
+        crate::codecs::common::reject_mcp_content(
             response.outputs.iter().flat_map(|output| &output.content),
         )?;
         super::super::responses::validate_response_output(response, WireFormat::OpenAiChat)?;
