@@ -5316,6 +5316,12 @@ fn recent_sessions_text(reply: &Value) -> String {
     if skipped > 0 {
         text_out.push_str(&format!(" · {skipped} unreadable files skipped"));
     }
+    let elsewhere = reply["elsewhere"].as_u64().unwrap_or_default();
+    if elsewhere > 0 {
+        text_out.push_str(&format!(
+            " · {elsewhere} sessions whose directory is not on this computer left out"
+        ));
+    }
     for error in reply["errors"].as_array().into_iter().flatten() {
         text_out.push_str(&format!("\n{}", error.as_str().unwrap_or_default()));
     }

@@ -1440,7 +1440,8 @@ impl Controller {
                 };
                 if !directory.is_dir() {
                     return Err(format!(
-                        "The session directory {} does not exist on this computer.",
+                        "The session directory {} is not on this computer. The transcript may \
+                         come from a remote session or from a project that was removed.",
                         directory.display()
                     ));
                 }
@@ -2165,6 +2166,7 @@ pub(crate) fn recent_sessions(
     let mut errors = Vec::new();
     let mut found = Vec::new();
     let mut skipped = 0;
+    let mut elsewhere = 0;
     for (tool, account, root) in &roots {
         let kind = transcript_kind(*tool)?;
         listed.push(json!({
@@ -2182,6 +2184,12 @@ pub(crate) fn recent_sessions(
         };
         skipped += listing.skipped;
         for session in &listing.sessions {
+            // A session continues in its own directory, so one recorded on another computer,
+            // such as a remote session, or in a folder that is gone, is counted and left out.
+            if !session.cwd.as_deref().is_some_and(Path::is_dir) {
+                elsewhere += 1;
+                continue;
+            }
             let mut value = serde_json::to_value(session).map_err(|error| error.to_string())?;
             let managed_id = session.cwd.as_deref().map(canonical).and_then(|cwd| {
                 managed
@@ -2208,6 +2216,7 @@ pub(crate) fn recent_sessions(
         "sessions": found,
         "total": total,
         "skipped": skipped,
+        "elsewhere": elsewhere,
         "roots": listed,
         "errors": errors,
         "limit": LISTED_SESSIONS,
@@ -2965,6 +2974,20 @@ mod tests {
                 .concat(),
             )
             .expect("transcript");
+            // A transcript from another computer records a directory that is not here, so it
+            // is counted and left out of the listing.
+            let remote_slug = claude_dir.join("projects/-remote-box-home");
+            fs::create_dir_all(&remote_slug).expect("projects");
+            let remote = sessions::claude_session_id();
+            fs::write(
+                remote_slug.join(format!("{remote}.jsonl")),
+                line(
+                    json!({"type": "user", "cwd": home.join("not-on-this-computer"),
+                    "sessionId": remote, "timestamp": now,
+                    "message": {"role": "user", "content": "Remote work"}}),
+                ),
+            )
+            .expect("remote transcript");
             let listing = controller
                 .dispatch(Action::RecentSessions {
                     tool: Some(Harness::Claude),
@@ -2972,6 +2995,7 @@ mod tests {
                 })
                 .expect("listing");
             assert_eq!(listing.data["total"], 1);
+            assert_eq!(listing.data["elsewhere"], 1);
             assert_eq!(listing.data["sessions"][0]["transcript"], json!(transcript));
             assert_eq!(listing.data["sessions"][0]["cwd"], json!(project));
             // Without a harness, both harnesses list together, and each session names the
@@ -2984,6 +3008,7 @@ mod tests {
                 .expect("merged listing");
             let all = merged.data["sessions"].as_array().expect("sessions");
             assert_eq!(all.len(), 2, "{all:?}");
+            assert_eq!(merged.data["elsewhere"], 1);
             let claude = all
                 .iter()
                 .find(|s| s["tool"] == "claude")

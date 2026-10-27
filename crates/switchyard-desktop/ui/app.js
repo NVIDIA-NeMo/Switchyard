@@ -37,7 +37,7 @@ function dismissNotification(event) {
 let snapshot, page = 'overview', busy = false, reading = false, lastRefresh = null, stale = false;
 const sessionView = {tool:'',account:'',route:'',project:''};
 // The transcript browser keeps its listing across refreshes because listing reads every transcript.
-const handoffView = {options:{claude:{route:'',account:''},codex_cli:{route:'',account:''}},recent:null,loading:false,file:''};
+const handoffView = {options:{claude:{route:'',account:''},codex_cli:{route:'',account:''}},chosen:{codex_cli:'',claude:''},recent:null,loading:false,loadedAt:0,container:null};
 const accountView = {tool:'codex_cli',name:''};
 const activity = [];
 const connectedTools=new Set();
@@ -268,7 +268,7 @@ function handoffPreviewText(d){const s=d.source||{},t=d.destination||{};return [
 // A hand-off continues a session in the other command line harness. The destination defaults to
 // that harness's first usable route and its current login; Options can choose others. The route
 // check runs before the review, so a wrong choice is a message and never a dead button.
-const harnessNames={codex_cli:'Codex CLI',codex_app:'Codex app',claude:'Claude Code',pi:'Pi'};
+const harnessNames={codex_cli:'Codex',codex_app:'Codex app',claude:'Claude Code',pi:'Pi'};
 function shortName(tool){return harnessNames[tool]||snapshot?.tools?.find(t=>t.tool===tool)?.label||tool;}
 function otherHarness(tool){return tool==='claude'?'codex_cli':'claude';}
 function compatibleRoute(tool){return snapshot.routes.find(r=>!r.compatibility?.[tool])?.key||'';}
@@ -306,62 +306,66 @@ function renderSessions() {
   c.append(node('p','Codex app workspaces are managed in the Codex app. Supported command line harnesses appear above.','muted'));
   const inventory=card('Recorded sessions');inventory.append(node('p','Recorded calls do not establish that a process is running.'));
   if(snapshot.session_inventory_error)inventory.append(node('p',snapshot.session_inventory_error,'field-error'));
-  for(const item of snapshot.session_inventory||[]){const row=node('div',undefined,'route-row'),last=snapshot.entries.filter(e=>e.session_id===item.id).at(-1);row.append(node('h4',item.id),node('p',[item.repository,item.branch,item.route,item.worktree,item.created_at,last?`Last recorded call: ${last.ts}`:'No recent recorded call'].filter(Boolean).join(' · ')));button(actions(row),'Copy path',()=>copyText(item.worktree));button(actions(row),'Open folder',()=>run({kind:'open_session',id:item.id},false));mutation(actions(row),`Continue in ${shortName(otherHarness(item.tool))}…`,()=>continueSession({kind:'managed',id:item.id},otherHarness(item.tool)));mutation(actions(row),'Review cleanup…',async()=>{const result=await run({kind:'preview_session_cleanup',id:item.id},false);if(!result)return;const data=result.data;confirmAction('Remove session worktree?',`${data.cleanup_notice}\n\nDirectory: ${data.worktree}\nBranch: ${data.current_branch}\nRevision: ${data.current_revision}\n${data.dirty?'This worktree has uncommitted changes. Cleanup will refuse to remove it.':'The worktree has no uncommitted changes.'}${ignoredText(data.ignored)}`,'Remove session',()=>run({kind:'remove_session',id:item.id,preview_token:data.preview_token}));});inventory.append(row);}
+  for(const item of snapshot.session_inventory||[]){const row=node('div',undefined,'route-row'),last=snapshot.entries.filter(e=>e.session_id===item.id).at(-1);row.append(node('h4',item.id),node('p',[item.repository,item.branch,item.route,item.worktree,item.created_at,last?`Last recorded call: ${last.ts}`:'No recent recorded call'].filter(Boolean).join(' · ')));button(actions(row),'Copy path',()=>copyText(item.worktree));button(actions(row),'Open folder',()=>run({kind:'open_session',id:item.id},false));mutation(actions(row),`Switch to ${shortName(otherHarness(item.tool))}`,()=>continueSession({kind:'managed',id:item.id},otherHarness(item.tool)));mutation(actions(row),'Review cleanup…',async()=>{const result=await run({kind:'preview_session_cleanup',id:item.id},false);if(!result)return;const data=result.data;confirmAction('Remove session worktree?',`${data.cleanup_notice}\n\nDirectory: ${data.worktree}\nBranch: ${data.current_branch}\nRevision: ${data.current_revision}\n${data.dirty?'This worktree has uncommitted changes. Cleanup will refuse to remove it.':'The worktree has no uncommitted changes.'}${ignoredText(data.ignored)}`,'Remove session',()=>run({kind:'remove_session',id:item.id,preview_token:data.preview_token}));});inventory.append(row);}
   if(!(snapshot.session_inventory||[]).length){inventory.append(node('p','Switchyard has not recorded any managed sessions.'));const ids=actions(inventory);ids.classList.add('session-ids');for(const id of snapshot.sessions){button(ids,id,()=>{usageView.session=id;navigate('usage');});}}
   renderContinueCard();renderRecentHandoffs();
 }
-const RECENT_SHOWN=20;
-// Recent sessions of both harnesses, newest first, each continued in the other harness. The list
-// is read on demand because it opens every transcript.
+// Switch harness: one dropdown per harness, newest session first, and one button that continues
+// the chosen session in the other harness. The listing is read on demand because it opens every
+// transcript; it reloads when the page opens and when the window regains focus.
+const RECENT_AGE_MS=30000;
 function renderContinueCard(){
-  const c=card('Continue a session in the other harness');
-  c.append(node('p','The newest Codex CLI and Claude Code sessions on this computer, read from their own transcripts. Each one continues in the other harness with the first route it can use and your current login. The review shows the hand-off text before anything is written; nothing is uploaded.'));
+  const c=card('Switch harness');
+  c.append(node('p','Pick a session and switch it to the other harness. It continues in its own directory with the first route that harness can use and your current login. The review shows the hand-off text before anything is written; nothing is uploaded.'));
+  const body=node('div');c.append(body);handoffView.container=body;
+  renderSwitchRows(body);
   const options=node('details');options.append(node('summary','Options: route and account for each destination'));c.append(options);
   for(const tool of ['claude','codex_cli']){
     const chosen=handoffView.options[tool],name=shortName(tool);
     const routes=snapshot.routes.filter(r=>!r.compatibility?.[tool]).map(r=>[r.key,r.id,routeSummary(r)]);
     const route=field(options,`Route for ${name}`,combobox(routes,chosen.route||compatibleRoute(tool)||undefined,{mono:true,placeholder:routes.length?'Search by route or model':'No usable route in the server config'}));
-    route.onchange=()=>{chosen.route=route.value;};
+    route.onchange=()=>{chosen.route=route.value;renderSwitchRows(body);};
     const accounts=snapshot.tools.find(t=>t.tool===tool)?.accounts||[];
     const account=field(options,`Account for ${name}`,combobox([['','Current login','The harness’s normal login'],...accounts.map(n=>[n,n,'Saved account'])],chosen.account));
     account.onchange=()=>{chosen.account=account.value;};
   }
-  const list=node('div');c.append(list);
-  const a=actions(c);
-  button(a,'Refresh list',()=>loadRecentSessions(list));
-  button(a,'Choose a transcript file…',async()=>{try{const path=await request('choose_path',{directory:false});if(path){handoffView.file=path;renderRecentSessions(list);}}catch(error){notify(`Could not choose a file: ${error}`,'error');}});
-  renderRecentSessions(list);
-  if(!handoffView.recent&&!handoffView.loading)loadRecentSessions(list);
+  if(!handoffView.recent||Date.now()-handoffView.loadedAt>RECENT_AGE_MS)loadRecentSessions(body);
 }
-async function loadRecentSessions(list){
-  if(handoffView.loading)return;handoffView.loading=true;renderRecentSessions(list);
+async function loadRecentSessions(body){
+  if(handoffView.loading)return;handoffView.loading=true;
   try{const r=await readAction({kind:'recent_sessions'});handoffView.recent={data:r.data,error:null};}
   catch(error){handoffView.recent={data:null,error:String(error)};}
-  finally{handoffView.loading=false;if(list.isConnected)renderRecentSessions(list);}
+  finally{handoffView.loading=false;handoffView.loadedAt=Date.now();if(body.isConnected)renderSwitchRows(body);}
 }
-function renderRecentSessions(list){
-  list.replaceChildren();
-  if(handoffView.file){const row=node('div',undefined,'route-row');row.append(node('h4','Transcript file'),node('pre',handoffView.file));for(const tool of ['claude','codex_cli'])mutation(actions(row),`Continue in ${shortName(tool)}…`,()=>continueSession({kind:'transcript',path:handoffView.file},tool));button(actions(row),'Clear',()=>{handoffView.file='';renderRecentSessions(list);});list.append(row);}
-  if(handoffView.loading){list.append(node('p','Reading transcripts…','muted'));return;}
-  const recent=handoffView.recent;if(!recent)return;
-  if(recent.error){list.append(node('p',recent.error,'field-error'));return;}
-  const d=recent.data||{},sessions=d.sessions||[],shown=sessions.slice(0,RECENT_SHOWN);
-  list.append(node('p',`${d.total||0} sessions under ${(d.roots||[]).map(r=>r.transcripts).join(', ')}${d.skipped?` · ${d.skipped} unreadable files skipped`:''}${(d.total||0)>shown.length?` · newest ${shown.length} shown`:''}`,'muted'));
-  for(const error of d.errors||[])list.append(node('p',error,'field-error'));
-  if(!sessions.length){list.append(node('p','No Codex CLI or Claude Code transcripts were found. Start a session in either harness, then refresh the list.'));return;}
-  for(const s of shown){
-    const row=node('div',undefined,'route-row'),dest=s.destination||{},folder=(s.cwd||'').replace(/\/+$/,'').split('/').pop();
-    row.append(node('h4',`${s.label}${s.account?` · ${s.account}`:''} · ${folder||'(directory unknown)'}${s.managed_id?' · started by Switchyard':''}`),node('p',[s.cwd||'(directory unknown)',s.branch,s.last_activity,s.title].filter(Boolean).join(' · ')),node('pre',s.transcript));
-    const tool=dest.tool||otherHarness(s.tool),source=s.managed_id?{kind:'managed',id:s.managed_id}:{kind:'transcript',path:s.transcript};
-    const go=mutation(actions(row),`Continue in ${shortName(tool)}…`,()=>continueSession(source,tool),true);
-    if(dest.reason){blocked(go,true);row.append(node('p',dest.reason,'field-error'));}
-    button(actions(row),'Copy transcript path',()=>copyText(s.transcript));
-    list.append(row);
+function sessionOption(s){
+  const folder=(s.cwd||'').replace(/\/+$/,'').split('/').pop()||'(directory unknown)';
+  return [s.transcript,`${folder}${s.title?` · ${s.title}`:''}`,[s.account,s.branch,s.last_activity,s.managed_id?'Switchyard worktree':''].filter(Boolean).join(' · '),[s.cwd,s.native_id].filter(Boolean).join(' ')];
+}
+function renderSwitchRows(body){
+  body.replaceChildren();
+  const recent=handoffView.recent;
+  if(!recent){body.append(node('p','Reading transcripts…','muted'));return;}
+  if(recent.error){body.append(node('p',recent.error,'field-error'));return;}
+  const sessions=recent.data?.sessions||[];
+  for(const tool of ['codex_cli','claude']){
+    const mine=sessions.filter(s=>s.tool===tool),target=otherHarness(tool),name=shortName(tool);
+    const remembered=handoffView.chosen[tool],chosen=mine.some(s=>s.transcript===remembered)?remembered:mine[0]?.transcript;
+    const picker=field(body,`${name} session`,combobox(mine.map(sessionOption),chosen,{placeholder:mine.length?'Search by folder, title, or branch':`No ${name} sessions found`}));
+    picker.host.closest('.field').style.maxWidth='480px';
+    picker.onchange=()=>{handoffView.chosen[tool]=picker.value;};
+    if(!mine.length)picker.disabled=true;
+    const a=actions(body),go=mutation(a,`Switch to ${shortName(target)}`,()=>{const s=mine.find(x=>x.transcript===picker.value)||mine[0];if(!s)return;continueSession(s.managed_id?{kind:'managed',id:s.managed_id}:{kind:'transcript',path:s.transcript},target);},true);
+    let reason='';
+    if(!mine.length)reason=`No ${name} sessions found.`;else{try{handoffDestination(target);}catch(error){reason=error.message||String(error);}}
+    if(reason){blocked(go,true);a.append(node('small',reason,'field-error'));}
   }
+  const d=recent.data||{};
+  const count=(n,noun)=>`${n} ${noun}${n===1?'':'s'}`;
+  for(const note of [...(d.errors||[]),d.elsewhere?`${count(d.elsewhere,'session')} whose directory is not on this computer, such as remote sessions, left out.`:'',d.skipped?`${count(d.skipped,'unreadable transcript file')} skipped.`:''].filter(Boolean))body.append(node('p',note,'muted'));
 }
 function renderRecentHandoffs(){
   const recent=card('Recent hand-offs');recent.append(node('p','Hand-off files hold conversation excerpts. They are readable only by you and are removed seven days after they are written.','muted'));
-  for(const h of snapshot.handoffs||[]){const row=node('div',undefined,'route-row');row.append(node('h4',`${h.source?.label||'?'} → ${h.destination?.label||'?'}`),node('p',[h.created_at,h.destination?.directory,h.destination?.session_id,h.opened===false?'Not opened':''].filter(Boolean).join(' · ')));if(h.file){row.append(node('pre',h.file));button(actions(row),'Copy hand-off path',()=>copyText(h.file));}recent.append(row);}
+  for(const h of snapshot.handoffs||[]){const row=node('div',undefined,'route-row');row.append(node('h4',`${h.source?.label||'?'} → ${h.destination?.label||'?'}`),node('p',[h.created_at,h.destination?.directory,h.destination?.session_id,h.opened===false?'Not opened':''].filter(Boolean).join(' · ')));if(h.file)row.append(node('pre',h.file));recent.append(row);}
   if(!(snapshot.handoffs||[]).length)recent.append(node('p','No hand-offs recorded.'));
 }
 function updatePreviewText(data){return [`Source checkout: ${data.source}`,`Branch: ${data.branch||'Detached HEAD'}`,`Revision: ${data.revision}`,`Local changes: ${data.changes||'None'}`,Array.isArray(data.plan)?data.plan.join('\n'):data.plan].filter(Boolean).join('\n\n');}
@@ -739,6 +743,8 @@ window.addEventListener?.('switchyard-continue',event=>{
   const start=()=>continueSession(detail.source,detail.destination.tool);
   if(snapshot)start();else refresh().then(start);
 });
+// A session quit in Terminal appears on top when the window comes back.
+window.addEventListener?.('focus',()=>{if(page==='sessions'&&handoffView.container?.isConnected&&Date.now()-handoffView.loadedAt>RECENT_AGE_MS)loadRecentSessions(handoffView.container);});
 async function poll() {
   if(!document.querySelector('[role="dialog"]')&&!busy&&document.activeElement?.tagName!=='SELECT')await refresh(false);
   setTimeout(poll,(snapshot?.refresh_seconds||30)*1000);
