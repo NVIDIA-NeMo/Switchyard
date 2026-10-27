@@ -31,6 +31,7 @@ mod openai_decisions;
 pub mod raw;
 pub mod run;
 mod system_one;
+mod vllm_choice;
 
 pub use backend::{Backend, DEFAULT_MAX_RETRIES, HttpBackendConfig};
 pub use client::{AuxiliaryOperation, ModelConfig, TranslatingLlmClient};
@@ -41,6 +42,7 @@ pub use raw::RawResponse;
 pub use run::{ClientRouter, decide, run};
 pub use switchyard_translation::RawEventStream;
 pub use system_one::SystemOneClient;
+pub use vllm_choice::VllmChoiceClient;
 
 /// Registers process-wide compatibility gauges with the global meter provider.
 pub fn initialize_metrics() {

@@ -1,0 +1,70 @@
+schema_version = 1
+
+[llm_clients.hub]
+format = "openai_chat"
+base_url = "https://inference-api.nvidia.com/v1"
+api_key_env = "NVIDIA_API_KEY"
+timeout_ms = 60000
+
+[targets.luna]
+id = "openai/openai/gpt-6-luna"
+llm_client = "hub"
+reasoning_effort = "none"
+
+[decision_clients.hub]
+format = "openai_decisions"
+endpoint = "https://inference-api.nvidia.com/v1/decisions"
+api_key_env = "NVIDIA_API_KEY"
+timeout_ms = 5000
+
+[decision_clients.functiongemma]
+format = "vllm_choice"
+endpoint = "http://127.0.0.1:8003/v1/chat/completions"
+# A nonempty dummy key is enough when the local vLLM server has no authentication.
+api_key_env = "FUNCTIONGEMMA_API_KEY"
+timeout_ms = 5000
+
+[decision_targets.luna_decisions]
+id = "openai/openai/gpt-6-luna"
+decision_client = "hub"
+
+[decision_targets.functiongemma]
+id = "functiongemma-270m"
+decision_client = "functiongemma"
+
+# Inference Hub currently serves Nemotron-Deciffusion-5B-v3 under this alias.
+[decision_targets.deciffusion]
+id = "nvidia/nemotron-deciffusion/nemotron-deciffusion-8b"
+decision_client = "hub"
+
+[routes.baseline]
+id = "switchyard/luna"
+type = "passthrough"
+target = "luna"
+
+[routes.luna_decisions]
+id = "switchyard/speculate-luna"
+type = "speculative_tool_call"
+target = "luna"
+decision_target = "luna_decisions"
+threshold = 0.9
+max_hold_ms = 750
+max_candidates = 25
+
+[routes.functiongemma]
+id = "switchyard/speculate-functiongemma"
+type = "speculative_tool_call"
+target = "luna"
+decision_target = "functiongemma"
+threshold = 0.9
+max_hold_ms = 750
+max_candidates = 25
+
+[routes.deciffusion]
+id = "switchyard/speculate-deciffusion"
+type = "speculative_tool_call"
+target = "luna"
+decision_target = "deciffusion"
+threshold = 0.9
+max_hold_ms = 750
+max_candidates = 25

@@ -181,7 +181,7 @@ Decision clients serve typed judgments for routing classifiers.
 
 | Key | Required | Meaning |
 |---|:---:|---|
-| `format` | Yes | `system_one` or `openai_decisions`. |
+| `format` | Yes | `system_one`, `openai_decisions`, or `vllm_choice`. |
 | `endpoint` | Yes | Full API URL, including the endpoint path. |
 | `api_key_env` | Yes | Environment variable holding a non-empty API key. |
 | `timeout_ms` | Yes | Request and response deadline in milliseconds; must be at least `1`. |
@@ -202,6 +202,11 @@ decision_client = "decisions"
 
 Each `decision_targets` entry pairs an upstream model `id` with a `decision_client`.
 OpenAI receives structured context, instructions, and descriptions as JSON text.
+
+`vllm_choice` serves one Choice question through a vLLM Chat Completions endpoint,
+using constrained one-token labels and their normalized log-probabilities. It supports
+up to 26 options. Start vLLM with `--max-logprobs 128`; the full completion URL goes in
+`endpoint`. A dummy nonempty API key works for an unauthenticated local server.
 
 ## `[routes.<name>]`
 
@@ -262,6 +267,32 @@ see [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md).
 |---|:---:|---|
 | `target` | Yes | Target used for parent and harness-maintenance requests. |
 | `subagents` | No | Nested `passthrough` or `llm_classifier` policy used only for delegated sub-agent work. Nested classifiers currently support only `mode = "custom"`. |
+
+### `speculative_tool_call`
+
+Starts the normal target and a decision model together. A sufficiently probable complete
+tool call can replace the normal answer before its stream is released. Abstention,
+provider errors, and the hold deadline continue the same normal call. Stream handoff
+retains the original provider events; it also commits when the buffered prefix reaches
+64 KiB or 128 events.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---:|---|
+| `target` | Yes | — | Normal LLM target. |
+| `decision_target` | Yes | — | Existing decision target. |
+| `threshold` | No | `0.9` | Minimum selected-call probability, in `[0,1]`. |
+| `max_hold_ms` | No | `400` | Positive hold deadline. |
+| `max_candidates` | No | `64` | Complete calls offered to the judge, excluding abstention; `1..=256`. |
+
+Candidates use enum/constant values, booleans, bounded integers, and omitted optional
+arguments. Each complete argument object must pass the tool's JSON Schema. Unsupported
+or oversized tools remain available to the normal model and are visible to the judge.
+Requests containing non-function tools, unsupported tool-choice policies, structured
+output constraints, multiple completions, or provider-owned continuation state use the normal target directly.
+
+The [three-backend example](../../examples/speculative_tool_call/config.toml) compares
+Luna Decisions, local FunctionGemma, and Deciffusion against the same normal Luna target.
+It uses 25 candidates so FunctionGemma's additional abstention option fits the 26-label limit.
 
 ### `random`
 

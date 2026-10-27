@@ -15,9 +15,9 @@ use libsy::{
     CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
     DecisionJudgeConfig, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
     LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
-    PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels, StageRouter,
-    StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
-    Vgr, VgrConfig,
+    PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels, SpeculativeToolCall,
+    SpeculativeToolCallConfig, StageRouter, StageRouterConfig, SubagentRouter,
+    SubagentRouterConfig, TaskClassifierConfig, ToolSemantics, Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -59,6 +59,16 @@ impl Error for AlgorithmConfigError {
 }
 
 type AlgorithmResult<T> = Result<T, AlgorithmConfigError>;
+
+fn default_speculative_threshold() -> f64 {
+    SpeculativeToolCallConfig::default().threshold
+}
+fn default_speculative_hold_ms() -> u64 {
+    400
+}
+fn default_speculative_candidates() -> usize {
+    SpeculativeToolCallConfig::default().max_candidates
+}
 
 /// How a custom classifier turns the judge's JSON verdict into a target.
 #[derive(Clone, Debug, Deserialize)]
@@ -397,6 +407,22 @@ pub enum AlgorithmSpec {
         /// Separate policy for delegated sub-agent work.
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
+    },
+    /// Races a bounded tool-call decision against the normal answer stream.
+    SpeculativeToolCall {
+        /// Target that serves the normal answer and every fallback.
+        target: String,
+        /// Decision target choosing complete tool calls.
+        decision_target: String,
+        /// Required probability of the selected call.
+        #[serde(default = "default_speculative_threshold")]
+        threshold: f64,
+        /// Maximum time the normal stream is held.
+        #[serde(default = "default_speculative_hold_ms")]
+        max_hold_ms: u64,
+        /// Maximum complete call candidates, excluding abstention.
+        #[serde(default = "default_speculative_candidates")]
+        max_candidates: usize,
     },
     /// Plans on the capable target, then permanently hands off after the first mutation.
     PlanExecute {
@@ -752,6 +778,15 @@ impl StageClassifierConfig {
 }
 
 impl AlgorithmSpec {
+    pub(crate) fn decision_target_name(&self) -> Option<&str> {
+        match self {
+            Self::SpeculativeToolCall {
+                decision_target, ..
+            } => Some(decision_target),
+            _ => self.decision_judge().map(|(target, _)| target),
+        }
+    }
+
     pub(crate) fn decision_judge(&self) -> Option<(&str, &DecisionJudgeRouteConfig)> {
         match self {
             Self::LlmClassifier { config, .. } => config
@@ -775,6 +810,7 @@ impl AlgorithmSpec {
         match self {
             Self::Noop { .. } => Vec::new(),
             Self::Random { targets, .. } => targets.iter().map(String::as_str).collect(),
+            Self::SpeculativeToolCall { target, .. } => vec![target],
             Self::Passthrough {
                 target, subagents, ..
             } => {
@@ -858,6 +894,9 @@ impl AlgorithmSpec {
     pub fn callable_target_names(&self) -> Vec<&str> {
         let mut names = self.routing_target_names();
         match self {
+            Self::SpeculativeToolCall {
+                decision_target, ..
+            } => names.push(decision_target),
             // Custom mode names its judge in `models.judge`; the other two modes
             // use the top-level `classifier_target`.
             Self::LlmClassifier { config, .. } => {
@@ -918,6 +957,14 @@ impl AlgorithmSpec {
             Self::Passthrough { target, .. } => {
                 category_models([(Category::Any, vec![target.clone()])])
             }
+            Self::SpeculativeToolCall {
+                target,
+                decision_target,
+                ..
+            } => category_models([
+                (Category::Any, vec![target.clone()]),
+                (Category::Judge, vec![decision_target.clone()]),
+            ]),
             Self::PlanExecute {
                 capable_target,
                 efficient_target,
@@ -1022,6 +1069,11 @@ impl AlgorithmSpec {
     /// Response target and routing-only dependency for routers that answer while routing.
     pub(crate) fn routing_response_and_dependency(&self) -> Option<(&str, &str)> {
         match self {
+            Self::SpeculativeToolCall {
+                target,
+                decision_target,
+                ..
+            } => Some((target, decision_target)),
             Self::LlmClassifier { config, .. }
                 if matches!(config.classifier_mode(), ClassifierMode::Escalation) =>
             {
@@ -1060,7 +1112,7 @@ impl AlgorithmSpec {
         route_name: &str,
         targets: &BTreeMap<String, ModelId>,
     ) -> AlgorithmResult<Arc<dyn Algorithm>> {
-        build_algorithm(route_name, self, targets)
+        build_algorithm(route_name, self, targets, None)
     }
 
     /// Resolves target names to host model IDs and builds the algorithm and runtime groups.
@@ -1069,7 +1121,16 @@ impl AlgorithmSpec {
         route_name: &str,
         targets: &BTreeMap<String, ModelId>,
     ) -> AlgorithmResult<(Arc<dyn Algorithm>, RuntimeModels)> {
-        let algorithm = self.build(route_name, targets)?;
+        self.build_with_runtime_models_and_prompt(route_name, targets, None)
+    }
+
+    pub(crate) fn build_with_runtime_models_and_prompt(
+        &self,
+        route_name: &str,
+        targets: &BTreeMap<String, ModelId>,
+        target_prompt: Option<&str>,
+    ) -> AlgorithmResult<(Arc<dyn Algorithm>, RuntimeModels)> {
+        let algorithm = build_algorithm(route_name, self, targets, target_prompt)?;
         let names = self.runtime_model_names(route_name)?;
         let mut models =
             RuntimeModels::new(resolve_runtime_models(route_name, names.parent, targets)?);
@@ -1489,9 +1550,30 @@ fn build_algorithm(
     route_name: &str,
     config: &AlgorithmSpec,
     targets: &BTreeMap<String, ModelId>,
+    target_prompt: Option<&str>,
 ) -> AlgorithmResult<Arc<dyn Algorithm>> {
     match config {
         AlgorithmSpec::Noop { .. } => Ok(Arc::new(Noop {})),
+        AlgorithmSpec::SpeculativeToolCall {
+            threshold,
+            max_hold_ms,
+            max_candidates,
+            ..
+        } => {
+            let algorithm = SpeculativeToolCall::new(SpeculativeToolCallConfig {
+                threshold: *threshold,
+                max_hold: std::time::Duration::from_millis(*max_hold_ms),
+                max_candidates: *max_candidates,
+                target_system_prompt: target_prompt.map(str::to_owned),
+            })
+            .map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("speculative_tool_call route {route_name}: {error}"),
+                    error,
+                )
+            })?;
+            Ok(Arc::new(algorithm))
+        }
         AlgorithmSpec::Random {
             targets: names,
             weights,
