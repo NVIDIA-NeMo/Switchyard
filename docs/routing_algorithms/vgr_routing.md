@@ -130,6 +130,19 @@ automatic continuations. Retries retain the original call's tag. Without a
 recognized tag, Switchyard uses the message shape to identify a user turn.
 `x-session-id` is also accepted as a session-header alias.
 
+## Served-answer reporting
+
+The SDK client reports served answers through `Algorithm::observe_answer`.
+Custom libsy hosts can report `AnswerSummary::of(&response)` for aggregate
+responses. For streams, report `final_reply = false` when serving begins and
+report the final summary before forwarding the terminal chunk. Use the request's
+session ID; requests without one retain the existing behavior.
+
+Without a recognized `x-initiator` header, reported incomplete answers and
+immediate recovery nudges retain the turn hold and budget. A reply to a complete
+final answer releases them after a two-second quiet period. Explicit user/agent
+headers take precedence. Hosts that omit reporting retain message-shape detection.
+
 ## Verification and capable-tier outages
 
 Policy version `1.2` allows the default verification branch to accept a clean
