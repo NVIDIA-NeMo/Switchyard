@@ -71,10 +71,11 @@ type Reply struct {
 // A call that ignores cancellation may outlive Route, but cannot access the native run.
 type HostCall func(context.Context, Work) (Reply, error)
 
-// Outcome retains the ordered candidates, prepared request, and any routing-produced answer.
+// Outcome retains the ordered candidates, prepared requests, and any routing-produced answer.
 type Outcome struct {
 	SelectedModelIDs []string         `json:"selected_model_ids"`
 	Request          json.RawMessage  `json:"request"`
+	FallbackRequest  *json.RawMessage `json:"fallback_request"`
 	Response         *json.RawMessage `json:"response"`
 	Metadata         json.RawMessage  `json:"metadata"`
 }
