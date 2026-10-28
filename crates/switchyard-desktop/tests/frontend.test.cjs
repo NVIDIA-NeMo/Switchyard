@@ -86,3 +86,32 @@ test('route creation keeps pending model lists with their endpoint', async () =>
   const result=vm.runInContext(`[lists.get(modelListKey('A'))?.models,lists.has(modelListKey('B')),controls.get('Model').options]`,context);
   assert.deepEqual(JSON.parse(JSON.stringify(result)),[['A/model'],false,[]]);
 });
+
+// Hand-off previews and transcript listings only read, so a running mutation must not block
+// them, while the hand-off itself waits like every other mutation.
+test('hand-off previews and session listings read without taking the busy lock', async () => {
+  const context = editor((command, args) => Promise.resolve({message: '', data: {kind: args.action.kind}}));
+  const result = await vm.runInContext(`(async () => {
+    busy = true;
+    const preview = await run({kind:'preview_handoff'}, false);
+    const sessions = await run({kind:'recent_sessions'}, false);
+    const blocked = await run({kind:'handoff'}, false);
+    return [preview.data.kind, sessions.data.kind, blocked === undefined, busy];
+  })()`, context);
+  assert.deepEqual(Array.from(result), ['preview_handoff', 'recent_sessions', true, true]);
+});
+
+// A wrong route used to surface only as a toast after the click, so the button looked dead.
+test('a hand-off destination defaults to the first route its harness can use', () => {
+  const context = editor();
+  const result = vm.runInContext(`
+    snapshot={tools:[{tool:'claude',label:'Claude Code',available:true,accounts:[]},{tool:'codex_cli',label:'Codex CLI profile',available:false,accounts:[]}],
+      routes:[{key:'sy',id:'switchyard',compatibility:{claude:'This route forwards the login to chatgpt.com.',codex_cli:null}},{key:'cl',id:'claude',compatibility:{claude:null,codex_cli:'This route forwards the login to api.anthropic.com.'}}]};
+    const chosen=handoffDestination('claude');
+    handoffView.options.claude.route='sy';
+    let rejected='';try{handoffDestination('claude');}catch(error){rejected=error.message;}
+    let missing='';try{handoffDestination('codex_cli');}catch(error){missing=error.message;}
+    [chosen.route, chosen.id, chosen.label, rejected.includes('cannot use route switchyard'), missing.includes('not detected')];
+  `, context);
+  assert.deepEqual(Array.from(result), ['cl', 'claude', 'Claude Code', true, true]);
+});

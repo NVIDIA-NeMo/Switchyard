@@ -407,6 +407,55 @@ remove the worktree, branch, and private settings it created; cleanup can fail.
 The app does not show provider reset windows or manage task dependencies,
 session resume, remote workspaces, or review comments. Provider limits still apply.
 
+## Continue a session in another harness
+
+A session can continue in another harness, for example from Codex CLI to
+Claude Code, without replaying its transcript or sharing a login. In
+**Sessions**, the **Switch harness** card has one dropdown per harness, newest
+session first, read from the harness's own transcripts: pick a Codex session
+and click **Switch to Claude Code**, or pick a Claude Code session and click
+**Switch to Codex**. The session continues in its own directory with the first
+route the destination can use and your current login; **Options** chooses
+another route or a saved account for each destination. Recorded sessions have
+the same button. Sessions whose directory is not on this computer, such as
+remote sessions, are left out and counted under the dropdowns. The menu bar
+popup lists the newest sessions with the same action; choosing one opens the
+window on the review.
+
+The review shows the hand-off text that the new session reads: the goal, the
+harness's own compaction summary when it wrote one, the last eight turns, the
+files and commands it touched, and the last error, cut to 32 KiB. Tool output
+is left out. Nothing is written until you confirm. Then Switchyard writes that
+text to `~/.switchyard/handoffs/<id>/HANDOFF.md`, readable only by you, and
+opens the destination harness in the session's directory with a short
+instruction to read the file, summarize the state in five lines, and continue.
+Codex CLI receives the instruction as `developer_instructions`; Claude Code
+receives it as `--append-system-prompt`, with `--add-dir` for the hand-off
+directory. The destination model does the summarizing under its own login.
+Switchyard makes no model call, uploads nothing, and never copies login files.
+
+A hand-off from a recorded session keeps its session ID, so Usage lists both
+harnesses under one session, and the server's per-session routing state carries
+over. A hand-off from a transcript file starts a new session ID in the
+directory that the transcript records. The session's receipt lists every
+launch. Hand-off files are removed seven days after they are written; the new
+session's own transcript stays with its harness. Switchyard reads transcripts
+on this computer only, and only when you ask for a review or a listing.
+
+In the terminal app, `c` continues the selected recorded session, `x` continues
+a transcript file, and `h` lists the sessions of the selected harness and
+account. Each review ends with the whole hand-off text; type `HANDOFF` to write
+it and open the harness.
+
+From a shell, `switchyard-desktop handoff --to claude` continues the session
+that was last recorded in the current directory, in that same terminal. It
+prints the review, asks for confirmation, writes the hand-off, and then starts
+the destination harness in place of itself. `--to codex` goes the other way.
+`--transcript FILE` or `--session ID` names the source, `--route` and
+`--account` choose the destination's route and saved account, `--show` prints
+the hand-off text, and `--yes` skips the confirmation. Run
+`switchyard-desktop handoff --help` for every option.
+
 ## Usage
 
 Usage displays up to 100 calls per page. **Previous calls** and **Next calls** move

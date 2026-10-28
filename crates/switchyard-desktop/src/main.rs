@@ -12,6 +12,8 @@ mod accounts;
 mod controller;
 #[cfg(any(target_os = "macos", windows))]
 mod gui;
+mod handoff_cli;
+mod handoffs;
 mod harness;
 mod models;
 mod pricing;
@@ -30,6 +32,7 @@ use config::Config;
 
 const USAGE: &str = "\
 Usage: switchyard-desktop [--tui | --print | --validate-toml] [FILE]
+       switchyard-desktop handoff --to <codex|claude> [options]
 
 This app opens the desktop window on macOS and Windows.
 Use --tui for the terminal app or --print for a usage summary.
@@ -38,6 +41,8 @@ Use --tui for the terminal app or --print for a usage summary.
   --tui           Run the terminal app.
   --print         Print the current summary and exit.
   --validate-toml Parse FILE as TOML and exit.
+  handoff         Continue this directory's session in another harness, here in
+                  this terminal. Run `switchyard-desktop handoff --help`.
 
 Without FILE, the app uses bundled installation metadata to find desktop.toml.
 Without that metadata, it uses $SY_HOME/desktop.toml, or ~/.switchyard/desktop.toml
@@ -67,11 +72,15 @@ fn main() -> ExitCode {
 
     #[cfg(windows)]
     windows::attach_console();
+    let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if arguments.first().map(String::as_str) == Some("handoff") {
+        return handoff_cli::main(&arguments[1..]);
+    }
     let mut settings = None;
     let mut print_only = false;
     let mut validate_toml = false;
     let mut terminal = false;
-    for arg in std::env::args().skip(1) {
+    for arg in arguments {
         match arg.as_str() {
             "-h" | "--help" => {
                 println!("{USAGE}");

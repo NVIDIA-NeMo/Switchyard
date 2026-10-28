@@ -29,6 +29,24 @@ function render(view) {
     return row;
   }));
   show('note',overview?.note);
+  // Each row continues a session in the other harness. The window reviews it before writing.
+  const sessions=view.sessions||[];
+  $('sessions').hidden=!sessions.length;
+  $('session-list').replaceChildren(...sessions.map(session=>{
+    const row=node('button'),destination=session.destination||{},folder=(session.cwd||'').replace(/\/+$/,'').split('/').pop();
+    row.type='button';row.title=session.cwd||'';
+    row.append(node('span',`${session.label} · ${folder||'(directory unknown)'} → ${destination.label||'?'}`),
+      node('span',[session.branch,ago(session.last_activity),session.title].filter(Boolean).join(' · '),'detail'));
+    if(destination.reason){row.disabled=true;row.title=destination.reason;}
+    const source=session.managed_id?{kind:'managed',id:session.managed_id}:{kind:'transcript',path:session.transcript};
+    row.onclick=()=>command('tray_continue',{request:{source,destination}});
+    return row;
+  }));
+}
+function ago(iso) {
+  if(!iso)return '';const minutes=Math.round((Date.now()-Date.parse(iso))/60000);
+  if(!(minutes>=0))return '';if(minutes<1)return 'just now';if(minutes<60)return `${minutes} min ago`;
+  const hours=Math.round(minutes/60);return hours<24?`${hours} h ago`:`${Math.round(hours/24)} d ago`;
 }
 async function refresh() {
   clearTimeout(refreshTimer);if(refreshing)return;refreshing=true;let seconds=5;
