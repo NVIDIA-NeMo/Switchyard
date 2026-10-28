@@ -61,10 +61,13 @@ impl Vgr {
             breaker: safety::CircuitBreaker::new(config.breaker),
             config,
         });
-        let route = route
-            .with_processor(affinity.clone())
-            .with_classifier(Arc::new(runtime::Held(affinity, reason)))
-            .with_classifier(classifier.clone());
+        // Shadow always serves the capable tier; only a VGR escalation should hold it there.
+        if classifier.config.mode != ServingMode::Shadow {
+            route = route
+                .with_processor(affinity.clone())
+                .with_classifier(Arc::new(runtime::Held(affinity, reason)));
+        }
+        let route = route.with_classifier(classifier.clone());
         Ok(Self { route, classifier })
     }
 }

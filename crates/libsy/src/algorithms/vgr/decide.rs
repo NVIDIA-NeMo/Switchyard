@@ -9,7 +9,7 @@
 use super::{Branch, Capabilities};
 
 /// Version of these rules and dials, carried on every decision record.
-pub(super) const POLICY_VERSION: &str = "1.1";
+pub(super) const POLICY_VERSION: &str = "1.2";
 
 const READOUT: f64 = 0.9;
 const DELIBERATION: f64 = 0.5;
@@ -140,7 +140,11 @@ pub(super) fn decide(
                     AgenticRun::Vetoed => false,
                 }
         }
-        Branch::DefaultVerified => clean && efficient_verified(branch, signals),
+        Branch::DefaultVerified => {
+            clean
+                && (efficient_verified(branch, signals)
+                    || (affirms(signals.capable_judge) && affirms(signals.evidence_confirm)))
+        }
     };
     if commit {
         Route::Efficient

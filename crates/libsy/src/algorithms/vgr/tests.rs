@@ -385,6 +385,30 @@ mod decide {
     }
 
     #[test]
+    fn default_verification_requires_both_capable_verdicts_and_a_clean_record() {
+        let mut caps = agentic(0, 0, 0);
+        caps.branch = Branch::DefaultVerified;
+        for first in [None, Some(Tri::Unknown), Some(Tri::No), Some(Tri::Yes)] {
+            for second in [None, Some(Tri::Unknown), Some(Tri::No), Some(Tri::Yes)] {
+                let signals = Signals {
+                    capable_judge: first,
+                    evidence_confirm: second,
+                    ..Signals::default()
+                };
+                let expected = if first == Some(Tri::Yes) && second == Some(Tri::Yes) {
+                    Route::Efficient
+                } else {
+                    Route::Capable
+                };
+                assert_eq!(decide(&caps, &signals, None), expected);
+                caps.tools.as_mut().unwrap().errors = 1;
+                assert_eq!(decide(&caps, &signals, None), Route::Capable);
+                caps.tools.as_mut().unwrap().errors = 0;
+            }
+        }
+    }
+
+    #[test]
     fn deliberation_commits_only_on_an_affirmative_score() {
         for branch in [Branch::Chat, Branch::Agentic, Branch::DefaultVerified] {
             let mut caps = agentic(0, 1, 1);

@@ -132,7 +132,11 @@ recognized tag, Switchyard uses the message shape to identify a user turn.
 
 ## Verification and capable-tier outages
 
-Policy version `1.1` verifies typed factual answers on the answer itself, including
+Policy version `1.2` allows the default verification branch to accept a clean
+efficient attempt when the capable judge approves both the evidence and the
+answer. A negative or unavailable evidence verdict skips the answer check.
+
+Typed factual answers are verified on the answer itself, including
 later user turns without tool work. A readout of at least 0.9 can serve the
 efficient answer; lower scores require capable-tier verification. Scored verdicts
 require yes and no together to hold at least half the first token's probability.
@@ -149,7 +153,10 @@ image request the efficient tier cannot serve.
 ## Serving modes
 
 - `off` skips candidate generation and serves the capable tier. This is the default.
-- `shadow` computes a decision but serves the capable tier.
+- `shadow` computes a decision but serves the capable tier. It continues evaluating
+  subsequent steps until VGR escalates, then holds the capable tier for the rest
+  of the user turn. A new user turn resumes evaluation, including when
+  `latch_escalation = true`.
 - `evaluate` serves the policy decision for isolated evaluation.
 - `active` serves the policy decision in production and requires
   `active_approval = "prospective-validation-and-canary-approved"`.

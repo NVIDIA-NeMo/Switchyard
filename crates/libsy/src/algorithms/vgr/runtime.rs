@@ -33,6 +33,8 @@ use crate::{LibsyError, Result};
 
 /// Whether turn verification latched the capable tier; cleared when the user responds.
 const TURN_LATCHED_KEY: &str = "vgr_turn_latched";
+/// Holds a shadow turn only after a VGR escalation.
+const SHADOW_HELD_KEY: &str = "vgr_shadow_held";
 pub(super) const TURN_STREAK_KEY: &str = "vgr_turn_streak";
 /// Unix seconds at the first request of the current user turn.
 const TURN_STARTED_KEY: &str = "vgr_turn_started";
@@ -119,6 +121,7 @@ impl Classifier for VgrClassifier {
         };
         if new_turn {
             state.extra.remove(TURN_STARTED_KEY);
+            state.extra.remove(SHADOW_HELD_KEY);
             set_flag(state, HANDOFF_SENT_KEY, false);
         }
         if answered {
@@ -126,7 +129,9 @@ impl Classifier for VgrClassifier {
             set_count(state, TURN_STREAK_KEY, 0);
         }
         let turn_budget_spent = self.turn_budget_spent(state);
-        let short_circuit = if self.config.mode == ServingMode::Off {
+        let short_circuit = if flag(state, SHADOW_HELD_KEY) {
+            Some("turn_verification_latched")
+        } else if self.config.mode == ServingMode::Off {
             Some("mode_off")
         } else if self
             .config
@@ -224,7 +229,7 @@ impl Classifier for VgrClassifier {
                 ));
             }
             if self.config.mode == ServingMode::Shadow {
-                return Ok(self.escalate(
+                return Ok(self.serve_capable(
                     driver,
                     "turn_verification_complete",
                     None,
@@ -243,8 +248,18 @@ impl Classifier for VgrClassifier {
         let caps = derive_capabilities(request, &attempt, task_type);
         let signals = self.gather(&context, &caps).await;
         let route = decide::decide(&caps, &signals, self.config.confirmed_min_clean_tail());
-        if route == Route::Capable || self.config.mode == ServingMode::Shadow {
+        if route == Route::Capable {
             return Ok(self.escalate(
+                driver,
+                "decided",
+                Some(caps.branch),
+                request,
+                state,
+                Some(&attempt),
+            ));
+        }
+        if self.config.mode == ServingMode::Shadow {
+            return Ok(self.serve_capable(
                 driver,
                 "decided",
                 Some(caps.branch),
@@ -275,6 +290,21 @@ impl VgrClassifier {
     }
 
     fn escalate(
+        &self,
+        driver: &Driver,
+        reason: &'static str,
+        branch: Option<Branch>,
+        request: &mut Request,
+        state: &mut State,
+        unverified_final: Option<&str>,
+    ) -> Scored {
+        if self.config.mode == ServingMode::Shadow {
+            set_flag(state, SHADOW_HELD_KEY, true);
+        }
+        self.serve_capable(driver, reason, branch, request, state, unverified_final)
+    }
+
+    fn serve_capable(
         &self,
         driver: &Driver,
         reason: &'static str,
@@ -456,7 +486,7 @@ impl VgrClassifier {
                     signals.evidence_verifier = Some(capable_ask(Question::Evidence).await);
                 }
             }
-            Branch::Chat => {
+            Branch::Chat | Branch::DefaultVerified => {
                 signals.capable_judge = Some(capable_ask(Question::Evidence).await);
                 // Asked only once the first affirms, so a refutation costs one call.
                 if signals.capable_judge == Some(Tri::Yes) {

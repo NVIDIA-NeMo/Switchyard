@@ -134,7 +134,10 @@ async fn malformed_tool_calls_escalate_and_complete_ones_are_judged() -> Result<
 
 #[tokio::test]
 async fn a_truncated_efficient_attempt_is_judged_before_it_escalates() -> Result<()> {
-    let route = route(|config| config.targets.judge = None)?;
+    let route = route(|config| {
+        config.targets.judge = None;
+        config.targets.capable_judge = None;
+    })?;
     let calls = Arc::new(Calls::default());
     let task = session(vec![Message::text(Role::User, "explain quicksort")]);
     let cut_off = || {
@@ -468,7 +471,7 @@ async fn decisions_attach_the_reason_and_exclude_efficient_capable_fallbacks() -
         assert_eq!(evidence["source"], "vgr");
         assert_eq!(evidence["reason_code"], reason);
         assert_eq!(evidence["verdict"], served);
-        assert_eq!(evidence["policy_version"], "1.1");
+        assert_eq!(evidence["policy_version"], "1.2");
         if reason == "decided" {
             assert_eq!(evidence["branch"], "DefaultVerified");
         }
@@ -1112,5 +1115,141 @@ async fn a_capable_decision_falls_back_to_efficient_without_the_handoff_note() -
             assert_eq!(fallback.llm_request.messages, task().llm_request.messages);
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_verification_asks_capable_evidence_then_answer() -> Result<()> {
+    for (evidence, answer, expected) in [
+        ("yes", "yes", "efficient"),
+        ("yes", "no", "capable"),
+        ("yes", "unclear", "capable"),
+        ("no", "yes", "capable"),
+        ("unclear", "yes", "capable"),
+    ] {
+        let route = route(|_| {})?;
+        let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&calls);
+        let (selected, _) = test_drive_with_models(
+            route,
+            session(vec![Message::text(Role::User, "explain quicksort")]),
+            category_models(Category::Any, &["efficient", "capable"]),
+            move |target: ModelId, request: Request| {
+                let seen = Arc::clone(&seen);
+                async move {
+                    Ok(match target.as_str() {
+                        "efficient" => reply("Choose a pivot and partition the input."),
+                        "judge" => scored(0.1),
+                        "capable-judge" => {
+                            let is_answer = request
+                                .llm_request
+                                .instructions
+                                .iter()
+                                .flat_map(|block| &block.content)
+                                .any(|block| {
+                                    matches!(block, ContentBlock::Text { text }
+                                    if text.starts_with("You are a strict answer verifier"))
+                                });
+                            seen.lock().push(is_answer);
+                            reply(if is_answer { answer } else { evidence })
+                        }
+                        _ => reply("capable answer"),
+                    })
+                }
+            },
+        )
+        .await?;
+        assert_eq!(selected.as_str(), expected, "{evidence}, {answer}");
+        assert_eq!(
+            *calls.lock(),
+            if evidence == "yes" {
+                vec![false, true]
+            } else {
+                vec![false]
+            }
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn shadow_keeps_judging_a_turn_until_vgr_escalates_it() -> Result<()> {
+    fn truncated() -> Response {
+        tool_call(json!(r#"{"command":"l"#), StopReason::MaxTokens)
+    }
+    for latch_escalation in [false, true] {
+        let route = route(|config| {
+            config.mode = ServingMode::Shadow;
+            config.latch_escalation = latch_escalation;
+        })?;
+        let calls = Arc::new(Calls::default());
+        let mut messages = vec![Message::text(Role::User, "fix the build")];
+        for (step, efficient) in [complete_call, complete_call, truncated, complete_call]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                drive(
+                    &route,
+                    session(messages.clone()),
+                    calls.clone(),
+                    efficient,
+                    0.1
+                )
+                .await?,
+                "capable"
+            );
+            let id = format!("c{step}");
+            messages.extend([call(&id), result(&id, "ok")]);
+        }
+        assert_eq!(calls.0.load(Ordering::Relaxed), 3);
+        messages.push(Message::text(Role::User, "keep going"));
+        drive(
+            &route,
+            initiated_by(session(messages.clone()), "agent"),
+            calls.clone(),
+            complete_call,
+            0.1,
+        )
+        .await?;
+        assert_eq!(calls.0.load(Ordering::Relaxed), 3);
+        drive(
+            &route,
+            initiated_by(session(messages), "user"),
+            calls.clone(),
+            complete_call,
+            0.1,
+        )
+        .await?;
+        assert_eq!(calls.0.load(Ordering::Relaxed), 4);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn shadow_final_answer_commits_do_not_latch_but_rejections_do() -> Result<()> {
+    let route = route(|config| {
+        config.mode = ServingMode::Shadow;
+        config.targets.capable_judge = None;
+    })?;
+    let calls = Arc::new(Calls::default());
+    let mut messages = vec![Message::text(Role::User, "explain quicksort")];
+    for probability in [0.9, 0.9, 0.1, 0.9] {
+        let task = initiated_by(session(messages.clone()), "agent");
+        assert_eq!(
+            drive(
+                &route,
+                task,
+                calls.clone(),
+                || reply("Partition around a pivot."),
+                probability
+            )
+            .await?,
+            "capable"
+        );
+        messages.push(Message::text(Role::Assistant, "Partition around a pivot."));
+        messages.push(Message::text(Role::User, "continue"));
+    }
+    assert_eq!(calls.0.load(Ordering::Relaxed), 3);
     Ok(())
 }
