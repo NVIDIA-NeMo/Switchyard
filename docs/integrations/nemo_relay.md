@@ -313,8 +313,9 @@ The plugin captures two existing Switchyard spans. Each routing or answer LLM
 call becomes a `libsy.client_call` scope. Physical HTTP attempts and retries
 become `libsy.upstream_attempt` child scopes. Buffered calls close with the response;
 streaming calls close when the stream finishes, fails, or is dropped. The
-projection contains allowlisted, payload-free routing metadata only and does not
-copy prompts, responses, provider error bodies, or credentials into Relay.
+projection contains allowlisted routing metadata by default. Optional
+[routing payload capture](#inspect-classifier-and-judge-payloads) adds the final
+classifier/judge request and successful buffered response.
 
 `switchyard.call_phase` records when Switchyard issued a client call:
 `routing` while the algorithm was still deciding, or `completion` after a
@@ -328,6 +329,62 @@ classification as `routing` or `answer`.
 | Routing or answer model call | `libsy.client_call` scope | Relay's managed request scope | Starts with the Switchyard call and closes with the buffered response or terminal stream event. |
 | Physical provider request or retry | `libsy.upstream_attempt` scope | Its `libsy.client_call` scope | Starts before the HTTP attempt and closes on response, error, or cancellation. |
 | Routing request, decision, overhead, or failure | Existing `switchyard.routing.*` mark | Active Relay scope at emission | Point-in-time mark using the existing outcome fields. |
+
+### Inspect Classifier and Judge Payloads
+
+Enable capture to inspect the request a classifier actually received, including
+its system prompt, task context, output schema, resolved model, and target body
+settings. This helps distinguish a poor verdict from missing task context.
+
+Add these options to the existing `plugins.dynamic.config` table in your Relay
+`plugins.toml`, then restart the host:
+
+```toml
+[plugins.dynamic.config]
+switchyard_config_path = "/etc/switchyard/routes.toml"
+capture_routing_payloads = true
+max_routing_payload_bytes = 262144
+```
+
+`capture_routing_payloads` defaults to `false`. The positive
+`max_routing_payload_bytes` limit defaults to 262144 encoded bytes (256 KiB) per body.
+Bodies over the limit are omitted with
+`body = null` and `truncated = true`; increase the limit when an experiment
+needs the complete context. Capture does not change what the model receives.
+
+Within the routed request's trace:
+
+1. Find the `libsy.client_call` scope for the classifier/judge model, with
+   `switchyard.call_phase = routing`.
+2. Open its `libsy.upstream_attempt` child. The request is the scope input;
+   its successful buffered response is the scope output. Retries have separate
+   attempt scopes. Each payload has a JSON string in `body` and a `truncated` flag.
+3. Inspect the `switchyard.routing.decision` mark on the same routed request
+   for the selected and served model. The judge response contains the returned
+   verdict; the decision mark records what Switchyard did with it.
+
+For an [ATOF export](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/atof),
+the request appears directly in the attempt start event's `data`, and the
+response in the matching end event's `data`. Their `uuid` values match;
+`parent_uuid` identifies the classifier call. For example, inspect complete
+captured requests with:
+
+```bash
+jq 'select(.name == "libsy.upstream_attempt" and .scope_category == "start" and .data.body != null) | .data.body | fromjson' events.jsonl
+```
+
+Capture follows routing-phase HTTP calls, which include LLM classifier/judge
+calls and may include other model calls used while deciding a route. It excludes
+completion-phase payloads, streamed response bodies, HTTP error bodies, and
+non-LLM decision-client payloads such as SystemOne. This option belongs to the
+native Relay plugin; enabling standalone Switchyard TRACE logging does not
+enable payload capture.
+
+Payloads can contain sensitive task data. The plugin masks configured provider
+keys and passes the captured data through Relay's normal event sanitizers and
+configured exporters. Personal data and other secrets require suitable
+sanitizers; see Relay's
+[PII redaction options](https://docs.nvidia.com/nemo/relay/configure-plugins/pii-redaction/about).
 
 ### How Routing Appears in Traces
 

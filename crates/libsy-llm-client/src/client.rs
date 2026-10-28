@@ -502,6 +502,7 @@ impl TranslatingLlmClient {
         } else {
             &self.client
         };
+        crate::payload_capture::record("request", || body);
         let builder = client.post(url).json(body);
         let builder = forward_metadata_headers(builder, metadata, backend);
         let builder = backend.apply_forwarded_auth(builder, metadata);
@@ -554,6 +555,7 @@ impl TranslatingLlmClient {
                 }
             };
             metrics::record_upstream_attempt(Some(status.as_u16()));
+            crate::payload_capture::record("response", || String::from_utf8_lossy(&body));
             return Ok(EncodedResponse::Buffered {
                 status: status.as_u16(),
                 body: body.to_vec(),

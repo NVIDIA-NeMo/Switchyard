@@ -234,8 +234,11 @@ retains ownership of the outer LLM lifecycle.
 The plugin also captures the existing `libsy.client_call` and
 `libsy.upstream_attempt` spans for each routed request. It replays completed
 spans beneath Relay's outer LLM scope with their original timestamps. The
-projection includes allowlisted, payload-free routing metadata only; it excludes
-prompts, responses, provider error bodies, and credentials.
+projection contains allowlisted routing metadata by default. To inspect the
+final classifier/judge request and buffered response, enable
+[routing payload capture](../../docs/integrations/nemo_relay.md#inspect-classifier-and-judge-payloads)
+in the plugin configuration. Capture uses Relay's existing exporters and writes
+no payload files inside the plugin.
 
 ## Observability
 
