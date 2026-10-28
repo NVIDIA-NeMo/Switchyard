@@ -40,6 +40,33 @@ func input() Input {
 	}
 }
 
+// Completed outcomes retain fallback requests while absent requests remain optional.
+func TestOutcomeFallbackRequest(t *testing.T) {
+	request := input().Request
+	for _, tc := range []struct {
+		name, field string
+		present     bool
+	}{
+		{"present", `"fallback_request":` + string(request), true},
+		{"missing", "", false},
+		{"null", `"fallback_request":null`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var outcome Outcome
+			data := []byte(`{` + tc.field + `}`)
+			if err := json.Unmarshal(data, &outcome); err != nil {
+				t.Fatal(err)
+			}
+			if present := outcome.FallbackRequest != nil; present != tc.present {
+				t.Fatalf("fallback request present=%v, want %v", present, tc.present)
+			}
+			if tc.present && string(*outcome.FallbackRequest) != string(request) {
+				t.Fatalf("fallback request=%s, want %s", *outcome.FallbackRequest, request)
+			}
+		})
+	}
+}
+
 // Selection retains eligible targets and Stage's prepared request across the codecs.
 func TestSelectionAndTranslation(t *testing.T) {
 	type chatRequest struct {
