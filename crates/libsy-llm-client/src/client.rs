@@ -371,8 +371,6 @@ impl TranslatingLlmClient {
         if matches!(backend, Backend::OpenAiChat(_)) {
             ensure_openai_stream_usage(&mut body);
         }
-        // Only attribute defaults that survived later request normalization unchanged.
-        injected_extra_body.retain(|key| body.get(key) == backend.extra_body().get(key));
         let streaming = endpoint.allows_streaming()
             && body.get("stream").and_then(Value::as_bool).unwrap_or(false);
         let url = endpoint.url(backend);
@@ -392,24 +390,33 @@ impl TranslatingLlmClient {
             until.fetch_max(deadline, Ordering::Relaxed);
         }
         // Let cooldown expire naturally; a successful in-flight call may overlap a newer failure.
-        match result {
-            Err(LlmClientError::UpstreamHttp { status, body })
-                if matches!(status.as_u16(), 400 | 422) =>
-            {
-                let rejected = rejected_extra_body_keys(&body, &injected_extra_body);
-                if rejected.is_empty() {
-                    Err(LlmClientError::UpstreamHttp { status, body })
-                } else {
-                    Err(LlmClientError::Configuration {
-                        message: format!(
-                            "model {model} rejected extra_body keys [{}]; remove or correct them in the target configuration",
-                            rejected.join(", ")
-                        ),
-                    })
-                }
+        if let Err(LlmClientError::UpstreamHttp {
+            status,
+            body: error,
+        }) = &result
+            && matches!(status.as_u16(), 400 | 422)
+        {
+            // Exclude fields that normalization changes or would generate without extra_body.
+            let mut defaults = json!({"stream": body.get("stream")});
+            apply_reasoning_effort(&mut defaults, backend);
+            if matches!(backend, Backend::OpenAiChat(_)) {
+                ensure_openai_stream_usage(&mut defaults);
             }
-            result => result,
+            injected_extra_body.retain(|key| {
+                body.get(key) == backend.extra_body().get(key)
+                    && (key == "stream" || body.get(key) != defaults.get(key))
+            });
+            let rejected = rejected_extra_body_keys(error, &injected_extra_body);
+            if !rejected.is_empty() {
+                return Err(LlmClientError::Configuration {
+                    message: format!(
+                        "model {model} rejected extra_body keys [{}]; remove or correct them in the target configuration",
+                        rejected.join(", ")
+                    ),
+                });
+            }
         }
+        result
     }
 
     // Sends the encoded body, retrying retryable failures within the backend's retry budget.
@@ -1332,17 +1339,13 @@ fn rejected_extra_body_keys(body: &str, injected: &[String]) -> Vec<String> {
         .iter()
         .filter(|key| {
             parsed.pointer("/error/param").and_then(Value::as_str) == Some(key.as_str())
-                || parsed
-                    .get("detail")
-                    .and_then(Value::as_array)
-                    .is_some_and(|details| {
-                        details.iter().any(|detail| {
-                            matches!(
-                                detail["type"].as_str(),
-                                Some("extra_forbidden" | "value_error.extra")
-                            ) && detail["loc"] == json!(["body", key])
-                        })
+                || parsed["detail"].as_array().is_some_and(|details| {
+                    details.iter().any(|detail| {
+                        (detail["type"] == "extra_forbidden"
+                            || detail["type"] == "value_error.extra")
+                            && detail["loc"] == json!(["body", key])
                     })
+                })
         })
         .cloned()
         .collect()
@@ -3958,36 +3961,74 @@ mod tests {
     #[tokio::test]
     async fn normalized_defaults_are_not_blamed_on_extra_body()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
-        for (key, responses, streaming) in [
-            ("reasoning", true, false),
-            ("reasoning_effort", false, false),
-            ("stream_options", false, true),
+        for (key, value, responses, streaming, configuration) in [
+            (
+                "stream_options",
+                json!({"include_usage": true}),
+                false,
+                true,
+                false,
+            ),
+            ("reasoning", json!({"effort": "high"}), true, false, false),
+            ("reasoning_effort", json!("high"), false, false, false),
+            ("reasoning", Value::Null, true, false, false),
+            ("reasoning_effort", Value::Null, false, false, false),
+            ("stream_options", Value::Null, false, true, false),
+            (
+                "stream_options",
+                json!({"include_usage": false}),
+                false,
+                true,
+                true,
+            ),
+            (
+                "reasoning",
+                json!({"effort": "high", "summary": "auto"}),
+                true,
+                false,
+                true,
+            ),
         ] {
             let server = MockServer::start().await;
             Mock::given(method("POST"))
                 .respond_with(
                     ResponseTemplate::new(400).set_body_json(json!({"error": {"param": key}})),
                 )
-                .expect(1)
+                .expect(2)
                 .mount(&server)
                 .await;
             let mut config = config(&format!("{}/v1", server.uri()));
-            config.extra_body.insert(key.to_string(), Value::Null);
+            config.extra_body.insert(key.to_string(), value);
             config.reasoning_effort = Some("high".to_string());
-            let backend = if responses {
-                Backend::OpenAiResponses(config)
-            } else {
-                Backend::OpenAiChat(config)
-            };
-            let client = TranslatingLlmClient::new(&[ModelConfig::new("gpt", backend, None)])?;
-            let error = client.call_rewrite_model_raw(
-                json!({"model": "gpt", "messages": [{"role": "user", "content": "hi"}], "stream": streaming}),
-                None, Some(&ModelId::new("gpt")), WireFormat::OpenAiChat,
-            ).await.err().ok_or("expected rejection")?;
-            assert!(
-                matches!(error, LlmClientError::UpstreamHttp { .. }),
-                "{key}: {error:?}"
-            );
+            for with_extra_body in [true, false] {
+                if !with_extra_body {
+                    config.extra_body.clear();
+                }
+                let backend = if responses {
+                    Backend::OpenAiResponses(config.clone())
+                } else {
+                    Backend::OpenAiChat(config.clone())
+                };
+                let client = TranslatingLlmClient::new(&[ModelConfig::new("gpt", backend, None)])?;
+                let error = client.call_rewrite_model_raw(
+                    json!({"model": "gpt", "messages": [{"role": "user", "content": "hi"}], "stream": streaming}),
+                    None, Some(&ModelId::new("gpt")), WireFormat::OpenAiChat,
+                ).await.err().ok_or("expected rejection")?;
+                assert!(
+                    if configuration && with_extra_body {
+                        matches!(error, LlmClientError::Configuration { .. })
+                    } else {
+                        matches!(error, LlmClientError::UpstreamHttp { status, body }
+                            if status == StatusCode::BAD_REQUEST
+                                && serde_json::from_str::<Value>(&body).ok() == Some(json!({"error": {"param": key}})))
+                    },
+                    "{key}: unexpected rejection"
+                );
+            }
+            let requests = server.received_requests().await.ok_or("missing requests")?;
+            let with_default: Value = serde_json::from_slice(&requests[0].body)?;
+            let without_default: Value = serde_json::from_slice(&requests[1].body)?;
+            assert_eq!(with_default != without_default, configuration, "{key}");
         }
         Ok(())
     }
