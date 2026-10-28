@@ -18,7 +18,7 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
-use crate::privacy::LocalPolicy;
+use crate::privacy::RestrictionPolicy;
 use crate::route::ExecutionLane;
 use crate::runner::ModelPropertiesProbe;
 use crate::{
@@ -108,14 +108,14 @@ struct RouteConfig {
     tool_calling: Option<bool>,
     reasoning: Option<bool>,
     vision: Option<bool>,
-    local: Option<LocalConfig>,
+    restricted: Option<RestrictedConfig>,
     algorithm: AlgorithmSpec,
     infra: Option<libsy::InfraPolicy>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct LocalConfig {
+struct RestrictedConfig {
     #[serde(default)]
     require_explicit_signal: bool,
     #[serde(default)]
@@ -163,7 +163,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
         let reasoning = take_optional(&mut table, "reasoning")?;
         let vision = take_optional(&mut table, "vision")?;
         let infra = take_optional(&mut table, "infra")?;
-        let local = take_optional(&mut table, "local")?;
+        let restricted = take_optional(&mut table, "restricted")?;
         let algorithm = AlgorithmSpec::deserialize(toml::Value::Table(table))
             .map_err(serde::de::Error::custom)?;
         Ok(Self {
@@ -172,7 +172,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
             tool_calling,
             reasoning,
             vision,
-            local,
+            restricted,
             algorithm,
             infra,
         })
@@ -260,9 +260,9 @@ impl DeploymentConfig {
                 }
                 std::collections::hash_map::Entry::Occupied(slot) => {
                     let (first_name, first) = slot.get();
-                    if first.local != target.local {
+                    if first.restricted != target.restricted {
                         return Err(RunnerError::configuration(format!(
-                            "targets {first_name} and {target_name} share a model and llm client but disagree on local approval"
+                            "targets {first_name} and {target_name} share a model and llm client but disagree on restricted approval"
                         )));
                     }
                     if first.reasoning_effort != target.reasoning_effort
@@ -302,11 +302,11 @@ impl DeploymentConfig {
                 )));
             }
             if decision_approvals
-                .insert((&target.decision_client, &target.id), target.local)
-                .is_some_and(|approved| approved != target.local)
+                .insert((&target.decision_client, &target.id), target.restricted)
+                .is_some_and(|approved| approved != target.restricted)
             {
                 return Err(RunnerError::configuration(format!(
-                    "decision target {name} shares a model and client with an alias but disagrees on local approval"
+                    "decision target {name} shares a model and client with an alias but disagrees on restricted approval"
                 )));
             }
         }
@@ -346,7 +346,7 @@ impl DeploymentConfig {
             {
                 model_properties_probes.insert(config.id.clone(), probe);
             }
-            let local = self.build_local(
+            let restricted = self.build_restricted(
                 route_name,
                 config,
                 &standard_targets,
@@ -359,15 +359,15 @@ impl DeploymentConfig {
                 &standard_targets,
                 decision,
                 &clients,
-                config.local.is_some(),
+                config.restricted.is_some(),
             )?;
             let completion_names = config.algorithm.routing_target_names();
             let mut target_names = completion_names.clone();
-            if let Some(local) = &config.local {
+            if let Some(restricted) = &config.restricted {
                 target_names.extend(
-                    completion_names
-                        .iter()
-                        .filter_map(|name| local.target_overrides.get(*name).map(String::as_str)),
+                    completion_names.iter().filter_map(|name| {
+                        restricted.target_overrides.get(*name).map(String::as_str)
+                    }),
                 );
             }
             let mut model_clients = HashMap::new();
@@ -389,8 +389,8 @@ impl DeploymentConfig {
                 .collect();
             let mut route = Route::from_lane(standard, caller_auth, capabilities, decision_targets)
                 .with_infra(config.infra.clone());
-            if let Some((policy, lane)) = local {
-                route = route.with_local(policy, lane);
+            if let Some((policy, lane)) = restricted {
+                route = route.with_restricted(policy, lane);
             }
             routes.push((config.id.clone(), route));
         }
@@ -401,29 +401,29 @@ impl DeploymentConfig {
         Ok(runner)
     }
 
-    // Keep the router settings while binding every callable role to a local target.
-    fn build_local(
+    // Keep the router settings while binding every callable role to an approved target.
+    fn build_restricted(
         &self,
         route_name: &str,
         route_config: &RouteConfig,
         standard_targets: &LaneTargets<'_>,
         decision_clients: &BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
-    ) -> RunnerResult<Option<(LocalPolicy, ExecutionLane)>> {
-        let Some(config) = &route_config.local else {
+    ) -> RunnerResult<Option<(RestrictionPolicy, ExecutionLane)>> {
+        let Some(config) = &route_config.restricted else {
             return Ok(None);
         };
         if !route_config.algorithm.supports_target_restrictions() {
             return Err(RunnerError::configuration(format!(
-                "route {route_name} cannot use local restrictions with prefill_router"
+                "route {route_name} cannot use restrictions with prefill_router"
             )));
         }
         if self.uses_forward_auth(standard_targets) {
             return Err(RunnerError::configuration(format!(
-                "route {route_name} cannot use local restrictions with forward_auth"
+                "route {route_name} cannot use restrictions with forward_auth"
             )));
         }
-        let policy = LocalPolicy::new(
+        let policy = RestrictionPolicy::new(
             config.require_explicit_signal,
             matches!(&config.scope, RestrictionScope::Task),
         );
@@ -451,18 +451,18 @@ impl DeploymentConfig {
                     "route {route_name} target_overrides replacement {replacement} must exist and match the target kind of {source}"
                 )));
             }
-            let is_local = self
+            let is_restricted = self
                 .targets
                 .get(replacement)
-                .map(|target| target.local)
+                .map(|target| target.restricted)
                 .or_else(|| {
                     self.decision_targets
                         .get(replacement)
-                        .map(|target| target.local)
+                        .map(|target| target.restricted)
                 });
-            if is_local != Some(true) {
+            if is_restricted != Some(true) {
                 return Err(RunnerError::configuration(format!(
-                    "route {route_name} target_overrides replacement {replacement} is not local"
+                    "route {route_name} target_overrides replacement {replacement} is not approved for restricted requests"
                 )));
             }
         }
@@ -473,8 +473,12 @@ impl DeploymentConfig {
                 let name = bound_target(name, overrides);
                 self.targets
                     .get(name)
-                    .map(|target| target.local)
-                    .or_else(|| self.decision_targets.get(name).map(|target| target.local))
+                    .map(|target| target.restricted)
+                    .or_else(|| {
+                        self.decision_targets
+                            .get(name)
+                            .map(|target| target.restricted)
+                    })
                     .unwrap_or(false)
             })
             .collect();
@@ -482,12 +486,14 @@ impl DeploymentConfig {
             .algorithm
             .restricted_to(&approved)
             .map_err(|error| {
-                RunnerError::configuration(format!("route {route_name} local targets: {error}"))
+                RunnerError::configuration(format!(
+                    "route {route_name} restricted targets: {error}"
+                ))
             })?;
         let targets = self.resolve_lane_targets(&algorithm, overrides)?;
         if self.uses_forward_auth(&targets) {
             return Err(RunnerError::configuration(format!(
-                "route {route_name} cannot use local restrictions with forward_auth replacements"
+                "route {route_name} cannot use restrictions with forward_auth replacements"
             )));
         }
         if matches!(algorithm, AlgorithmSpec::Random { .. }) && !overrides.is_empty() {
@@ -1064,7 +1070,7 @@ struct DecisionTargetConfig {
     id: ModelId,
     decision_client: String,
     #[serde(default)]
-    local: bool,
+    restricted: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1073,7 +1079,7 @@ struct TargetConfig {
     id: ModelId,
     llm_client: String,
     #[serde(default)]
-    local: bool,
+    restricted: bool,
     #[serde(default)]
     extra_body: BTreeMap<String, Value>,
     /// Top-level request fields dropped from the outbound body before `extra_body` is merged.
@@ -1270,7 +1276,7 @@ bogus = true
 #[cfg(test)]
 mod deployment_tests {
     use super::*;
-    use crate::require_local_targets;
+    use crate::require_restricted_targets;
     use serde_json::json;
     use switchyard_protocol::{Category, Message, Request, Role};
 
@@ -1330,13 +1336,16 @@ capable_target = "strong"
 efficient_target = "weak"
 "#;
 
-    fn decision_local_config() -> String {
+    fn decision_restricted_config() -> String {
         let config = VALID_CONFIG
             .replace(
                 "id = \"strong/model\"",
-                "id = \"strong/model\"\nlocal = true",
+                "id = \"strong/model\"\nrestricted = true",
             )
-            .replace("id = \"weak/model\"", "id = \"weak/model\"\nlocal = true");
+            .replace(
+                "id = \"weak/model\"",
+                "id = \"weak/model\"\nrestricted = true",
+            );
         format!(
             r#"{config}
 
@@ -1349,7 +1358,7 @@ timeout_ms = 5000
 [decision_targets.standard]
 id = "decision/standard"
 decision_client = "privacy"
-local = true
+restricted = true
 
 [routes.typed]
 id = "switchyard/typed"
@@ -1364,14 +1373,14 @@ cutoff = 0.4
 candidates = {{ a = "strong", b = "weak" }}
 evidence = {{}}
 
-[routes.typed.local]
+[routes.typed.restricted]
 "#
         )
     }
 
-    fn local_pool_config() -> String {
+    fn restricted_pool_config() -> String {
         let config = VALID_CONFIG
-            .replace("id = \"strong/model\"", "id = \"strong/model\"\nlocal = true")
+            .replace("id = \"strong/model\"", "id = \"strong/model\"\nrestricted = true")
             .replace(
                 "type = \"passthrough\"\ntarget = \"weak\"",
                 "type = \"random\"\ntargets = [\"weak\", \"strong\"]\nweights = [3.0, 1.0]\nseed = 7",
@@ -1379,7 +1388,7 @@ evidence = {{}}
         format!(
             r#"{config}
 
-[routes.passthrough.local]
+[routes.passthrough.restricted]
 "#
         )
     }
@@ -1434,12 +1443,12 @@ evidence = {{}}
     }
 
     #[test]
-    fn local_lane_requires_local_roles_and_decision_targets() -> RunnerResult<()> {
-        let configured = decision_local_config();
+    fn restricted_lane_requires_approved_roles_and_decision_targets() -> RunnerResult<()> {
+        let configured = decision_restricted_config();
         let runner = Runner::from_toml(&configured)?;
         let route = runner
             .route("switchyard/typed")
-            .expect("typed local route should exist");
+            .expect("typed restricted route should exist");
         assert_eq!(
             route.models().models_for(&Category::Judge),
             [ModelId::from("decision/standard")]
@@ -1448,13 +1457,16 @@ evidence = {{}}
         for (config, expected) in [
             (
                 configured.replace(
-                    "decision_client = \"privacy\"\nlocal = true",
+                    "decision_client = \"privacy\"\nrestricted = true",
                     "decision_client = \"privacy\"",
                 ),
                 "required target standard",
             ),
             (
-                configured.replace("id = \"weak/model\"\nlocal = true", "id = \"weak/model\""),
+                configured.replace(
+                    "id = \"weak/model\"\nrestricted = true",
+                    "id = \"weak/model\"",
+                ),
                 "decision candidate weak",
             ),
         ] {
@@ -1468,12 +1480,12 @@ evidence = {{}}
     }
 
     #[tokio::test]
-    async fn local_signal_selects_only_local_targets() -> RunnerResult<()> {
-        let configured = local_pool_config();
+    async fn restricted_signal_selects_only_approved_targets() -> RunnerResult<()> {
+        let configured = restricted_pool_config();
         let runner = Runner::from_toml(&configured)?;
         let route = runner
             .route("switchyard/passthrough")
-            .expect("local route should exist");
+            .expect("restricted route should exist");
 
         let mut request = Request::default();
         request.llm_request.messages.push(Message::text(
@@ -1495,40 +1507,40 @@ evidence = {{}}
                 .model,
             outcome.selected_model_id()?
         );
-        require_local_targets(&mut request, true)?;
+        require_restricted_targets(&mut request, true)?;
         assert_eq!(
             route.decide(request).await?.selected_model_id()?,
             "strong/model"
         );
 
-        let no_local_target = configured.replace("local = true", "local = false");
-        assert!(error_message(&no_local_target).contains("without an eligible target"));
-        let missing_tier = format!("{configured}\n[routes.plan_execute.local]\n");
+        let no_restricted_target = configured.replace("restricted = true", "restricted = false");
+        assert!(error_message(&no_restricted_target).contains("without an eligible target"));
+        let missing_tier = format!("{configured}\n[routes.plan_execute.restricted]\n");
         assert!(error_message(&missing_tier).contains("required target weak"));
         let conflicting_alias = format!(
             "{configured}\n[targets.alias]\nid = \"strong/model\"\nllm_client = \"responses\"\n"
         );
-        assert!(error_message(&conflicting_alias).contains("disagree on local approval"));
+        assert!(error_message(&conflicting_alias).contains("disagree on restricted approval"));
         Ok(())
     }
 
     #[tokio::test]
-    async fn ordinary_routes_reject_local_signals() -> RunnerResult<()> {
+    async fn ordinary_routes_reject_restricted_signals() -> RunnerResult<()> {
         let runner = Runner::from_toml(VALID_CONFIG)?;
         let ordinary = runner.route("switchyard/random").expect("ordinary route");
-        for local_only in [false, true] {
+        for is_restricted in [false, true] {
             let mut request = Request::default();
-            require_local_targets(&mut request, local_only)?;
+            require_restricted_targets(&mut request, is_restricted)?;
             assert!(ordinary.decide(request).await.is_err());
         }
         Ok(())
     }
 
     #[tokio::test]
-    async fn local_lane_requires_signal_when_configured() -> RunnerResult<()> {
-        let configured = local_pool_config().replace(
-            "[routes.passthrough.local]",
-            "[routes.passthrough.local]\nrequire_explicit_signal = true",
+    async fn restricted_lane_requires_signal_when_configured() -> RunnerResult<()> {
+        let configured = restricted_pool_config().replace(
+            "[routes.passthrough.restricted]",
+            "[routes.passthrough.restricted]\nrequire_explicit_signal = true",
         );
         let runner = Runner::from_toml(&configured)?;
         let route = runner.route("switchyard/passthrough").expect("route");
@@ -1539,21 +1551,21 @@ evidence = {{}}
             .err()
             .expect("missing signal");
         assert!(error.to_string().contains("explicit"));
-        require_local_targets(&mut request, false)?;
+        require_restricted_targets(&mut request, false)?;
         assert_eq!(route.decide(request).await?.selected_model_ids.len(), 2);
         Ok(())
     }
 
-    fn overridden_local_config(algorithm: &str) -> String {
+    fn overridden_restricted_config(algorithm: &str) -> String {
         let globals = VALID_CONFIG.split("[routes.noop]").next().expect("globals");
         let mut config = globals.to_string();
         for name in ["weak", "strong", "classifier"] {
             config.push_str(&format!(
-                "\n[targets.approved_{name}]\nid = 'approved/{name}'\nllm_client = 'primary'\nlocal = true\n"
+                "\n[targets.approved_{name}]\nid = 'approved/{name}'\nllm_client = 'primary'\nrestricted = true\n"
             ));
         }
         config.push_str(&format!(
-            "\n[routes.test]\nid = 'route'\n{algorithm}\n[routes.test.local.target_overrides]\n"
+            "\n[routes.test]\nid = 'route'\n{algorithm}\n[routes.test.restricted.target_overrides]\n"
         ));
         let spec: AlgorithmSpec = toml::from_str(algorithm).expect("test algorithm");
         for name in spec
@@ -1568,7 +1580,7 @@ evidence = {{}}
 
     // Fixed roles keep their meaning while each lane resolves its own models and metadata.
     #[tokio::test]
-    async fn local_overrides_preserve_router_roles() -> RunnerResult<()> {
+    async fn restricted_overrides_preserve_router_roles() -> RunnerResult<()> {
         for (algorithm, initial) in [
             ("type = 'passthrough'\ntarget = 'weak'", Some("weak")),
             (
@@ -1612,13 +1624,13 @@ evidence = {{}}
                 Some("weak"),
             ),
         ] {
-            let runner = Runner::from_toml(&overridden_local_config(algorithm))?;
+            let runner = Runner::from_toml(&overridden_restricted_config(algorithm))?;
             let Some(initial) = initial else { continue };
             let route = runner.route("route").expect("route");
             let standard = route.decide(Request::default()).await?;
             assert_eq!(standard.selected_model_id()?, &format!("{initial}/model"));
             let mut request = Request::default();
-            require_local_targets(&mut request, true)?;
+            require_restricted_targets(&mut request, true)?;
             let outcome = route.decide(request).await?;
             assert_eq!(outcome.selected_model_id()?, &format!("approved/{initial}"));
             assert!(
@@ -1637,8 +1649,8 @@ evidence = {{}}
 
     // Invalid bindings fail at startup instead of being ignored or weakening requirements.
     #[test]
-    fn local_overrides_reject_invalid_bindings() {
-        let config = overridden_local_config(
+    fn restricted_overrides_reject_invalid_bindings() {
+        let config = overridden_restricted_config(
             "type = 'auto'\ncapable_target = 'strong'\nefficient_target = 'weak'",
         );
         for (invalid, expected) in [
@@ -1652,7 +1664,7 @@ evidence = {{}}
             ),
             (
                 config.replace("weak = 'approved_weak'", "weak = 'weak'"),
-                "is not local",
+                "is not approved for restricted requests",
             ),
             (
                 config.replace(
@@ -1672,7 +1684,7 @@ evidence = {{}}
                 "expected {expected:?}, got {message}"
             );
         }
-        let random = overridden_local_config(
+        let random = overridden_restricted_config(
             "type = 'random'\ntargets = ['weak', 'strong']\nweights = [0, 1]",
         )
         .replace("strong = 'approved_strong'", "strong = 'approved_weak'");
@@ -1683,27 +1695,45 @@ evidence = {{}}
         );
         assert!(Runner::from_toml(&prompt).is_ok());
         let wrong_kind = format!(
-            "{}\n[routes.typed.local.target_overrides]\nstandard = 'weak'\n",
-            decision_local_config()
+            "{}\n[routes.typed.restricted.target_overrides]\nstandard = 'weak'\n",
+            decision_restricted_config()
         );
         assert!(error_message(&wrong_kind).contains("must exist and match the target kind"));
     }
 
     #[test]
-    fn local_config_rejects_retired_fields_and_invalid_scope() {
-        let configured = local_pool_config();
+    fn restricted_config_rejects_retired_fields_and_invalid_scope() {
+        let configured = restricted_pool_config();
         for (invalid, expected) in [
+            (
+                configured.replace("restricted = true", "local = true"),
+                "unknown field `local`",
+            ),
+            (
+                configured.replace(
+                    "[routes.passthrough.restricted]",
+                    "[routes.passthrough.local]",
+                ),
+                "unknown field `local`",
+            ),
+            (
+                decision_restricted_config().replace(
+                    "[decision_targets.standard]",
+                    "[decision_targets.standard]\nlocal = true",
+                ),
+                "unknown field `local`",
+            ),
             (
                 format!("{configured}\naccepted_requirement_sets = {{ local = [] }}\n"),
                 "unknown field `accepted_requirement_sets`",
             ),
             (
-                configured.replace("local = true", "labels = ['private']"),
+                configured.replace("restricted = true", "labels = ['private']"),
                 "unknown field `labels`",
             ),
             (
                 configured.replace(
-                    "[routes.passthrough.local]",
+                    "[routes.passthrough.restricted]",
                     "[routes.passthrough.eligibility]",
                 ),
                 "unknown field `eligibility`",
@@ -1713,7 +1743,7 @@ evidence = {{}}
                 "unknown variant `tenant`",
             ),
             (
-                decision_local_config().replace(
+                decision_restricted_config().replace(
                     "[decision_targets.standard]",
                     "[decision_targets.standard]\nlabels = ['private']",
                 ),
@@ -1729,34 +1759,34 @@ evidence = {{}}
     }
 
     #[test]
-    fn local_config_rejects_conflicting_approvals_and_forwarded_auth() {
-        let configured = local_pool_config();
+    fn restricted_config_rejects_conflicting_approvals_and_forwarded_auth() {
+        let configured = restricted_pool_config();
         for (invalid, expected) in [
             (
                 format!(
                     "{configured}\n[targets.alias]\nid = \"strong/model\"\nllm_client = \"responses\"\n"
                 ),
-                "disagree on local approval",
+                "disagree on restricted approval",
             ),
             (
                 format!(
                     "{}\n[decision_targets.alias]\nid = \"decision/standard\"\ndecision_client = \"privacy\"\n",
-                    decision_local_config()
+                    decision_restricted_config()
                 ),
-                "disagrees on local approval",
+                "disagrees on restricted approval",
             ),
             (
                 configured.replace(
                     "[llm_clients.responses]\nformat = \"openai_responses\"",
                     "[llm_clients.responses]\nformat = \"openai_responses\"\nforward_auth = true",
                 ),
-                "cannot use local restrictions with forward_auth",
+                "cannot use restrictions with forward_auth",
             ),
             (
-                overridden_local_config(
+                overridden_restricted_config(
                     "type = 'prefill_router'\ntargets = ['weak']\ncheckpoint = 'unused'",
                 ),
-                "cannot use local restrictions with prefill_router",
+                "cannot use restrictions with prefill_router",
             ),
         ] {
             let message = error_message(&invalid);
@@ -1769,28 +1799,28 @@ evidence = {{}}
 
     #[tokio::test]
     async fn task_retention_is_sticky_per_task() -> RunnerResult<()> {
-        let configured = local_pool_config().replace(
-            "[routes.passthrough.local]",
-            "[routes.passthrough.local]\nscope = 'task'",
+        let configured = restricted_pool_config().replace(
+            "[routes.passthrough.restricted]",
+            "[routes.passthrough.restricted]\nscope = 'task'",
         );
         let runner = Runner::from_toml(&configured)?;
         let route = runner
             .route("switchyard/passthrough")
-            .expect("local route should exist");
-        let request = |task_id: Option<&str>, local_only: bool| -> RunnerResult<Request> {
+            .expect("restricted route should exist");
+        let request = |task_id: Option<&str>, is_restricted: bool| -> RunnerResult<Request> {
             let mut request = Request::default();
             request.metadata.get_or_insert_default().task_id = task_id.map(str::to_string);
-            require_local_targets(&mut request, local_only)?;
+            require_restricted_targets(&mut request, is_restricted)?;
             Ok(request)
         };
 
-        for (task_id, local_only, candidates) in [
+        for (task_id, is_restricted, candidates) in [
             ("task-a", false, 2),
             ("task-a", true, 1),
             ("task-a", false, 1),
             ("task-b", false, 2),
         ] {
-            let outcome = route.decide(request(Some(task_id), local_only)?).await?;
+            let outcome = route.decide(request(Some(task_id), is_restricted)?).await?;
             assert_eq!(outcome.selected_model_ids.len(), candidates);
             if candidates == 1 {
                 assert_eq!(outcome.selected_model_id()?, "strong/model");

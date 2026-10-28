@@ -15,7 +15,7 @@ use switchyard_protocol::{
 use thiserror::Error;
 
 use crate::DecisionTarget;
-use crate::privacy::{LocalPolicy, PrivacyDecision, has_local_requirement};
+use crate::privacy::{PrivacyDecision, RestrictionPolicy, has_restriction_signal};
 
 /// Capabilities declared for one route.
 ///
@@ -138,8 +138,8 @@ impl ExecutionLane {
     }
 }
 
-struct LocalExecution {
-    policy: LocalPolicy,
+struct RestrictedExecution {
+    policy: RestrictionPolicy,
     lane: ExecutionLane,
 }
 
@@ -151,7 +151,7 @@ struct LaneSelection<'a> {
 /// One or more execution lanes behind a configured route.
 pub struct Route {
     standard: ExecutionLane,
-    local: Option<LocalExecution>,
+    restricted: Option<RestrictedExecution>,
     decision_targets: Vec<DecisionTarget>,
     caller_auth: Option<CallerAuthKind>,
     capabilities: ModelCapabilities,
@@ -199,7 +199,7 @@ impl Route {
     ) -> Self {
         Self {
             standard: lane,
-            local: None,
+            restricted: None,
             decision_targets,
             caller_auth,
             capabilities,
@@ -207,26 +207,28 @@ impl Route {
         }
     }
 
-    pub(crate) fn with_local(mut self, policy: LocalPolicy, lane: ExecutionLane) -> Self {
-        self.local = Some(LocalExecution { policy, lane });
+    pub(crate) fn with_restricted(
+        mut self,
+        policy: RestrictionPolicy,
+        lane: ExecutionLane,
+    ) -> Self {
+        self.restricted = Some(RestrictedExecution { policy, lane });
         self
     }
 
     fn select_lane(&self, request: &Request) -> Result<LaneSelection<'_>, RunnerError> {
-        if let Some(local) = &self.local {
-            let local_only = local.policy.admit(request)?;
-            let privacy = Some(PrivacyDecision::from_local_requirement(
-                request, local_only,
-            )?);
-            let lane = if local_only {
-                &local.lane
+        if let Some(restricted) = &self.restricted {
+            let is_restricted = restricted.policy.admit(request)?;
+            let privacy = Some(PrivacyDecision::from_restriction(request, is_restricted)?);
+            let lane = if is_restricted {
+                &restricted.lane
             } else {
                 &self.standard
             };
             tracing::debug!(
                 switchyard.route = request.llm_request.model.as_deref().unwrap_or_default(),
                 switchyard.algorithm = self.algorithm_name(),
-                local_only,
+                restricted = is_restricted,
                 privacy.lane = privacy.as_ref().map(PrivacyDecision::lane),
                 privacy.source = privacy.as_ref().map(PrivacyDecision::source),
                 privacy.reason_code = privacy.as_ref().map(PrivacyDecision::reason_code),
@@ -234,9 +236,9 @@ impl Route {
             );
             return Ok(LaneSelection { lane, privacy });
         }
-        if has_local_requirement(request) {
+        if has_restriction_signal(request) {
             return Err(LlmClientError::InvalidRequest {
-                message: "route does not accept a local-only signal".to_string(),
+                message: "route does not accept a restricted signal".to_string(),
             }
             .into());
         }
@@ -294,7 +296,7 @@ impl Route {
             .await
     }
 
-    /// Executes the route and reports standard or local-only admission before dispatch.
+    /// Executes the route and reports standard or restricted admission before dispatch.
     pub async fn execute_with_privacy_observer(
         &self,
         request: Request,
@@ -420,11 +422,11 @@ mod tests {
     };
 
     use super::*;
-    use crate::require_local_targets;
+    use crate::require_restricted_targets;
 
     impl Route {
         fn with_private_targets(self, restricted: ExecutionLane) -> Self {
-            self.with_local(LocalPolicy::new(false, false), restricted)
+            self.with_restricted(RestrictionPolicy::new(false, false), restricted)
         }
     }
 
@@ -557,7 +559,7 @@ mod tests {
 
     fn restricted_request() -> Request {
         let mut request = Request::default();
-        require_local_targets(&mut request, true).expect("trusted restriction");
+        require_restricted_targets(&mut request, true).expect("trusted restriction");
         request
     }
 
@@ -582,7 +584,10 @@ mod tests {
             ModelCapabilities::default(),
             Vec::new(),
         )
-        .with_local(LocalPolicy::new(false, true), build_lane("local-capable"))
+        .with_restricted(
+            RestrictionPolicy::new(false, true),
+            build_lane("local-capable"),
+        )
         .with_infra(Some(libsy::InfraPolicy {
             max_signal_age_ms: 1_000,
             min_waiting_requests: 4,
@@ -609,14 +614,14 @@ mod tests {
             )
         })
         .collect();
-        for (task, local_only, expected) in [
+        for (task, is_restricted, expected) in [
             ("restricted", true, "local-capable"),
             ("restricted", false, "local-capable"),
             ("ordinary", false, "cloud-capable"),
         ] {
             let mut request = Request::default();
             request.metadata.get_or_insert_default().task_id = Some(task.into());
-            require_local_targets(&mut request, local_only).expect("trusted signal");
+            require_restricted_targets(&mut request, is_restricted).expect("trusted signal");
             let mut outcome = RoutingOutcome::route_to("local-fast".into(), vec![], request);
             assert!(
                 route
@@ -657,17 +662,17 @@ mod tests {
             ModelCapabilities::default(),
             Vec::new(),
         )
-        .with_local(LocalPolicy::new(false, true), build_lane("local"));
+        .with_restricted(RestrictionPolicy::new(false, true), build_lane("local"));
         let mut request = Request::default();
         request.metadata.get_or_insert_default().task_id = Some("task".into());
-        require_local_targets(&mut request, false).expect("trusted signal");
+        require_restricted_targets(&mut request, false).expect("trusted signal");
         let outcome = route
             .decide(request.clone())
             .await
             .expect("normal decision");
         assert_eq!(outcome.selected_model_id().expect("model"), "standard");
 
-        require_local_targets(&mut request, true).expect("trusted restriction");
+        require_restricted_targets(&mut request, true).expect("trusted restriction");
         request.llm_request.extensions.fields.insert(
             "previous_response_id".into(),
             Value::String("hidden".into()),
@@ -875,7 +880,7 @@ mod tests {
             "standard"
         );
 
-        require_local_targets(&mut request, true).expect("trusted restriction");
+        require_restricted_targets(&mut request, true).expect("trusted restriction");
         let outcome = route.decide(request).await.expect("trusted restriction");
         assert_eq!(
             outcome.selected_model_id().expect("selected model"),

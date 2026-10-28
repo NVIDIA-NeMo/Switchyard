@@ -21,7 +21,7 @@ pub use algorithm::{
 pub use failure::{RouteErrorKind, RouteErrorPhase, RouteErrorSummary, stream_error_summary};
 // Re-exported because `Route::new` takes it, so a host wiring routes does not need a libsy dep.
 pub use libsy::{RoutingOutcome, RuntimeModels};
-pub use privacy::{PrivacyDecision, require_local_targets};
+pub use privacy::{PrivacyDecision, require_restricted_targets};
 pub use provider_key_redactor::ProviderKeyRedactor;
 pub use route::{
     AuxiliaryTarget, CallerAuthKind, ModelCapabilities, Route, RunOutput, RunnerError,
