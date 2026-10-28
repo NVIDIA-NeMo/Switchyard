@@ -1612,6 +1612,7 @@ mod tests {
                         base_url: server.uri(),
                         api_key: None,
                         forward_auth: false,
+                        forward_beta: Default::default(),
                         extra_headers: BTreeMap::new(),
                         extra_body: BTreeMap::from([("store".to_string(), json!(store))]),
                         omit_body_fields: BTreeSet::new(),
@@ -1759,6 +1760,7 @@ mod tests {
                     base_url: server.uri(),
                     api_key: None,
                     forward_auth: false,
+                    forward_beta: Default::default(),
                     extra_headers: BTreeMap::new(),
                     extra_body: BTreeMap::new(),
                     omit_body_fields: BTreeSet::new(),
@@ -2519,6 +2521,7 @@ mod tests {
                     base_url: format!("{}/v1", server.uri()),
                     api_key: None,
                     forward_auth: false,
+                    forward_beta: Default::default(),
                     extra_headers: BTreeMap::new(),
                     extra_body: BTreeMap::new(),
                     omit_body_fields: BTreeSet::new(),
@@ -2599,6 +2602,7 @@ mod tests {
                 max_retries: 0,
                 failure_cooldown: std::time::Duration::ZERO,
                 timeout: None,
+                forward_beta: Default::default(),
             })
         };
         let client = Arc::new(
@@ -2692,6 +2696,7 @@ mod tests {
                 base_url: format!("{}/v1", server.uri()),
                 api_key: None,
                 forward_auth: false,
+                forward_beta: Default::default(),
                 extra_headers: BTreeMap::new(),
                 extra_body: BTreeMap::new(),
                 omit_body_fields: BTreeSet::new(),
