@@ -284,11 +284,11 @@ meaning requires a new schema version.
 `evidence` is an object containing the supported string fields `source`, `verdict`,
 `trigger`, and `reason_code`, and numeric fields `score`, `confidence`, and `threshold`.
 String values longer than 64 bytes are omitted and should be stable, non-sensitive labels.
-After successful admission, routes with local policy record one privacy decision mark.
-`restricted` means local-only; `standard` permits the normal model pool. The source identifies
+After successful admission, routes with restriction policy record one privacy decision mark.
+`restricted` permits approved private targets; `standard` permits the normal model pool. The source identifies
 the external signal, retained task restriction or default policy. The mark is retained if
-execution later fails. Routes without local policy do not emit it. Switchyard does not classify
-content, and this plugin does not yet import a trusted local-only signal from Relay.
+execution later fails. Routes without restriction policy do not emit it. Switchyard does not classify
+content, and this plugin does not yet import a trusted restriction signal from Relay.
 
 ## Failure policy
 

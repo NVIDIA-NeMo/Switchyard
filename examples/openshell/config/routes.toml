@@ -1,0 +1,30 @@
+schema_version = 1
+
+[llm_clients.standard]
+format = "openai_chat"
+base_url = "https://cloud.example/v1"
+max_retries = 0
+
+[llm_clients.approved]
+format = "anthropic_messages"
+base_url = "https://private.example/v1"
+max_retries = 0
+
+[targets.standard]
+id = "standard-model"
+llm_client = "standard"
+
+[targets.approved]
+id = "approved-private-model"
+llm_client = "approved"
+restricted = true
+
+[routes.assistant]
+id = "switchyard/assistant"
+type = "passthrough"
+target = "standard"
+
+[routes.assistant.restricted]
+require_explicit_signal = true
+scope = "task"
+target_overrides = { standard = "approved" }

@@ -1,0 +1,19 @@
+# Policy excerpt: merge into an existing sandbox policy.
+# Existing filesystem and network grants are omitted.
+network_middlewares:
+  restricted-source:
+    middleware: switchyard
+    order: 10
+    on_error: fail_closed
+    config:
+      action: mark_restricted
+    endpoints:
+      include: [records.example]
+  model-execution:
+    middleware: switchyard
+    order: 20
+    on_error: fail_closed
+    config:
+      action: execute
+    endpoints:
+      include: [models.example]

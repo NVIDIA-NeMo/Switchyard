@@ -1,0 +1,13 @@
+{
+  "listen": "127.0.0.1:50051",
+  "routes": "config/routes.toml",
+  "route_id": "switchyard/assistant",
+  "journal": ".cache/restrictions.jsonl",
+  "public_key": "/etc/openshell/gateway-jwt-public.pem",
+  "issuer": "openshell-gateway:example",
+  "audience": "urn:openshell:extension:middleware:switchyard",
+  "tls": {
+    "cert": "/etc/switchyard/middleware-cert.pem",
+    "key": "/etc/switchyard/middleware-key.pem"
+  }
+}

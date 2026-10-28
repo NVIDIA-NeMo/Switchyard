@@ -986,8 +986,8 @@ mod tests {
             },
             "targets": {
                 "standard": {"id": "standard/model", "llm_client": "target"},
-                "restricted": {"id": "restricted/model", "llm_client": "target", "local": true},
-                "backup": {"id": "backup/model", "llm_client": "target", "local": true},
+                "restricted": {"id": "restricted/model", "llm_client": "target", "restricted": true},
+                "backup": {"id": "backup/model", "llm_client": "target", "restricted": true},
             },
             "routes": {
                 "privacy": {
@@ -996,7 +996,7 @@ mod tests {
                     "targets": ["standard", "restricted", "backup"],
                     "weights": [100.0, 10.0, 1.0],
                     "seed": 42,
-                    "local": {},
+                    "restricted": {},
                 }
             }
         });
@@ -1108,7 +1108,7 @@ mod tests {
         ] {
             let mut request = privacy_request(&runtime, None);
             if restricted {
-                switchyard_runner::require_local_targets(&mut request, true)
+                switchyard_runner::require_restricted_targets(&mut request, true)
                     .expect("trusted restriction");
             }
             let execution = runtime
@@ -1140,7 +1140,7 @@ mod tests {
 
     // Answer failures must not restore a public candidate, including on the streaming path.
     #[tokio::test]
-    async fn local_only_restricts_buffered_and_streaming_fallbacks() {
+    async fn restricted_signal_restricts_buffered_and_streaming_fallbacks() {
         for streaming in [false, true] {
             let server = MockServer::start().await;
             Mock::given(body_partial_json(json!({"model": "restricted/model"})))
@@ -1174,7 +1174,7 @@ mod tests {
                 .await;
             let runtime = privacy_runtime(&format!("{}/v1", server.uri()));
             let mut request = privacy_request(&runtime, Some(streaming));
-            switchyard_runner::require_local_targets(&mut request, true)
+            switchyard_runner::require_restricted_targets(&mut request, true)
                 .expect("trusted restriction");
             let events = if streaming {
                 let execution = runtime
