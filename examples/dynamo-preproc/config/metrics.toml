@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Service name from Dynamo's kube-prometheus-stack setup.
+endpoint = "http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090/api/v1/query"
+poll_interval_ms = 1000
+timeout_ms = 500
+
+# Replace these with labels selecting every engine in the pool, without duplicate series.
+[[models]]
+model = "Qwen/Qwen3-0.6B"
+selector = 'namespace="switchyard", model_name="Qwen/Qwen3-0.6B", endpoint="system"'
+
+[[models]]
+model = "Qwen/Qwen3-1.7B"
+selector = 'namespace="switchyard", model_name="Qwen/Qwen3-1.7B", endpoint="system"'

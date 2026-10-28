@@ -91,10 +91,17 @@ A client can set `forward_auth = true` instead of `api_key_env` to send the
 caller's credential to the configured upstream. OpenAI clients forward
 `authorization`, `chatgpt-account-id`, and `x-openai-fedramp`. Anthropic clients
 forward `authorization` or `x-api-key`. Enable this only when every forwarding
-client's `base_url` should receive the caller's login. All backends reachable
-through the route must use the same provider. Other application headers are
-preserved and may contain provider-specific credentials. A forwarding route
-must be called through the matching provider API.
+client's `base_url` should receive the caller's login. Other application headers
+are preserved and may contain provider-specific credentials. A route's
+forwarding clients must use one credential family: all OpenAI formats or all
+`anthropic_messages`. The exception is one host that serves both formats, such
+as an LLM gateway that accepts each caller's gateway key on every endpoint: a
+route may mix the two families when all of its forwarding clients use the same
+scheme, host, and port. Such a route serves Chat Completions and Responses
+callers and forwards the caller's bearer token to every forwarding client.
+The server returns 400 to a caller whose API the route does not serve.
+Clients that use `api_key_env` send the server's own key, so these limits do
+not apply to them.
 Target-level `extra_body` values are shallow-merged into the upstream request when
 the request does not already contain that key.
 Target-level `system_prompt` values are prepended when that target serves a completion.
@@ -117,10 +124,52 @@ served model. The legacy `proxy_x_session_id` remains a fallback when no normali
 present. The endpoint returns `404` when the session has no records and is not registered when
 routing logging is disabled.
 
+The routing log saves each call's reported charge in USD. When the upstream reports no
+charge, the server estimates it using [bundled rates](../switchyard-costs/prices.toml).
+A reported charge, including zero, takes precedence over the bundled rates.
+Bundled rates stay fixed until you install a version with updated rates.
+The table includes text-token rates for OpenAI, Claude, Gemini, and DeepSeek models, plus
+OpenRouter rates for other popular models. Model IDs match exactly, including provider
+prefixes; an unlisted ID has no estimated cost. Direct-provider and OpenRouter rates use
+separate IDs, such as `gemini-3.8-flash` and `google/gemini-3.8-flash`.
+Estimates exclude long-context and service-tier adjustments, OpenAI's 12-hour cache-write
+pricing, tool fees, and time-based cache storage. Each model has one rate at all times of
+day. Billed charges can differ when a gateway selects another provider or a promotion
+ends. The table lists the Gemini promotion end dates.
+Use `--pricing-file prices.toml` to replace the entire bundled table with your own rates.
+Use a `.toml` file with quoted served model IDs and rates in USD per million tokens:
+
+```toml
+["upstream/model"]
+input = 1
+output = 5
+cache_read = 0.1
+cache_write = 2
+```
+
+The `.toml` extension check ignores case. Other filenames are read as JSON, so existing
+JSON overrides still work. TOML and JSON also accept groups of exact IDs that share
+one set of rates, as shown in the [pi guide](../../docs/integrations/pi.md#estimate-the-cost).
+The bundled table uses this grouped format and can be supplied to `--pricing-file`.
+
+Session stats include cost totals. Missing usage or rates leave cost unknown; `known_usd`
+keeps the priced subtotal and `total_usd` is null when any cost is unknown. Rates load once
+at startup, and saved costs do not change when prices change. An unreadable or invalid
+`--pricing-file` stops startup; the server does not use bundled rates instead.
+
+The [pi guide](../../docs/integrations/pi.md#estimate-the-cost) explains how to supply
+rates for your own models.
+
 Clients can send `x-switchyard-origin: codex-cli` (or another client label) to include an
 `origin` field in each routing record. Missing, empty, or non-text header values produce
 `"origin": null`. The value is supplied by the caller; it is not inferred from `User-Agent`.
 Older records without `origin` remain readable by the session stats endpoint.
+
+A child agent can share its parent's session ID. To tell their calls apart, records also include
+the agent identity from the request metadata: `agent_id`, `parent_agent_id`, `agent_kind`,
+`agent_role`, and `delegated` (`true` when the request carries delegated sub-agent work). When the client
+cannot identify its child agents, the record has `"subagent_identity_unsupported": true`. Each of
+these fields is left out when it is not set, so records without agent identity are unchanged.
 
 An `llm_classifier` route sends each task to `classifier_target` for a capability verdict, then
 routes to `weak_target` or `strong_target`. Beyond the three targets it accepts these keys; only
@@ -175,6 +224,88 @@ transparent forwarding through `fallback_client` and direct library calls remain
 To add instructions for a target, set `system_prompt` on its `[targets.<name>]` entry.
 Switchyard prepends that text when the selected target serves a completion and retains
 the caller's instructions. Omit the setting to add no target instructions.
+
+## Codex "Approve for me"
+
+With "Approve for me" on, Codex asks a reviewer model to check each action that
+needs approval. Codex sends each review request to its own model provider, so
+when Codex points at Switchyard, the review goes to Switchyard. Unless Codex is
+logged in with an OpenAI API key, the request names the model ID
+`codex-auto-review`. If no route has that `id`, the server returns HTTP 404
+`model_not_found`. Codex treats a failed review as a denial, so it declines the
+action.
+
+You need the route if you use Codex through Switchyard with "Approve for me" on
+in the Default or Read Only mode. This includes Codex logged in with ChatGPT.
+Full Access mode never asks for approval, so it never sends review requests.
+
+Add a route whose `id` is `codex-auto-review`. `examples/run_codex.sh` and
+`scripts/config/composite.toml` forward the review unchanged to Codex's own
+reviewer model on the ChatGPT backend:
+
+```toml
+[llm_clients.chatgpt_backend]
+format = "openai_responses"
+base_url = "https://chatgpt.com/backend-api/codex"
+forward_auth = true
+
+[targets.reviewer]
+id = "codex-auto-review"
+llm_client = "chatgpt_backend"
+
+[routes.codex_auto_review]
+id = "codex-auto-review"
+type = "passthrough"
+target = "reviewer"
+```
+
+To review with another model, point `target` at any other target. Use a small,
+fast model at low reasoning effort. Codex waits for each review before it runs
+the action, so a slow reviewer slows down every step that needs approval.
+Codex already asks for `low` effort in each review request, so don't set a
+higher `reasoning_effort` on the reviewer target. A larger model costs more and
+takes longer per review, but OpenAI found that stronger models catch risky
+actions more reliably
+([Auto-review](https://alignment.openai.com/auto-review/)). The model must also
+follow a JSON output schema, because Codex reads the reviewer's final message as
+a JSON verdict.
+
+When Codex is logged in with an OpenAI API key, it sends review requests to
+`gpt-5.6-luna` instead. For that login, give the reviewer route
+`id = "gpt-5.6-luna"`. That route then receives every Codex request for the
+`gpt-5.6-luna` model ID, not only review requests.
+
+Codex can send reviews to another model ID only through a full replacement model
+catalog: set the `model_catalog_json` config key, and set
+`auto_review_model_override` on the session model's entry. That catalog must
+list every model Codex uses and changes with Codex releases, so a Switchyard
+route is simpler.
+
+To run every action without a review, use Codex settings instead of a
+Switchyard route. With `approval_policy = "never"` (`-a never`), Codex never
+asks and sends no review requests. Commands still run inside the sandbox, and
+anything the sandbox blocks fails back to the model:
+
+```toml
+approval_policy = "never"
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = true  # only if commands need the network
+```
+
+`--dangerously-bypass-approvals-and-sandbox` (`--yolo`, the Full Access preset)
+runs everything with no sandbox and no approvals. To skip review only for some
+commands, add an experimental `prefix_rule(pattern = [...], decision = "allow")`
+rule to `~/.codex/rules/default.rules`. See Codex's
+[Agent approvals & security](https://learn.chatgpt.com/docs/agent-approvals-security)
+page.
+
+The installer, `scripts/linux/install.sh`, does not overwrite an existing
+`~/.switchyard/composite.toml`.
+If you installed Switchyard before this route was added, add the
+`[targets.reviewer]` and `[routes.codex_auto_review]` blocks to that file by
+hand, then restart the server.
 
 ## Endpoints
 

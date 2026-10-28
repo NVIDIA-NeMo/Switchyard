@@ -310,7 +310,7 @@ where
 /// `error` must already be redacted: `LlmClientError::UpstreamHttp`'s `Display` interpolates the
 /// raw upstream body, which can quote the conversation back. Callers pass a
 /// `robustness::safe_*` summary rather than the error itself.
-fn report_fail_open(judge_model: &str, error: String, reason: &'static str) {
+pub(crate) fn report_fail_open(judge_model: &str, error: String, reason: &'static str) {
     tracing::warn!(
         target: "libsy",
         judge_model,
@@ -344,7 +344,7 @@ fn client_error_reason(error: &LlmClientError) -> &'static str {
 }
 
 #[async_trait]
-impl<J, P> Classifier<State> for JudgeClassifier<J, P>
+impl<J, P> Classifier for JudgeClassifier<J, P>
 where
     J: Judge,
     P: JudgePolicy<Verdict = J::Verdict>,
@@ -588,7 +588,7 @@ mod tests {
 
         let serve = async {
             if let Some(Ok(Step::CallModel(call))) = steps.next().await {
-                let _ = call.respond(reply);
+                let _ = call.respond(std::future::ready(reply)).await;
             }
         };
         let (classification, ()) =

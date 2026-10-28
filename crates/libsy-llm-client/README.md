@@ -154,6 +154,12 @@ async fn stream(
 runs. The terminal outcome either already contains the answer or supplies the selected model and
 ordered fallbacks for the client to try. `ClientRouter::single` is the single-provider case:
 
+Routing-time calls run concurrently. If an algorithm drops one of its waiting
+call futures, the corresponding HTTP work is dropped while other calls continue.
+Ending or dropping the run drops all outstanding call handlers. A returned
+response stream stays alive until its consumer finishes or drops it. These are
+local cancellation guarantees; a provider may continue generation after disconnect.
+
 ```rust
 use std::sync::Arc;
 use switchyard_libsy::{Algorithm, RuntimeModels};
@@ -242,7 +248,11 @@ fn build_multi_format_client(
   normalize `authorization`, `chatgpt-account-id`, and `x-openai-fedramp`.
   Anthropic backends forward `authorization` or `x-api-key`; they also keep
   `oauth-*` values from `anthropic-beta` and remove other caller-supplied beta values.
-  All backends reachable through a forwarding route must use the same provider.
+  The forwarding backends in one route must use one credential family (OpenAI or
+  Anthropic) unless they all use the same scheme, host, and port, such as one LLM
+  gateway that accepts the caller's gateway key on every endpoint. Such a route
+  serves Chat Completions and Responses callers and forwards their bearer token
+  to every forwarding backend. Backends that send a configured key are not restricted.
   Headers owned by other providers are preserved as application headers.
 - Per-backend custom headers go in `HttpBackendConfig::extra_headers`. Set credentials with
   `api_key`. OpenAI backends reject `Authorization`; Anthropic backends reject `x-api-key`
@@ -259,6 +269,12 @@ fn build_multi_format_client(
   transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
   transport failures are retried; streaming body failures are not replayed after
   the response has been returned.
+- `ModelConfig::with_responses_reasoning` controls Responses reasoning replay.
+  Every Responses model defaults to `PreserveEncrypted`: plaintext is removed,
+  encrypted provider state is retained. Stored reasoning IDs are retained unless
+  the request sets `store: false`. Switchyard's translated Anthropic reasoning is
+  removed. Set `Drop` for
+  a backend that cannot consume provider reasoning. Messages and tool history are retained.
 - `HttpBackendConfig::failure_cooldown` skips completion calls to a backend briefly
   after an exhausted transient failure. Zero disables it. State is shared per model
   within the client. Calls resume when the cooldown expires. Deployment TOML defaults
@@ -280,7 +296,8 @@ to stop the request on their client failures. Recovery includes client errors an
 deadlines during stream collection. Custom hosts can honor the same flag when serving calls.
 
 Retries replay the same upstream request to the same model. After routing completes,
-non-timeout failures may try another completion candidate. A timeout stops the call.
+non-timeout failures may try another completion candidate. A timeout stops the call;
+a connection that times out before it is established is a `Transport` failure.
 A transport failure can duplicate a request that the provider processed but did not
 finish returning. Each attempt is counted once; expiry during a retry delay or
 after a stream has started does not count another attempt.
@@ -297,7 +314,7 @@ after a stream has started does not count another attempt.
 | `RequestEncoding(msg)` | re-encoding an already-decoded request to the wire format failed (internal fault) |
 | `ResponseTranslation(msg)` | response decoding or encoding failed in the translation engine |
 | `Timeout { source }` | request or response body read exceeded its timeout |
-| `Transport { source }` | non-timeout connection or transport failure |
+| `Transport { source }` | connection failure, including a connect timeout, or another transport failure |
 | `ContextWindowExceeded { model, message }` | upstream 400 detected as a context overflow (checked before `UpstreamHttp`, so callers can evict-and-retry) |
 | `UpstreamHttp { status, body }` | any other non-2xx upstream response |
 | `InvalidResponse { source }` | the upstream response could not be decoded |

@@ -19,10 +19,11 @@ use async_trait::async_trait;
 
 use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
+use super::util::affinity::ClassifyTrigger;
 use super::util::prompts::prepend_system_prompt;
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, Tier, fall_open_tier,
-    record_decision_source, record_routing_decision,
+    record_routing_decision,
 };
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
@@ -41,7 +42,7 @@ struct TierPromptProcessor {
 }
 
 #[async_trait]
-impl Processor<State> for TierPromptProcessor {
+impl Processor for TierPromptProcessor {
     async fn process(&self, _state: &mut State, event: Event<'_>) -> Result<()> {
         if let Event::Decision {
             request, category, ..
@@ -65,12 +66,12 @@ impl Processor<State> for TierPromptProcessor {
 /// The classifiers themselves are composition-agnostic and write no state; only
 /// this router knows where each sits in its cascade.
 struct SourceStamp {
-    inner: Arc<dyn Classifier<State>>,
+    inner: Arc<dyn Classifier>,
     source: DecisionSource,
 }
 
 #[async_trait]
-impl Classifier<State> for SourceStamp {
+impl Classifier for SourceStamp {
     async fn score(
         &self,
         state: &mut State,
@@ -80,7 +81,6 @@ impl Classifier<State> for SourceStamp {
         let (classification, served) = self.inner.score(state, request, driver).await?;
         // An abstaining classifier passes the turn on, so it is not its to claim.
         if let Some(winner) = classification.argmax(false)? {
-            record_decision_source(state, self.source);
             record_routing_decision(self.source, &winner.target);
             driver.set_evidence_if_empty(serde_json::json!({
                 "source": self.source.as_str(),
@@ -96,7 +96,7 @@ struct FallOpen {
 }
 
 #[async_trait]
-impl Classifier<State> for FallOpen {
+impl Classifier for FallOpen {
     async fn score(
         &self,
         state: &mut State,
@@ -122,10 +122,11 @@ impl Classifier<State> for FallOpen {
 
 /// The capability judge a stage router falls through to.
 pub struct LlmFallback {
-    /// Judge configuration. `recent_turn_window` is worth setting to this router's
-    /// `recent_window` so the judge reads the same span the signal scorer scored.
-    /// Note: `classify_trigger = new_session` and `message_hash_fallback` have no effect here —
-    /// the judge runs as a cascade classifier, not a standalone algorithm.
+    /// Judge configuration. Its `recent_turn_window` counts trailing messages, while
+    /// this router's `recent_window` counts tool results.
+    /// Note: `classify_trigger` and `message_hash_fallback` have no effect here. The judge
+    /// runs as a cascade classifier on every ambiguous turn, not as a standalone algorithm,
+    /// so no verdict is retained.
     pub config: TaskClassifierConfig,
 }
 
@@ -135,14 +136,20 @@ pub struct StageRouterConfig {
     pub mode: PickerMode,
     /// How much corroboration a decisive pick needs, in `[0.0, 1.0]`.
     pub confidence_threshold: f64,
+    /// Threshold after an outer classifier selects capable-first. Defaults to `0.0`.
+    pub capable_first_threshold: f64,
     /// Trailing tool results the signals are computed over. `None` uses
     /// [`DEFAULT_RECENT_WINDOW`].
     pub recent_window: Option<usize>,
     /// Exact tool-name semantics added to the built-in coding vocabulary.
     pub tool_semantics: ToolSemantics,
-    /// Requests to keep on the capable tier after an escalation. A clean test
-    /// pass clears the hold early.
-    pub capable_hold_turns: u32,
+    /// Requests to keep on capable after an escalation. `0` disables the hold;
+    /// `-1` pins after switching to this tier.
+    pub capable_hold_turns: i64,
+    /// Requests to keep on efficient after a switch. `None` defaults to `-1`
+    /// under composite's capable-first policy, otherwise `0`. `Some(0)` disables
+    /// the hold; `Some(-1)` pins until the session state is cleared.
+    pub efficient_hold_turns: Option<i64>,
     /// Note handed to the model on a signal-driven escalation, and on a
     /// hand-back to the efficient tier when a de-escalation note is configured.
     pub handoff_notes: Option<HandoffNoteConfig>,
@@ -162,9 +169,11 @@ impl StageRouterConfig {
         Self {
             mode,
             confidence_threshold,
+            capable_first_threshold: 0.0,
             recent_window: None,
             tool_semantics: ToolSemantics::default(),
             capable_hold_turns: 2,
+            efficient_hold_turns: None,
             handoff_notes: None,
             capable_system_prompt: None,
             efficient_system_prompt: None,
@@ -177,15 +186,29 @@ impl StageRouterConfig {
 /// decide first, an optional capability judge takes the turns they cannot, and
 /// the picker's default tier closes the cascade so a turn is never left unrouted.
 pub struct StageRouter {
-    route: FallThrough<State>,
+    route: FallThrough,
 }
 
 impl StageRouter {
     /// Routes between the runtime `capable` and `efficient` models. The judge,
     /// when configured, is called through the runtime `judge` model.
     ///
-    /// Errors if either threshold in `config` is outside `[0.0, 1.0]`.
+    /// Errors if either threshold in `config` is outside `[0.0, 1.0]`, or if the
+    /// hold counts are outside `-1..=u32::MAX`. Also rejects a
+    /// fallback judge configured to retain verdicts: it runs on every ambiguous
+    /// turn, so `classify_trigger` and `message_hash_fallback` would do nothing.
     pub fn new(config: StageRouterConfig) -> Result<Self> {
+        if let Some(fallback) = &config.llm_fallback
+            && (fallback.config.classify_trigger != ClassifyTrigger::EveryRequest
+                || fallback.config.message_hash_fallback)
+        {
+            return Err(LibsyError::AlgorithmError {
+                message: "classify_trigger and message_hash_fallback have no effect on the \
+                          stage fallback judge, which runs on every ambiguous turn; remove \
+                          them, or use a composite route to judge once per user turn"
+                    .to_string(),
+            });
+        }
         Ok(Self {
             route: build_stage_route(config)?,
         })
@@ -209,21 +232,41 @@ impl Algorithm for StageRouter {
 
 /// Wires the cascade the wrapper drives. Exposed so a composition above can
 /// stack a prelude onto it.
-pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough<State>> {
-    if !(0.0..=1.0).contains(&config.confidence_threshold) {
-        return Err(LibsyError::AlgorithmError {
-            message: format!(
-                "confidence_threshold must be between 0 and 1, got {}",
-                config.confidence_threshold
-            ),
-        });
+pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough> {
+    for (name, threshold) in [
+        ("confidence_threshold", config.confidence_threshold),
+        ("capable_first_threshold", config.capable_first_threshold),
+    ] {
+        if !(0.0..=1.0).contains(&threshold) {
+            return Err(LibsyError::AlgorithmError {
+                message: format!("{name} must be between 0 and 1, got {threshold}"),
+            });
+        }
     }
     config.tool_semantics.validate()?;
+    for (name, turns) in [
+        ("capable_hold_turns", Some(config.capable_hold_turns)),
+        ("efficient_hold_turns", config.efficient_hold_turns),
+    ] {
+        let Some(turns) = turns else { continue };
+        if !(-1..=i64::from(u32::MAX)).contains(&turns) {
+            return Err(LibsyError::AlgorithmError {
+                message: format!(
+                    "{name} must be -1 or between 0 and {}, got {turns}",
+                    u32::MAX
+                ),
+            });
+        }
+    }
     let default_tier = config.mode.default_tier();
     let fall_open = FallOpen { default_tier };
 
     let mut classifier = StageClassifier::new(config.mode, config.confidence_threshold)
+        .with_capable_first_threshold(config.capable_first_threshold)
         .with_capable_hold_turns(config.capable_hold_turns);
+    if let Some(turns) = config.efficient_hold_turns {
+        classifier = classifier.with_efficient_hold_turns(turns);
+    }
     if let Some(notes) = config.handoff_notes {
         classifier = classifier.with_handoff_notes(notes);
     }
@@ -231,10 +274,11 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
         recent_window: config.recent_window.unwrap_or(DEFAULT_RECENT_WINDOW),
         tool_semantics: config.tool_semantics,
     };
-    let mut router = FallThrough::<State>::new_with_state()
+    let classifier = Arc::new(classifier.with_signals(signals));
+    let mut router = FallThrough::new_with_state()
         .with_name(STAGE_ROUTER)
-        .with_processor(Arc::new(signals))
-        .with_classifier(Arc::new(classifier));
+        .with_processor(classifier.clone())
+        .with_classifier(classifier);
     if let Some(fallback) = config.llm_fallback {
         router = router.with_classifier(Arc::new(SourceStamp {
             inner: Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
@@ -259,6 +303,7 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
 
 #[cfg(test)]
 mod tests {
+    use crate::{CapabilityJudgeConfig, LlmCapabilityConfig};
     use std::collections::HashMap;
     use std::sync::Arc;
 
@@ -266,17 +311,16 @@ mod tests {
     use parking_lot::Mutex;
 
     use super::*;
-    use crate::algorithms::util::stage::{DECISION_SOURCE_KEY, clear_fall_open, set_fall_open};
+    use crate::algorithms::util::stage::{clear_fall_open, set_fall_open};
     use crate::algorithms::util::tier_fixtures::{JUDGE, Recorder, turn_request};
-    use crate::core::state::StateValue;
-    use crate::core::testing::{empty_driver, test_drive_with_models};
+    use crate::core::testing::test_drive_with_models;
     use switchyard_protocol::{Category, ModelId};
 
     /// A classifier that always picks `target`, standing in for a cascade member.
     struct Fixed(&'static str);
 
     #[async_trait]
-    impl Classifier<State> for Fixed {
+    impl Classifier for Fixed {
         async fn score(
             &self,
             _state: &mut State,
@@ -298,7 +342,7 @@ mod tests {
     struct Abstains;
 
     #[async_trait]
-    impl Classifier<State> for Abstains {
+    impl Classifier for Abstains {
         async fn score(
             &self,
             _state: &mut State,
@@ -309,19 +353,29 @@ mod tests {
         }
     }
 
-    async fn stamped(inner: Arc<dyn Classifier<State>>) -> Result<Option<String>> {
+    async fn stamped(inner: Arc<dyn Classifier>) -> Result<Option<String>> {
         let stamp = SourceStamp {
             inner,
             source: DecisionSource::LlmClassifier,
         };
-        let mut state = State::default();
+        let (driver, mut rx) = Driver::new("test", Arc::new(crate::RuntimeModels::default()));
         stamp
-            .score(&mut state, &mut Request::default(), &empty_driver())
+            .score(&mut State::default(), &mut Request::default(), &driver)
             .await?;
-        Ok(match state.extra.get(DECISION_SOURCE_KEY) {
-            Some(StateValue::String(source)) => Some(source.clone()),
-            _ => None,
-        })
+        driver
+            .finish(Ok(crate::RoutingOutcome::route_to(
+                "strong".into(),
+                Vec::new(),
+                Request::default(),
+            )))
+            .await?;
+        let Some(Ok(crate::Step::Done(outcome))) = rx.recv().await else {
+            panic!("expected Done step");
+        };
+        Ok(outcome
+            .metadata
+            .and_then(|metadata| metadata.evidence)
+            .and_then(|evidence| evidence.get("source")?.as_str().map(str::to_string)))
     }
 
     #[tokio::test]
@@ -376,7 +430,10 @@ mod tests {
         let mut config = config();
         config.llm_fallback = Some(LlmFallback {
             config: TaskClassifierConfig {
-                base_threshold: -0.1,
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold: -0.1,
+                    ..LlmCapabilityConfig::default()
+                }),
                 ..Default::default()
             },
         });
@@ -387,9 +444,241 @@ mod tests {
     }
 
     #[test]
+    fn rejects_retaining_triggers_on_the_fallback_judge() {
+        for (trigger, message_hash_fallback) in [
+            (ClassifyTrigger::UserTurn, false),
+            (ClassifyTrigger::NewSession, false),
+            (ClassifyTrigger::UserTurn, true),
+        ] {
+            let mut config = config();
+            config.llm_fallback = Some(LlmFallback {
+                config: TaskClassifierConfig {
+                    classify_trigger: trigger,
+                    message_hash_fallback,
+                    ..Default::default()
+                },
+            });
+            assert!(
+                matches!(
+                    StageRouter::new(config),
+                    Err(LibsyError::AlgorithmError { .. })
+                ),
+                "{trigger:?} with message_hash_fallback = {message_hash_fallback}"
+            );
+        }
+    }
+
+    #[test]
     fn builds() -> Result<()> {
         let router = StageRouter::new(config())?;
         assert_eq!(router.name(), STAGE_ROUTER);
+        Ok(())
+    }
+
+    #[test]
+    fn hold_turns_accept_pins_and_reject_invalid_counts() {
+        for capable in [true, false] {
+            for turns in [-2, -1, 0, 1, i64::from(u32::MAX), i64::from(u32::MAX) + 1] {
+                let mut config = config();
+                if capable {
+                    config.capable_hold_turns = turns;
+                } else {
+                    config.efficient_hold_turns = Some(turns);
+                }
+                assert_eq!(
+                    StageRouter::new(config).is_ok(),
+                    (-1..=i64::from(u32::MAX)).contains(&turns)
+                );
+            }
+        }
+    }
+
+    /// A clean write selects efficient without ending finite capable holds early.
+    fn production_request() -> Request {
+        let mut request = turn_request(false);
+        if let switchyard_protocol::ContentBlock::ToolCall(call) =
+            &mut request.llm_request.messages[1].content[0]
+        {
+            call.name = "Write".to_string();
+        }
+        request
+    }
+
+    #[tokio::test]
+    async fn standalone_pickers_default_to_no_efficient_hold() -> Result<()> {
+        for mode in [PickerMode::EfficientFirst, PickerMode::CapableFirst] {
+            let mut config = StageRouterConfig::new(mode, 0.5);
+            config.capable_hold_turns = 0;
+            let router = recording_router(config)?;
+            let recorder = Arc::new(Recorder::default());
+            for request in [turn_request(true), production_request(), turn_request(true)] {
+                test_drive_with_models(router.clone(), request, runtime_models(), recorder.serve())
+                    .await?;
+            }
+            let actual: Vec<_> = recorder
+                .routed()
+                .into_iter()
+                .map(|call| call.target)
+                .collect();
+            assert_eq!(actual, ["strong", "weak", "strong"]);
+        }
+        Ok(())
+    }
+
+    /// Both pickers honor both holds; the switch request is not one of the held turns.
+    #[tokio::test]
+    async fn holds_expire_or_pin_after_switching_in_both_pickers() -> Result<()> {
+        for mode in [PickerMode::EfficientFirst, PickerMode::CapableFirst] {
+            for capable in [true, false] {
+                for turns in [0, 1, 2, -1] {
+                    let mut config = StageRouterConfig::new(mode, 0.5);
+                    config.capable_hold_turns = if capable { turns } else { 0 };
+                    config.efficient_hold_turns = Some(if capable { 0 } else { turns });
+                    let router = recording_router(config)?;
+                    let recorder = Arc::new(Recorder::default());
+                    let (switch, opposing, held_target, other_target) = if capable {
+                        (turn_request(true), production_request(), "strong", "weak")
+                    } else {
+                        (production_request(), turn_request(true), "weak", "strong")
+                    };
+                    let mut requests = vec![opposing.clone(), switch];
+                    requests.extend(std::iter::repeat_n(opposing, 4));
+                    for request in requests {
+                        test_drive_with_models(
+                            router.clone(),
+                            request,
+                            runtime_models(),
+                            recorder.serve(),
+                        )
+                        .await?;
+                    }
+                    let actual: Vec<_> = recorder
+                        .routed()
+                        .into_iter()
+                        .map(|call| call.target)
+                        .collect();
+                    let mut expected = vec![other_target, held_target];
+                    expected.extend((0..4).map(|i| {
+                        if turns == -1 || i < turns {
+                            held_target
+                        } else {
+                            other_target
+                        }
+                    }));
+                    assert_eq!(
+                        actual, expected,
+                        "{mode:?}, capable={capable}, turns={turns}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Initial selection does not pin. Once switched, pins survive missing signals,
+    /// passing tests, and critical errors, and remain scoped to one session/agent.
+    #[tokio::test]
+    async fn pins_survive_signals_and_remain_isolated() -> Result<()> {
+        for mode in [PickerMode::EfficientFirst, PickerMode::CapableFirst] {
+            for capable in [true, false] {
+                let mut config = StageRouterConfig::new(mode, 0.5);
+                config.capable_hold_turns = -1;
+                config.efficient_hold_turns = Some(-1);
+                let router = recording_router(config)?;
+                let recorder = Arc::new(Recorder::default());
+                let (initial, switch, held, other) = if capable {
+                    (production_request(), turn_request(true), "strong", "weak")
+                } else {
+                    (turn_request(true), production_request(), "weak", "strong")
+                };
+                let mut no_signals = turn_request(false);
+                no_signals.llm_request.messages.truncate(1);
+                let mut passing = turn_request(false);
+                if let switchyard_protocol::ContentBlock::ToolResult(result) =
+                    &mut passing.llm_request.messages[2].content[0]
+                {
+                    result.content = vec![switchyard_protocol::ContentBlock::Text {
+                        text: "test result: ok. 1 passed; 0 failed".into(),
+                    }];
+                }
+                let mut child = initial.clone();
+                child.metadata.as_mut().unwrap().agent_id = Some("child".into());
+                let mut other_session = initial.clone();
+                other_session.metadata.as_mut().unwrap().session_id = Some("other".into());
+                let mut final_request = initial.clone();
+                final_request.metadata.as_mut().unwrap().session_final = Some(true);
+                let requests = [
+                    initial.clone(),
+                    switch,
+                    no_signals,
+                    passing,
+                    initial.clone(),
+                    child,
+                    other_session,
+                    final_request,
+                    initial,
+                ];
+                for request in requests {
+                    test_drive_with_models(
+                        router.clone(),
+                        request,
+                        runtime_models(),
+                        recorder.serve(),
+                    )
+                    .await?;
+                }
+                let actual: Vec<_> = recorder
+                    .routed()
+                    .into_iter()
+                    .map(|call| call.target)
+                    .collect();
+                assert_eq!(
+                    actual,
+                    [other, held, held, held, held, other, other, held, other]
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Judge-driven switches must arm the same pin as signal-driven switches.
+    #[tokio::test]
+    async fn judge_switches_arm_pins_and_held_turns_skip_the_judge() -> Result<()> {
+        for capable in [true, false] {
+            let recorder = Arc::new(Recorder::default());
+            let mut config = config_with_judge(&recorder, if capable { 1.0 } else { 0.0 });
+            config.capable_hold_turns = -1;
+            config.efficient_hold_turns = Some(-1);
+            let router = recording_router(config)?;
+            for p_solve in [
+                if capable { 1.0 } else { 0.0 },
+                if capable { 0.0 } else { 1.0 },
+                if capable { 1.0 } else { 0.0 },
+            ] {
+                *recorder.judge_p_solve.lock() = p_solve;
+                test_drive_with_models(
+                    router.clone(),
+                    turn_request(false),
+                    runtime_models(),
+                    recorder.serve(),
+                )
+                .await?;
+            }
+            let actual: Vec<_> = recorder
+                .routed()
+                .into_iter()
+                .map(|call| call.target)
+                .collect();
+            assert_eq!(
+                actual,
+                if capable {
+                    ["weak", "strong", "strong"]
+                } else {
+                    ["strong", "weak", "weak"]
+                }
+            );
+            assert_eq!(recorder.judge_calls(), 2);
+        }
         Ok(())
     }
 
@@ -411,7 +700,10 @@ mod tests {
         let mut c = config();
         c.llm_fallback = Some(LlmFallback {
             config: TaskClassifierConfig {
-                base_threshold: 0.5,
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold: 0.5,
+                    ..LlmCapabilityConfig::default()
+                }),
                 recent_turn_window: Some(3),
                 ..Default::default()
             },
@@ -427,7 +719,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Processor<State> for TierDecider {
+    impl Processor for TierDecider {
         async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
             if matches!(event, Event::Request { .. }) {
                 let mut requests = self.requests.lock();
