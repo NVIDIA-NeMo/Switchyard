@@ -103,6 +103,7 @@ enum RunStep<'a> {
     Done {
         selected_model_ids: &'a [ModelId],
         request: &'a LlmRequest,
+        fallback_request: Option<&'a LlmRequest>,
         response: Option<&'a AggLlmResponse>,
         metadata: Option<OutcomeMetadataRef<'a>>,
     },
@@ -264,22 +265,22 @@ impl RunState {
                 Ok(output)
             }
             Step::Done(outcome) => {
-                let response = match outcome.response.as_ref() {
+                let response = match outcome.response {
                     None => None,
-                    Some(Response {
-                        llm_response: LlmResponse::Agg(response),
-                        ..
-                    }) => Some(response),
-                    Some(_) => {
-                        return Err(
-                            "streaming routing outcomes are not supported by this spike".into()
-                        );
-                    }
+                    Some(response) => tokio::select! {
+                        biased;
+                        _ = self.cancellation.cancelled() => return Err("routing cancelled".into()),
+                        response = response.llm_response.into_agg() => Some(response?),
+                    },
                 };
                 let output = encode_json(&RunStep::Done {
                     selected_model_ids: &outcome.selected_model_ids,
                     request: &outcome.request.llm_request,
-                    response,
+                    fallback_request: outcome
+                        .fallback_request
+                        .as_ref()
+                        .map(|request| &request.llm_request),
+                    response: response.as_ref(),
                     metadata: outcome
                         .metadata
                         .as_ref()
@@ -425,7 +426,7 @@ pub unsafe extern "C" fn sy_router_new(
     config_json: *const c_char,
     out: *mut *mut SyRouter,
 ) -> *mut c_char {
-    let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+    ffi_call(|| {
         let out = unsafe { out.as_mut() }.ok_or("missing router output")?;
         *out = std::ptr::null_mut();
         let config: RouterConfig = unsafe { parse_json_input(config_json) }?;
@@ -435,12 +436,7 @@ pub unsafe extern "C" fn sy_router_new(
             engine: Arc::new(Engine { algorithm, runtime }),
         }));
         Ok(())
-    }));
-    match result {
-        Ok(Ok(())) => std::ptr::null_mut(),
-        Ok(Err(error)) => error_string(error.to_string()),
-        Err(_) => error_string("Switchyard binding panicked".to_string()),
-    }
+    })
 }
 
 /// Starts a run with host-approved model groups.
@@ -452,7 +448,7 @@ pub unsafe extern "C" fn sy_run_new(
     input_json: *const c_char,
     out: *mut *mut SyRun,
 ) -> *mut c_char {
-    let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+    ffi_call(|| {
         let router = unsafe { router.as_ref() }.ok_or("missing router")?;
         let out = unsafe { out.as_mut() }.ok_or("missing run output")?;
         *out = std::ptr::null_mut();
@@ -481,12 +477,7 @@ pub unsafe extern "C" fn sy_run_new(
         );
         *out = Box::into_raw(Box::new(SyRun::new(stream, Arc::clone(&router.engine))));
         Ok(())
-    }));
-    match result {
-        Ok(Ok(())) => std::ptr::null_mut(),
-        Ok(Err(error)) => error_string(error.to_string()),
-        Err(_) => error_string("Switchyard binding panicked".to_string()),
-    }
+    })
 }
 
 /// Requests the next step asynchronously. Only one read may be pending per run.
@@ -502,7 +493,7 @@ pub unsafe extern "C" fn sy_run_next_async(
     callback: Option<unsafe extern "C" fn(usize, *mut c_char, *mut c_char)>,
     user_data: usize,
 ) -> *mut c_char {
-    let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+    ffi_call(|| {
         let run = unsafe { run.as_ref() }.ok_or("missing run")?;
         let callback = callback.ok_or("missing completion callback")?;
         let read = run.state.begin_read()?;
@@ -517,12 +508,7 @@ pub unsafe extern "C" fn sy_run_next_async(
             run.engine.runtime.handle(),
         );
         Ok(())
-    }));
-    match result {
-        Ok(Ok(())) => std::ptr::null_mut(),
-        Ok(Err(error)) => error_string(error.to_string()),
-        Err(_) => error_string("Switchyard binding panicked".to_string()),
-    }
+    })
 }
 
 /// Delivers a buffered host reply to its pending call.
@@ -535,7 +521,7 @@ pub unsafe extern "C" fn sy_run_respond(
     call_id: u64,
     reply_json: *const c_char,
 ) -> *mut c_char {
-    let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+    ffi_call(|| {
         let run = unsafe { run.as_ref() }.ok_or("missing run")?;
         let reply: CallReply = unsafe { parse_json_input(reply_json) }?;
         let mut lifecycle = run.state.lifecycle.lock();
@@ -607,12 +593,7 @@ pub unsafe extern "C" fn sy_run_respond(
             run.state.stop(RunStatus::Failed);
         }
         Ok(result?)
-    }));
-    match result {
-        Ok(Ok(())) => std::ptr::null_mut(),
-        Ok(Err(error)) => error_string(error.to_string()),
-        Err(_) => error_string("Switchyard binding panicked".to_string()),
-    }
+    })
 }
 
 /// Signals cancellation without waiting for callbacks.

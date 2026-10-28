@@ -162,6 +162,112 @@ fn completed_runs_reject_further_reads() {
     unsafe { sy_run_free(Box::into_raw(run)) };
 }
 
+// Streamed answers still use the buffered Done contract without losing the answer.
+#[test]
+fn noop_outcomes_return_buffered_answers() {
+    let router = router(json!({"type": "noop"}));
+    for stream in [false, true] {
+        let run = run(
+            &router,
+            json!({
+                "request": {"model": "capable", "stream": stream},
+                "models": {"any": ["capable"]},
+            }),
+        );
+        let done = next(&run);
+        assert_eq!(done["type"], "done");
+        assert_eq!(done["selected_model_ids"], json!(["capable"]));
+        assert_eq!(done["request"]["model"], "capable");
+        assert_eq!(done["request"]["stream"], stream);
+        assert_eq!(done["response"]["id"], "switchyard-noop");
+        assert_eq!(done["response"]["model"], "capable");
+        assert_eq!(done["response"]["outputs"][0]["content"][0]["text"], "OK");
+    }
+}
+
+// Cancellation must interrupt response aggregation, not just waiting for a routing step.
+#[test]
+fn streamed_outcomes_propagate_errors_and_cancellation() {
+    let router = router(json!({"type": "noop"}));
+    for (cancel, expected_error, terminal_error) in [
+        (false, "stream failed", "routing failed"),
+        (true, "routing cancelled", "routing cancelled"),
+    ] {
+        let (polled, started) = mpsc::channel();
+        let response = Response {
+            llm_response: LlmResponse::Stream(Box::pin(futures::stream::poll_fn(move |_| {
+                let _ = polled.send(());
+                if cancel {
+                    std::task::Poll::Pending
+                } else {
+                    std::task::Poll::Ready(Some(Err(switchyard_protocol::LlmClientError::General(
+                        "stream failed".into(),
+                    ))))
+                }
+            }))),
+            metadata: None,
+            upstream_headers: Default::default(),
+        };
+        let outcome = switchyard_libsy::RoutingOutcome::answered(
+            "capable".into(),
+            Request::default(),
+            response,
+        );
+        let run = Box::new(SyRun::new(
+            Box::pin(futures::stream::iter([Ok(Step::Done(Box::new(outcome)))])),
+            Arc::clone(&router.engine),
+        ));
+        let (sender, receiver) = mpsc::channel();
+        next_async(&run, &sender).unwrap();
+        started.recv_timeout(Duration::from_secs(5)).unwrap();
+        if cancel {
+            unsafe { sy_run_cancel(&*run) };
+        }
+        let error = receiver
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(error.to_str().unwrap(), expected_error);
+        assert_eq!(next_async(&run, &sender).unwrap_err(), terminal_error);
+        unsafe { sy_run_free(Box::into_raw(run)) };
+    }
+}
+
+// Fallback candidates retain their request when the selected model's request was rewritten.
+#[test]
+fn completed_runs_preserve_fallback_requests() {
+    let router = router(json!({"type": "passthrough", "target": "capable"}));
+    for fallback in [
+        Some(switchyard_protocol::text_request(None, "original")),
+        None,
+    ] {
+        let expected = serde_json::to_value(&fallback).unwrap();
+        let mut outcome = switchyard_libsy::RoutingOutcome::route_to(
+            "capable".into(),
+            vec!["efficient".into()],
+            Request {
+                llm_request: switchyard_protocol::text_request(None, "rewritten"),
+                ..Default::default()
+            },
+        );
+        outcome.fallback_request = fallback.map(|llm_request| Request {
+            llm_request,
+            ..Default::default()
+        });
+        let run = SyRun::new(
+            Box::pin(futures::stream::iter([Ok(Step::Done(Box::new(outcome)))])),
+            Arc::clone(&router.engine),
+        );
+        let done = next(&run);
+        assert_eq!(done["selected_model_ids"], json!(["capable", "efficient"]));
+        assert_eq!(
+            done["request"]["messages"][0]["content"][0]["text"],
+            "rewritten"
+        );
+        assert_eq!(done.get("fallback_request"), Some(&expected));
+    }
+}
+
 #[test]
 fn cancellation_completes_pending_read_and_rejects_replies() {
     let (run, id) = pending_advisor();
