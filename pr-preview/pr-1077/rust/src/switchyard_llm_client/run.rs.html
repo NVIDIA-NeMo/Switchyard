@@ -2571,171 +2571,223 @@
 <a href=#2571 id=2571 data-nosnippet>2571</a>    }
 <a href=#2572 id=2572 data-nosnippet>2572</a>
 <a href=#2573 id=2573 data-nosnippet>2573</a>    <span class="attr">#[tokio::test]
-<a href=#2574 id=2574 data-nosnippet>2574</a>    </span><span class="kw">async fn </span>streams_are_outside_the_candidate_fallback_boundary() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#2575 id=2575 data-nosnippet>2575</a>        <span class="comment">// Receiving a stream handle is a successful call and ends candidate selection.
-<a href=#2576 id=2576 data-nosnippet>2576</a>        </span><span class="kw">let </span>(client, result) = run_candidates(FirstOutcome::StreamSuccess).<span class="kw">await</span>;
-<a href=#2577 id=2577 data-nosnippet>2577</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = result<span class="question-mark">?</span>;
-<a href=#2578 id=2578 data-nosnippet>2578</a>        <span class="macro">assert_eq!</span>(response.served_model().map(ModelId::as_str), <span class="prelude-val">Some</span>(<span class="string">"weak"</span>));
-<a href=#2579 id=2579 data-nosnippet>2579</a>        <span class="kw">let </span>aggregate = response
-<a href=#2580 id=2580 data-nosnippet>2580</a>            .llm_response
-<a href=#2581 id=2581 data-nosnippet>2581</a>            .into_agg()
-<a href=#2582 id=2582 data-nosnippet>2582</a>            .<span class="kw">await
-<a href=#2583 id=2583 data-nosnippet>2583</a>            </span>.map_err(|source| LibsyError::client_call(<span class="string">"weak"</span>, source))<span class="question-mark">?</span>;
-<a href=#2584 id=2584 data-nosnippet>2584</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>client.calls.lock(), <span class="kw-2">&amp;</span>[ModelId::from(<span class="string">"weak"</span>)]);
-<a href=#2585 id=2585 data-nosnippet>2585</a>        <span class="macro">assert_eq!</span>(completion_text(<span class="kw-2">&amp;</span>aggregate), <span class="string">"streamed"</span>);
-<a href=#2586 id=2586 data-nosnippet>2586</a>
-<a href=#2587 id=2587 data-nosnippet>2587</a>        <span class="comment">// A later in-stream failure surfaces during aggregation without trying another model.
-<a href=#2588 id=2588 data-nosnippet>2588</a>        </span><span class="kw">let </span>(client, result) = run_candidates(FirstOutcome::MidStreamError).<span class="kw">await</span>;
-<a href=#2589 id=2589 data-nosnippet>2589</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = result<span class="question-mark">?</span>;
-<a href=#2590 id=2590 data-nosnippet>2590</a>        <span class="kw">let </span>error = response
-<a href=#2591 id=2591 data-nosnippet>2591</a>            .llm_response
-<a href=#2592 id=2592 data-nosnippet>2592</a>            .into_agg()
-<a href=#2593 id=2593 data-nosnippet>2593</a>            .<span class="kw">await
-<a href=#2594 id=2594 data-nosnippet>2594</a>            </span>.expect_err(<span class="string">"the stream should fail during aggregation"</span>);
-<a href=#2595 id=2595 data-nosnippet>2595</a>        <span class="macro">assert!</span>(error.to_string().contains(<span class="string">"stream failed"</span>));
-<a href=#2596 id=2596 data-nosnippet>2596</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>client.calls.lock(), <span class="kw-2">&amp;</span>[ModelId::from(<span class="string">"weak"</span>)]);
-<a href=#2597 id=2597 data-nosnippet>2597</a>        <span class="prelude-val">Ok</span>(())
-<a href=#2598 id=2598 data-nosnippet>2598</a>    }
-<a href=#2599 id=2599 data-nosnippet>2599</a>
-<a href=#2600 id=2600 data-nosnippet>2600</a>    <span class="comment">// Verbatim shape of an SGLang admission rejection on a streaming session:
-<a href=#2601 id=2601 data-nosnippet>2601</a>    // HTTP 200, and the overflow arrives as the first SSE event.
-<a href=#2602 id=2602 data-nosnippet>2602</a>    </span><span class="kw">const </span>OVERFLOW_SSE: <span class="kw-2">&amp;</span>str = <span class="string">"data: {\"error\":{\"code\":400,\"message\":\"Input length (600013 tokens) exceeds the maximum allowed length (536826 tokens). Use a shorter input or enable --allow-auto-truncate.\",\"object\":\"error\",\"param\":null,\"type\":\"BAD_REQUEST\"},\"model\":\"weak\"}\n\ndata: [DONE]\n\n"</span>;
-<a href=#2603 id=2603 data-nosnippet>2603</a>
-<a href=#2604 id=2604 data-nosnippet>2604</a>    <span class="comment">// A normal one-turn streamed answer, as the second candidate serves it.
-<a href=#2605 id=2605 data-nosnippet>2605</a>    </span><span class="kw">const </span>STRONG_SSE: <span class="kw-2">&amp;</span>str = <span class="string">"data: {\"id\":\"answer\",\"model\":\"strong\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"answer\",\"model\":\"strong\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"</span>;
-<a href=#2606 id=2606 data-nosnippet>2606</a>
-<a href=#2607 id=2607 data-nosnippet>2607</a>    <span class="doccomment">/// Runs a streaming request through the weak→strong candidate loop, serving
-<a href=#2608 id=2608 data-nosnippet>2608</a>    /// `weak_sse` from the first candidate and [`STRONG_SSE`] from the second.
-<a href=#2609 id=2609 data-nosnippet>2609</a>    /// The server is returned so response streams stay readable after the call.
-<a href=#2610 id=2610 data-nosnippet>2610</a>    </span><span class="kw">async fn </span>run_streaming_candidates(
-<a href=#2611 id=2611 data-nosnippet>2611</a>        weak_sse: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
-<a href=#2612 id=2612 data-nosnippet>2612</a>    ) -&gt; (
-<a href=#2613 id=2613 data-nosnippet>2613</a>        MockServer,
-<a href=#2614 id=2614 data-nosnippet>2614</a>        Arc&lt;Mutex&lt;Vec&lt;String&gt;&gt;&gt;,
-<a href=#2615 id=2615 data-nosnippet>2615</a>        <span class="prelude-ty">Result</span>&lt;(ModelId, Response)&gt;,
-<a href=#2616 id=2616 data-nosnippet>2616</a>    ) {
-<a href=#2617 id=2617 data-nosnippet>2617</a>        <span class="kw">let </span>server = MockServer::start().<span class="kw">await</span>;
-<a href=#2618 id=2618 data-nosnippet>2618</a>        <span class="kw">let </span>calls = Arc::new(Mutex::new(Vec::new()));
-<a href=#2619 id=2619 data-nosnippet>2619</a>        <span class="kw">let </span>observed_calls = Arc::clone(<span class="kw-2">&amp;</span>calls);
-<a href=#2620 id=2620 data-nosnippet>2620</a>        Mock::given(method(<span class="string">"POST"</span>))
-<a href=#2621 id=2621 data-nosnippet>2621</a>            .respond_with(<span class="kw">move </span>|request: <span class="kw-2">&amp;</span>wiremock::Request| {
-<a href=#2622 id=2622 data-nosnippet>2622</a>                <span class="kw">let </span>body: serde_json::Value =
-<a href=#2623 id=2623 data-nosnippet>2623</a>                    serde_json::from_slice(<span class="kw-2">&amp;</span>request.body).unwrap_or(serde_json::Value::Null);
-<a href=#2624 id=2624 data-nosnippet>2624</a>                <span class="kw">let </span>model = body[<span class="string">"model"</span>].as_str().unwrap_or_default().to_string();
-<a href=#2625 id=2625 data-nosnippet>2625</a>                observed_calls.lock().push(model.clone());
-<a href=#2626 id=2626 data-nosnippet>2626</a>                <span class="kw">let </span>sse = <span class="kw">if </span>model == <span class="string">"weak" </span>{
-<a href=#2627 id=2627 data-nosnippet>2627</a>                    weak_sse
-<a href=#2628 id=2628 data-nosnippet>2628</a>                } <span class="kw">else </span>{
-<a href=#2629 id=2629 data-nosnippet>2629</a>                    STRONG_SSE
-<a href=#2630 id=2630 data-nosnippet>2630</a>                };
-<a href=#2631 id=2631 data-nosnippet>2631</a>                ResponseTemplate::new(<span class="number">200</span>)
-<a href=#2632 id=2632 data-nosnippet>2632</a>                    .insert_header(<span class="string">"content-type"</span>, <span class="string">"text/event-stream"</span>)
-<a href=#2633 id=2633 data-nosnippet>2633</a>                    .set_body_string(sse)
-<a href=#2634 id=2634 data-nosnippet>2634</a>            })
-<a href=#2635 id=2635 data-nosnippet>2635</a>            .mount(<span class="kw-2">&amp;</span>server)
-<a href=#2636 id=2636 data-nosnippet>2636</a>            .<span class="kw">await</span>;
-<a href=#2637 id=2637 data-nosnippet>2637</a>
-<a href=#2638 id=2638 data-nosnippet>2638</a>        <span class="kw">let </span>backend = || {
-<a href=#2639 id=2639 data-nosnippet>2639</a>            Backend::OpenAiChat(HttpBackendConfig {
-<a href=#2640 id=2640 data-nosnippet>2640</a>                base_url: <span class="macro">format!</span>(<span class="string">"{}/v1"</span>, server.uri()),
-<a href=#2641 id=2641 data-nosnippet>2641</a>                api_key: <span class="prelude-val">None</span>,
-<a href=#2642 id=2642 data-nosnippet>2642</a>                forward_auth: <span class="bool-val">false</span>,
-<a href=#2643 id=2643 data-nosnippet>2643</a>                extra_headers: BTreeMap::new(),
-<a href=#2644 id=2644 data-nosnippet>2644</a>                extra_body: BTreeMap::new(),
-<a href=#2645 id=2645 data-nosnippet>2645</a>                omit_body_fields: BTreeSet::new(),
-<a href=#2646 id=2646 data-nosnippet>2646</a>                reasoning_effort: <span class="prelude-val">None</span>,
-<a href=#2647 id=2647 data-nosnippet>2647</a>                max_retries: <span class="number">0</span>,
-<a href=#2648 id=2648 data-nosnippet>2648</a>                failure_cooldown: std::time::Duration::ZERO,
-<a href=#2649 id=2649 data-nosnippet>2649</a>                timeout: <span class="prelude-val">None</span>,
-<a href=#2650 id=2650 data-nosnippet>2650</a>            })
-<a href=#2651 id=2651 data-nosnippet>2651</a>        };
-<a href=#2652 id=2652 data-nosnippet>2652</a>        <span class="kw">let </span>client = Arc::new(
-<a href=#2653 id=2653 data-nosnippet>2653</a>            TranslatingLlmClient::new(<span class="kw-2">&amp;</span>[
-<a href=#2654 id=2654 data-nosnippet>2654</a>                ModelConfig::new(<span class="string">"weak"</span>, backend(), <span class="prelude-val">None</span>),
-<a href=#2655 id=2655 data-nosnippet>2655</a>                ModelConfig::new(<span class="string">"strong"</span>, backend(), <span class="prelude-val">None</span>),
-<a href=#2656 id=2656 data-nosnippet>2656</a>            ])
-<a href=#2657 id=2657 data-nosnippet>2657</a>            .expect(<span class="string">"building test client"</span>),
-<a href=#2658 id=2658 data-nosnippet>2658</a>        );
-<a href=#2659 id=2659 data-nosnippet>2659</a>        <span class="kw">let </span>algorithm = Arc::new(CandidateAlgorithm {});
-<a href=#2660 id=2660 data-nosnippet>2660</a>        <span class="kw">let </span><span class="kw-2">mut </span>llm_request = text_request(<span class="prelude-val">Some</span>(<span class="string">"auto"</span>.to_string()), <span class="string">"hello"</span>.to_string());
-<a href=#2661 id=2661 data-nosnippet>2661</a>        llm_request.stream = <span class="bool-val">true</span>;
-<a href=#2662 id=2662 data-nosnippet>2662</a>        <span class="kw">let </span>request = Request {
-<a href=#2663 id=2663 data-nosnippet>2663</a>            llm_request,
-<a href=#2664 id=2664 data-nosnippet>2664</a>            raw_request: <span class="prelude-val">None</span>,
-<a href=#2665 id=2665 data-nosnippet>2665</a>            metadata: <span class="prelude-val">None</span>,
-<a href=#2666 id=2666 data-nosnippet>2666</a>        };
-<a href=#2667 id=2667 data-nosnippet>2667</a>        <span class="kw">let </span>result = run(
-<a href=#2668 id=2668 data-nosnippet>2668</a>            algorithm,
-<a href=#2669 id=2669 data-nosnippet>2669</a>            ClientRouter::single(client),
-<a href=#2670 id=2670 data-nosnippet>2670</a>            request,
-<a href=#2671 id=2671 data-nosnippet>2671</a>            to_category_map(<span class="kw-2">&amp;</span>[<span class="string">"weak"</span>, <span class="string">"strong"</span>]),
-<a href=#2672 id=2672 data-nosnippet>2672</a>            <span class="prelude-val">None</span>,
-<a href=#2673 id=2673 data-nosnippet>2673</a>        )
-<a href=#2674 id=2674 data-nosnippet>2674</a>        .<span class="kw">await</span>;
-<a href=#2675 id=2675 data-nosnippet>2675</a>        (server, calls, result)
-<a href=#2676 id=2676 data-nosnippet>2676</a>    }
-<a href=#2677 id=2677 data-nosnippet>2677</a>
-<a href=#2678 id=2678 data-nosnippet>2678</a>    <span class="attr">#[tokio::test]
-<a href=#2679 id=2679 data-nosnippet>2679</a>    </span><span class="kw">async fn </span>first_stream_event_overflow_falls_back_to_the_next_candidate() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
-<a href=#2680 id=2680 data-nosnippet>2680</a>        <span class="comment">// Nothing has reached the caller when the first event arrives, so an overflow
-<a href=#2681 id=2681 data-nosnippet>2681</a>        // there falls through to the next candidate exactly as its buffered twin does.
-<a href=#2682 id=2682 data-nosnippet>2682</a>        </span><span class="kw">let </span>(_server, calls, result) = run_streaming_candidates(OVERFLOW_SSE).<span class="kw">await</span>;
-<a href=#2683 id=2683 data-nosnippet>2683</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = result<span class="question-mark">?</span>;
-<a href=#2684 id=2684 data-nosnippet>2684</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>calls.lock(), <span class="kw-2">&amp;</span>[<span class="string">"weak"</span>, <span class="string">"strong"</span>]);
-<a href=#2685 id=2685 data-nosnippet>2685</a>        <span class="macro">assert_eq!</span>(response.served_model().map(ModelId::as_str), <span class="prelude-val">Some</span>(<span class="string">"strong"</span>));
-<a href=#2686 id=2686 data-nosnippet>2686</a>        <span class="kw">let </span>aggregate = response
-<a href=#2687 id=2687 data-nosnippet>2687</a>            .llm_response
-<a href=#2688 id=2688 data-nosnippet>2688</a>            .into_agg()
-<a href=#2689 id=2689 data-nosnippet>2689</a>            .<span class="kw">await
-<a href=#2690 id=2690 data-nosnippet>2690</a>            </span>.map_err(|source| LibsyError::client_call(<span class="string">"strong"</span>, source))<span class="question-mark">?</span>;
-<a href=#2691 id=2691 data-nosnippet>2691</a>        <span class="macro">assert_eq!</span>(completion_text(<span class="kw-2">&amp;</span>aggregate), <span class="string">"ok"</span>);
-<a href=#2692 id=2692 data-nosnippet>2692</a>
-<a href=#2693 id=2693 data-nosnippet>2693</a>        <span class="comment">// Only a classified overflow re-routes; any other in-band error event still
-<a href=#2694 id=2694 data-nosnippet>2694</a>        // streams through to the consumer without trying another candidate.
-<a href=#2695 id=2695 data-nosnippet>2695</a>        </span><span class="kw">let </span>(_server, calls, result) = run_streaming_candidates(
-<a href=#2696 id=2696 data-nosnippet>2696</a>            <span class="string">"data: {\"error\":{\"code\":500,\"message\":\"engine exploded\",\"object\":\"error\"},\"model\":\"weak\"}\n\ndata: [DONE]\n\n"</span>,
-<a href=#2697 id=2697 data-nosnippet>2697</a>        )
-<a href=#2698 id=2698 data-nosnippet>2698</a>        .<span class="kw">await</span>;
-<a href=#2699 id=2699 data-nosnippet>2699</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = result<span class="question-mark">?</span>;
-<a href=#2700 id=2700 data-nosnippet>2700</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>calls.lock(), <span class="kw-2">&amp;</span>[<span class="string">"weak"</span>]);
-<a href=#2701 id=2701 data-nosnippet>2701</a>        <span class="kw">let </span>error = response
-<a href=#2702 id=2702 data-nosnippet>2702</a>            .llm_response
-<a href=#2703 id=2703 data-nosnippet>2703</a>            .into_agg()
-<a href=#2704 id=2704 data-nosnippet>2704</a>            .<span class="kw">await
-<a href=#2705 id=2705 data-nosnippet>2705</a>            </span>.expect_err(<span class="string">"the in-band error should surface to the consumer"</span>);
-<a href=#2706 id=2706 data-nosnippet>2706</a>        <span class="macro">assert!</span>(error.to_string().contains(<span class="string">"engine exploded"</span>));
-<a href=#2707 id=2707 data-nosnippet>2707</a>
-<a href=#2708 id=2708 data-nosnippet>2708</a>        <span class="comment">// Once content has streamed, a retry would repeat delivered output, so a later
-<a href=#2709 id=2709 data-nosnippet>2709</a>        // overflow event keeps today's semantics and surfaces during aggregation.
-<a href=#2710 id=2710 data-nosnippet>2710</a>        </span><span class="kw">let </span>(_server, calls, result) = run_streaming_candidates(
-<a href=#2711 id=2711 data-nosnippet>2711</a>            <span class="string">"data: {\"id\":\"turn\",\"model\":\"weak\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"},\"finish_reason\":null}]}\n\ndata: {\"error\":{\"code\":400,\"message\":\"Input length (600013 tokens) exceeds the maximum allowed length (536826 tokens).\",\"object\":\"error\",\"type\":\"BAD_REQUEST\"},\"model\":\"weak\"}\n\ndata: [DONE]\n\n"</span>,
-<a href=#2712 id=2712 data-nosnippet>2712</a>        )
-<a href=#2713 id=2713 data-nosnippet>2713</a>        .<span class="kw">await</span>;
-<a href=#2714 id=2714 data-nosnippet>2714</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = result<span class="question-mark">?</span>;
-<a href=#2715 id=2715 data-nosnippet>2715</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>calls.lock(), <span class="kw-2">&amp;</span>[<span class="string">"weak"</span>]);
-<a href=#2716 id=2716 data-nosnippet>2716</a>        <span class="kw">let </span>error = response
-<a href=#2717 id=2717 data-nosnippet>2717</a>            .llm_response
-<a href=#2718 id=2718 data-nosnippet>2718</a>            .into_agg()
-<a href=#2719 id=2719 data-nosnippet>2719</a>            .<span class="kw">await
-<a href=#2720 id=2720 data-nosnippet>2720</a>            </span>.expect_err(<span class="string">"the mid-stream overflow should surface to the consumer"</span>);
-<a href=#2721 id=2721 data-nosnippet>2721</a>        <span class="macro">assert!</span>(
-<a href=#2722 id=2722 data-nosnippet>2722</a>            error
-<a href=#2723 id=2723 data-nosnippet>2723</a>                .to_string()
-<a href=#2724 id=2724 data-nosnippet>2724</a>                .contains(<span class="string">"exceeds the maximum allowed length"</span>)
-<a href=#2725 id=2725 data-nosnippet>2725</a>        );
-<a href=#2726 id=2726 data-nosnippet>2726</a>
-<a href=#2727 id=2727 data-nosnippet>2727</a>        <span class="comment">// A stream that ends before any event is not a classified failure; it still
-<a href=#2728 id=2728 data-nosnippet>2728</a>        // aggregates to an empty response.
-<a href=#2729 id=2729 data-nosnippet>2729</a>        </span><span class="kw">let </span>(_server, calls, result) = run_streaming_candidates(<span class="string">"data: [DONE]\n\n"</span>).<span class="kw">await</span>;
-<a href=#2730 id=2730 data-nosnippet>2730</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = result<span class="question-mark">?</span>;
-<a href=#2731 id=2731 data-nosnippet>2731</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>calls.lock(), <span class="kw-2">&amp;</span>[<span class="string">"weak"</span>]);
-<a href=#2732 id=2732 data-nosnippet>2732</a>        <span class="kw">let </span>aggregate = response
-<a href=#2733 id=2733 data-nosnippet>2733</a>            .llm_response
-<a href=#2734 id=2734 data-nosnippet>2734</a>            .into_agg()
-<a href=#2735 id=2735 data-nosnippet>2735</a>            .<span class="kw">await
-<a href=#2736 id=2736 data-nosnippet>2736</a>            </span>.map_err(|source| LibsyError::client_call(<span class="string">"weak"</span>, source))<span class="question-mark">?</span>;
-<a href=#2737 id=2737 data-nosnippet>2737</a>        <span class="macro">assert_eq!</span>(completion_text(<span class="kw-2">&amp;</span>aggregate), <span class="string">""</span>);
-<a href=#2738 id=2738 data-nosnippet>2738</a>        <span class="prelude-val">Ok</span>(())
-<a href=#2739 id=2739 data-nosnippet>2739</a>    }
-<a href=#2740 id=2740 data-nosnippet>2740</a>}
+<a href=#2574 id=2574 data-nosnippet>2574</a>    </span><span class="kw">async fn </span>refused_connection_falls_back_to_the_next_candidate() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#2575 id=2575 data-nosnippet>2575</a>        <span class="kw">let </span>server = MockServer::start().<span class="kw">await</span>;
+<a href=#2576 id=2576 data-nosnippet>2576</a>        Mock::given(method(<span class="string">"POST"</span>))
+<a href=#2577 id=2577 data-nosnippet>2577</a>            .respond_with(ResponseTemplate::new(<span class="number">200</span>).set_body_json(<span class="macro">serde_json::json!</span>({
+<a href=#2578 id=2578 data-nosnippet>2578</a>                <span class="string">"id"</span>: <span class="string">"answer"</span>,
+<a href=#2579 id=2579 data-nosnippet>2579</a>                <span class="string">"model"</span>: <span class="string">"strong"</span>,
+<a href=#2580 id=2580 data-nosnippet>2580</a>                <span class="string">"choices"</span>: [{
+<a href=#2581 id=2581 data-nosnippet>2581</a>                    <span class="string">"index"</span>: <span class="number">0</span>,
+<a href=#2582 id=2582 data-nosnippet>2582</a>                    <span class="string">"message"</span>: {<span class="string">"role"</span>: <span class="string">"assistant"</span>, <span class="string">"content"</span>: <span class="string">"ok"</span>},
+<a href=#2583 id=2583 data-nosnippet>2583</a>                    <span class="string">"finish_reason"</span>: <span class="string">"stop"
+<a href=#2584 id=2584 data-nosnippet>2584</a>                </span>}],
+<a href=#2585 id=2585 data-nosnippet>2585</a>                <span class="string">"usage"</span>: {}
+<a href=#2586 id=2586 data-nosnippet>2586</a>            })))
+<a href=#2587 id=2587 data-nosnippet>2587</a>            .mount(<span class="kw-2">&amp;</span>server)
+<a href=#2588 id=2588 data-nosnippet>2588</a>            .<span class="kw">await</span>;
+<a href=#2589 id=2589 data-nosnippet>2589</a>
+<a href=#2590 id=2590 data-nosnippet>2590</a>        <span class="kw">let </span>backend = |base_url: String| {
+<a href=#2591 id=2591 data-nosnippet>2591</a>            Backend::OpenAiChat(HttpBackendConfig {
+<a href=#2592 id=2592 data-nosnippet>2592</a>                base_url,
+<a href=#2593 id=2593 data-nosnippet>2593</a>                api_key: <span class="prelude-val">None</span>,
+<a href=#2594 id=2594 data-nosnippet>2594</a>                forward_auth: <span class="bool-val">false</span>,
+<a href=#2595 id=2595 data-nosnippet>2595</a>                extra_headers: BTreeMap::new(),
+<a href=#2596 id=2596 data-nosnippet>2596</a>                extra_body: BTreeMap::new(),
+<a href=#2597 id=2597 data-nosnippet>2597</a>                omit_body_fields: BTreeSet::new(),
+<a href=#2598 id=2598 data-nosnippet>2598</a>                reasoning_effort: <span class="prelude-val">None</span>,
+<a href=#2599 id=2599 data-nosnippet>2599</a>                max_retries: <span class="number">0</span>,
+<a href=#2600 id=2600 data-nosnippet>2600</a>                failure_cooldown: std::time::Duration::ZERO,
+<a href=#2601 id=2601 data-nosnippet>2601</a>                timeout: <span class="prelude-val">None</span>,
+<a href=#2602 id=2602 data-nosnippet>2602</a>            })
+<a href=#2603 id=2603 data-nosnippet>2603</a>        };
+<a href=#2604 id=2604 data-nosnippet>2604</a>        <span class="kw">let </span>client = Arc::new(
+<a href=#2605 id=2605 data-nosnippet>2605</a>            TranslatingLlmClient::new(<span class="kw-2">&amp;</span>[
+<a href=#2606 id=2606 data-nosnippet>2606</a>                <span class="comment">// Nothing listens on port 1, so the connection is refused.
+<a href=#2607 id=2607 data-nosnippet>2607</a>                </span>ModelConfig::new(<span class="string">"weak"</span>, backend(<span class="string">"http://127.0.0.1:1/v1"</span>.to_string()), <span class="prelude-val">None</span>),
+<a href=#2608 id=2608 data-nosnippet>2608</a>                ModelConfig::new(<span class="string">"strong"</span>, backend(<span class="macro">format!</span>(<span class="string">"{}/v1"</span>, server.uri())), <span class="prelude-val">None</span>),
+<a href=#2609 id=2609 data-nosnippet>2609</a>            ])
+<a href=#2610 id=2610 data-nosnippet>2610</a>            .map_err(|error| LibsyError::external(<span class="string">"building test client"</span>, error))<span class="question-mark">?</span>,
+<a href=#2611 id=2611 data-nosnippet>2611</a>        );
+<a href=#2612 id=2612 data-nosnippet>2612</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = run(
+<a href=#2613 id=2613 data-nosnippet>2613</a>            Arc::new(CandidateAlgorithm {}),
+<a href=#2614 id=2614 data-nosnippet>2614</a>            ClientRouter::single(client),
+<a href=#2615 id=2615 data-nosnippet>2615</a>            request(),
+<a href=#2616 id=2616 data-nosnippet>2616</a>            to_category_map(<span class="kw-2">&amp;</span>[<span class="string">"weak"</span>, <span class="string">"strong"</span>]),
+<a href=#2617 id=2617 data-nosnippet>2617</a>            <span class="prelude-val">None</span>,
+<a href=#2618 id=2618 data-nosnippet>2618</a>        )
+<a href=#2619 id=2619 data-nosnippet>2619</a>        .<span class="kw">await</span><span class="question-mark">?</span>;
+<a href=#2620 id=2620 data-nosnippet>2620</a>
+<a href=#2621 id=2621 data-nosnippet>2621</a>        <span class="macro">assert_eq!</span>(response.served_model().map(ModelId::as_str), <span class="prelude-val">Some</span>(<span class="string">"strong"</span>));
+<a href=#2622 id=2622 data-nosnippet>2622</a>        <span class="prelude-val">Ok</span>(())
+<a href=#2623 id=2623 data-nosnippet>2623</a>    }
+<a href=#2624 id=2624 data-nosnippet>2624</a>
+<a href=#2625 id=2625 data-nosnippet>2625</a>    <span class="attr">#[tokio::test]
+<a href=#2626 id=2626 data-nosnippet>2626</a>    </span><span class="kw">async fn </span>streams_are_outside_the_candidate_fallback_boundary() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#2627 id=2627 data-nosnippet>2627</a>        <span class="comment">// Receiving a stream handle is a successful call and ends candidate selection.
+<a href=#2628 id=2628 data-nosnippet>2628</a>        </span><span class="kw">let </span>(client, result) = run_candidates(FirstOutcome::StreamSuccess).<span class="kw">await</span>;
+<a href=#2629 id=2629 data-nosnippet>2629</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = result<span class="question-mark">?</span>;
+<a href=#2630 id=2630 data-nosnippet>2630</a>        <span class="macro">assert_eq!</span>(response.served_model().map(ModelId::as_str), <span class="prelude-val">Some</span>(<span class="string">"weak"</span>));
+<a href=#2631 id=2631 data-nosnippet>2631</a>        <span class="kw">let </span>aggregate = response
+<a href=#2632 id=2632 data-nosnippet>2632</a>            .llm_response
+<a href=#2633 id=2633 data-nosnippet>2633</a>            .into_agg()
+<a href=#2634 id=2634 data-nosnippet>2634</a>            .<span class="kw">await
+<a href=#2635 id=2635 data-nosnippet>2635</a>            </span>.map_err(|source| LibsyError::client_call(<span class="string">"weak"</span>, source))<span class="question-mark">?</span>;
+<a href=#2636 id=2636 data-nosnippet>2636</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>client.calls.lock(), <span class="kw-2">&amp;</span>[ModelId::from(<span class="string">"weak"</span>)]);
+<a href=#2637 id=2637 data-nosnippet>2637</a>        <span class="macro">assert_eq!</span>(completion_text(<span class="kw-2">&amp;</span>aggregate), <span class="string">"streamed"</span>);
+<a href=#2638 id=2638 data-nosnippet>2638</a>
+<a href=#2639 id=2639 data-nosnippet>2639</a>        <span class="comment">// A later in-stream failure surfaces during aggregation without trying another model.
+<a href=#2640 id=2640 data-nosnippet>2640</a>        </span><span class="kw">let </span>(client, result) = run_candidates(FirstOutcome::MidStreamError).<span class="kw">await</span>;
+<a href=#2641 id=2641 data-nosnippet>2641</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = result<span class="question-mark">?</span>;
+<a href=#2642 id=2642 data-nosnippet>2642</a>        <span class="kw">let </span>error = response
+<a href=#2643 id=2643 data-nosnippet>2643</a>            .llm_response
+<a href=#2644 id=2644 data-nosnippet>2644</a>            .into_agg()
+<a href=#2645 id=2645 data-nosnippet>2645</a>            .<span class="kw">await
+<a href=#2646 id=2646 data-nosnippet>2646</a>            </span>.expect_err(<span class="string">"the stream should fail during aggregation"</span>);
+<a href=#2647 id=2647 data-nosnippet>2647</a>        <span class="macro">assert!</span>(error.to_string().contains(<span class="string">"stream failed"</span>));
+<a href=#2648 id=2648 data-nosnippet>2648</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>client.calls.lock(), <span class="kw-2">&amp;</span>[ModelId::from(<span class="string">"weak"</span>)]);
+<a href=#2649 id=2649 data-nosnippet>2649</a>        <span class="prelude-val">Ok</span>(())
+<a href=#2650 id=2650 data-nosnippet>2650</a>    }
+<a href=#2651 id=2651 data-nosnippet>2651</a>
+<a href=#2652 id=2652 data-nosnippet>2652</a>    <span class="comment">// Verbatim shape of an SGLang admission rejection on a streaming session:
+<a href=#2653 id=2653 data-nosnippet>2653</a>    // HTTP 200, and the overflow arrives as the first SSE event.
+<a href=#2654 id=2654 data-nosnippet>2654</a>    </span><span class="kw">const </span>OVERFLOW_SSE: <span class="kw-2">&amp;</span>str = <span class="string">"data: {\"error\":{\"code\":400,\"message\":\"Input length (600013 tokens) exceeds the maximum allowed length (536826 tokens). Use a shorter input or enable --allow-auto-truncate.\",\"object\":\"error\",\"param\":null,\"type\":\"BAD_REQUEST\"},\"model\":\"weak\"}\n\ndata: [DONE]\n\n"</span>;
+<a href=#2655 id=2655 data-nosnippet>2655</a>
+<a href=#2656 id=2656 data-nosnippet>2656</a>    <span class="comment">// A normal one-turn streamed answer, as the second candidate serves it.
+<a href=#2657 id=2657 data-nosnippet>2657</a>    </span><span class="kw">const </span>STRONG_SSE: <span class="kw-2">&amp;</span>str = <span class="string">"data: {\"id\":\"answer\",\"model\":\"strong\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"answer\",\"model\":\"strong\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"</span>;
+<a href=#2658 id=2658 data-nosnippet>2658</a>
+<a href=#2659 id=2659 data-nosnippet>2659</a>    <span class="doccomment">/// Runs a streaming request through the weak→strong candidate loop, serving
+<a href=#2660 id=2660 data-nosnippet>2660</a>    /// `weak_sse` from the first candidate and [`STRONG_SSE`] from the second.
+<a href=#2661 id=2661 data-nosnippet>2661</a>    /// The server is returned so response streams stay readable after the call.
+<a href=#2662 id=2662 data-nosnippet>2662</a>    </span><span class="kw">async fn </span>run_streaming_candidates(
+<a href=#2663 id=2663 data-nosnippet>2663</a>        weak_sse: <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str,
+<a href=#2664 id=2664 data-nosnippet>2664</a>    ) -&gt; (
+<a href=#2665 id=2665 data-nosnippet>2665</a>        MockServer,
+<a href=#2666 id=2666 data-nosnippet>2666</a>        Arc&lt;Mutex&lt;Vec&lt;String&gt;&gt;&gt;,
+<a href=#2667 id=2667 data-nosnippet>2667</a>        <span class="prelude-ty">Result</span>&lt;(ModelId, Response)&gt;,
+<a href=#2668 id=2668 data-nosnippet>2668</a>    ) {
+<a href=#2669 id=2669 data-nosnippet>2669</a>        <span class="kw">let </span>server = MockServer::start().<span class="kw">await</span>;
+<a href=#2670 id=2670 data-nosnippet>2670</a>        <span class="kw">let </span>calls = Arc::new(Mutex::new(Vec::new()));
+<a href=#2671 id=2671 data-nosnippet>2671</a>        <span class="kw">let </span>observed_calls = Arc::clone(<span class="kw-2">&amp;</span>calls);
+<a href=#2672 id=2672 data-nosnippet>2672</a>        Mock::given(method(<span class="string">"POST"</span>))
+<a href=#2673 id=2673 data-nosnippet>2673</a>            .respond_with(<span class="kw">move </span>|request: <span class="kw-2">&amp;</span>wiremock::Request| {
+<a href=#2674 id=2674 data-nosnippet>2674</a>                <span class="kw">let </span>body: serde_json::Value =
+<a href=#2675 id=2675 data-nosnippet>2675</a>                    serde_json::from_slice(<span class="kw-2">&amp;</span>request.body).unwrap_or(serde_json::Value::Null);
+<a href=#2676 id=2676 data-nosnippet>2676</a>                <span class="kw">let </span>model = body[<span class="string">"model"</span>].as_str().unwrap_or_default().to_string();
+<a href=#2677 id=2677 data-nosnippet>2677</a>                observed_calls.lock().push(model.clone());
+<a href=#2678 id=2678 data-nosnippet>2678</a>                <span class="kw">let </span>sse = <span class="kw">if </span>model == <span class="string">"weak" </span>{
+<a href=#2679 id=2679 data-nosnippet>2679</a>                    weak_sse
+<a href=#2680 id=2680 data-nosnippet>2680</a>                } <span class="kw">else </span>{
+<a href=#2681 id=2681 data-nosnippet>2681</a>                    STRONG_SSE
+<a href=#2682 id=2682 data-nosnippet>2682</a>                };
+<a href=#2683 id=2683 data-nosnippet>2683</a>                ResponseTemplate::new(<span class="number">200</span>)
+<a href=#2684 id=2684 data-nosnippet>2684</a>                    .insert_header(<span class="string">"content-type"</span>, <span class="string">"text/event-stream"</span>)
+<a href=#2685 id=2685 data-nosnippet>2685</a>                    .set_body_string(sse)
+<a href=#2686 id=2686 data-nosnippet>2686</a>            })
+<a href=#2687 id=2687 data-nosnippet>2687</a>            .mount(<span class="kw-2">&amp;</span>server)
+<a href=#2688 id=2688 data-nosnippet>2688</a>            .<span class="kw">await</span>;
+<a href=#2689 id=2689 data-nosnippet>2689</a>
+<a href=#2690 id=2690 data-nosnippet>2690</a>        <span class="kw">let </span>backend = || {
+<a href=#2691 id=2691 data-nosnippet>2691</a>            Backend::OpenAiChat(HttpBackendConfig {
+<a href=#2692 id=2692 data-nosnippet>2692</a>                base_url: <span class="macro">format!</span>(<span class="string">"{}/v1"</span>, server.uri()),
+<a href=#2693 id=2693 data-nosnippet>2693</a>                api_key: <span class="prelude-val">None</span>,
+<a href=#2694 id=2694 data-nosnippet>2694</a>                forward_auth: <span class="bool-val">false</span>,
+<a href=#2695 id=2695 data-nosnippet>2695</a>                extra_headers: BTreeMap::new(),
+<a href=#2696 id=2696 data-nosnippet>2696</a>                extra_body: BTreeMap::new(),
+<a href=#2697 id=2697 data-nosnippet>2697</a>                omit_body_fields: BTreeSet::new(),
+<a href=#2698 id=2698 data-nosnippet>2698</a>                reasoning_effort: <span class="prelude-val">None</span>,
+<a href=#2699 id=2699 data-nosnippet>2699</a>                max_retries: <span class="number">0</span>,
+<a href=#2700 id=2700 data-nosnippet>2700</a>                failure_cooldown: std::time::Duration::ZERO,
+<a href=#2701 id=2701 data-nosnippet>2701</a>                timeout: <span class="prelude-val">None</span>,
+<a href=#2702 id=2702 data-nosnippet>2702</a>            })
+<a href=#2703 id=2703 data-nosnippet>2703</a>        };
+<a href=#2704 id=2704 data-nosnippet>2704</a>        <span class="kw">let </span>client = Arc::new(
+<a href=#2705 id=2705 data-nosnippet>2705</a>            TranslatingLlmClient::new(<span class="kw-2">&amp;</span>[
+<a href=#2706 id=2706 data-nosnippet>2706</a>                ModelConfig::new(<span class="string">"weak"</span>, backend(), <span class="prelude-val">None</span>),
+<a href=#2707 id=2707 data-nosnippet>2707</a>                ModelConfig::new(<span class="string">"strong"</span>, backend(), <span class="prelude-val">None</span>),
+<a href=#2708 id=2708 data-nosnippet>2708</a>            ])
+<a href=#2709 id=2709 data-nosnippet>2709</a>            .expect(<span class="string">"building test client"</span>),
+<a href=#2710 id=2710 data-nosnippet>2710</a>        );
+<a href=#2711 id=2711 data-nosnippet>2711</a>        <span class="kw">let </span>algorithm = Arc::new(CandidateAlgorithm {});
+<a href=#2712 id=2712 data-nosnippet>2712</a>        <span class="kw">let </span><span class="kw-2">mut </span>llm_request = text_request(<span class="prelude-val">Some</span>(<span class="string">"auto"</span>.to_string()), <span class="string">"hello"</span>.to_string());
+<a href=#2713 id=2713 data-nosnippet>2713</a>        llm_request.stream = <span class="bool-val">true</span>;
+<a href=#2714 id=2714 data-nosnippet>2714</a>        <span class="kw">let </span>request = Request {
+<a href=#2715 id=2715 data-nosnippet>2715</a>            llm_request,
+<a href=#2716 id=2716 data-nosnippet>2716</a>            raw_request: <span class="prelude-val">None</span>,
+<a href=#2717 id=2717 data-nosnippet>2717</a>            metadata: <span class="prelude-val">None</span>,
+<a href=#2718 id=2718 data-nosnippet>2718</a>        };
+<a href=#2719 id=2719 data-nosnippet>2719</a>        <span class="kw">let </span>result = run(
+<a href=#2720 id=2720 data-nosnippet>2720</a>            algorithm,
+<a href=#2721 id=2721 data-nosnippet>2721</a>            ClientRouter::single(client),
+<a href=#2722 id=2722 data-nosnippet>2722</a>            request,
+<a href=#2723 id=2723 data-nosnippet>2723</a>            to_category_map(<span class="kw-2">&amp;</span>[<span class="string">"weak"</span>, <span class="string">"strong"</span>]),
+<a href=#2724 id=2724 data-nosnippet>2724</a>            <span class="prelude-val">None</span>,
+<a href=#2725 id=2725 data-nosnippet>2725</a>        )
+<a href=#2726 id=2726 data-nosnippet>2726</a>        .<span class="kw">await</span>;
+<a href=#2727 id=2727 data-nosnippet>2727</a>        (server, calls, result)
+<a href=#2728 id=2728 data-nosnippet>2728</a>    }
+<a href=#2729 id=2729 data-nosnippet>2729</a>
+<a href=#2730 id=2730 data-nosnippet>2730</a>    <span class="attr">#[tokio::test]
+<a href=#2731 id=2731 data-nosnippet>2731</a>    </span><span class="kw">async fn </span>first_stream_event_overflow_falls_back_to_the_next_candidate() -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
+<a href=#2732 id=2732 data-nosnippet>2732</a>        <span class="comment">// Nothing has reached the caller when the first event arrives, so an overflow
+<a href=#2733 id=2733 data-nosnippet>2733</a>        // there falls through to the next candidate exactly as its buffered twin does.
+<a href=#2734 id=2734 data-nosnippet>2734</a>        </span><span class="kw">let </span>(_server, calls, result) = run_streaming_candidates(OVERFLOW_SSE).<span class="kw">await</span>;
+<a href=#2735 id=2735 data-nosnippet>2735</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = result<span class="question-mark">?</span>;
+<a href=#2736 id=2736 data-nosnippet>2736</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>calls.lock(), <span class="kw-2">&amp;</span>[<span class="string">"weak"</span>, <span class="string">"strong"</span>]);
+<a href=#2737 id=2737 data-nosnippet>2737</a>        <span class="macro">assert_eq!</span>(response.served_model().map(ModelId::as_str), <span class="prelude-val">Some</span>(<span class="string">"strong"</span>));
+<a href=#2738 id=2738 data-nosnippet>2738</a>        <span class="kw">let </span>aggregate = response
+<a href=#2739 id=2739 data-nosnippet>2739</a>            .llm_response
+<a href=#2740 id=2740 data-nosnippet>2740</a>            .into_agg()
+<a href=#2741 id=2741 data-nosnippet>2741</a>            .<span class="kw">await
+<a href=#2742 id=2742 data-nosnippet>2742</a>            </span>.map_err(|source| LibsyError::client_call(<span class="string">"strong"</span>, source))<span class="question-mark">?</span>;
+<a href=#2743 id=2743 data-nosnippet>2743</a>        <span class="macro">assert_eq!</span>(completion_text(<span class="kw-2">&amp;</span>aggregate), <span class="string">"ok"</span>);
+<a href=#2744 id=2744 data-nosnippet>2744</a>
+<a href=#2745 id=2745 data-nosnippet>2745</a>        <span class="comment">// Only a classified overflow re-routes; any other in-band error event still
+<a href=#2746 id=2746 data-nosnippet>2746</a>        // streams through to the consumer without trying another candidate.
+<a href=#2747 id=2747 data-nosnippet>2747</a>        </span><span class="kw">let </span>(_server, calls, result) = run_streaming_candidates(
+<a href=#2748 id=2748 data-nosnippet>2748</a>            <span class="string">"data: {\"error\":{\"code\":500,\"message\":\"engine exploded\",\"object\":\"error\"},\"model\":\"weak\"}\n\ndata: [DONE]\n\n"</span>,
+<a href=#2749 id=2749 data-nosnippet>2749</a>        )
+<a href=#2750 id=2750 data-nosnippet>2750</a>        .<span class="kw">await</span>;
+<a href=#2751 id=2751 data-nosnippet>2751</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = result<span class="question-mark">?</span>;
+<a href=#2752 id=2752 data-nosnippet>2752</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>calls.lock(), <span class="kw-2">&amp;</span>[<span class="string">"weak"</span>]);
+<a href=#2753 id=2753 data-nosnippet>2753</a>        <span class="kw">let </span>error = response
+<a href=#2754 id=2754 data-nosnippet>2754</a>            .llm_response
+<a href=#2755 id=2755 data-nosnippet>2755</a>            .into_agg()
+<a href=#2756 id=2756 data-nosnippet>2756</a>            .<span class="kw">await
+<a href=#2757 id=2757 data-nosnippet>2757</a>            </span>.expect_err(<span class="string">"the in-band error should surface to the consumer"</span>);
+<a href=#2758 id=2758 data-nosnippet>2758</a>        <span class="macro">assert!</span>(error.to_string().contains(<span class="string">"engine exploded"</span>));
+<a href=#2759 id=2759 data-nosnippet>2759</a>
+<a href=#2760 id=2760 data-nosnippet>2760</a>        <span class="comment">// Once content has streamed, a retry would repeat delivered output, so a later
+<a href=#2761 id=2761 data-nosnippet>2761</a>        // overflow event keeps today's semantics and surfaces during aggregation.
+<a href=#2762 id=2762 data-nosnippet>2762</a>        </span><span class="kw">let </span>(_server, calls, result) = run_streaming_candidates(
+<a href=#2763 id=2763 data-nosnippet>2763</a>            <span class="string">"data: {\"id\":\"turn\",\"model\":\"weak\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"},\"finish_reason\":null}]}\n\ndata: {\"error\":{\"code\":400,\"message\":\"Input length (600013 tokens) exceeds the maximum allowed length (536826 tokens).\",\"object\":\"error\",\"type\":\"BAD_REQUEST\"},\"model\":\"weak\"}\n\ndata: [DONE]\n\n"</span>,
+<a href=#2764 id=2764 data-nosnippet>2764</a>        )
+<a href=#2765 id=2765 data-nosnippet>2765</a>        .<span class="kw">await</span>;
+<a href=#2766 id=2766 data-nosnippet>2766</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = result<span class="question-mark">?</span>;
+<a href=#2767 id=2767 data-nosnippet>2767</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>calls.lock(), <span class="kw-2">&amp;</span>[<span class="string">"weak"</span>]);
+<a href=#2768 id=2768 data-nosnippet>2768</a>        <span class="kw">let </span>error = response
+<a href=#2769 id=2769 data-nosnippet>2769</a>            .llm_response
+<a href=#2770 id=2770 data-nosnippet>2770</a>            .into_agg()
+<a href=#2771 id=2771 data-nosnippet>2771</a>            .<span class="kw">await
+<a href=#2772 id=2772 data-nosnippet>2772</a>            </span>.expect_err(<span class="string">"the mid-stream overflow should surface to the consumer"</span>);
+<a href=#2773 id=2773 data-nosnippet>2773</a>        <span class="macro">assert!</span>(
+<a href=#2774 id=2774 data-nosnippet>2774</a>            error
+<a href=#2775 id=2775 data-nosnippet>2775</a>                .to_string()
+<a href=#2776 id=2776 data-nosnippet>2776</a>                .contains(<span class="string">"exceeds the maximum allowed length"</span>)
+<a href=#2777 id=2777 data-nosnippet>2777</a>        );
+<a href=#2778 id=2778 data-nosnippet>2778</a>
+<a href=#2779 id=2779 data-nosnippet>2779</a>        <span class="comment">// A stream that ends before any event is not a classified failure; it still
+<a href=#2780 id=2780 data-nosnippet>2780</a>        // aggregates to an empty response.
+<a href=#2781 id=2781 data-nosnippet>2781</a>        </span><span class="kw">let </span>(_server, calls, result) = run_streaming_candidates(<span class="string">"data: [DONE]\n\n"</span>).<span class="kw">await</span>;
+<a href=#2782 id=2782 data-nosnippet>2782</a>        <span class="kw">let </span>(<span class="kw">_</span>, response) = result<span class="question-mark">?</span>;
+<a href=#2783 id=2783 data-nosnippet>2783</a>        <span class="macro">assert_eq!</span>(<span class="kw-2">&amp;*</span>calls.lock(), <span class="kw-2">&amp;</span>[<span class="string">"weak"</span>]);
+<a href=#2784 id=2784 data-nosnippet>2784</a>        <span class="kw">let </span>aggregate = response
+<a href=#2785 id=2785 data-nosnippet>2785</a>            .llm_response
+<a href=#2786 id=2786 data-nosnippet>2786</a>            .into_agg()
+<a href=#2787 id=2787 data-nosnippet>2787</a>            .<span class="kw">await
+<a href=#2788 id=2788 data-nosnippet>2788</a>            </span>.map_err(|source| LibsyError::client_call(<span class="string">"weak"</span>, source))<span class="question-mark">?</span>;
+<a href=#2789 id=2789 data-nosnippet>2789</a>        <span class="macro">assert_eq!</span>(completion_text(<span class="kw-2">&amp;</span>aggregate), <span class="string">""</span>);
+<a href=#2790 id=2790 data-nosnippet>2790</a>        <span class="prelude-val">Ok</span>(())
+<a href=#2791 id=2791 data-nosnippet>2791</a>    }
+<a href=#2792 id=2792 data-nosnippet>2792</a>}
 </code></pre></div></section></main></body></html>
