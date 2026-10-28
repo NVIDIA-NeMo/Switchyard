@@ -73,11 +73,8 @@ decision_clients.judge = { format = "system_one", endpoint = "https://e.test", a
     // Import reads one variable from a login shell whose startup files print around it.
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let shell = dir.path().join("shell");
-        let script = "#!/bin/sh\necho Hi\nexport SY_VALUE=set\n/bin/sh -c \"$4\"\necho Bye\n";
-        fs::write(&shell, script).expect("shell");
-        fs::set_permissions(&shell, fs::Permissions::from_mode(0o700)).expect("mode");
+        // Parallel forks must not inherit a writer to the executable fixture.
+        let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/login-shell.sh");
         let value = credentials::shell_value(&shell, "SY_VALUE");
         assert_eq!(value, Ok("set".into()));
         let error = credentials::shell_value(&shell, "SY_UNSET").expect_err("unset");
