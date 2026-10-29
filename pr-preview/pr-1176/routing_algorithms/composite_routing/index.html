@@ -2492,9 +2492,9 @@ on a standalone stage route.</p>
 </span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="n">capable_system_prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Plan the work and resolve uncertain steps.&quot;</span>
 </span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="n">efficient_system_prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Continue implementing the plan.&quot;</span>
 </span></code></pre></div>
-<p>See <a href="../stage_router_routing/#knob-reference">stage routing</a> for threshold,
-hold, tool-signal, and handoff behavior. Omitted settings inherit from <code>stage</code>,
-including the corresponding threshold. Prompts default to unset.
+<p>Both profiles use the <a href="../stage_router_routing/#knob-reference">stage tuning and prompt settings</a>.
+Targets stay in <code>stage</code>, the classifier stays in <code>classifier</code>, and each profile's name fixes its picker.
+Omitted settings inherit from <code>stage</code>, including the corresponding threshold.
 A supplied <code>tool_semantics</code> or <code>handoff_notes</code> table replaces the shared table.</p>
 <p>Either table enables two profiles with separate hold state. Switching back
 resumes that profile's holds. Inactive profiles do not consume hold turns.

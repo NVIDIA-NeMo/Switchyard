@@ -3084,7 +3084,7 @@ counts. Plain <code>decide</code> and <code>execute</code> retain task routing. 
 </span></code></pre></div>
 <p>All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/68b012b59c14e6a1dc03d403893c9a8e0161f58f/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a9bbd62f97595ca379181a6b881fc5db99fe454a/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
 for collection and capacity safeguards.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
@@ -3605,6 +3605,18 @@ the signals work and for tuning.</p>
 <td style="text-align: center;">No</td>
 <td><code>0.0</code></td>
 <td>Threshold used after an outer classifier selects the capable tier. Only a <a href="#composite">composite</a> route sets that tier, so this key has no effect on a standalone <code>stage_router</code> route.</td>
+</tr>
+<tr>
+<td><code>capable_system_prompt</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>System prompt prepended for capable requests.</td>
+</tr>
+<tr>
+<td><code>efficient_system_prompt</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>System prompt prepended for efficient requests.</td>
 </tr>
 <tr>
 <td><code>recent_turn_window</code></td>
