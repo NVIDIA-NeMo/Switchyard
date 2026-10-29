@@ -431,16 +431,21 @@ fn tray_size(app: tauri::AppHandle, height: f64) -> Result<(), String> {
     app.state::<panel::TrayPanel>().resize(height);
     #[cfg(windows)]
     if let Some(window) = app.get_webview_window("tray") {
-        let height = window
-            .current_monitor()
-            .map_err(|e| e.to_string())?
-            .map(|monitor| {
-                height.min(f64::from(monitor.work_area().size.height) / monitor.scale_factor())
-            })
-            .unwrap_or(height);
-        window
-            .set_size(tauri::LogicalSize::new(POPUP_WIDTH, height))
-            .map_err(|e| e.to_string())?;
+        let anchor = {
+            let mut placement = app.state::<TrayPopup>().lock();
+            placement.height = height;
+            placement.anchor
+        };
+        // The popup moves as well as resizes, so a popup above a bottom taskbar stays
+        // against it when its height changes.
+        match (anchor, window.current_monitor().map_err(|e| e.to_string())?) {
+            (Some(anchor), Some(monitor)) => {
+                place_popup(&window, &monitor, anchor, height).map_err(|e| e.to_string())?;
+            }
+            _ => window
+                .set_size(tauri::LogicalSize::new(POPUP_WIDTH, height))
+                .map_err(|e| e.to_string())?,
+        }
     }
     Ok(())
 }
@@ -463,12 +468,67 @@ fn dismiss_tray(app: tauri::AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
+/// TrayPopup keeps what Windows needs to place the popup: the content height that the webview
+/// last measured, in points, and the tray icon's rectangle from the click that opened it.
+#[cfg(windows)]
+struct TrayPopup(std::sync::Mutex<TrayPlacement>);
+#[cfg(windows)]
+#[derive(Clone, Copy)]
+struct TrayPlacement {
+    height: f64,
+    anchor: Option<tauri::Rect>,
+}
+#[cfg(windows)]
+impl TrayPopup {
+    fn new() -> Self {
+        // The first opening uses the largest height until the webview measures its content.
+        Self(std::sync::Mutex::new(TrayPlacement {
+            height: 620.0,
+            anchor: None,
+        }))
+    }
+    fn lock(&self) -> std::sync::MutexGuard<'_, TrayPlacement> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+#[cfg(windows)]
+fn place_popup(
+    window: &tauri::WebviewWindow,
+    monitor: &tauri::Monitor,
+    anchor: tauri::Rect,
+    height: f64,
+) -> tauri::Result<()> {
+    let (position, size) =
+        popup_geometry(anchor, monitor.work_area(), monitor.scale_factor(), height);
+    window.set_size(size)?;
+    window.set_position(position)
+}
+/// Pressing the tray icon takes focus from the popup before the click arrives. The popup
+/// stays open for that focus loss, so the click closes it instead of reopening it.
+#[cfg(windows)]
+fn cursor_on_tray_icon(window: &tauri::Window) -> bool {
+    let Some(anchor) = window.state::<TrayPopup>().lock().anchor else {
+        return false;
+    };
+    let (Ok(cursor), Ok(scale)) = (window.cursor_position(), window.scale_factor()) else {
+        return false;
+    };
+    let origin = anchor.position.to_physical::<f64>(scale);
+    let size = anchor.size.to_physical::<f64>(scale);
+    cursor.x >= origin.x
+        && cursor.x < origin.x + size.width
+        && cursor.y >= origin.y
+        && cursor.y < origin.y + size.height
+}
 // Windows uses physical coordinates to keep the popup within the target monitor's work area.
 #[cfg(windows)]
 fn popup_geometry(
     rect: tauri::Rect,
     area: &tauri::PhysicalRect<i32, u32>,
     scale: f64,
+    height: f64,
 ) -> (tauri::PhysicalPosition<i32>, tauri::PhysicalSize<u32>) {
     let origin = rect.position.to_physical::<f64>(scale);
     let icon = rect.size.to_physical::<f64>(scale);
@@ -476,7 +536,7 @@ fn popup_geometry(
         (POPUP_WIDTH * scale)
             .min(f64::from(area.size.width))
             .round() as u32,
-        (620.0 * scale).min(f64::from(area.size.height)).round() as u32,
+        (height * scale).min(f64::from(area.size.height)).round() as u32,
     );
     let x = (origin.x + icon.width / 2.0 - f64::from(size.width) / 2.0).clamp(
         f64::from(area.position.x),
@@ -528,10 +588,12 @@ fn toggle_tray(
                 && position.y >= f64::from(origin.y)
                 && position.y < f64::from(origin.y) + f64::from(size.height)
         }) {
-            let (position, size) =
-                popup_geometry(rect, monitor.work_area(), monitor.scale_factor());
-            window.set_position(position)?;
-            window.set_size(size)?;
+            let height = {
+                let mut placement = app.state::<TrayPopup>().lock();
+                placement.anchor = Some(rect);
+                placement.height
+            };
+            place_popup(&window, &monitor, rect, height)?;
         }
         window.show()?;
         window.set_focus()?;
@@ -639,7 +701,10 @@ pub fn run(controller: Controller, settings: PathBuf) -> Result<(), String> {
                 app.manage(panel::TrayPanel::new(&tray_window).map_err(std::io::Error::other)?);
             }
             #[cfg(windows)]
-            let _ = tray_window;
+            {
+                let _ = tray_window;
+                app.manage(TrayPopup::new());
+            }
 
             let tray_pixels = include_bytes!("../icons/tray.rgba");
             TrayIconBuilder::with_id(TRAY_ID)
@@ -698,6 +763,7 @@ pub fn run(controller: Controller, settings: PathBuf) -> Result<(), String> {
             #[cfg(windows)]
             if window.label() == "tray"
                 && matches!(event, tauri::WindowEvent::Focused(false))
+                && !cursor_on_tray_icon(window)
                 && let Err(error) = window.hide()
             {
                 eprintln!("switchyard-desktop: could not hide the usage preview: {error}");

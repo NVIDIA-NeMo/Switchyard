@@ -160,7 +160,8 @@ at startup, and saved costs do not change when prices change. An unreadable or i
 The [pi guide](../../docs/integrations/pi.md#estimate-the-cost) explains how to supply
 rates for your own models. The desktop app uses the same bundled rates by default.
 For custom rates, point its `pricing_file` setting at the same TOML or JSON file as
-the server's `--pricing-file`. Actual spending comes from recorded costs.
+the server's `--pricing-file`. The desktop app totals these recorded costs, so its totals
+can differ from what your provider bills.
 
 Clients can send `x-switchyard-origin: codex-cli` (or another client label) to include an
 `origin` field in each routing record. Missing, empty, or non-text header values produce

@@ -79,12 +79,14 @@ installed helper:
 ```
 
 On Windows, the installer puts the helper in
-`%LOCALAPPDATA%\Programs\Switchyard`. There `key set` reads the key from
+`%LOCALAPPDATA%\Programs\Switchyard`, or `%USERPROFILE%\AppData\Local\Programs\Switchyard`
+when `LOCALAPPDATA` is unset. There `key set` reads the key from
 standard input without a prompt, and `key import` reads the variable from your
 Windows environment variables. From PowerShell:
 
 ```powershell
-$helper = "$env:LOCALAPPDATA\Programs\Switchyard\switchyard-desktop-install.exe"
+$local = if ($env:LOCALAPPDATA) { $env:LOCALAPPDATA } else { "$env:USERPROFILE\AppData\Local" }
+$helper = "$local\Programs\Switchyard\switchyard-desktop-install.exe"
 & $helper key status --config "$env:USERPROFILE\.switchyard\composite.toml"
 [Net.NetworkCredential]::new('', (Read-Host 'Key' -AsSecureString)).Password | & $helper key set NVIDIA_API_KEY
 & $helper key import NVIDIA_API_KEY
@@ -193,8 +195,9 @@ also fails, the error names the directory containing recovery files.
 Rerun installation if a later task or settings operation fails; the complete
 installation is not one transaction.
 
-Settings, server config, accounts, and routing history stay in
-`%USERPROFILE%\.switchyard` unless `SY_HOME` changes the directory. Server and app
+Settings, server config, and routing history stay in `SY_HOME`, which defaults
+to `%USERPROFILE%\.switchyard`. Named accounts stay in
+`%USERPROFILE%\.switchyard\accounts` whatever `SY_HOME` is. Server and app
 logs are in `SY_HOME\logs`. Model-list keys entered in Routes are saved in the
 current user's Windows Credential Manager. Coding tools keep their own login files.
 

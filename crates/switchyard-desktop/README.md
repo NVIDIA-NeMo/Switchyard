@@ -301,9 +301,12 @@ instead.
 with `api_key_env` and says whether a key is saved for it. The installed server
 reads only these saved keys, never your shell's variables. To save a key, type
 or paste it in the hidden field and press Enter. Select **Show key** to check
-what you typed, or choose **Import from shell** to read the variable once from
-your login shell. **Remove…** deletes a saved key after you confirm. The
-installed helper saves each key in macOS Keychain or Windows Credential Manager.
+what you typed, or choose **Import from shell** to read the variable once. On
+macOS and Linux it reads the variable from your login shell; on Windows it reads
+your Windows environment variables. **Remove…** deletes a saved key after you
+confirm. The installed helper saves each key in macOS Keychain, Windows
+Credential Manager, or the Linux Secret Service keyring (GNOME Keyring or KDE
+Wallet).
 The app passes the key to the helper through standard input and never stores
 it. Restart the server to use a changed key. After a change, the section shows
 **Restart server now**.
@@ -448,7 +451,9 @@ billing. Both apps refresh usage at the configured `refresh_seconds` interval.
 
 ## Settings
 
-The app reads `~/.switchyard/desktop.toml` on refresh and before each operation:
+The app reads `$SY_HOME/desktop.toml` on refresh and before each operation.
+An installed app uses the `SY_HOME` it was installed with. `SY_HOME` defaults to
+`~/.switchyard`, so by default the file is `~/.switchyard/desktop.toml`:
 
 ```toml
 server_url = "http://127.0.0.1:4123"
