@@ -9,7 +9,9 @@ use std::collections::HashMap;
 
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
-use switchyard_protocol::{LlmResponseStreamEvent, ResponseAccumulator, StopReason};
+use switchyard_protocol::{
+    ContentBlock, LlmResponseStreamEvent, McpContent, McpItemKind, ResponseAccumulator, StopReason,
+};
 use switchyard_translation::{
     LlmResponseChunk, StreamTranslationState, TranslationEngine, WireFormat, decode_stream_event,
 };
@@ -17,6 +19,73 @@ use switchyard_translation::{
 use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+#[test]
+fn mcp_chunks_report_a_terminal_encoding_error() -> TestResult {
+    let engine = TranslationEngine::default();
+    for format in [
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+    ] {
+        for chunk in [
+            LlmResponseChunk::McpItemAnnouncement {
+                index: 0,
+                id: "mcpl_1".into(),
+                server_name: "inventory".into(),
+                kind: McpItemKind::Listing,
+            },
+            LlmResponseChunk::McpItemAnnouncement {
+                index: 1,
+                id: "mcpr_1".into(),
+                server_name: "inventory".into(),
+                kind: McpItemKind::ApprovalRequest {
+                    name: "lookup".into(),
+                    arguments: "{}".into(),
+                },
+            },
+            LlmResponseChunk::McpCallDelta {
+                index: 0,
+                id: None,
+                server_name: None,
+                name: None,
+                arguments_delta: None,
+            },
+            LlmResponseChunk::McpContentBlockComplete {
+                index: 0,
+                block: Box::new(ContentBlock::Mcp(McpContent::Listing {
+                    server_name: "inventory".into(),
+                    id: None,
+                    tools: Vec::new(),
+                    error: None,
+                })),
+            },
+        ] {
+            let mut state = StreamTranslationState::new(format, format);
+            let events = engine.encode_stream_event(&mut state, format, chunk.into())?;
+            assert_eq!(events.len(), 1);
+            let message = if format == WireFormat::OpenAiResponses {
+                &events[0]["message"]
+            } else {
+                &events[0]["error"]["message"]
+            };
+            assert!(message.as_str().is_some_and(|message| {
+                message.contains("MCP stream encoding is not supported")
+            }));
+            assert!(
+                engine
+                    .encode_stream_event(
+                        &mut state,
+                        format,
+                        LlmResponseChunk::MessageStop { reason: None }.into()
+                    )?
+                    .is_empty()
+            );
+            assert!(engine.finish_stream(&mut state, format)?.is_empty());
+        }
+    }
+    Ok(())
+}
 
 #[test]
 fn fragmented_chat_tool_names_are_complete_in_cross_format_streams() -> TestResult {

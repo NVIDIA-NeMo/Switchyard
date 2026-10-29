@@ -171,6 +171,14 @@ fn encode_anthropic_stream(
         return Vec::new();
     }
     match event {
+        LlmResponseChunk::McpCallDelta { .. }
+        | LlmResponseChunk::McpItemAnnouncement { .. }
+        | LlmResponseChunk::McpContentBlockComplete { .. } => encode_anthropic_stream(
+            state,
+            LlmResponseChunk::DecodeError {
+                message: "MCP stream encoding is not supported for Anthropic Messages".into(),
+            },
+        ),
         LlmResponseChunk::MessageStart { id, model } => {
             record_source_identity(state, id, model);
             if state.emitted_message_start {
