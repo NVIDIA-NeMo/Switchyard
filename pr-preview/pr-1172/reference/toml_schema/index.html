@@ -1134,6 +1134,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../routing_algorithms/target_pools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    N-target Pools and FallThrough
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../routing_algorithms/model_selection/" class="md-nav__link">
         
   
@@ -3084,7 +3112,7 @@ counts. Plain <code>decide</code> and <code>execute</code> retain task routing. 
 </span></code></pre></div>
 <p>All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/067373e13b8fff892972ee56b3174c3a4f211d70/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/479d1da62c432d7061fee39262c96a56c870ef16/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
 for collection and capacity safeguards.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
@@ -3809,8 +3837,8 @@ Schema with one choice per target. Omit <code>classifier.mode</code>,
 <code>classifier.base_threshold</code>, <code>classifier.threshold_step</code>, and <code>classifier.decision</code>.
 <code>classifier.response_format_type</code> must be <code>json_schema</code>. <code>classifier.prompt</code>
 customizes the instructions before the generated choices. See
-<a href="../../routing_algorithms/stage_router_routing/#optional-more-than-two-targets">Multi-target Stage routing</a>
-for the score line and ambiguity-band formula.</p>
+<a href="../../routing_algorithms/target_pools/">N-target pools and FallThrough</a>
+for the score line, ambiguity bands, and current Stage integration.</p>
 <h3 id="auto"><code>auto</code><a class="headerlink" href="#auto" title="Permanent link">&para;</a></h3>
 <p><code>auto</code> is a preset. It builds a <code>stage_router</code> route with fixed settings and no
 classifier. Use it when you want the recommended starting point without tuning.
