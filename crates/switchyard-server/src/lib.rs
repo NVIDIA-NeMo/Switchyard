@@ -18,7 +18,7 @@ mod stats;
 mod testing;
 mod usage_metrics;
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::future::Future;
@@ -472,7 +472,7 @@ const CLASSIFIER_TIER: &str = "classifier";
 fn stats_observer(
     stats: StatsAccumulator,
     classifier_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
-    provider_models: Arc<HashMap<ModelId, ModelId>>,
+    route: Route,
 ) -> RunObserver {
     Arc::new(move |observation| match observation {
         RunObservation::Outcome(metadata) => {
@@ -489,6 +489,7 @@ fn stats_observer(
                     log.append(
                         context.clone(),
                         &call.selected_model,
+                        route.provider_model(&call.selected_model),
                         None,
                         &Usage::default(),
                     );
@@ -499,9 +500,7 @@ fn stats_observer(
         RunObservation::LlmCall(call) | RunObservation::DecisionCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
             if let Some((log, context)) = classifier_log.as_ref() {
-                let model = provider_models
-                    .get(&call.selected_model)
-                    .unwrap_or(&call.selected_model);
+                let model = route.provider_model(&call.selected_model);
                 log.append(
                     context.clone(),
                     &call.selected_model,
@@ -1123,7 +1122,7 @@ async fn handle_llm_request(
     let observer = stats_observer(
         state.stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
-        route.provider_models(),
+        route.clone(),
     );
 
     let output = match route.execute(request, Some(observer)).await {
@@ -1880,10 +1879,25 @@ targets = ["only"]
         headers.insert("x-switchyard-turn-id", "turn-1".parse()?);
         let metadata = metadata_from_headers(headers);
         let context = routing_log::RoutingLogContext::from_metadata(&metadata);
+        let runner = Runner::from_toml(
+            r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "http://localhost:1/v1"
+[targets.judge]
+id = "judge-model"
+llm_client = "upstream"
+[routes.only]
+id = "route"
+type = "passthrough"
+target = "judge"
+"#,
+        )?;
         let observer = stats_observer(
             StatsAccumulator::default(),
             Some((log.clone(), context)),
-            Arc::default(),
+            runner.route("route").expect("configured route").clone(),
         );
 
         let call = |model: &str, answer: bool| {
@@ -1903,7 +1917,7 @@ targets = ["only"]
                 RunObservation::LlmCall(observation)
             }
         };
-        observer(call("judge-model", false));
+        observer(call("judge", false));
         observer(call("routed-model", true));
         observer(RunObservation::Outcome(libsy::OutcomeMetadata::new(
             "stage".into(),
@@ -1949,6 +1963,8 @@ targets = ["only"]
             serde_json::from_str(contents.lines().next().expect("call record"))?;
         assert_eq!(record["session_id"], "session-1");
         assert_eq!(record["turn_id"], "turn-1");
+        assert_eq!(record["target"], "judge");
+        assert_eq!(record["model"], "judge-model");
         Ok(())
     }
 

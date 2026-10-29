@@ -97,7 +97,14 @@ evidence = {{ description = "Compare the two profiles" }}
             })),
         )
         .await?;
-    assert_eq!(output.selected_model, "weak/model");
+    assert_eq!(output.selected_model, "weak");
+    assert_eq!(
+        runner
+            .route("switchyard/classifier")
+            .unwrap()
+            .provider_model(&output.selected_model),
+        "weak/model"
+    );
     let usage = observations.try_iter().find_map(|event| match event {
         RunObservation::DecisionCall(call) => call.usage,
         _ => None,
