@@ -402,6 +402,7 @@ mod tests {
         let mut log = RoutingLog::new(&path).expect("routing log");
         log.append(
             RoutingLogContext::from_metadata(&metadata).with_route("model-router", "passthrough"),
+            "worker",
             "worker-model",
             None,
             &Usage::default(),

@@ -2661,22 +2661,22 @@ schema_version = 1
 format = "openai_chat"
 base_url = "{base_url}"
 
-[targets.medium]
+[targets.efficient]
 id = "model/shared"
 llm_client = "upstream"
 reasoning_effort = "medium"
-system_prompt = "medium prompt"
+system_prompt = "efficient prompt"
 
-[targets.max]
+[targets.capable]
 id = "model/shared"
 llm_client = "upstream"
 reasoning_effort = "max"
-system_prompt = "max prompt"
+system_prompt = "capable prompt"
 
 [routes.random]
 id = "switchyard/random"
 type = "random"
-targets = ["medium", "max"]
+targets = ["efficient", "capable"]
 seed = 17
 "#,
         base_url = upstream.base_url
@@ -2709,14 +2709,12 @@ seed = 17
     for call in calls.iter() {
         assert_eq!(call["model"], "model/shared");
         let effort = call["reasoning_effort"].as_str().unwrap_or_default();
-        assert!(
-            matches!(effort, "medium" | "max"),
-            "unexpected effort {effort}"
-        );
-        assert!(
-            has_system_prompt(call, &format!("{effort} prompt")),
-            "{call}"
-        );
+        let expected_prompt = match effort {
+            "medium" => "efficient prompt",
+            "max" => "capable prompt",
+            other => panic!("unexpected effort {other}"),
+        };
+        assert!(has_system_prompt(call, expected_prompt), "{call}");
     }
     drop(calls);
 
@@ -2736,13 +2734,18 @@ seed = 17
     .json()?;
     let selected = &decision["selected"];
     assert_eq!(selected["model"], "model/shared");
-    assert_eq!(selected["reasoning_effort"], selected["target"]);
+    let expected_effort = match selected["target"].as_str() {
+        Some("capable") => "max",
+        Some("efficient") => "medium",
+        other => panic!("unexpected target {other:?}"),
+    };
+    assert_eq!(selected["reasoning_effort"], expected_effort);
 
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
-    let medium = stats["models"]["medium"]["calls"].as_u64().unwrap_or(0);
-    let max = stats["models"]["max"]["calls"].as_u64().unwrap_or(0);
-    assert!(medium > 0 && max > 0, "{}", stats["models"]);
-    assert_eq!(medium + max, requests as u64);
+    let efficient = stats["models"]["efficient"]["calls"].as_u64().unwrap_or(0);
+    let capable = stats["models"]["capable"]["calls"].as_u64().unwrap_or(0);
+    assert!(efficient > 0 && capable > 0, "{}", stats["models"]);
+    assert_eq!(efficient + capable, requests as u64);
     Ok(())
 }
 

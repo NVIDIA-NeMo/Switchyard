@@ -109,6 +109,7 @@ impl RunnerError {
 }
 
 /// A configured algorithm and the per-target clients its calls resolve through.
+#[derive(Clone)]
 pub struct Route {
     algorithm: Arc<dyn Algorithm>,
     // Resolves each offloaded call to the client configured for the target the algorithm
@@ -119,8 +120,7 @@ pub struct Route {
     capabilities: ModelCapabilities,
     anthropic_auxiliary_target: Option<AuxiliaryTarget>,
     responses_auxiliary_target: Option<AuxiliaryTarget>,
-    decision_targets: Vec<DecisionTarget>,
-    provider_models: Arc<HashMap<ModelId, ModelId>>,
+    targets: Arc<HashMap<ModelId, DecisionTarget>>,
     models: Arc<RuntimeModels>,
     infra: Option<libsy::InfraPolicy>,
 }
@@ -141,12 +141,12 @@ impl Route {
         capabilities: ModelCapabilities,
         anthropic_auxiliary_target: Option<AuxiliaryTarget>,
         responses_auxiliary_target: Option<AuxiliaryTarget>,
-        decision_targets: Vec<DecisionTarget>,
+        targets: Vec<DecisionTarget>,
         models: RuntimeModels,
     ) -> Self {
-        let provider_models = decision_targets
-            .iter()
-            .map(|target| (ModelId::from(target.target.as_str()), target.model.clone()))
+        let targets = targets
+            .into_iter()
+            .map(|target| (ModelId::from(target.target.as_str()), target))
             .collect();
         Self {
             algorithm,
@@ -155,8 +155,7 @@ impl Route {
             capabilities,
             anthropic_auxiliary_target,
             responses_auxiliary_target,
-            decision_targets,
-            provider_models: Arc::new(provider_models),
+            targets: Arc::new(targets),
             models: Arc::new(models),
             infra: None,
         }
@@ -179,22 +178,16 @@ impl Route {
 
     /// Resolves a selected model to this route's non-secret target metadata.
     pub(crate) fn decision_target(&self, model: &ModelId) -> Option<DecisionTarget> {
-        self.decision_targets
-            .iter()
-            .find(|target| target.target == model.as_str())
-            .cloned()
+        self.targets.get(model).cloned()
     }
 
     /// The provider model that serves `selected`, or `selected` itself when it names no
     /// target of this route.
     pub fn provider_model<'a>(&'a self, selected: &'a ModelId) -> &'a ModelId {
-        self.provider_models.get(selected).unwrap_or(selected)
-    }
-
-    /// Target name to provider model for every callable target, for observers that outlive
-    /// the borrow of this route.
-    pub fn provider_models(&self) -> Arc<HashMap<ModelId, ModelId>> {
-        Arc::clone(&self.provider_models)
+        self.targets
+            .get(selected)
+            .map(|target| &target.model)
+            .unwrap_or(selected)
     }
 
     /// Returns the models grouped for one algorithm execution.

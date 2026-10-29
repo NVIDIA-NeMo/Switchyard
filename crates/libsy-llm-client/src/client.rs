@@ -2588,7 +2588,7 @@ mod tests {
             Backend::Anthropic(backend),
             None,
         )])?;
-        let llm_request = decode_request(
+        let llm_request = switchyard_translation::decode_request(
             WireFormat::AnthropicMessages,
             &json!({"model": "claude", "messages": [{"role": "user", "content": "hi"}]}),
         )?;
@@ -3815,61 +3815,6 @@ mod tests {
         assert_eq!(body["choices"][0]["message"]["content"], "Hi there");
         // The client sees the model that answered, not the "client-facing" route id.
         assert_eq!(body["model"], "gpt");
-        Ok(())
-    }
-
-    // Two keys share one provider model. Each key keeps its own backend settings, and
-    // the upstream and the caller both see the provider model.
-    #[tokio::test]
-    async fn keys_sharing_a_provider_model_keep_their_own_settings()
-    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
-        let server = MockServer::start().await;
-        for effort in ["medium", "max"] {
-            Mock::given(method("POST"))
-                .and(path("/v1/chat/completions"))
-                .and(wiremock::matchers::body_partial_json(json!({
-                    "model": "gpt",
-                    "reasoning_effort": effort
-                })))
-                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                    "id": "chatcmpl-1",
-                    "model": "gpt",
-                    "choices": [{
-                        "index": 0,
-                        "message": {"role": "assistant", "content": effort},
-                        "finish_reason": "stop"
-                    }],
-                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
-                })))
-                .expect(1)
-                .mount(&server)
-                .await;
-        }
-        let models = ["medium", "max"].map(|effort| {
-            let mut backend = config(&format!("{}/v1", server.uri()));
-            backend.reasoning_effort = Some(effort.to_string());
-            ModelConfig::new(effort, Backend::OpenAiChat(backend), None).with_provider_model("gpt")
-        });
-        let client = TranslatingLlmClient::new(&models)?;
-        for effort in ["medium", "max"] {
-            let RawResponse::Buffered(body) = client
-                .call_rewrite_model_raw(
-                    json!({
-                        "model": "client-facing",
-                        "messages": [{"role": "user", "content": "hi"}],
-                        "reasoning_effort": "high"
-                    }),
-                    None,
-                    Some(&ModelId::from(effort)),
-                    WireFormat::OpenAiChat,
-                )
-                .await?
-            else {
-                panic!("expected a buffered response");
-            };
-            assert_eq!(body["choices"][0]["message"]["content"], effort);
-            assert_eq!(body["model"], "gpt");
-        }
         Ok(())
     }
 

@@ -393,7 +393,7 @@ impl DeploymentConfig {
             let responses_auxiliary_target =
                 self.build_responses_auxiliary_target(config, &clients);
             // Judges are included so a judge answer maps to its provider model too.
-            let decision_targets = config
+            let route_targets = config
                 .callable_target_names()
                 .into_iter()
                 .filter_map(|name| self.decision_target(name))
@@ -405,7 +405,7 @@ impl DeploymentConfig {
                 capabilities,
                 anthropic_auxiliary_target,
                 responses_auxiliary_target,
-                decision_targets,
+                route_targets,
                 models,
             )
             .with_infra(config.infra.clone());
@@ -647,7 +647,7 @@ impl DeploymentConfig {
                 .filter_map(|name| {
                     let target = &self.targets[name];
                     (!self.llm_clients[&target.llm_client].fallback_on_rate_limit)
-                        .then(|| target.id.clone())
+                        .then(|| ModelId::from(name))
                 })
                 .collect(),
         );
@@ -717,7 +717,7 @@ impl DeploymentConfig {
         }
         let client = clients.get(&efficient_target.llm_client)?;
         Some(ModelPropertiesProbe {
-            model: efficient_target.id.clone(),
+            model: ModelId::from(efficient_target_name),
             format: client_config.format.wire_format(),
             client: Arc::clone(client),
         })
@@ -1594,28 +1594,13 @@ classify_trigger"#,
         Ok(())
     }
 
+    // A routing-only judge cannot inherit the answer target's system prompt.
     #[test]
-    fn targets_sharing_a_model_keep_their_own_prompts() -> RunnerResult<()> {
-        let configured = stage_config()
-            .replace(
-                "id = \"strong/model\"\nllm_client = \"responses\"",
-                "id = \"strong/model\"\nllm_client = \"responses\"\nsystem_prompt = \"capable\"",
-            )
-            .replace(
-                "[routes.stage]",
-                "[targets.strong_alias]\nid = \"strong/model\"\nllm_client = \"responses\"\n\n[routes.stage]",
-            )
-            .replace("efficient_target = \"weak\"", "efficient_target = \"strong_alias\"");
-        runner_from_toml(&configured)?;
-        Ok(())
-    }
-
-    #[test]
-    fn prompted_routing_response_may_share_a_model_with_a_dependency() -> RunnerResult<()> {
+    fn rejects_prompted_answer_target_used_as_routing_only_target() {
         let configured = VALID_CONFIG
             .replace(
-                "id = \"classifier/model\"\nllm_client = \"primary\"",
-                "id = \"weak/model\"\nllm_client = \"primary\"",
+                "classifier_target = \"classifier\"",
+                "classifier_target = \"weak\"",
             )
             .replace(
                 "id = \"weak/model\"\nllm_client = \"anthropic\"",
@@ -1626,8 +1611,10 @@ classify_trigger"#,
                 "base_threshold = 0.5\nescalation = { confirmations = 1 }",
             );
 
-        runner_from_toml(&configured)?;
-        Ok(())
+        assert_eq!(
+            error_message(&configured),
+            "route classifier cannot apply system_prompt to target weak: it is also the routing-only target"
+        );
     }
 
     #[test]
@@ -1713,20 +1700,6 @@ classify_trigger"#,
             message.contains("decision target judge id strong is also an LLM target name"),
             "{message}"
         );
-    }
-
-    #[test]
-    fn targets_may_share_a_model_with_different_settings() -> RunnerResult<()> {
-        let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
-        assert!(VALID_CONFIG.contains(strong));
-        let shared = VALID_CONFIG.replace(
-            strong,
-            &format!(
-                "{strong}\n\n[targets.strong_max]\nid = \"strong/model\"\nllm_client = \"responses\"\nreasoning_effort = \"max\""
-            ),
-        );
-        runner_from_toml(&shared)?;
-        Ok(())
     }
 
     #[test]
@@ -2054,7 +2027,7 @@ target = "smart"
 
     #[test]
     fn accepts_same_model_id_on_different_llm_clients() -> RunnerResult<()> {
-        // One model may be served through different clients, in separate routes or one.
+        // One model may be served through different clients in separate routes.
         const CROSS_PROVIDER: &str = r#"
 schema_version = 1
 
@@ -2085,19 +2058,6 @@ type = "passthrough"
 target = "azure"
 "#;
         runner_from_toml(CROSS_PROVIDER)?;
-        let shared_route = format!(
-            r#"{CROSS_PROVIDER}
-
-[routes.shared]
-id = "switchyard/shared"
-type = "stage_router"
-capable_target = "openai"
-efficient_target = "azure"
-picker = "efficient_first"
-confidence_threshold = 0.5
-"#
-        );
-        runner_from_toml(&shared_route)?;
         Ok(())
     }
 
