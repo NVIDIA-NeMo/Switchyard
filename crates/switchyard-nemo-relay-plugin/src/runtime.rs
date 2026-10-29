@@ -1058,8 +1058,8 @@ mod tests {
                     _ => None,
                 })
                 .expect("decision mark should be emitted");
-            assert_eq!(decision["selected_model"], "target/model");
-            assert_eq!(decision["served_model"], "target/model");
+            assert_eq!(decision["selected_model"], "default");
+            assert_eq!(decision["served_model"], "default");
             assert_eq!(decision["fallback_used"], false);
             assert!(decision["outcome_id"].is_string());
             let response = execution.result.expect("target call should succeed");

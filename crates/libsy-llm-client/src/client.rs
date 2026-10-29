@@ -64,6 +64,7 @@ const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 #[derive(Clone, Debug)]
 pub struct ModelConfig {
     model_name: ModelId,
+    provider_model: Option<ModelId>,
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
     responses_reasoning: crate::ResponsesReasoningPolicy,
@@ -79,6 +80,7 @@ impl ModelConfig {
     ) -> Self {
         Self {
             model_name: model_name.into(),
+            provider_model: None,
             default_backend,
             other_backends,
             responses_reasoning: crate::ResponsesReasoningPolicy::default(),
@@ -89,6 +91,14 @@ impl ModelConfig {
     #[must_use]
     pub fn with_responses_reasoning(mut self, policy: crate::ResponsesReasoningPolicy) -> Self {
         self.responses_reasoning = policy;
+        self
+    }
+
+    /// Sends `provider_model` upstream in place of `model_name`. The client is still
+    /// called with `model_name`, so several entries can serve one provider model with
+    /// different backend settings.
+    pub fn with_provider_model(mut self, provider_model: impl Into<ModelId>) -> Self {
+        self.provider_model = Some(provider_model.into());
         self
     }
 }
@@ -205,6 +215,15 @@ impl TranslatingLlmClient {
         })
     }
 
+    /// The model id sent upstream for `model`: its provider model when one is set,
+    /// otherwise `model` itself.
+    pub fn provider_model<'a>(&'a self, model: &'a ModelId) -> &'a ModelId {
+        self.model_to_config
+            .get(model)
+            .and_then(|config| config.provider_model.as_ref())
+            .unwrap_or(model)
+    }
+
     /// Whether `model` has a backend for `operation`.
     pub fn supports_auxiliary(&self, model: &ModelId, operation: AuxiliaryOperation) -> bool {
         self.backend_for(model, operation.wire_format()).is_some()
@@ -281,7 +300,7 @@ impl TranslatingLlmClient {
             metadata,
             ..
         } = request;
-        llm_request.model = Some(model.to_string());
+        llm_request.model = Some(self.provider_model(model).to_string());
         let http_response = self
             .send_encoded(
                 backend,
@@ -340,8 +359,9 @@ impl TranslatingLlmClient {
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`; force the resolved model so
-        // the upstream always sees the target id.
-        set_json_model(&mut body, model);
+        // the upstream always sees the provider model.
+        let upstream_model = self.provider_model(model);
+        set_json_model(&mut body, upstream_model);
         if matches!(backend, Backend::OpenAiResponses(_)) {
             sanitize_openai_responses_provider_body(&mut body);
         }
@@ -361,8 +381,11 @@ impl TranslatingLlmClient {
                 .normalize(&mut body);
         }
         // After the merge on purpose: the effort override must win over both the caller's
-        // value and any `reasoning` default a target set through `extra_body`.
-        apply_reasoning_effort(&mut body, backend);
+        // value and any `reasoning` default a target set through `extra_body`. Token counting
+        // does not depend on effort, and Anthropic's count endpoint may reject the field.
+        if matches!(endpoint, UpstreamEndpoint::Completion) {
+            apply_reasoning_effort(&mut body, backend);
+        }
         if matches!(backend, Backend::OpenAiResponses(_)) {
             normalize_codex_string_input(&backend.url(), &mut body);
         }
@@ -378,7 +401,7 @@ impl TranslatingLlmClient {
         let streaming = endpoint.allows_streaming()
             && body.get("stream").and_then(Value::as_bool).unwrap_or(false);
         let url = endpoint.url(backend);
-        record_gen_ai_request(&url, model, streaming);
+        record_gen_ai_request(&url, upstream_model, streaming);
 
         let result = self
             .send_with_retries(&url, backend, &body, metadata, model, streaming)
@@ -636,8 +659,8 @@ impl TranslatingLlmClient {
     /// backend), and returns the neutral response.
     ///
     /// Resolution: `model_name` wins over `request.llm_request.model`; the
-    /// resolved name is both the outer map key and the model id written into the
-    /// request before translation. Missing models are invalid requests; unknown
+    /// resolved name is the outer map key, and its provider model is the model id
+    /// written into the request before translation. Missing models are invalid requests; unknown
     /// models or wire formats are configuration errors.
     pub async fn call_rewrite_model(
         &self,
@@ -656,7 +679,7 @@ impl TranslatingLlmClient {
             .ok_or_else(|| LlmClientError::InvalidRequest {
                 message: "no model given".to_string(),
             })?;
-        llm_request.model = Some(model_id.to_string());
+        llm_request.model = Some(self.provider_model(&model_id).to_string());
 
         let orig_format = metadata.as_ref().and_then(|m| m.wire_format);
         let wire_format = orig_format.unwrap_or(
@@ -766,8 +789,9 @@ impl TranslatingLlmClient {
         // one, else the request's own model. Mirrors `call_rewrite_model`'s own
         // resolution so the response names whoever answered.
         let served_model = model
-            .map(ModelId::to_string)
-            .or_else(|| llm_request.model.clone());
+            .cloned()
+            .or_else(|| llm_request.model.clone().map(ModelId::from))
+            .map(|model| self.provider_model(&model).to_string());
 
         let request = Request {
             llm_request,
@@ -1257,6 +1281,16 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
     if let Value::Object(object) = body {
         object.remove("reasoning_effort");
         object.remove("context_management");
+        // `strict: false` is the default, and Bedrock rejects the field outright.
+        if let Some(Value::Array(tools)) = object.get_mut("tools") {
+            for tool in tools {
+                if let Value::Object(tool) = tool
+                    && tool.get("strict") == Some(&Value::Bool(false))
+                {
+                    tool.remove("strict");
+                }
+            }
+        }
     }
 }
 
@@ -1342,20 +1376,9 @@ fn apply_reasoning_effort(body: &mut Value, backend: &Backend) {
         return;
     };
     match backend {
-        Backend::OpenAiResponses(_) => {
-            // Responses nests effort under `reasoning` next to fields the caller may have set
-            // (`summary`, for example), so only the `effort` key is replaced. A `reasoning`
-            // value that is not an object is malformed and is replaced whole.
-            let reasoning = object
-                .entry("reasoning".to_string())
-                .or_insert_with(|| Value::Object(serde_json::Map::new()));
-            if !reasoning.is_object() {
-                *reasoning = Value::Object(serde_json::Map::new());
-            }
-            if let Value::Object(reasoning) = reasoning {
-                reasoning.insert("effort".to_string(), Value::String(effort.to_string()));
-            }
-        }
+        // Responses nests effort under `reasoning`, Anthropic under `output_config`.
+        Backend::OpenAiResponses(_) => set_nested_effort(object, "reasoning", effort),
+        Backend::Anthropic(_) => set_nested_effort(object, "output_config", effort),
         Backend::OpenAiChat(_) => {
             // Chat Completions takes effort as a top-level field.
             object.insert(
@@ -1363,9 +1386,20 @@ fn apply_reasoning_effort(body: &mut Value, backend: &Backend) {
                 Value::String(effort.to_string()),
             );
         }
-        // Anthropic has no effort field (thinking is a token budget); the runner rejects the
-        // setting on Anthropic clients at load time, so this arm is unreachable in practice.
-        Backend::Anthropic(_) => {}
+    }
+}
+
+// Replaces only `effort` inside `key`, keeping fields the caller set next to it (`summary` or
+// `format`, for example). A non-object value there is malformed and is replaced whole.
+fn set_nested_effort(object: &mut serde_json::Map<String, Value>, key: &str, effort: &str) {
+    let container = object
+        .entry(key.to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    if !container.is_object() {
+        *container = Value::Object(serde_json::Map::new());
+    }
+    if let Value::Object(container) = container {
+        container.insert("effort".to_string(), Value::String(effort.to_string()));
     }
 }
 
@@ -2315,6 +2349,69 @@ mod tests {
         Ok(())
     }
 
+    // Covers both a translated request and an Anthropic caller's body sent as is.
+    #[tokio::test]
+    async fn anthropic_requests_drop_tool_strict_false()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "claude",
+            Backend::Anthropic(config(&server.uri())),
+            None,
+        )])?;
+        let schema = json!({"type": "object"});
+        let requests = [
+            (
+                WireFormat::OpenAiChat,
+                json!({
+                    "model": "client-facing",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tools": [
+                        {"type": "function", "function": {"name": "loose", "parameters": schema, "strict": false}},
+                        {"type": "function", "function": {"name": "exact", "parameters": schema, "strict": true}}
+                    ]
+                }),
+            ),
+            (
+                WireFormat::AnthropicMessages,
+                json!({
+                    "model": "client-facing",
+                    "max_tokens": 8,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tools": [
+                        {"name": "loose", "input_schema": schema, "strict": false},
+                        {"name": "exact", "input_schema": schema, "strict": true}
+                    ]
+                }),
+            ),
+        ];
+        for (format, request) in requests {
+            client
+                .call_rewrite_model_raw(request, None, Some(&ModelId::from("claude")), format)
+                .await?;
+        }
+        for received in server.received_requests().await.unwrap_or_default() {
+            let body: Value = serde_json::from_slice(&received.body)?;
+            assert!(body["tools"][0].get("strict").is_none(), "{body}");
+            assert_eq!(body["tools"][1]["strict"], true, "{body}");
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn template_rejection_retries_once_without_changing_other_fields()
     -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
@@ -2471,6 +2568,91 @@ mod tests {
                 assert_eq!(serde_json::from_slice::<Value>(&calls[0].body)?, expected);
             }
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn token_counting_does_not_send_the_effort_override()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages/count_tokens"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"input_tokens": 3})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut backend = config(&server.uri());
+        backend.reasoning_effort = Some("max".to_string());
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "claude",
+            Backend::Anthropic(backend),
+            None,
+        )])?;
+        let llm_request = switchyard_translation::decode_request(
+            WireFormat::AnthropicMessages,
+            &json!({"model": "claude", "messages": [{"role": "user", "content": "hi"}]}),
+        )?;
+        let request = Request {
+            llm_request,
+            raw_request: None,
+            metadata: None,
+        };
+        client
+            .call_auxiliary(
+                &ModelId::from("claude"),
+                request,
+                AuxiliaryOperation::AnthropicCountTokens,
+            )
+            .await?;
+        let received = server.received_requests().await.unwrap_or_default();
+        let body: Value = serde_json::from_slice(&received[0].body)?;
+        assert!(body.get("output_config").is_none(), "{body}");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reasoning_effort_override_sets_anthropic_output_config_effort()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let format = json!({"type": "json_schema", "schema": {"type": "object"}});
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .and(wiremock::matchers::body_partial_json(json!({
+                "model": "claude",
+                "output_config": {"effort": "max", "format": format}
+            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude",
+                "content": [{"type": "text", "text": "ok"}],
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut backend = config(&server.uri());
+        backend.reasoning_effort = Some("max".to_string());
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            "claude",
+            Backend::Anthropic(backend),
+            None,
+        )])?;
+        client
+            .call_rewrite_model_raw(
+                json!({
+                    "model": "client-facing",
+                    "max_tokens": 7,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "output_config": {"effort": "high", "format": format}
+                }),
+                None,
+                Some(&ModelId::from("claude")),
+                WireFormat::AnthropicMessages,
+            )
+            .await?;
         Ok(())
     }
 

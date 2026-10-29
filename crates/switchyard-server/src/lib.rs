@@ -150,6 +150,8 @@ struct DecisionTargetResponse {
     model: ModelId,
     llm_client: DecisionLlmClientResponse,
     extra_body: BTreeMap<String, Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 /// Non-secret client settings needed to call a selected model.
@@ -189,11 +191,16 @@ impl SharedRoutingLog {
     fn append(
         &self,
         context: routing_log::RoutingLogContext,
+        target: &str,
         model: &str,
         tier: Option<&str>,
         usage: &Usage,
     ) {
-        if let Err(error) = self.writer.lock().append(context, model, tier, usage) {
+        if let Err(error) = self
+            .writer
+            .lock()
+            .append(context, target, model, tier, usage)
+        {
             tracing::warn!(path = %self.path.display(), %error, "routing log append failed");
         }
     }
@@ -280,6 +287,7 @@ impl ServerState {
                 base_url: target.base_url,
             },
             extra_body: target.extra_body,
+            reasoning_effort: target.reasoning_effort,
         };
         Some(DecisionResponse {
             selected: convert(description.selected),
@@ -448,6 +456,7 @@ const CLASSIFIER_TIER: &str = "classifier";
 fn stats_observer(
     stats: StatsAccumulator,
     classifier_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
+    route: Route,
 ) -> RunObserver {
     Arc::new(move |observation| match observation {
         RunObservation::Outcome(_) => {}
@@ -460,6 +469,7 @@ fn stats_observer(
                     log.append(
                         context.clone(),
                         &call.selected_model,
+                        route.provider_model(&call.selected_model),
                         None,
                         &Usage::default(),
                     );
@@ -470,9 +480,11 @@ fn stats_observer(
         RunObservation::LlmCall(call) | RunObservation::DecisionCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
             if let Some((log, context)) = classifier_log.as_ref() {
+                let model = route.provider_model(&call.selected_model);
                 log.append(
                     context.clone(),
                     &call.selected_model,
+                    model,
                     Some(CLASSIFIER_TIER),
                     call.usage.as_ref().unwrap_or(&Usage::default()),
                 );
@@ -779,7 +791,10 @@ async fn decision_inner(
             match observed_translation::encode_response(
                 &aggregate,
                 input_format,
-                outcome.selected_model_id().ok().map(ModelId::as_str),
+                outcome
+                    .selected_model_id()
+                    .ok()
+                    .map(|model| route.provider_model(model).as_str()),
                 &ProviderExtensions::default(),
             ) {
                 Ok(response) => Some(response),
@@ -1086,6 +1101,7 @@ async fn handle_llm_request(
     let observer = stats_observer(
         state.stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
+        route.clone(),
     );
 
     let output = match route.execute(request, Some(observer)).await {
@@ -1110,6 +1126,10 @@ async fn handle_llm_request(
     // The response carries the candidate that actually served it. Fall back to the routing
     // selection for algorithms that return a response without an offloaded model call.
     let served_model = response.served_model().cloned().or(Some(selected_model));
+    // Stats and logs use the target. The caller sees the provider model that answered.
+    let provider_model = served_model
+        .as_ref()
+        .map(|model| route.provider_model(model).to_string());
     let mut response = if let Some(served_model) = served_model.as_ref() {
         let cache_eligible = cache_probe
             .as_ref()
@@ -1118,6 +1138,7 @@ async fn handle_llm_request(
         usage_metrics::observe(
             response,
             served_model.as_str(),
+            provider_model.as_deref().unwrap_or(served_model.as_str()),
             started.0,
             state.stats,
             cache_eligible,
@@ -1128,7 +1149,7 @@ async fn handle_llm_request(
     };
 
     let upstream_headers = std::mem::take(&mut response.upstream_headers);
-    let response_model = served_model.as_ref().map(ToString::to_string);
+    let response_model = provider_model.clone();
     let mut response = match into_http_response(
         response,
         wire_format,
@@ -1148,8 +1169,8 @@ async fn handle_llm_request(
         }
         response_headers.append(name.clone(), value.clone());
     }
-    if let Some(served_model) = served_model.as_ref() {
-        attach_routing_headers(&mut response, served_model.as_str());
+    if let Some(provider_model) = provider_model.as_ref() {
+        attach_routing_headers(&mut response, provider_model);
     }
     response
 }
@@ -1837,7 +1858,26 @@ targets = ["only"]
         headers.insert("x-switchyard-turn-id", "turn-1".parse()?);
         let metadata = metadata_from_headers(headers);
         let context = routing_log::RoutingLogContext::from_metadata(&metadata);
-        let observer = stats_observer(StatsAccumulator::default(), Some((log.clone(), context)));
+        let runner = Runner::from_toml(
+            r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "http://localhost:1/v1"
+[targets.judge]
+id = "judge-model"
+llm_client = "upstream"
+[routes.only]
+id = "route"
+type = "passthrough"
+target = "judge"
+"#,
+        )?;
+        let observer = stats_observer(
+            StatsAccumulator::default(),
+            Some((log.clone(), context)),
+            runner.route("route").expect("configured route").clone(),
+        );
 
         let call = |model: &str, answer: bool| {
             let observation = ModelCallObservation {
@@ -1856,7 +1896,7 @@ targets = ["only"]
                 RunObservation::LlmCall(observation)
             }
         };
-        observer(call("judge-model", false));
+        observer(call("judge", false));
         observer(call("routed-model", true));
 
         let snapshot = log
@@ -1871,6 +1911,8 @@ targets = ["only"]
         let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&log.path)?)?;
         assert_eq!(record["session_id"], "session-1");
         assert_eq!(record["turn_id"], "turn-1");
+        assert_eq!(record["target"], "judge");
+        assert_eq!(record["model"], "judge-model");
         Ok(())
     }
 

@@ -3,6 +3,7 @@
 
 //! One configured algorithm and the clients that serve its targets.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
 
@@ -108,6 +109,7 @@ impl RunnerError {
 }
 
 /// A configured algorithm and the per-target clients its calls resolve through.
+#[derive(Clone)]
 pub struct Route {
     algorithm: Arc<dyn Algorithm>,
     // Resolves each offloaded call to the client configured for the target the algorithm
@@ -118,7 +120,7 @@ pub struct Route {
     capabilities: ModelCapabilities,
     anthropic_auxiliary_target: Option<AuxiliaryTarget>,
     responses_auxiliary_target: Option<AuxiliaryTarget>,
-    decision_targets: Vec<DecisionTarget>,
+    targets: Arc<HashMap<ModelId, DecisionTarget>>,
     models: Arc<RuntimeModels>,
     infra: Option<libsy::InfraPolicy>,
 }
@@ -139,9 +141,13 @@ impl Route {
         capabilities: ModelCapabilities,
         anthropic_auxiliary_target: Option<AuxiliaryTarget>,
         responses_auxiliary_target: Option<AuxiliaryTarget>,
-        decision_targets: Vec<DecisionTarget>,
+        targets: Vec<DecisionTarget>,
         models: RuntimeModels,
     ) -> Self {
+        let targets = targets
+            .into_iter()
+            .map(|target| (ModelId::from(target.target.as_str()), target))
+            .collect();
         Self {
             algorithm,
             clients,
@@ -149,7 +155,7 @@ impl Route {
             capabilities,
             anthropic_auxiliary_target,
             responses_auxiliary_target,
-            decision_targets,
+            targets: Arc::new(targets),
             models: Arc::new(models),
             infra: None,
         }
@@ -172,10 +178,16 @@ impl Route {
 
     /// Resolves a selected model to this route's non-secret target metadata.
     pub(crate) fn decision_target(&self, model: &ModelId) -> Option<DecisionTarget> {
-        self.decision_targets
-            .iter()
-            .find(|target| target.model == *model)
-            .cloned()
+        self.targets.get(model).cloned()
+    }
+
+    /// The provider model that serves `selected`, or `selected` itself when it names no
+    /// target of this route.
+    pub fn provider_model<'a>(&'a self, selected: &'a ModelId) -> &'a ModelId {
+        self.targets
+            .get(selected)
+            .map(|target| &target.model)
+            .unwrap_or(selected)
     }
 
     /// Returns the models grouped for one algorithm execution.

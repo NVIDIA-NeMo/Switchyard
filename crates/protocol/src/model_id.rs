@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 /// It can name a provider model, such as `"openai/gpt-oss-20b"`. It can also name a
 /// Switchyard route, such as `"switchyard/random"`.
 ///
-/// A target name from server config, such as `"capable"`, is not a model ID. The server
-/// resolves target names to model IDs before routing.
+/// The runner routes on target names from server config, such as `"capable"`, and sends
+/// each target's provider model upstream.
 ///
 /// This type acts like a string. It can be printed, compared, and saved as a JSON string.
 #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
