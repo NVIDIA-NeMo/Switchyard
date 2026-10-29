@@ -565,7 +565,7 @@ impl VgrClassifier {
         let outcome = tokio::time::timeout(budget, async {
             let response = context
                 .driver
-                .call_model(call, vec![target.clone()])
+                .call_model_with_error_recovery(call, vec![target.clone()], true)
                 .await?;
             response
                 .llm_response

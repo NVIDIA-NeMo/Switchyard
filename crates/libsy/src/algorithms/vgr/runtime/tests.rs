@@ -1334,3 +1334,55 @@ fn only_a_paused_reply_to_a_reported_final_answer_releases_the_latch() {
         );
     }
 }
+
+#[tokio::test]
+async fn a_failed_capable_verifier_still_offers_the_efficient_answer() -> Result<()> {
+    use crate::core::algorithm::Call;
+    use crate::core::testing::serve_decision;
+
+    let algorithm = route(|config| config.task_typing = true)?;
+    let task = || session(vec![Message::text(Role::User, "What is 1+1?")]);
+    // Exercise production error propagation through CallModel::respond.
+    let outcome = crate::drive(
+        algorithm,
+        task(),
+        Arc::new(category_models(Category::Any, &["efficient", "capable"]).into()),
+        |call| async move {
+            match call {
+                Call::Model(call) => {
+                    let target = call.models[0].clone();
+                    let readout = call
+                        .request
+                        .llm_request
+                        .extensions
+                        .fields
+                        .contains_key("logprobs");
+                    let response = match target.as_str() {
+                        "efficient" => Ok(reply("2")),
+                        "judge" if readout => Ok(scored(0.05)),
+                        "judge" => Ok(reply("Answer")),
+                        _ => Err(crate::LibsyError::client_call(
+                            target,
+                            LlmClientError::UpstreamHttp {
+                                status: http::StatusCode::BAD_GATEWAY,
+                                body: String::new(),
+                            },
+                        )),
+                    };
+                    call.respond(std::future::ready(response)).await
+                }
+                Call::Decision(call) => serve_decision(*call).await,
+            }
+        },
+    )
+    .await?;
+    assert_eq!(
+        outcome.selected_model_ids,
+        vec![ModelId::new("capable"), ModelId::new("efficient")]
+    );
+    let fallback = outcome
+        .fallback_request
+        .expect("an efficient fallback request");
+    assert_eq!(fallback.llm_request.messages, task().llm_request.messages);
+    Ok(())
+}
