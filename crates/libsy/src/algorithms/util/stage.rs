@@ -784,6 +784,13 @@ impl Classifier for StageClassifier {
             let value = score_signal(signal).probability();
             let confidence = pool.confidence(value)?;
             let ambiguous = !pool.is_clear(value, threshold)?;
+            tracing::info!(
+                score = value,
+                confidence,
+                threshold,
+                ambiguous,
+                "Stage pool score classified"
+            );
             record_score_metrics(
                 signal,
                 &PickOutcome::ConsultClassifier {

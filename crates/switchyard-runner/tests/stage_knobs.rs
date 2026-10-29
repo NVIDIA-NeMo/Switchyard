@@ -106,3 +106,25 @@ fn rejects_invalid_pools_and_binary_judge_knobs_for_n_targets() {
     }
     assert!(load_error(&format!("{CONFIG}{POOL}{CLASSIFIER}")).contains("categorical"));
 }
+
+#[test]
+fn rejects_invalid_n_target_classifier_settings_at_load() {
+    for (setting, expected) in [
+        ("classify_trigger = 'user_turn'", "without retention"),
+        ("message_hash_fallback = true", "without retention"),
+        ("max_output_tokens = 0", "at least 1"),
+        ("prompt = '   '", "prompt must not be empty"),
+        ("threshold_step = 0.1", "categorical"),
+        ("response_format_type = 'json_object'", "categorical"),
+        ("mode = 'custom'", "categorical"),
+    ] {
+        let error = load_error(&format!(
+            "{CONFIG}{POOL}[routes.stage.classifier]\ntarget = 'judge'\n{setting}\n"
+        ));
+        assert!(error.contains(expected), "{setting}: {error}");
+    }
+    let error = load_error(&format!(
+        "{CONFIG}{POOL}[routes.stage.classifier]\ntarget = 'missing'\n"
+    ));
+    assert!(error.contains("missing"), "{error}");
+}

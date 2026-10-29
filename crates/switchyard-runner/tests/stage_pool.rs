@@ -40,21 +40,32 @@ target = "judge"
 "#
     );
     let runner = Runner::from_toml(&config)?;
-    for (choice, expected) in [
+    let verdicts = [
         ("target_0", "small"),
         ("target_1", "medium"),
         ("target_2", "large"),
         ("target_3", "largest"),
         ("unknown", "small"),
-    ] {
+    ]
+    .into_iter()
+    .map(|(choice, expected)| {
+        (
+            json!({"target":choice,"reason":"fixture"}).to_string(),
+            expected,
+        )
+    })
+    .chain([
+        ("not JSON".into(), "small"),
+        (r#"{"target":"target_3"}"#.into(), "small"),
+        (r#"{"target":3,"reason":"fixture"}"#.into(), "small"),
+        (r#"{"target":"judge","reason":"fixture"}"#.into(), "small"),
+    ]);
+    for (verdict, expected) in verdicts {
         server.reset().await;
         Mock::given(method("POST"))
             .and(path("/v1/chat/completions"))
             .and(body_partial_json(json!({"model":"judge"})))
-            .respond_with(ResponseTemplate::new(200).set_body_json(completion(
-                "judge",
-                &json!({"target":choice,"reason":"fixture"}).to_string(),
-            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(completion("judge", &verdict)))
             .expect(1)
             .mount(&server)
             .await;

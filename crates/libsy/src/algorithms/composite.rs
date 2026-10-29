@@ -265,6 +265,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn n_target_pool_allows_policy_judge_but_rejects_binary_model_fallback() -> Result<()> {
+        for binary_fallback in [false, true] {
+            let mut stage = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
+            if binary_fallback {
+                stage.llm_fallback = Some(crate::LlmFallback {
+                    config: TaskClassifierConfig::default(),
+                });
+            }
+            let router = router_with_stage(ClassifyTrigger::NewSession, stage)?;
+            let targets = vec![
+                ModelId::from("weak"),
+                ModelId::from("middle"),
+                ModelId::from("strong"),
+            ];
+            let mut groups = runtime_models();
+            groups.insert(Category::Any, targets.clone());
+            let models = crate::RuntimeModels::new(groups)
+                .with_pool(crate::TargetPool::new(targets, vec![])?)?;
+            let recorder = Arc::new(Recorder::default());
+            let result =
+                test_drive_with_models(router, turn_request(false), models, recorder.serve()).await;
+            if binary_fallback {
+                assert!(
+                    result
+                        .err()
+                        .expect("incompatible model fallback")
+                        .to_string()
+                        .contains("supports at most 2 pool targets")
+                );
+                assert!(
+                    recorder.calls.lock().is_empty(),
+                    "reject before the outer judge runs"
+                );
+            } else {
+                assert_eq!(result?.0, "middle");
+                assert_eq!(recorder.judge_calls(), 1);
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn capable_first_defaults_to_pinning_efficient_after_a_switch() -> Result<()> {
         for capable_first in [false, true] {
             for turns in [None, Some(0), Some(1), Some(-1)] {

@@ -65,9 +65,12 @@ impl RuntimeModels {
     }
 
     /// Opt into a score line for the parent router. Subagents retain their own decisions.
-    pub fn with_pool(mut self, pool: crate::TargetPool) -> Self {
+    /// Rejects pool targets absent from the parent's `Any` completion group.
+    pub fn with_pool(mut self, pool: crate::TargetPool) -> Result<Self> {
+        pool.validate_targets(self.models_for(&Category::Any))?;
+        tracing::info!(pool = ?pool, "Routing score pool configured");
         self.pool = Some(pool);
-        self
+        Ok(self)
     }
 
     /// Adds the groups used for delegated sub-agent work.

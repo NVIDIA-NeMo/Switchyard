@@ -761,6 +761,15 @@ impl StageClassifierConfig {
                 "N-target stage uses a categorical JSON Schema judge; binary decision settings and custom schemas are unsupported",
             ));
         }
+        if self
+            .prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.trim().is_empty())
+        {
+            return Err(AlgorithmConfigError::new(
+                "classifier prompt must not be empty",
+            ));
+        }
         let choices: Vec<_> = (0..pool.targets.len())
             .map(|i| format!("target_{i}"))
             .collect();
@@ -1194,7 +1203,9 @@ impl AlgorithmSpec {
         if let Some(tiers) = tiers
             && let Some(pool) = tiers.resolved_pool(route_name, targets)?
         {
-            models = models.with_pool(pool);
+            models = models.with_pool(pool).map_err(|error| {
+                AlgorithmConfigError::with_source(format!("route {route_name}: {error}"), error)
+            })?;
         }
         if let Some(subagent) = names.subagent {
             models = models.with_subagent(resolve_runtime_models(route_name, subagent, targets)?);

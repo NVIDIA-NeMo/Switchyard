@@ -75,6 +75,10 @@ struct SourceStamp {
 
 #[async_trait]
 impl Classifier for SourceStamp {
+    fn max_pool_targets(&self) -> Option<usize> {
+        self.inner.max_pool_targets()
+    }
+
     async fn score(
         &self,
         state: &mut State,
@@ -234,12 +238,12 @@ impl StageRouter {
                 message: "stage fallback must classify every request without retention".into(),
             });
         }
-        Ok(Self {
-            route: build_stage_route_with_fallback(
-                config,
-                Some(LlmTaskClassifier::custom_classifier(&fallback, fail_open)?),
-            )?,
-        })
+        let route = build_stage_route_with_fallback(
+            config,
+            Some(LlmTaskClassifier::custom_classifier(&fallback, fail_open)?),
+        )?;
+        tracing::info!(fail_open, "Stage categorical fallback configured");
+        Ok(Self { route })
     }
 }
 
@@ -984,6 +988,88 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn custom_fallback_rejects_conflicts_and_invalid_contracts() {
+        use crate::{CustomClassifierConfig, CustomClassifierPolicy};
+        use serde_json::json;
+        let fallback = |prompt: &str, schema, selector: &str| {
+            CustomClassifierConfig::new(
+                prompt,
+                schema,
+                CustomClassifierPolicy::target_selector(selector),
+            )
+        };
+        for (prompt, schema, selector, expected) in [
+            (
+                "route",
+                json!({"type":"invalid"}),
+                "/target",
+                "valid JSON Schema",
+            ),
+            ("route", json!({"type":"object"}), "target", "JSON Pointer"),
+            (
+                " ",
+                json!({"type":"object"}),
+                "/target",
+                "prompt must not be empty",
+            ),
+        ] {
+            let error = StageRouter::new_with_custom_fallback(
+                config(),
+                fallback(prompt, schema, selector),
+                true,
+            )
+            .err()
+            .expect("invalid contract");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+        let mut config = config();
+        config.llm_fallback = Some(LlmFallback {
+            config: TaskClassifierConfig::default(),
+        });
+        let error = StageRouter::new_with_custom_fallback(
+            config,
+            fallback("route", json!({"type":"object"}), "/target"),
+            true,
+        )
+        .err()
+        .expect("conflicting fallbacks");
+        assert!(error.to_string().contains("only one stage fallback"));
+    }
+
+    #[tokio::test]
+    async fn binary_fallback_rejects_n_target_pools_before_any_call() -> Result<()> {
+        for count in [2, 3] {
+            let recorder = Arc::new(Recorder::default());
+            let router = Arc::new(StageRouter::new(config_with_judge(&recorder, 0.9))?);
+            let mut targets = vec![ModelId::from("weak"), ModelId::from("strong")];
+            if count == 3 {
+                targets.insert(1, "middle".into());
+            }
+            let mut groups = runtime_models();
+            groups.insert(Category::Any, targets.clone());
+            let models = crate::RuntimeModels::new(groups)
+                .with_pool(crate::TargetPool::new(targets, vec![])?)?;
+            let result =
+                test_drive_with_models(router, turn_request(false), models, recorder.serve()).await;
+            if count == 3 {
+                assert!(
+                    result
+                        .err()
+                        .expect("binary judge must reject N targets")
+                        .to_string()
+                        .contains("supports at most 2 pool targets")
+                );
+                assert_eq!(recorder.judge_calls(), 0);
+                assert!(recorder.calls.lock().is_empty());
+            } else {
+                result?;
+                assert_eq!(recorder.judge_calls(), 1);
+            }
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     async fn three_targets_route_neutral_signals_to_the_middle_and_preserve_override_holds()
     -> Result<()> {
@@ -996,9 +1082,9 @@ mod tests {
         let models = RuntimeModels::new(groups).with_pool(TargetPool::new(
             vec!["weak".into(), "middle".into(), "strong".into()],
             vec![],
-        )?);
+        )?)?;
         let recorder = Arc::new(Recorder::default());
-        let router = Arc::new(StageRouter::new(config_with_judge(&recorder, 0.9))?);
+        let router = Arc::new(StageRouter::new(config())?);
         for (failed, expected) in [
             (false, "middle"),
             (true, "strong"),

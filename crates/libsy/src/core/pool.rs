@@ -51,6 +51,18 @@ impl TargetPool {
         Ok(Self { targets, positions })
     }
 
+    /// Number of targets on the score line.
+    pub fn target_count(&self) -> usize {
+        self.targets.len()
+    }
+
+    pub(crate) fn validate_targets(&self, targets: &[ModelId]) -> Result<()> {
+        for target in &self.targets {
+            super::algorithm::ensure_model_is_target(targets, target)?;
+        }
+        Ok(())
+    }
+
     /// Distance from the nearest midpoint, normalized within its adjacent interval.
     /// Zero is ambiguous; one is an anchor. This reduces to abs(2*p - 1) for two targets.
     pub fn confidence(&self, value: f64) -> Result<f64> {
@@ -185,6 +197,29 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn runtime_pool_rejects_targets_outside_the_completion_group() -> Result<()> {
+        use switchyard_protocol::Category;
+        let models = crate::RuntimeModels::new(
+            [
+                (Category::Any, vec!["small".into()]),
+                (Category::Judge, vec!["judge".into()]),
+            ]
+            .into(),
+        );
+        for target in ["missing", "judge"] {
+            let error = models
+                .clone()
+                .with_pool(TargetPool::new(
+                    vec!["small".into(), target.into()],
+                    vec![],
+                )?)
+                .expect_err("pool targets must be completion targets");
+            assert!(matches!(error, LibsyError::TargetNotFound { target: name } if name == target));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn parent_line_does_not_leak_into_subagent_scope() -> Result<()> {
         use switchyard_protocol::Category;
         let models = crate::RuntimeModels::new(
@@ -197,7 +232,7 @@ mod tests {
         .with_pool(TargetPool::new(
             vec!["small".into(), "middle".into(), "large".into()],
             vec![0.0, 0.4, 1.0],
-        )?)
+        )?)?
         .with_subagent(
             [
                 (Category::Efficient, vec!["worker-small".into()]),

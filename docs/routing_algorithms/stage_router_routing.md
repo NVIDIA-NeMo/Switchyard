@@ -385,9 +385,28 @@ judge still selects the EF or CF policy. Subagent routing keeps its own target g
 The existing Rust `Score.target`, `Classification`, and `Classifier::score` API
 remain unchanged. The optional `Classifier::classify` method defaults to that API;
 classifiers can override it to return `ClassifierOutput::Position` when a pool is
-configured. `RuntimeModels::with_pool` opts in. Without a pool, routing keeps the
-existing decision path. Category-based failover and already-served responses remain
+configured. `RuntimeModels::with_pool(pool)?` validates pool membership and opts in.
+Without a pool, routing keeps the existing decision path. Category-based failover and already-served responses remain
 supported.
+
+Capability, decision, escalation, and VGR model-selection classifiers are binary.
+The cascade checks every classifier's `max_pool_targets` before running processors
+or classifiers and rejects an incompatible pool, even if an earlier classifier
+could decide. Custom classifiers can declare this optional limit. Composite's
+outer judge selects an EF/CF policy and remains valid with an N-target Stage pool.
+Categorical custom-schema judges, random selection, affinity, and fixed-target
+fallbacks can operate with N targets. Advisor's direct-response path is unchanged.
+
+Configuration errors reject invalid pools, thresholds, holds, and judge settings.
+Classifier confidence must be finite and within `[0,1]`, including ambiguous
+verdicts. Numeric output requires a pool even when ambiguous. Invalid selections
+return errors before an answer call; unavailable judge verdicts use the existing
+warning and recovery policy.
+
+Info logs report pool setup, categorical fallback setup, score/threshold/ambiguity,
+and the final target, classifier index, output kind, and response reuse. Debug logs
+show cascade continuation; a warning identifies a discarded response from an
+abstaining classifier. These events omit prompts and tool output.
 
 ### Optional: custom tool semantics
 

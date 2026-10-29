@@ -198,6 +198,23 @@ impl FallThrough {
         driver: &Driver,
         request: &mut Request,
     ) -> Result<(Score, Option<Response>)> {
+        // Check the entire cascade before a processor or earlier classifier can make a call.
+        if let Some(pool) = driver.pool() {
+            for (index, classifier) in self.classifiers.iter().enumerate() {
+                if let Some(limit) = classifier.max_pool_targets()
+                    && pool.target_count() > limit
+                {
+                    return Err(LibsyError::AlgorithmError {
+                        message: format!(
+                            "{} classifier {index} supports at most {limit} pool targets, but {} are configured; use an N-target classifier or a compatible pool",
+                            self.name,
+                            pool.target_count()
+                        ),
+                    });
+                }
+            }
+        }
+
         // 1. Processor chain accumulates request-side facts into the composition's state.
         //    The driver is offered here so a processor may consult a model first.
         for processor in &self.processors {
@@ -208,16 +225,32 @@ impl FallThrough {
         // 2. Fall through the cascade: the first classifier to score decides (argmax). The
         //    per-request driver is offered to each — driver-backed classifiers use it.
         let mut routed = None;
-        for classifier in &self.classifiers {
+        for (classifier_index, classifier) in self.classifiers.iter().enumerate() {
             let (scores, response) = classifier.classify(state, request, driver).await?;
             if let Some(score) = scores.resolve(driver)? {
                 // Only the deciding classifier's response answers the turn; an abstaining
                 // classifier selected nothing for it to be the answer to.
-                routed = Some((score, response));
+                let output_kind = match scores {
+                    crate::ClassifierOutput::Decision(_) => "target",
+                    crate::ClassifierOutput::Position { .. } => "position",
+                };
+                routed = Some((score, response, classifier_index, output_kind));
                 break;
             }
+            if response.is_some() {
+                tracing::warn!(
+                    algorithm = self.name,
+                    classifier_index,
+                    "Discarding response from an abstaining classifier"
+                );
+            }
+            tracing::debug!(
+                algorithm = self.name,
+                classifier_index,
+                "Classifier abstained; continuing cascade"
+            );
         }
-        let Some((score, served)) = routed else {
+        let Some((score, served, classifier_index, output_kind)) = routed else {
             return Err(LibsyError::AlgorithmError {
                 message: "every classifier abstained".to_string(),
             });
@@ -226,7 +259,8 @@ impl FallThrough {
         // 3. Resolve the target and log the choice.
         algorithm::ensure_model_is_target(driver.models_for(&Category::Any), &score.target)?;
         let target = score.target.clone();
-        tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, "Model selected");
+        tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence,
+            classifier_index, output_kind, reused_response = served.is_some(), "Model selected");
 
         // 4. Post-decision replay: every processor sees the selection so stateful ones
         //    can bind it, and may rewrite the outbound request (e.g. add a target prompt).
@@ -894,15 +928,27 @@ mod tests {
         assert!(!states.contains_key("session-2"));
     }
     #[tokio::test]
+    async fn invalid_target_is_rejected_before_an_answer_call() {
+        let router =
+            Arc::new(FallThrough::new().with_classifier(fixed(vec![score("missing", 1.0)])));
+        let error = run_turn(&router, |_target, _request| async {
+            panic!("invalid target must not be called")
+        })
+        .await
+        .expect_err("invalid target");
+        assert!(matches!(error, LibsyError::TargetNotFound { target } if target == "missing"));
+    }
+
+    #[tokio::test]
     async fn legacy_decisions_keep_their_targets_with_an_optional_pool() -> Result<()> {
         let router =
             Arc::new(FallThrough::new().with_classifier(fixed(vec![score("strong", 1.0)])));
         let models =
             crate::RuntimeModels::new(category_models(Category::Any, &["weak", "mid", "strong"]))
                 .with_pool(crate::TargetPool::new(
-                    target_set(&["weak", "mid"]),
-                    vec![],
-                )?);
+                target_set(&["weak", "mid"]),
+                vec![],
+            )?)?;
         let (target, _) = test_drive_with_models(router, request(), models, echo()).await?;
         assert_eq!(target, "strong");
         Ok(())
@@ -947,9 +993,9 @@ mod tests {
         let models =
             crate::RuntimeModels::new(category_models(Category::Any, &["weak", "mid", "strong"]))
                 .with_pool(crate::TargetPool::new(
-                    target_set(&["weak", "mid", "strong"]),
-                    vec![0.0, 0.4, 1.0],
-                )?);
+                target_set(&["weak", "mid", "strong"]),
+                vec![0.0, 0.4, 1.0],
+            )?)?;
         let (model, response) =
             test_drive_with_models(router, request(), models, |_target, _request| async {
                 panic!("a served response must not trigger another model call");
