@@ -565,7 +565,7 @@
 <a href=#565 id=565 data-nosnippet>565</a>        <span class="kw">let </span>outcome = tokio::time::timeout(budget, <span class="kw">async </span>{
 <a href=#566 id=566 data-nosnippet>566</a>            <span class="kw">let </span>response = context
 <a href=#567 id=567 data-nosnippet>567</a>                .driver
-<a href=#568 id=568 data-nosnippet>568</a>                .call_model(call, <span class="macro">vec!</span>[target.clone()])
+<a href=#568 id=568 data-nosnippet>568</a>                .call_model_with_error_recovery(call, <span class="macro">vec!</span>[target.clone()], <span class="bool-val">true</span>)
 <a href=#569 id=569 data-nosnippet>569</a>                .<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#570 id=570 data-nosnippet>570</a>            response
 <a href=#571 id=571 data-nosnippet>571</a>                .llm_response
