@@ -1220,16 +1220,27 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#anchors-and-bands" class="md-nav__link">
+  <a href="#anchors-and-ambiguity-bands" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Anchors and bands
+        Anchors and ambiguity bands
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Anchors and bands">
+    <nav class="md-nav" aria-label="Anchors and ambiguity bands">
       <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#example-three-targets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example: three targets
+      
+    </span>
+  </a>
+  
+</li>
         
           <li class="md-nav__item">
   <a href="#two-targets-keep-their-routing-behavior" class="md-nav__link">
@@ -2369,16 +2380,27 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#anchors-and-bands" class="md-nav__link">
+  <a href="#anchors-and-ambiguity-bands" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Anchors and bands
+        Anchors and ambiguity bands
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Anchors and bands">
+    <nav class="md-nav" aria-label="Anchors and ambiguity bands">
       <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#example-three-targets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example: three targets
+      
+    </span>
+  </a>
+  
+</li>
         
           <li class="md-nav__item">
   <a href="#two-targets-keep-their-routing-behavior" class="md-nav__link">
@@ -2522,24 +2544,40 @@ make its own ambiguity policy explicit.</p>
 target decisions, category-based failover, request mutations, and served-response
 reuse remain available. An explicit target must belong to the runtime completion
 group; it need not be an anchor in a smaller optional pool.</p>
-<h2 id="anchors-and-bands">Anchors and bands<a class="headerlink" href="#anchors-and-bands" title="Permanent link">&para;</a></h2>
-<p>Configure ordered target anchors from <code>0</code> to <code>1</code>. Omitted positions are evenly
-spaced. N targets have N anchors, N−2 interior anchors, and N−1 adjacent intervals.
-For adjacent anchors <code>a</code> and <code>b</code>, the boundary is <code>(a+b)/2</code>. Stage's closed
-ambiguity band extends <code>t * (b-a)/2</code> on either side of that boundary, where <code>t</code> is
-its confidence threshold.</p>
-<p>For anchors <code>[0.0, 0.4, 1.0]</code> and <code>t=0.5</code>, the two bands differ in width because
-the anchor intervals differ. The diagram labels the exact values; spacing is
-schematic.</p>
+<h2 id="anchors-and-ambiguity-bands">Anchors and ambiguity bands<a class="headerlink" href="#anchors-and-ambiguity-bands" title="Permanent link">&para;</a></h2>
+<p>Order N targets on a score line with anchors <code>a_1 = 0 &lt; ... &lt; a_N = 1</code>.
+Omitted anchor positions are evenly spaced. There are N−2 interior anchors and
+N−1 intervals between adjacent anchors.</p>
+<p>For each adjacent pair <code>a_i</code>, <code>a_(i+1)</code>, Stage defines:</p>
+<ul>
+<li>Midpoint: <code>m_i = (a_i + a_(i+1)) / 2</code>.</li>
+<li>Ambiguous band: <code>[L_i, U_i]</code>, where <code>L_i = m_i - t * (a_(i+1) - a_i) / 2</code>
+  and <code>U_i = m_i + t * (a_(i+1) - a_i) / 2</code>.</li>
+<li>Clear bands: the remaining regions around the anchors. A clear score selects
+  that anchor's target; an ambiguous score continues to the next classifier.</li>
+</ul>
+<p>Here <code>t</code> is Stage's <code>confidence_threshold</code>. Both kinds of band appear on the same
+line below, in increasing score order. The middle pattern repeats for N targets;
+with two targets, there is just one ambiguous band between the two clear bands.
+Spacing is schematic.</p>
 <pre class="mermaid"><code>flowchart LR
-    S(("Small&lt;br/&gt;0.00")) --- B1["Ambiguous: 0.10–0.30&lt;br/&gt;Boundary: 0.20"]
-    B1 --- M(("Medium&lt;br/&gt;0.40"))
-    M --- B2["Ambiguous: 0.55–0.85&lt;br/&gt;Boundary: 0.70"]
-    B2 --- L(("Large&lt;br/&gt;1.00"))
-    classDef anchor fill:#e8f5e9,stroke:#287a3c,color:#163d20
-    classDef band fill:#fff3df,stroke:#a36400,color:#573700
-    class S,M,L anchor
-    class B1,B2 band</code></pre>
+    C1["Clear → target 1&lt;br/&gt;[a₁, L₁)"] --- A1["Ambiguous&lt;br/&gt;[L₁, U₁]"]
+    A1 --- C2["Clear → target 2&lt;br/&gt;(U₁, L₂)"]
+    C2 --- More["⋯"]
+    More --- AN["Ambiguous&lt;br/&gt;[Lₙ₋₁, Uₙ₋₁]"]
+    AN --- CN["Clear → target N&lt;br/&gt;(Uₙ₋₁, aₙ]"]
+    classDef clear fill:#e8f5e9,stroke:#287a3c,color:#163d20
+    classDef ambiguous fill:#fff3df,stroke:#a36400,color:#573700
+    class C1,C2,CN clear
+    class A1,AN ambiguous</code></pre>
+<p>Square brackets include a boundary; parentheses exclude it. For any interior
+target <code>i</code>, the clear band is <code>(U_(i-1), L_i)</code>. At <code>t=1</code>, the clear bands are empty.
+These bands describe Stage's ambiguity policy; the shared pool maps accepted
+clear scores to targets, and other classifiers can define their own policy.</p>
+<h3 id="example-three-targets">Example: three targets<a class="headerlink" href="#example-three-targets" title="Permanent link">&para;</a></h3>
+<p>For small, medium, and large at anchors <code>[0.0, 0.4, 1.0]</code>, with <code>t=0.5</code>, the
+midpoints are <code>0.20</code> and <code>0.70</code>. The ambiguous bands have different widths because
+the anchor intervals differ.</p>
 <table>
 <thead>
 <tr>
