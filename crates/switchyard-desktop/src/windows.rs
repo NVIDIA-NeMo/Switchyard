@@ -111,18 +111,27 @@ pub fn terminal_job() -> Option<Result<(), String>> {
         if let Some(directory) = job.directory {
             child.current_dir(directory);
         }
-        let status = child
-            .status()
-            .map_err(|e| format!("Could not start the harness: {e}"))?;
-        println!("Harness exited with {status}. Press Enter to close this window.");
+        let (message, result) = match child.status() {
+            Ok(status) => {
+                let message = format!("Harness exited with {status}.");
+                let result = if status.success() {
+                    Ok(())
+                } else {
+                    Err(message.clone())
+                };
+                (message, result)
+            }
+            Err(error) => {
+                let message = format!("Could not start the harness: {error}");
+                (message.clone(), Err(message))
+            }
+        };
+        // The console closes when this process exits, so every outcome waits for Enter.
+        println!("{message} Press Enter to close this window.");
         if std::io::stdin().is_terminal() {
             let mut line = String::new();
             let _ = std::io::stdin().read_line(&mut line);
         }
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!("Harness exited with {status}."))
-        }
+        result
     })())
 }

@@ -505,7 +505,9 @@ pub fn command(program: &str, args: &[&str]) -> Result<String, String> {
 }
 
 // This function saves the script before opening a terminal so a save error cannot launch it.
-// If no terminal starts, this function removes the script; callers supply scripts that remove themselves on startup.
+// Callers supply scripts that remove themselves on startup, so the script's absence shows that
+// a terminal started it. If none does in time, this function removes the script itself, so a
+// terminal that starts later finds nothing to run.
 #[cfg(not(windows))]
 pub fn open_terminal_script(prefix: &str, text: &str) -> Result<(), String> {
     let mut script = tempfile::Builder::new()
@@ -524,20 +526,68 @@ pub fn open_terminal_script(prefix: &str, text: &str) -> Result<(), String> {
     }
     let (_, path) = script.keep().map_err(|e| e.to_string())?;
     if let Err(error) = run_in_terminal(&path) {
-        let _ = std::fs::remove_file(path);
-        return Err(error);
+        return match std::fs::remove_file(&path) {
+            // The terminal started the script after the wait ended.
+            Err(removed) if removed.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            _ => Err(error),
+        };
     }
     Ok(())
+}
+
+/// A terminal has this long to start the script before the launch counts as failed.
+#[cfg(not(windows))]
+const TERMINAL_START: std::time::Duration = std::time::Duration::from_secs(15);
+
+#[cfg(not(windows))]
+enum Start {
+    Started,
+    /// The terminal program exited with an error before it started the script.
+    Failed,
+    TimedOut,
+}
+
+#[cfg(not(windows))]
+fn wait_for_start(path: &Path, mut terminal: Option<&mut std::process::Child>) -> Start {
+    let deadline = std::time::Instant::now() + TERMINAL_START;
+    loop {
+        if !path.exists() {
+            return Start::Started;
+        }
+        // A launcher such as gnome-terminal exits successfully before its window runs the
+        // script, so only a failed exit ends the wait early.
+        if let Some(terminal) = terminal.as_deref_mut()
+            && matches!(terminal.try_wait(), Ok(Some(status)) if !status.success())
+        {
+            return Start::Failed;
+        }
+        if std::time::Instant::now() >= deadline {
+            return Start::TimedOut;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+#[cfg(not(windows))]
+fn timed_out() -> String {
+    format!(
+        "The terminal did not start within {} seconds. Nothing was run.",
+        TERMINAL_START.as_secs()
+    )
 }
 
 // macOS `open` runs a `.command` file in Terminal.
 #[cfg(not(any(windows, target_os = "linux")))]
 fn run_in_terminal(path: &Path) -> Result<(), String> {
-    command("open", &[&path.display().to_string()]).map(drop)
+    command("open", &[&path.display().to_string()])?;
+    match wait_for_start(path, None) {
+        Start::Started => Ok(()),
+        Start::Failed | Start::TimedOut => Err(timed_out()),
+    }
 }
 
 // xdg-open may open the script in an editor, so this function starts a terminal program that runs it.
-// It tries $TERMINAL first and then common terminal programs, and uses the first one that starts.
+// It tries $TERMINAL first and then common terminal programs, and uses the first one that runs it.
 #[cfg(target_os = "linux")]
 fn run_in_terminal(path: &Path) -> Result<(), String> {
     let preferred = std::env::var("TERMINAL")
@@ -554,17 +604,23 @@ fn run_in_terminal(path: &Path) -> Result<(), String> {
             ("xterm", "-e"),
         ]);
     for (program, flag) in terminals {
-        let started = Command::new(program)
+        let Ok(mut terminal) = Command::new(program)
             .arg(flag)
             .arg(path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
-            .spawn();
-        if let Ok(mut terminal) = started {
-            // A thread waits for the terminal so the exited process does not stay a zombie.
-            std::thread::spawn(move || terminal.wait());
-            return Ok(());
+            .spawn()
+        else {
+            continue;
+        };
+        let start = wait_for_start(path, Some(&mut terminal));
+        // A thread waits for the terminal so the exited process does not stay a zombie.
+        std::thread::spawn(move || terminal.wait());
+        match start {
+            Start::Started => return Ok(()),
+            Start::Failed => continue,
+            Start::TimedOut => return Err(timed_out()),
         }
     }
     Err(
