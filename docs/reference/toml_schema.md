@@ -546,7 +546,7 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `stage.handoff_notes` | No | unset | Optional guidance appended to forwarded requests. Uses the same fields and behavior as [stage-router handoff notes](../routing_algorithms/stage_router_routing.md#optional-handoff-notes). |
 | `subagents` | No | unset | Nested policy used only for delegated sub-agent work. |
 
-Optional `efficient_first` and `capable_first` tables provide independent stage
+Optional `efficient` and `capable` tables provide independent stage
 settings and prompts. See [independent stage profiles](../routing_algorithms/composite_routing.md#independent-stage-profiles).
 
 For decision classifier configuration, see

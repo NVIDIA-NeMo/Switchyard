@@ -8,9 +8,9 @@ fit the same route type.
 ## What exists today
 
 One pairing: a classifier selects the stage router's starting policy.
-An efficient classification selects efficient-first with `efficient_first_threshold`
+By default, an efficient classification selects efficient-first with `efficient_first_threshold`
 (default `0.5`).
-A capable classification selects capable-first with `capable_first_threshold`
+A capable classification defaults to capable-first with `capable_first_threshold`
 (default `0.0`). Both thresholds are configurable from `0.0` to `1.0`.
 Tool signals can still change the tier
 during execution. Both algorithms and the
@@ -69,13 +69,15 @@ on a standalone stage route.
 Add these tables beside `stage` to configure each profile over the shared target pair:
 
 ```toml
-[routes.switchyard.efficient_first]
+[routes.switchyard.efficient]
+picker = "efficient_first"
 confidence_threshold = 0.5
 efficient_hold_turns = 0
 capable_system_prompt = "Resolve the difficult step."
 efficient_system_prompt = "Carry out the next concrete step."
 
-[routes.switchyard.capable_first]
+[routes.switchyard.capable]
+picker = "capable_first"
 confidence_threshold = 0.2
 efficient_hold_turns = -1
 capable_system_prompt = "Plan the work and resolve uncertain steps."
@@ -83,7 +85,10 @@ efficient_system_prompt = "Continue implementing the plan."
 ```
 
 Both profiles use the [stage tuning and prompt settings](stage_router_routing.md#knob-reference).
-Targets stay in `stage`, the classifier stays in `classifier`, and each profile's name fixes its picker.
+The judge's verdict selects `efficient` or `capable`. Their pickers default to
+efficient-first and capable-first respectively. Override `picker` to use either
+mode in either profile, including capable-first in both.
+Targets stay in `stage` and the classifier stays in `classifier`.
 Omitted settings inherit from `stage`, including the corresponding threshold.
 A supplied `tool_semantics` or `handoff_notes` table replaces the shared table.
 

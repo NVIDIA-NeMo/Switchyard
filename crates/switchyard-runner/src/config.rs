@@ -1478,13 +1478,11 @@ new = ["send_message"]
         }
     }
 
-    #[test]
-    fn composite_validates_both_stage_profiles() -> RunnerResult<()> {
-        for profile in ["efficient_first", "capable_first"] {
+    #[tokio::test]
+    async fn composite_validates_both_stage_profiles() -> RunnerResult<()> {
+        for profile in ["efficient", "capable"] {
             for (setting, expected) in [
                 ("confidence_threshold = 1.1", "confidence_threshold"),
-                ("capable_hold_turns = -2", "capable_hold_turns"),
-                ("efficient_hold_turns = -2", "efficient_hold_turns"),
                 (
                     "tool_semantics = { new = ['Read'] }",
                     "cannot be reclassified",
@@ -1500,10 +1498,20 @@ new = ["send_message"]
                     "{profile}: {setting}"
                 );
             }
-            runner_from_toml(&format!(
-                "{}\n[routes.composed.{profile}]\ncapable_system_prompt = 'Plan'\nefficient_system_prompt = 'Implement'\n",
+            let runner = runner_from_toml(&format!(
+                "{}\n[routes.composed.{profile}]\npicker = 'capable_first'\ncapable_system_prompt = 'Plan'\nefficient_system_prompt = 'Implement'\n",
                 composite_config()
             ))?;
+            let route = runner.route("switchyard/hier").unwrap();
+            let outcome = route
+                .decide(switchyard_protocol::Request::default())
+                .await?;
+            let expected = if profile == "efficient" {
+                "strong/model"
+            } else {
+                "weak/model"
+            };
+            assert_eq!(outcome.selected_model_ids[0], expected);
         }
         Ok(())
     }

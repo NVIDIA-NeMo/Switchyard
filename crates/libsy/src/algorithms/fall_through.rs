@@ -146,6 +146,8 @@ impl FallThrough {
             }
         };
 
+        tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, "Model selected");
+
         // A classifier that already called a model — because deciding required one, and that
         // call also answers the turn — hands its response back here, so the turn is not paid
         // for twice.
@@ -223,10 +225,9 @@ impl FallThrough {
             });
         };
 
-        // 3. Resolve the target and log the choice.
+        // 3. Resolve the target.
         algorithm::ensure_model_is_target(driver.models_for(&Category::Any), &score.target)?;
         let target = score.target.clone();
-        tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, "Model selected");
 
         // 4. Post-decision replay: every processor sees the selection so stateful ones
         //    can bind it, and may rewrite the outbound request (e.g. add a target prompt).

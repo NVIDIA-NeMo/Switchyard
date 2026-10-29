@@ -461,10 +461,10 @@ pub enum AlgorithmSpec {
         stage: StageTierConfig,
         /// Settings for the profile selected by an efficient verdict.
         #[serde(default)]
-        efficient_first: Option<Box<StageSettingsConfig>>,
+        efficient: Option<Box<StageProfileConfig>>,
         /// Settings for the profile selected by a capable verdict.
         #[serde(default)]
-        capable_first: Option<Box<StageSettingsConfig>>,
+        capable: Option<Box<StageProfileConfig>>,
         /// Separate policy for delegated sub-agent work.
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
@@ -667,6 +667,14 @@ pub struct StageSettingsConfig {
     pub handoff_notes: Option<HandoffNoteConfig>,
     pub capable_system_prompt: Option<String>,
     pub efficient_system_prompt: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StageProfileConfig {
+    pub picker: Option<PickerMode>,
+    #[serde(flatten)]
+    pub settings: StageSettingsConfig,
 }
 
 impl StageSettingsConfig {
@@ -1722,8 +1730,8 @@ fn build_algorithm(
         AlgorithmSpec::Composite {
             classifier,
             stage,
-            efficient_first,
-            capable_first,
+            efficient,
+            capable,
             subagents,
         } => {
             stage.warn_identical_tiers(route_name);
@@ -1738,20 +1746,20 @@ fn build_algorithm(
                 )?)
             };
             let shared = &stage.settings;
-            let algorithm = if efficient_first.is_some() || capable_first.is_some() {
-                let defaults = StageSettingsConfig::default();
-                let efficient = efficient_first.as_deref().unwrap_or(&defaults);
-                let capable = capable_first.as_deref().unwrap_or(&defaults);
+            let algorithm = if efficient.is_some() || capable.is_some() {
+                let defaults = StageProfileConfig::default();
+                let efficient = efficient.as_deref().unwrap_or(&defaults);
+                let capable = capable.as_deref().unwrap_or(&defaults);
                 CompositeRouter::new_with_profiles(
                     judge,
-                    efficient.stage_config(
+                    efficient.settings.stage_config(
                         shared,
-                        PickerMode::EfficientFirst,
+                        efficient.picker.unwrap_or(PickerMode::EfficientFirst),
                         shared.confidence_threshold.unwrap_or(0.5),
                     ),
-                    capable.stage_config(
+                    capable.settings.stage_config(
                         shared,
-                        PickerMode::CapableFirst,
+                        capable.picker.unwrap_or(PickerMode::CapableFirst),
                         stage.capable_first_threshold,
                     ),
                 )

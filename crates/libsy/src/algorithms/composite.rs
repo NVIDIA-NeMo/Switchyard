@@ -154,20 +154,21 @@ impl CompositeRouter {
 
     /// Builds two independent stage profiles over the same runtime tier pair.
     /// The judge selects a profile before its signals and prompts run.
-    /// Each profile uses its own `confidence_threshold` with the named picker.
     /// Capable-first defaults to pinning efficient after a switch.
     pub fn new_with_profiles(
         judge: CompositeJudgeConfig,
-        mut efficient_first: StageRouterConfig,
-        mut capable_first: StageRouterConfig,
+        mut efficient: StageRouterConfig,
+        mut capable: StageRouterConfig,
     ) -> Result<Self> {
-        efficient_first.mode = PickerMode::EfficientFirst;
-        capable_first.mode = PickerMode::CapableFirst;
-        capable_first.efficient_hold_turns.get_or_insert(-1);
+        for profile in [&mut efficient, &mut capable] {
+            if profile.mode == PickerMode::CapableFirst {
+                profile.efficient_hold_turns.get_or_insert(-1);
+            }
+        }
         let setter = Self::tier_setter(judge, Tier::Efficient)?;
         let profiles = StageProfiles {
-            efficient_first: build_stage_route(efficient_first)?,
-            capable_first: build_stage_route(capable_first)?,
+            efficient: build_stage_route(efficient)?,
+            capable: build_stage_route(capable)?,
         };
         let route = FallThrough::new_with_state()
             .with_name(COMPOSITE)
@@ -216,8 +217,8 @@ impl CompositeRouter {
 }
 
 struct StageProfiles {
-    efficient_first: FallThrough,
-    capable_first: FallThrough,
+    efficient: FallThrough,
+    capable: FallThrough,
 }
 
 #[async_trait]
@@ -229,8 +230,8 @@ impl Classifier for StageProfiles {
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
         let (profile, prefix) = match fall_open_tier(state) {
-            Some(Tier::Capable) => (&self.capable_first, "composite.capable_first."),
-            _ => (&self.efficient_first, "composite.efficient_first."),
+            Some(Tier::Capable) => (&self.capable, "composite.capable."),
+            _ => (&self.efficient, "composite.efficient."),
         };
         // Each profile retains its own holds, including in caller-carried state.
         let mut profile_state = State {
@@ -420,8 +421,12 @@ mod tests {
 
     #[tokio::test]
     async fn profiles_keep_their_own_holds_and_prompts_when_the_judge_switches() -> Result<()> {
-        for session_id in [false, true] {
-            let mut efficient = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
+        for (has_session_id, picker, first_target, first_prompt) in [
+            (false, PickerMode::EfficientFirst, "weak", "EF efficient"),
+            (true, PickerMode::EfficientFirst, "weak", "EF efficient"),
+            (true, PickerMode::CapableFirst, "strong", "EF capable"),
+        ] {
+            let mut efficient = StageRouterConfig::new(picker, 0.5);
             efficient.capable_hold_turns = -1;
             efficient.capable_system_prompt = Some("EF capable".into());
             efficient.efficient_system_prompt = Some("EF efficient".into());
@@ -450,7 +455,7 @@ mod tests {
             }
             let mut state = State::default();
             for (p_solve, request, target, prompt) in [
-                (1.0, user_turn_request(), "weak", "EF efficient"),
+                (1.0, user_turn_request(), first_target, first_prompt),
                 (1.0, turn_request(true), "strong", "EF capable"),
                 (0.0, user_turn_request(), "strong", "CF capable"),
                 (0.0, write, "weak", "CF efficient"),
@@ -458,7 +463,7 @@ mod tests {
                 (0.0, user_turn_request(), "weak", "CF efficient"),
             ] {
                 *recorder.judge_p_solve.lock() = p_solve;
-                let request = if session_id {
+                let request = if has_session_id {
                     request
                 } else {
                     unkeyed(request)
