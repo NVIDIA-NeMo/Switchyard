@@ -173,6 +173,16 @@ struct LocalConfig {
     require_explicit_signal: bool,
     #[serde(default)]
     target_overrides: TargetOverrides,
+    #[serde(default)]
+    scope: RestrictionScope,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum RestrictionScope {
+    #[default]
+    Request,
+    Task,
 }
 
 struct TargetPromptPolicy {
@@ -495,7 +505,10 @@ impl DeploymentConfig {
                 "route {route_name} cannot use local restrictions with forward_auth"
             )));
         }
-        let policy = LocalPolicy::new(config.require_explicit_signal);
+        let policy = LocalPolicy::new(
+            config.require_explicit_signal,
+            matches!(&config.scope, RestrictionScope::Task),
+        );
         let overrides = &config.target_overrides;
         let mut callable = route_config
             .algorithm
@@ -1770,7 +1783,7 @@ evidence = {{}}
     }
 
     #[test]
-    fn local_config_rejects_retired_fields() {
+    fn local_config_rejects_retired_fields_and_invalid_scope() {
         let configured = local_pool_config();
         for (invalid, expected) in [
             (
@@ -1787,6 +1800,10 @@ evidence = {{}}
                     "[routes.passthrough.eligibility]",
                 ),
                 "unknown field `eligibility`",
+            ),
+            (
+                format!("{configured}\nscope = 'tenant'\n"),
+                "unknown variant `tenant`",
             ),
             (
                 decision_local_config().replace(
@@ -1841,6 +1858,41 @@ evidence = {{}}
                 "expected {expected:?}, got {message}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn task_retention_is_sticky_per_task() -> RunnerResult<()> {
+        let configured = local_pool_config().replace(
+            "[routes.passthrough.local]",
+            "[routes.passthrough.local]\nscope = 'task'",
+        );
+        let runner = Runner::from_toml(&configured)?;
+        let route = runner
+            .route("switchyard/passthrough")
+            .expect("local route should exist");
+        let request = |task_id: Option<&str>, local_only: bool| -> RunnerResult<Request> {
+            let mut request = Request::default();
+            request.metadata.get_or_insert_default().task_id = task_id.map(str::to_string);
+            require_local_targets(&mut request, local_only)?;
+            Ok(request)
+        };
+
+        for (task_id, local_only, candidates) in [
+            ("task-a", false, 2),
+            ("task-a", true, 1),
+            ("task-a", false, 1),
+            ("task-b", false, 2),
+        ] {
+            let outcome = route.decide(request(Some(task_id), local_only)?).await?;
+            assert_eq!(outcome.selected_model_ids.len(), candidates);
+            if candidates == 1 {
+                assert_eq!(outcome.selected_model_id()?, "strong/model");
+            }
+        }
+        for task_id in [None, Some(" ")] {
+            assert!(route.decide(request(task_id, false)?).await.is_err());
+        }
+        Ok(())
     }
 
     #[test]

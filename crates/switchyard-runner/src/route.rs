@@ -215,7 +215,9 @@ impl Route {
     fn select_lane(&self, request: &Request) -> Result<LaneSelection<'_>, RunnerError> {
         if let Some(local) = &self.local {
             let local_only = local.policy.admit(request)?;
-            let privacy = Some(PrivacyDecision::from_local_requirement(local_only));
+            let privacy = Some(PrivacyDecision::from_local_requirement(
+                request, local_only,
+            )?);
             let lane = if local_only {
                 &local.lane
             } else {
@@ -422,7 +424,7 @@ mod tests {
 
     impl Route {
         fn with_private_targets(self, restricted: ExecutionLane) -> Self {
-            self.with_local(LocalPolicy::new(false), restricted)
+            self.with_local(LocalPolicy::new(false, false), restricted)
         }
     }
 
@@ -580,7 +582,7 @@ mod tests {
             ModelCapabilities::default(),
             Vec::new(),
         )
-        .with_local(LocalPolicy::new(false), build_lane("local-capable"))
+        .with_local(LocalPolicy::new(false, true), build_lane("local-capable"))
         .with_infra(Some(libsy::InfraPolicy {
             max_signal_age_ms: 1_000,
             min_waiting_requests: 4,
@@ -607,8 +609,13 @@ mod tests {
             )
         })
         .collect();
-        for (local_only, expected) in [(true, "local-capable"), (false, "cloud-capable")] {
+        for (task, local_only, expected) in [
+            ("restricted", true, "local-capable"),
+            ("restricted", false, "local-capable"),
+            ("ordinary", false, "cloud-capable"),
+        ] {
             let mut request = Request::default();
+            request.metadata.get_or_insert_default().task_id = Some(task.into());
             require_local_targets(&mut request, local_only).expect("trusted signal");
             let mut outcome = RoutingOutcome::route_to("local-fast".into(), vec![], request);
             assert!(
@@ -628,6 +635,48 @@ mod tests {
             base_url: format!("https://{target}.example/v1"),
             extra_body: BTreeMap::new(),
         }
+    }
+
+    // Rejected content must not erase authoritative requirements supplied with that turn.
+    #[tokio::test]
+    async fn rejected_turn_retains_requirements() {
+        let client: Arc<dyn RoutedLlmClient> = Arc::new(RecordingClient {
+            calls: Arc::new(Mutex::new(Vec::new())),
+        });
+        let build_lane = |name: &str| {
+            lane(
+                Arc::new(Passthrough),
+                Arc::clone(&client),
+                RuntimeModels::new(HashMap::from([(Category::Any, vec![name.into()])])),
+                name,
+            )
+        };
+        let route = Route::from_lane(
+            build_lane("standard"),
+            None,
+            ModelCapabilities::default(),
+            Vec::new(),
+        )
+        .with_local(LocalPolicy::new(false, true), build_lane("local"));
+        let mut request = Request::default();
+        request.metadata.get_or_insert_default().task_id = Some("task".into());
+        require_local_targets(&mut request, false).expect("trusted signal");
+        let outcome = route
+            .decide(request.clone())
+            .await
+            .expect("normal decision");
+        assert_eq!(outcome.selected_model_id().expect("model"), "standard");
+
+        require_local_targets(&mut request, true).expect("trusted restriction");
+        request.llm_request.extensions.fields.insert(
+            "previous_response_id".into(),
+            Value::String("hidden".into()),
+        );
+        assert!(route.decide(request).await.is_err());
+        let mut next = Request::default();
+        next.metadata.get_or_insert_default().task_id = Some("task".into());
+        let outcome = route.decide(next).await.expect("retained decision");
+        assert_eq!(outcome.selected_model_id().expect("model"), "local");
     }
 
     #[tokio::test]
