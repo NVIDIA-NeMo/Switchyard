@@ -12,6 +12,42 @@ attach a pool with `RuntimeModels::with_pool(pool)?` and use compatible
 classifiers in FallThrough. Existing custom-schema LLM routing already supports
 multiple categorical targets independently of this score-pool feature.
 
+## Architecture
+
+The pool is shared by the cascade. Classifiers report a position or an existing
+target decision; only the accepted clear position is converted to a target.
+
+```mermaid
+flowchart TD
+    R[Request] --> V[Check all classifier limits against pool]
+    V --> P[Request processors]
+    P --> C[Run next classifier]
+    C --> O[Validate output]
+    O --> K{Result}
+    K -->|Ambiguous or empty| N{More classifiers?}
+    N -->|Yes| C
+    N -->|No| E[Error: every classifier abstained]
+    K -->|Clear position| Pool[Shared target pool: resolve once]
+    K -->|Clear target decision| T[Validate selected completion target]
+    Pool --> T
+    T --> D[Decision processors: state and request updates]
+    D --> S{Deciding classifier supplied response?}
+    S -->|Yes| Reuse[Reuse response]
+    S -->|No| Call[Call selected target with existing failover policy]
+    Reuse --> Out[Return response]
+    Call --> Out
+```
+
+Validation failures stop the request. An abstaining classifier's response is
+warned about and discarded before continuing. Existing recovery policies still
+apply to classifier errors.
+
+Stage currently supplies the signal classifier, optional fallback judge, and
+terminal picker fallback. Its clear signal positions use the shared pool; holds,
+overrides, and categorical judge decisions use the direct-target branch. The
+same FallThrough contract is available to other compatible Rust integrations.
+Advisor's direct-response behavior remains unchanged.
+
 ## Score, confidence, and ambiguity
 
 | Output | Meaning | Resolution |
