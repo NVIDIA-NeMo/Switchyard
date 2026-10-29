@@ -28,11 +28,13 @@ char *sy_run_next(const SyRun *run, char **out_json);
 char *sy_router_new(const char *config_json, SyRouter **out);
 char *sy_run_new(const SyRouter *router, const char *input_json, SyRun **out);
 
+#if !defined(__wasm32__)
 // One pending read per run; other runs execute independently. Replies and cancellation may overlap.
 // NULL accepts one read (one callback, even if cancelled); errors reject it (no callback).
 // Callbacks may overlap or run before return. Keep callback state alive until they return.
 // Callbacks must return promptly, not unwind, and not call sy_run_respond or free handles.
 char *sy_run_next_async(const SyRun *run, SyNextCallback callback, uintptr_t user_data);
+#endif
 char *sy_run_respond(const SyRun *run, uint64_t call_id, const char *reply_json);
 
 char *sy_decode_request(const char *input_json, char **out_json);
