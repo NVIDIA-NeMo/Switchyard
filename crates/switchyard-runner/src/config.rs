@@ -18,10 +18,11 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
+use crate::algorithm_factory::AlgorithmAndModels;
 use crate::runner::ModelPropertiesProbe;
 use crate::{
-    AlgorithmFactory, AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, ConfiguredAlgorithm,
-    DecisionTarget, ModelCapabilities, Route, Runner, RunnerError,
+    AlgorithmFactory, AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget,
+    ModelCapabilities, Route, Runner, RunnerError,
 };
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
@@ -241,7 +242,7 @@ impl DeploymentConfig {
     /// Resolves each route once; native and host-owned execution share this path.
     pub(crate) fn build_algorithms(
         &self,
-    ) -> impl Iterator<Item = RunnerResult<(&str, &RouteConfig, ConfiguredAlgorithm)>> {
+    ) -> impl Iterator<Item = RunnerResult<(&str, &RouteConfig, AlgorithmAndModels)>> {
         let targets = self.build_targets();
         self.routes.iter().map(move |(route_name, config)| {
             let decision_judge = config.algorithm.decision_judge();
@@ -277,7 +278,7 @@ impl DeploymentConfig {
                 .algorithm
                 .build_with_runtime_models(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
-            Ok((route_name.as_str(), config, ConfiguredAlgorithm { algorithm, models }))
+            Ok((route_name.as_str(), config, (algorithm, models)))
         })
     }
 
@@ -322,7 +323,7 @@ impl DeploymentConfig {
         let mut routes = Vec::with_capacity(self.routes.len());
         let mut model_properties_probes = BTreeMap::new();
         for entry in self.build_algorithms() {
-            let (route_name, config, ConfiguredAlgorithm { algorithm, models }) = entry?;
+            let (route_name, config, (algorithm, models)) = entry?;
             let capabilities = config.capabilities();
             if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
                 && let Some(probe) = self.build_model_properties_probe(&vgr.local_target, &clients)
