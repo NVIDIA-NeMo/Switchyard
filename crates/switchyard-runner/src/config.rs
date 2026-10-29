@@ -1479,6 +1479,36 @@ new = ["send_message"]
     }
 
     #[test]
+    fn composite_validates_both_stage_profiles() -> RunnerResult<()> {
+        for profile in ["efficient_first", "capable_first"] {
+            for (setting, expected) in [
+                ("confidence_threshold = 1.1", "confidence_threshold"),
+                ("capable_hold_turns = -2", "capable_hold_turns"),
+                ("efficient_hold_turns = -2", "efficient_hold_turns"),
+                (
+                    "tool_semantics = { new = ['Read'] }",
+                    "cannot be reclassified",
+                ),
+                ("confidence_threhold = 0.5", "unknown field"),
+            ] {
+                let source = format!(
+                    "{}\n[routes.composed.{profile}]\n{setting}\n",
+                    composite_config()
+                );
+                assert!(
+                    error_message(&source).contains(expected),
+                    "{profile}: {setting}"
+                );
+            }
+            runner_from_toml(&format!(
+                "{}\n[routes.composed.{profile}]\n",
+                composite_config()
+            ))?;
+        }
+        Ok(())
+    }
+
+    #[test]
     fn composite_decision_judge_reuses_capability_validation() {
         let source = composite_config().replace(
             "[routes.composed.classifier]\ntarget = \"tier_judge\"\nbase_threshold = 0.5",

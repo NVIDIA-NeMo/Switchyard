@@ -192,7 +192,7 @@ impl FallThrough {
         Some(Arc::clone(&session.state))
     }
 
-    async fn route(
+    pub(crate) async fn route(
         &self,
         state: &mut State,
         driver: &Driver,

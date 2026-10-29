@@ -64,6 +64,50 @@ nor a second `classifier`. The outer classifier supplies the default tier.
 Custom `tool_semantics` remain stage-local and have the same additive behavior as
 on a standalone stage route.
 
+### Independent stage profiles
+
+Add `efficient_first` and `capable_first` tables beside `stage` to configure each
+profile separately. Both profiles use the target pair in `stage`. The classifier
+selects a profile, and only that profile processes the request.
+
+```toml
+[routes.switchyard.efficient_first]
+confidence_threshold = 0.5
+capable_hold_turns = 2
+efficient_hold_turns = 0
+recent_turn_window = 3
+capable_system_prompt = "Resolve the difficult step and continue the task."
+efficient_system_prompt = "Carry out the next concrete step."
+
+[routes.switchyard.capable_first]
+confidence_threshold = 0.2
+capable_hold_turns = 0
+efficient_hold_turns = -1
+recent_turn_window = 5
+capable_system_prompt = "Plan the work and resolve uncertain steps."
+efficient_system_prompt = "Continue implementing the established plan."
+
+[routes.switchyard.capable_first.handoff_notes]
+escalation_note = "Review the latest error before proceeding."
+deescalation_note = "Continue with the current plan."
+```
+
+Each profile accepts `confidence_threshold`, `capable_hold_turns`,
+`efficient_hold_turns`, `recent_turn_window`, `tool_semantics`, `handoff_notes`,
+`capable_system_prompt`, and `efficient_system_prompt`. Profile prompts are
+prepended only to requests handled by that profile and tier.
+
+Omitted settings inherit from `stage`. The threshold inherits from
+`stage.efficient_first_threshold` or `stage.capable_first_threshold` for the
+corresponding profile. Without an explicit efficient hold, efficient-first uses
+`0` and capable-first uses `-1`. Prompts default to unset. A profile's
+`tool_semantics` or `handoff_notes` table replaces the whole shared table.
+
+Either profile table may be omitted. When either is present, both profiles are
+built at startup and keep separate hold state. Switching back resumes that
+profile's holds, and inactive profiles do not consume hold turns. Configurations
+with neither table keep their existing behavior.
+
 ## Custom LLM classifier
 
 To select a tier directly with your own prompt, keep the stage block and use:
