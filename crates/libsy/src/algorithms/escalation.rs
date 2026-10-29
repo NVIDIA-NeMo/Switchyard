@@ -141,7 +141,7 @@ impl EscalationClassifier {
         if next_strong_call < deescalation.config.strong_min_calls {
             set_count(state, STRONG_CALLS_KEY, next_strong_call);
             driver.set_evidence(serde_json::json!({"source": "escalation", "verdict": "latched"}));
-            return Ok((decisive(capable), None));
+            return Ok((decisive(driver, capable)?, None));
         }
 
         let capable_response = driver
@@ -150,7 +150,7 @@ impl EscalationClassifier {
         if capable_response.served_model() == Some(efficient) {
             set_count(state, RELEASE_STREAK_KEY, 0);
             driver.set_evidence(serde_json::json!({"source": "fallback"}));
-            return Ok((decisive(efficient), Some(capable_response)));
+            return Ok((decisive(driver, efficient)?, Some(capable_response)));
         }
         let capable_response = match buffer_response(capable.as_str(), capable_response).await {
             Ok(response) => response,
@@ -162,7 +162,7 @@ impl EscalationClassifier {
                 driver.set_evidence(
                     serde_json::json!({"source": "fallback", "reason_code": "transport"}),
                 );
-                return Ok((decisive(efficient), None));
+                return Ok((decisive(driver, efficient)?, None));
             }
             Err(error) => return Err(error),
         };
@@ -178,7 +178,7 @@ impl EscalationClassifier {
             .await?;
         let best = classification.argmax(false)?;
         let release_streak = match &best {
-            Some(score) if score.target == *efficient => {
+            Some(score) if score.value == driver.pool()?.position(efficient)? => {
                 count(state, RELEASE_STREAK_KEY).saturating_add(1)
             }
             _ => 0,
@@ -199,7 +199,10 @@ impl EscalationClassifier {
         }
 
         // A confirmed release applies on the next request; this turn is already complete.
-        Ok((decisive(capable), Some(capable_response.into_response())))
+        Ok((
+            decisive(driver, capable)?,
+            Some(capable_response.into_response()),
+        ))
     }
 }
 
@@ -279,7 +282,7 @@ impl Classifier for EscalationClassifier {
                 "source": "escalation",
                 "verdict": "latched",
             }));
-            return Ok((decisive(&capable), None));
+            return Ok((decisive(driver, &capable)?, None));
         }
 
         // Call efficient model and buffer the response so the judge can read it.
@@ -303,7 +306,7 @@ impl Classifier for EscalationClassifier {
                     "source": "fallback",
                     "reason_code": "context_window",
                 }));
-                return Ok((decisive(&capable), None));
+                return Ok((decisive(driver, &capable)?, None));
             }
             Err(e) => return Err(e),
         };
@@ -320,7 +323,7 @@ impl Classifier for EscalationClassifier {
                     "source": "fallback",
                     "reason_code": "context_window",
                 }));
-                return Ok((decisive(&capable), None));
+                return Ok((decisive(driver, &capable)?, None));
             }
             Err(LibsyError::ClientCall {
                 source: LlmClientError::Transport { .. },
@@ -330,7 +333,7 @@ impl Classifier for EscalationClassifier {
                     "source": "fallback",
                     "reason_code": "transport",
                 }));
-                return Ok((decisive(&capable), None));
+                return Ok((decisive(driver, &capable)?, None));
             }
             Err(error) => return Err(error),
         };
@@ -347,7 +350,7 @@ impl Classifier for EscalationClassifier {
             driver
                 .set_evidence(serde_json::json!({"source": "deescalation", "verdict": "cooldown"}));
             return Ok((
-                decisive(&efficient),
+                decisive(driver, &efficient)?,
                 Some(efficient_response.into_response()),
             ));
         }
@@ -408,7 +411,7 @@ impl Classifier for EscalationClassifier {
                 set_count(state, STRONG_CALLS_KEY, 1);
                 set_count(state, RELEASE_STREAK_KEY, 0);
             }
-            return Ok((decisive(&capable), None));
+            return Ok((decisive(driver, &capable)?, None));
         }
 
         if escalate {
@@ -424,7 +427,7 @@ impl Classifier for EscalationClassifier {
         }
 
         Ok((
-            decisive(&efficient),
+            decisive(driver, &efficient)?,
             Some(efficient_response.into_response()),
         ))
     }

@@ -279,7 +279,7 @@ impl JudgePolicy for TaskClassifierPolicy {
             return Ok(Classification::Ambiguous(vec![]));
         };
         Ok(Classification::Scores(vec![Score {
-            target,
+            value: driver.pool()?.position(&target)?,
             confidence: 1.0,
             category: Some(category),
         }]))
@@ -626,7 +626,7 @@ impl Classifier for DefaultCategoryClassifier {
         driver.set_evidence_if_empty(serde_json::json!({"source": "fall_open"}));
         Ok((
             Classification::Scores(vec![Score {
-                target: target.clone(),
+                value: driver.pool()?.position(target)?,
                 confidence: 0.0,
                 category: Some(self.0.clone()),
             }]),
@@ -919,7 +919,14 @@ mod tests {
         policy
             .to_classification(verdict, &policy_driver())?
             .argmax(false)?
-            .map(|score| score.target)
+            .map(|score| {
+                policy_driver()
+                    .pool()
+                    .unwrap()
+                    .resolve(score.value)
+                    .unwrap()
+                    .clone()
+            })
             .ok_or_else(|| LibsyError::AlgorithmError {
                 message: "policy abstained".to_string(),
             })

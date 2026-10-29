@@ -23,7 +23,7 @@ use super::util::affinity::ClassifyTrigger;
 use super::util::prompts::prepend_system_prompt;
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, Tier, fall_open_tier,
-    record_routing_decision,
+    selected_tier, stamp_decision_source,
 };
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
@@ -45,13 +45,16 @@ struct TierPromptProcessor {
 impl Processor for TierPromptProcessor {
     async fn process(&self, _state: &mut State, event: Event<'_>) -> Result<()> {
         if let Event::Decision {
-            request, category, ..
+            request,
+            selected_model_id,
+            category,
+            driver,
         } = event
         {
-            let prompt = match category {
-                Some(Category::Capable) => self.capable.as_deref(),
-                Some(Category::Efficient) => self.efficient.as_deref(),
-                _ => None,
+            let prompt = match selected_tier(category.as_ref(), selected_model_id, driver) {
+                Some(Tier::Capable) => self.capable.as_deref(),
+                Some(Tier::Efficient) => self.efficient.as_deref(),
+                None => None,
             };
             if let Some(prompt) = prompt {
                 prepend_system_prompt(request, prompt);
@@ -80,8 +83,8 @@ impl Classifier for SourceStamp {
     ) -> Result<(Classification, Option<Response>)> {
         let (classification, served) = self.inner.score(state, request, driver).await?;
         // An abstaining classifier passes the turn on, so it is not its to claim.
-        if let Some(winner) = classification.argmax(false)? {
-            record_routing_decision(self.source, &winner.target);
+        if classification.argmax(false)?.is_some() {
+            stamp_decision_source(state, self.source);
             driver.set_evidence_if_empty(serde_json::json!({
                 "source": self.source.as_str(),
             }));
@@ -111,7 +114,7 @@ impl Classifier for FallOpen {
         let target = driver.first_model_for(&category)?.clone();
         Ok((
             Classification::Scores(vec![Score {
-                target,
+                value: driver.pool()?.position(&target)?,
                 confidence: 0.0,
                 category: Some(category),
             }]),
@@ -160,6 +163,8 @@ pub struct StageRouterConfig {
     /// Capability judge consulted on turns the signals leave undecided. It uses
     /// the runtime judge model and the standalone capability route's settings.
     pub llm_fallback: Option<LlmFallback>,
+    /// N-category fallback: (custom judge configuration, recover upstream errors).
+    pub custom_fallback: Option<(super::llm_class::CustomClassifierConfig, bool)>,
 }
 
 impl StageRouterConfig {
@@ -178,6 +183,7 @@ impl StageRouterConfig {
             capable_system_prompt: None,
             efficient_system_prompt: None,
             llm_fallback: None,
+            custom_fallback: None,
         }
     }
 }
@@ -198,6 +204,19 @@ impl StageRouter {
     /// fallback judge configured to retain verdicts: it runs on every ambiguous
     /// turn, so `classify_trigger` and `message_hash_fallback` would do nothing.
     pub fn new(config: StageRouterConfig) -> Result<Self> {
+        if config.llm_fallback.is_some() && config.custom_fallback.is_some() {
+            return Err(LibsyError::AlgorithmError {
+                message: "configure only one stage fallback judge".into(),
+            });
+        }
+        if let Some((fallback, _)) = &config.custom_fallback
+            && (fallback.classify_trigger != ClassifyTrigger::EveryRequest
+                || fallback.message_hash_fallback)
+        {
+            return Err(LibsyError::AlgorithmError {
+                message: "stage fallback must classify every request without retention".into(),
+            });
+        }
         if let Some(fallback) = &config.llm_fallback
             && (fallback.config.classify_trigger != ClassifyTrigger::EveryRequest
                 || fallback.config.message_hash_fallback)
@@ -287,6 +306,12 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
             source: DecisionSource::LlmClassifier,
         }));
     }
+    if let Some((config, fail_open)) = config.custom_fallback {
+        router = router.with_classifier(Arc::new(SourceStamp {
+            inner: LlmTaskClassifier::custom_classifier(&config, fail_open)?,
+            source: DecisionSource::LlmClassifier,
+        }));
+    }
     // Nothing behind this, so no turn is left unrouted.
     router = router.with_classifier(Arc::new(SourceStamp {
         inner: Arc::new(fall_open),
@@ -325,11 +350,11 @@ mod tests {
             &self,
             _state: &mut State,
             _request: &mut Request,
-            _driver: &Driver,
+            driver: &Driver,
         ) -> Result<(Classification, Option<Response>)> {
             Ok((
                 Classification::Scores(vec![Score {
-                    target: ModelId::from(self.0),
+                    value: driver.pool()?.position(&ModelId::from(self.0))?,
                     confidence: 1.0,
                     category: None,
                 }]),
@@ -358,7 +383,10 @@ mod tests {
             inner,
             source: DecisionSource::LlmClassifier,
         };
-        let (driver, mut rx) = Driver::new("test", Arc::new(crate::RuntimeModels::default()));
+        let (driver, mut rx) = Driver::new(
+            "test",
+            Arc::new(crate::RuntimeModels::new(runtime_models())),
+        );
         stamp
             .score(&mut State::default(), &mut Request::default(), &driver)
             .await?;
@@ -940,6 +968,41 @@ mod tests {
             judged.contains("fix the build"),
             "the judge should see the opening task: {judged}"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn three_targets_route_neutral_signals_to_the_middle_and_preserve_override_holds()
+    -> Result<()> {
+        use crate::{RuntimeModels, TargetPool};
+        let mut groups = runtime_models();
+        groups
+            .get_mut(&Category::Any)
+            .unwrap()
+            .push("middle".into());
+        let models = RuntimeModels::new(groups).with_pool(TargetPool::new(
+            vec!["weak".into(), "middle".into(), "strong".into()],
+            vec![],
+        )?);
+        let recorder = Arc::new(Recorder::default());
+        let router = Arc::new(StageRouter::new(config_with_judge(&recorder, 0.9))?);
+        for (failed, expected) in [
+            (false, "middle"),
+            (true, "strong"),
+            (false, "strong"),
+            (false, "strong"),
+            (false, "middle"),
+        ] {
+            let (target, _) = test_drive_with_models(
+                router.clone(),
+                turn_request(failed),
+                models.clone(),
+                recorder.serve(),
+            )
+            .await?;
+            assert_eq!(target, expected);
+        }
+        assert_eq!(recorder.judge_calls(), 0);
         Ok(())
     }
 }

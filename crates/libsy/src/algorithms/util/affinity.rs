@@ -293,7 +293,7 @@ impl Classifier for AffinityRouter {
             Classification::Scores(match assigned {
                 Some((target, category)) => vec![Score {
                     confidence: 1.0,
-                    target: target.clone(),
+                    value: driver.pool()?.position(target)?,
                     category: category.clone(),
                 }],
                 None => Vec::new(),
@@ -324,6 +324,15 @@ mod tests {
 
     /// Boxed, thread-safe error type keeping the test helpers ergonomic.
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;
+
+    fn resolved(score: &Score) -> ModelId {
+        driver()
+            .pool()
+            .unwrap()
+            .resolve(score.value)
+            .unwrap()
+            .clone()
+    }
 
     fn fixed_model(target: &str) -> ModelId {
         ModelId::from(target)
@@ -443,7 +452,7 @@ mod tests {
         let scores = scores(&router, &mut state, &mut second).await?;
         assert_eq!(scores.len(), 1);
         assert_eq!(scores[0].confidence, 1.0);
-        assert_eq!(scores[0].target, "model-a");
+        assert_eq!(resolved(&scores[0]), "model-a");
         Ok(())
     }
 
@@ -460,10 +469,7 @@ mod tests {
         retain(&router, &mut state, &mut first_child_turn, "model-b").await?;
         let mut later_child_turn = request(subagent("child-1", "task-2"));
         let scores = scores(&router, &mut state, &mut later_child_turn).await?;
-        assert_eq!(
-            scores.first().map(|score| score.target.as_str()),
-            Some("model-b")
-        );
+        assert_eq!(scores.first().map(resolved).as_deref(), Some("model-b"));
         Ok(())
     }
 
@@ -478,10 +484,7 @@ mod tests {
         retain(&router, &mut state, &mut req, "model-b").await?;
 
         let scores = scores(&router, &mut state, &mut req).await?;
-        assert_eq!(
-            scores.first().map(|score| score.target.as_str()),
-            Some("model-a")
-        );
+        assert_eq!(scores.first().map(resolved).as_deref(), Some("model-a"));
         Ok(())
     }
 
@@ -496,10 +499,7 @@ mod tests {
         // Same child, different task: still scored onto the retained model.
         let mut second = request(subagent("child-1", "task-2"));
         let scores = scores(&router, &mut state, &mut second).await?;
-        assert_eq!(
-            scores.first().map(|score| score.target.as_str()),
-            Some("model-a")
-        );
+        assert_eq!(scores.first().map(resolved).as_deref(), Some("model-a"));
         Ok(())
     }
 
@@ -575,7 +575,8 @@ mod tests {
             scores(&router, &mut state, &mut follow_up)
                 .await?
                 .first()
-                .map(|score| score.target.as_str()),
+                .map(resolved)
+                .as_deref(),
             Some("weak")
         );
 
@@ -713,10 +714,7 @@ mod tests {
 
         let mut second = request(session("session-1", "agent-b"));
         let scores = scores(classifier.as_ref(), &mut state, &mut second).await?;
-        assert_eq!(
-            scores.first().map(|score| score.target.as_str()),
-            Some("model-a")
-        );
+        assert_eq!(scores.first().map(resolved).as_deref(), Some("model-a"));
         Ok(())
     }
 
@@ -778,11 +776,11 @@ mod tests {
         let first_scores = scores(&router, &mut state, &mut first).await?;
         let second_scores = scores(&router, &mut state, &mut second).await?;
         assert_eq!(
-            first_scores.first().map(|score| score.target.as_str()),
+            first_scores.first().map(resolved).as_deref(),
             Some("model-a")
         );
         assert_eq!(
-            second_scores.first().map(|score| score.target.as_str()),
+            second_scores.first().map(resolved).as_deref(),
             Some("model-b")
         );
         Ok(())
@@ -820,14 +818,8 @@ mod tests {
             &mut request(session("session-2", "other")),
         )
         .await?;
-        assert_eq!(
-            first.first().map(|score| score.target.as_str()),
-            Some("model-a")
-        );
-        assert_eq!(
-            second.first().map(|score| score.target.as_str()),
-            Some("model-b")
-        );
+        assert_eq!(first.first().map(resolved).as_deref(), Some("model-a"));
+        assert_eq!(second.first().map(resolved).as_deref(), Some("model-b"));
         Ok(())
     }
 
@@ -897,7 +889,8 @@ mod tests {
             scores(&router, &mut state, &mut continued)
                 .await?
                 .first()
-                .map(|s| s.target.as_str()),
+                .map(resolved)
+                .as_deref(),
             Some("weak")
         );
 
@@ -963,7 +956,8 @@ mod tests {
             scores(&router, &mut state, &mut req)
                 .await?
                 .first()
-                .map(|s| s.target.as_str()),
+                .map(resolved)
+                .as_deref(),
             Some("strong")
         );
         Ok(())
@@ -976,19 +970,24 @@ mod tests {
         let mut req = request(session("session-1", "agent-a"));
         retain(&router, &mut state, &mut req, "model-a").await?;
 
-        let empty = Driver::new("test", Arc::new(RuntimeModels::default())).0;
+        let empty = Driver::new(
+            "test",
+            Arc::new(RuntimeModels::default().with_pool(driver().pool()?.clone())),
+        )
+        .0;
         let (classification, _) = router.score(&mut state, &mut req, &empty).await?;
         let Classification::Scores(retained) = classification else {
             return Err("affinity never returns ambiguous scores".into());
         };
-        assert_eq!(retained.first().map(|s| s.target.as_str()), Some("model-a"));
+        assert_eq!(retained.first().map(resolved).as_deref(), Some("model-a"));
 
         // The assignment survived, so a later turn with the group present still latches.
         assert_eq!(
             scores(&router, &mut state, &mut req)
                 .await?
                 .first()
-                .map(|s| s.target.as_str()),
+                .map(resolved)
+                .as_deref(),
             Some("model-a")
         );
         Ok(())
