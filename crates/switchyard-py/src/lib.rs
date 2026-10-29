@@ -7,11 +7,13 @@ mod errors;
 mod libsy_bindings;
 mod py_serde;
 mod server_bindings;
+mod translation;
 
 #[pymodule]
 fn _switchyard_rust(module: &Bound<'_, PyModule>) -> PyResult<()> {
     errors::register(module)?;
     libsy_bindings::register(module)?;
     server_bindings::register(module)?;
+    translation::register(module)?;
     Ok(())
 }

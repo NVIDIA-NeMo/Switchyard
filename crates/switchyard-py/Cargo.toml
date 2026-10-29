@@ -26,4 +26,5 @@ serde.workspace = true
 serde_json.workspace = true
 switchyard-protocol.workspace = true
 switchyard-server.workspace = true
+switchyard-translation.workspace = true
 tokio.workspace = true
