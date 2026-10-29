@@ -9,7 +9,7 @@ pub use core::algorithm::{
     Algorithm, Call, CallDecision, CallModel, Driver, RoutingOutcome, RuntimeModels, Step,
     StepStream, drive,
 };
-pub use core::classifier::{Classification, Classifier, Score};
+pub use core::classifier::{Classification, Classifier, ClassifierOutput, Score};
 pub use core::outcome_metadata::OutcomeMetadata;
 pub use core::pool::TargetPool;
 pub use core::processor::{Event, Processor};

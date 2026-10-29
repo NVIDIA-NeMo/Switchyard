@@ -110,7 +110,7 @@ impl Classifier for RandomClassifier {
         Ok((
             Classification::Scores(vec![Score {
                 confidence: 1.0,
-                value: driver.pool()?.position(&target)?,
+                target,
                 category: Some(Category::Any),
             }]),
             None,
@@ -323,7 +323,7 @@ mod tests {
             .0
             .argmax(false)?;
         assert_eq!(
-            retained.map(|score| driver.pool().unwrap().resolve(score.value).unwrap().clone()),
+            retained.map(|score| score.target),
             Some(ModelId::from(selected.clone()))
         );
 

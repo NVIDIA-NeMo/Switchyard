@@ -371,8 +371,7 @@ async fn verifier_budget_exhaustion_is_not_an_endpoint_failure() -> Result<()> {
 #[tokio::test]
 async fn skipped_requests_leave_the_recovery_trial_available() -> Result<()> {
     use crate::core::classifier::Classifier;
-    use crate::{Driver, RuntimeModels};
-
+    use crate::core::testing::empty_driver;
     use switchyard_protocol::ImageSource;
 
     for skip in ["image", "latched", "off", "kill", "deadline"] {
@@ -403,24 +402,9 @@ async fn skipped_requests_leave_the_recovery_trial_available() -> Result<()> {
             "deadline" => classifier.config.deadline = std::time::Duration::ZERO,
             _ => unreachable!(),
         }
-        let driver = Driver::new(
-            "test",
-            Arc::new(RuntimeModels::new(
-                [
-                    (
-                        Category::Capable,
-                        vec![classifier.config.targets.capable.clone()],
-                    ),
-                    (
-                        Category::Efficient,
-                        vec![classifier.config.targets.efficient.clone()],
-                    ),
-                ]
-                .into(),
-            )),
-        )
-        .0;
-        classifier.score(&mut state, &mut task, &driver).await?;
+        classifier
+            .score(&mut state, &mut task, &empty_driver())
+            .await?;
         assert!(
             classifier.breaker.attempt().is_some(),
             "{skip} reserved the recovery trial"

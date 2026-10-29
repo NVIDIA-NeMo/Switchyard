@@ -34,12 +34,12 @@ impl Classifier for AlwaysOrchestrator {
         &self,
         _state: &mut State,
         _request: &mut Request,
-        driver: &Driver,
+        _driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
         Ok((
             Classification::Scores(vec![Score {
                 confidence: 0.5,
-                value: driver.pool()?.position(&ModelId::from("orchestrator"))?,
+                target: ModelId::from("orchestrator"),
                 category: None,
             }]),
             None,

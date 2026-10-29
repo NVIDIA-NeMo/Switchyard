@@ -134,7 +134,7 @@ impl Classifier for SubagentOverride {
             Classification::Scores(if is_delegated_work {
                 vec![Score {
                     confidence: 1.0,
-                    value: driver.pool()?.position(&self.worker)?,
+                    target: self.worker.clone(),
                     category: None,
                 }]
             } else {
@@ -148,9 +148,8 @@ impl Classifier for SubagentOverride {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::RuntimeModels;
-    use std::sync::Arc;
-    use switchyard_protocol::{Category, slice_to_header_map, text_request};
+    use crate::core::testing::empty_driver;
+    use switchyard_protocol::{slice_to_header_map, text_request};
 
     fn request(headers: &[(&str, &str)]) -> Request {
         let metadata =
@@ -165,20 +164,10 @@ mod tests {
     /// Scores `headers` through the override, returning the winning target if it scored.
     async fn selected(headers: &[(&str, &str)]) -> Result<Option<ModelId>> {
         let mut state = State::default();
-        let driver = Driver::new(
-            "test",
-            Arc::new(RuntimeModels::new(
-                [(Category::Any, vec!["worker".into()])].into(),
-            )),
-        )
-        .0;
         let classification = SubagentOverride::new("worker")
-            .score(&mut state, &mut request(headers), &driver)
+            .score(&mut state, &mut request(headers), &empty_driver())
             .await?;
-        Ok(classification
-            .0
-            .argmax(false)?
-            .map(|score| driver.pool().unwrap().resolve(score.value).unwrap().clone()))
+        Ok(classification.0.argmax(false)?.map(|score| score.target))
     }
 
     #[tokio::test]
@@ -223,18 +212,11 @@ mod tests {
         // Confidence 1.0 under `Scores` (never `Ambiguous`), so the cascade stops here
         // rather than consulting later classifiers.
         let mut state = State::default();
-        let driver = Driver::new(
-            "test",
-            Arc::new(RuntimeModels::new(
-                [(Category::Any, vec!["worker".into()])].into(),
-            )),
-        )
-        .0;
         let classification = SubagentOverride::new("worker")
             .score(
                 &mut state,
                 &mut request(&[("x-openai-subagent", "review")]),
-                &driver,
+                &empty_driver(),
             )
             .await?;
         match classification.0 {

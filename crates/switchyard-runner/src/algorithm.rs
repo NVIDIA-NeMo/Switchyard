@@ -1753,11 +1753,12 @@ fn build_algorithm(
             config.handoff_notes = handoff_notes.clone();
             // The judge is called through its own target, so it is not a routing
             // destination and stays out of the tier pair.
+            let mut custom_fallback = None;
             if let Some(classifier) = classifier {
                 if let Some(pool) = &tiers.pool
                     && pool.targets.len() > 2
                 {
-                    config.custom_fallback = Some((
+                    custom_fallback = Some((
                         classifier.pool_classifier_config(pool)?,
                         classifier.fail_open.unwrap_or(true),
                     ));
@@ -1767,7 +1768,13 @@ fn build_algorithm(
                     });
                 }
             }
-            let algorithm = StageRouter::new(config).map_err(|error| {
+            let algorithm = match custom_fallback {
+                Some((fallback, fail_open)) => {
+                    StageRouter::new_with_custom_fallback(config, fallback, fail_open)
+                }
+                None => StageRouter::new(config),
+            }
+            .map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("stage_router route {route_name}: {error}"),
                     error,

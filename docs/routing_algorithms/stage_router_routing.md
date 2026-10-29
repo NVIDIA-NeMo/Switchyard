@@ -361,16 +361,15 @@ At threshold zero, only exact boundaries remain ambiguous. At threshold one,
 continuous scores always consult the fallback. The existing two-target band is
 unchanged.
 
-Every classifier returns a clear or ambiguous score on this shared line. An
-ambiguous result continues the cascade; the first clear result stops it. One pool
-at the end resolves that score to the nearest anchor and its target. Score position
-and confidence are separate: an LLM's categorical choice of `medium` is a clear
-score at `0.4`, with confidence `1.0`, even at threshold one.
+Stage can return a clear or ambiguous position on this shared line. Ambiguous
+results continue the cascade. The first clear position is resolved once by the
+pool to the nearest target. Existing categorical classifiers return target
+decisions directly; these remain clear even at threshold one.
 
 For pools larger than two targets, the fallback uses the existing custom-schema
 LLM classifier. It generates one choice per target (`target_0`, `target_1`, …),
 and includes their configured names in the judge prompt. Valid choices produce
-clear anchor scores. Invalid verdicts fall through to the picker's default endpoint.
+clear target decisions. Invalid verdicts fall through to the picker's default endpoint.
 Binary solve-probability settings (`base_threshold`, `threshold_step`, `decision`)
 and custom response schemas are rejected for this fallback. It requires JSON Schema
 output and runs on every ambiguous request. Existing binary judge settings remain
@@ -383,11 +382,12 @@ intermediate target to an endpoint counts as a switch for that endpoint's hold.
 Composite routes accept the same pool under `[routes.agent.stage.pool]`; their outer
 judge still selects the EF or CF policy. Subagent routing keeps its own target groups.
 
-Rust classifier implementations now return `Score.value` in `[0,1]` instead of a
-target ID. Use `Driver::score_for` for categorical decisions and `Driver::pool` for
-continuous band checks. `Classification::Scores` means clear;
-`Classification::Ambiguous` continues the cascade. The final pool preserves the
-score's category for ordered failover and passes through an already-served response.
+The existing Rust `Score.target`, `Classification`, and `Classifier::score` API
+remain unchanged. The optional `Classifier::classify` method defaults to that API;
+classifiers can override it to return `ClassifierOutput::Position` when a pool is
+configured. `RuntimeModels::with_pool` opts in. Without a pool, routing keeps the
+existing decision path. Category-based failover and already-served responses remain
+supported.
 
 ### Optional: custom tool semantics
 

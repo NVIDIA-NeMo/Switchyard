@@ -28,7 +28,7 @@ use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::core::algorithm::{self, Algorithm, Driver};
-use crate::core::classifier::Classifier;
+use crate::core::classifier::{Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::core::state::State;
 use crate::{LibsyError, Result, RoutingOutcome};
@@ -133,7 +133,7 @@ impl FallThrough {
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
         let session_state = self.session_state(&request);
-        let (target, category, served) = match session_state {
+        let (score, served) = match session_state {
             Some(state) => {
                 let mut state = state.lock().await;
                 self.route(&mut state, &driver, &mut request).await?
@@ -151,6 +151,7 @@ impl FallThrough {
         // for twice.
         // Nothing reads it on the way out: streamed or buffered, it reaches the caller
         // untouched.
+        let target = score.target;
         match served {
             Some(response) => Ok(RoutingOutcome::answered(target, request, response)),
             None => {
@@ -158,7 +159,7 @@ impl FallThrough {
                 // alternatives to the model the classifier picked, in the order it ranked
                 // them. Every other runtime target follows as a last resort, so a route
                 // whose category holds one model still fails over to the other tier.
-                let chosen = driver.models_for(category.as_ref().unwrap_or(&Category::Any));
+                let chosen = driver.models_for(score.category.as_ref().unwrap_or(&Category::Any));
                 let mut fallback_models: Vec<ModelId> = Vec::new();
                 for candidate in chosen.iter().chain(driver.models_for(&Category::Any)) {
                     if *candidate != target && !fallback_models.contains(candidate) {
@@ -196,7 +197,7 @@ impl FallThrough {
         state: &mut State,
         driver: &Driver,
         request: &mut Request,
-    ) -> Result<(ModelId, Option<Category>, Option<Response>)> {
+    ) -> Result<(Score, Option<Response>)> {
         // 1. Processor chain accumulates request-side facts into the composition's state.
         //    The driver is offered here so a processor may consult a model first.
         for processor in &self.processors {
@@ -208,8 +209,8 @@ impl FallThrough {
         //    per-request driver is offered to each — driver-backed classifiers use it.
         let mut routed = None;
         for classifier in &self.classifiers {
-            let (scores, response) = classifier.score(state, request, driver).await?;
-            if let Some(score) = scores.argmax(false)? {
+            let (scores, response) = classifier.classify(state, request, driver).await?;
+            if let Some(score) = scores.resolve(driver)? {
                 // Only the deciding classifier's response answers the turn; an abstaining
                 // classifier selected nothing for it to be the answer to.
                 routed = Some((score, response));
@@ -223,10 +224,9 @@ impl FallThrough {
         };
 
         // 3. Resolve the target and log the choice.
-        let target = driver.pool()?.resolve(score.value)?.clone();
-        algorithm::ensure_model_is_target(driver.models_for(&Category::Any), &target)?;
-        let category = score.category;
-        tracing::info!(algorithm=self.name, target=%target, score=score.value, confidence=score.confidence, "Model selected");
+        algorithm::ensure_model_is_target(driver.models_for(&Category::Any), &score.target)?;
+        let target = score.target.clone();
+        tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, "Model selected");
 
         // 4. Post-decision replay: every processor sees the selection so stateful ones
         //    can bind it, and may rewrite the outbound request (e.g. add a target prompt).
@@ -234,13 +234,13 @@ impl FallThrough {
             let event = Event::Decision {
                 request,
                 selected_model_id: &target,
-                category: category.clone(),
+                category: score.category.clone(),
                 driver,
             };
             processor.process(state, event).await?;
         }
 
-        Ok((target, category, served))
+        Ok((score, served))
     }
 }
 
@@ -324,12 +324,7 @@ mod tests {
     }
 
     /// A classifier that emits fixed scores (empty = abstain).
-    struct TargetScore {
-        target: ModelId,
-        confidence: f64,
-    }
-
-    struct FixedClassifier(Vec<TargetScore>);
+    struct FixedClassifier(Vec<Score>);
 
     #[async_trait]
     impl Classifier for FixedClassifier {
@@ -337,28 +332,33 @@ mod tests {
             &self,
             _state: &mut State,
             _request: &mut Request,
-            driver: &Driver,
+            _driver: &Driver,
         ) -> Result<(Classification, Option<Response>)> {
             Ok((
                 Classification::Scores(
                     self.0
                         .iter()
-                        .map(|s| driver.score_for(&s.target, s.confidence, None))
-                        .collect::<Result<Vec<_>>>()?,
+                        .map(|s| Score {
+                            confidence: s.confidence,
+                            target: s.target.clone(),
+                            category: None,
+                        })
+                        .collect(),
                 ),
                 None,
             ))
         }
     }
 
-    fn score(target: &str, confidence: f64) -> TargetScore {
-        TargetScore {
+    fn score(target: &str, confidence: f64) -> Score {
+        Score {
             confidence,
             target: ModelId::from(target),
+            category: None,
         }
     }
 
-    fn fixed(scores: Vec<TargetScore>) -> Arc<dyn Classifier> {
+    fn fixed(scores: Vec<Score>) -> Arc<dyn Classifier> {
         Arc::new(FixedClassifier(scores))
     }
 
@@ -624,7 +624,7 @@ mod tests {
                 &self,
                 _state: &mut State,
                 request: &mut Request,
-                driver: &Driver,
+                _driver: &Driver,
             ) -> Result<(Classification, Option<Response>)> {
                 *self.0.lock() = request
                     .llm_request
@@ -636,10 +636,7 @@ mod tests {
                     .llm_request
                     .messages
                     .push(Message::text(Role::User, "classifier"));
-                Ok((
-                    Classification::Scores(vec![driver.score_for(&"strong".into(), 1.0, None)?]),
-                    None,
-                ))
+                Ok((Classification::Scores(vec![score("strong", 1.0)]), None))
             }
         }
 
@@ -706,13 +703,10 @@ mod tests {
                 &self,
                 state: &mut State,
                 _request: &mut Request,
-                driver: &Driver,
+                _driver: &Driver,
             ) -> Result<(Classification, Option<Response>)> {
                 let target = if count(state) >= 2 { "strong" } else { "weak" };
-                Ok((
-                    Classification::Scores(vec![driver.score_for(&target.into(), 1.0, None)?]),
-                    None,
-                ))
+                Ok((Classification::Scores(vec![score(target, 1.0)]), None))
             }
         }
 
@@ -820,26 +814,44 @@ mod tests {
         assert!(!states.contains_key("session-2"));
     }
     #[tokio::test]
+    async fn legacy_decisions_keep_their_targets_with_an_optional_pool() -> Result<()> {
+        let router =
+            Arc::new(FallThrough::new().with_classifier(fixed(vec![score("strong", 1.0)])));
+        let models =
+            crate::RuntimeModels::new(category_models(Category::Any, &["weak", "mid", "strong"]))
+                .with_pool(crate::TargetPool::new(
+                    target_set(&["weak", "mid"]),
+                    vec![],
+                )?);
+        let (target, _) = test_drive_with_models(router, request(), models, echo()).await?;
+        assert_eq!(target, "strong");
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn ambiguous_scores_continue_and_a_clear_score_reuses_its_response() -> Result<()> {
         struct Scored(bool, f64);
         #[async_trait]
         impl Classifier for Scored {
             async fn score(
                 &self,
+                _: &mut State,
+                _: &mut Request,
+                _: &Driver,
+            ) -> Result<(Classification, Option<Response>)> {
+                panic!("fallthrough should use the optional output method")
+            }
+            async fn classify(
+                &self,
                 _state: &mut State,
                 _request: &mut Request,
                 _driver: &Driver,
-            ) -> Result<(Classification, Option<Response>)> {
-                let scores = vec![crate::Score {
-                    value: self.1,
-                    confidence: 1.0,
-                    category: None,
-                }];
+            ) -> Result<(crate::ClassifierOutput, Option<Response>)> {
                 Ok((
-                    if self.0 {
-                        Classification::Ambiguous(scores)
-                    } else {
-                        Classification::Scores(scores)
+                    crate::ClassifierOutput::Position {
+                        value: self.1,
+                        confidence: 1.0,
+                        ambiguous: self.0,
                     },
                     Some(reply(if self.0 { "discarded" } else { "served" })),
                 ))

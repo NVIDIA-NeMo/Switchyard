@@ -150,14 +150,14 @@ impl Algorithm for PrefillRouterAlgo {
         mut request: Request,
     ) -> libsy::Result<RoutingOutcome> {
         let mut state = State::default();
-        if let Some(score) = self
+        if let Some(target) = self
             .affinity
             .score(&mut state, &mut request, &driver)
             .await?
             .0
-            .argmax(false)?
+            .argmax(false)
+            .map(|score| score.map(|score| score.target))?
         {
-            let target = driver.pool()?.resolve(score.value)?.clone();
             tracing::info!(target = %target, "prefill affinity selected target");
             return Ok(RoutingOutcome::route_to(
                 target.clone(),

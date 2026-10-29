@@ -51,24 +51,6 @@ impl TargetPool {
         Ok(Self { targets, positions })
     }
 
-    /// Targets in score order.
-    pub fn targets(&self) -> &[ModelId] {
-        &self.targets
-    }
-    /// Anchor positions in the same order as the targets.
-    pub fn positions(&self) -> &[f64] {
-        &self.positions
-    }
-
-    /// Encode a categorical decision as an exact anchor, without resolving a score.
-    pub fn position(&self, target: &ModelId) -> Result<f64> {
-        self.targets
-            .iter()
-            .position(|candidate| candidate == target)
-            .map(|index| self.positions[index])
-            .ok_or_else(|| invalid(format!("target {target} is not in the score pool")))
-    }
-
     /// Distance from the nearest midpoint, normalized within its adjacent interval.
     /// Zero is ambiguous; one is an anchor. This reduces to abs(2*p - 1) for two targets.
     pub fn confidence(&self, value: f64) -> Result<f64> {
@@ -86,40 +68,15 @@ impl TargetPool {
     pub fn is_clear(&self, value: f64, threshold: f64) -> Result<bool> {
         validate_value(value)?;
         validate_value(threshold)?;
+        // At one the bands cover the line; midpoint rounding must not open gaps.
+        if threshold == 1.0 {
+            return Ok(false);
+        }
         Ok(!self.positions.windows(2).any(|pair| {
             let midpoint = (pair[0] + pair[1]) / 2.0;
             let width = threshold * (pair[1] - pair[0]) / 2.0;
             value >= midpoint - width && value <= midpoint + width
         }))
-    }
-
-    pub(crate) fn from_categories(
-        groups: &std::collections::HashMap<switchyard_protocol::Category, Vec<ModelId>>,
-    ) -> Option<Self> {
-        use switchyard_protocol::Category;
-        let mut targets = Vec::new();
-        let mut categories: Vec<_> = groups
-            .keys()
-            .filter(|key| **key != Category::Judge)
-            .collect();
-        categories.sort_by_key(|category| category.as_str());
-        for category in [&Category::Efficient, &Category::Capable, &Category::Any]
-            .into_iter()
-            .chain(categories)
-        {
-            for target in groups.get(category).into_iter().flatten() {
-                if !targets.contains(target) {
-                    targets.push(target.clone());
-                }
-            }
-        }
-        if targets.is_empty() {
-            return None;
-        }
-        let positions = (0..targets.len())
-            .map(|i| i as f64 / targets.len().saturating_sub(1).max(1) as f64)
-            .collect();
-        Some(Self { targets, positions })
     }
 
     /// Resolve once, after the cascade accepts a clear score. Midpoint ties go left.
@@ -169,7 +126,6 @@ mod tests {
             assert!((pool.confidence(score)? - confidence).abs() < 1e-12);
             assert!((0.0..=1.0).contains(&pool.confidence(score)?));
         }
-        assert_eq!(pool.position(&"middle".into())?, 0.4);
         Ok(())
     }
     #[test]
@@ -210,6 +166,22 @@ mod tests {
         for p in [0.125, 0.375, 0.625, 0.875] {
             assert!(!pool.is_clear(p, 0.5)?);
         }
+        let uneven = TargetPool::new(
+            vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into()],
+            vec![
+                0.0,
+                0.34284326542215604,
+                0.471240086114993,
+                0.5346217948794222,
+                1.0,
+            ],
+        )?;
+        for value in &uneven.positions {
+            assert!(
+                !uneven.is_clear(*value, 1.0)?,
+                "anchor {value} escaped the closed band"
+            );
+        }
         Ok(())
     }
     #[test]
@@ -234,10 +206,9 @@ mod tests {
             .into(),
         );
         let (driver, _) = crate::Driver::new("test", std::sync::Arc::new(models));
-        assert_eq!(driver.pool()?.resolve(0.4)?.as_str(), "middle");
+        assert_eq!(driver.pool().unwrap().resolve(0.4)?.as_str(), "middle");
         let worker = driver.for_subagent()?;
-        assert_eq!(worker.pool()?.resolve(0.4)?.as_str(), "worker-small");
-        assert!(worker.pool()?.position(&"middle".into()).is_err());
+        assert!(worker.pool().is_none());
         Ok(())
     }
 }

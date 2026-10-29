@@ -453,7 +453,7 @@ mod tests {
                 "no-verdict"
             };
             Ok(Classification::Scores(vec![Score {
-                value: if target == "verdict" { 1.0 } else { 0.0 },
+                target: ModelId::from(target),
                 confidence: 1.0,
                 category: None,
             }]))
@@ -571,13 +571,7 @@ mod tests {
     fn selected(classification: Classification) -> Result<ModelId> {
         classification
             .argmax(false)?
-            .map(|score| {
-                ModelId::from(if score.value == 1.0 {
-                    "verdict"
-                } else {
-                    "no-verdict"
-                })
-            })
+            .map(|score| score.target)
             .ok_or_else(|| LibsyError::AlgorithmError {
                 message: "policy abstained".to_string(),
             })

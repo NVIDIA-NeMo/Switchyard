@@ -53,7 +53,7 @@ impl JudgePolicy for TargetSelectorPolicy {
             });
         match target {
             Some((category, target)) => Ok(Classification::Scores(vec![Score {
-                value: driver.pool()?.position(&target)?,
+                target,
                 confidence: 1.0,
                 category: Some(category),
             }])),
@@ -93,12 +93,7 @@ mod tests {
         )?;
 
         assert_eq!(
-            classification.argmax(false)?.map(|score| driver()
-                .pool()
-                .unwrap()
-                .resolve(score.value)
-                .unwrap()
-                .clone()),
+            classification.argmax(false)?.map(|score| score.target),
             Some(ModelId::from("model/opus"))
         );
         Ok(())

@@ -21,12 +21,12 @@ use switchyard_protocol::ModelId;
 use crate::core::classifier::{Classification, Score};
 
 /// A single full-confidence recommendation.
-pub(crate) fn decisive(driver: &crate::Driver, target: &ModelId) -> crate::Result<Classification> {
-    Ok(Classification::Scores(vec![Score {
-        value: driver.pool()?.position(target)?,
+pub(crate) fn decisive(target: &ModelId) -> Classification {
+    Classification::Scores(vec![Score {
+        target: target.clone(),
         confidence: 1.0,
         category: None,
-    }]))
+    }])
 }
 
 /// Default completion budget for internal classifier and escalation judge calls.

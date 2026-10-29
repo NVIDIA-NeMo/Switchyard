@@ -180,7 +180,7 @@ impl Classifier for DecisionClassifier {
         }));
         Ok((
             Classification::Scores(vec![Score {
-                value: driver.pool()?.position(target)?,
+                target: target.clone(),
                 confidence: 1.0,
                 category: Some(category),
             }]),

@@ -23,7 +23,7 @@ use super::util::affinity::ClassifyTrigger;
 use super::util::prompts::prepend_system_prompt;
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, Tier, fall_open_tier,
-    selected_tier, stamp_decision_source,
+    record_routing_decision, selected_tier,
 };
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
@@ -83,8 +83,8 @@ impl Classifier for SourceStamp {
     ) -> Result<(Classification, Option<Response>)> {
         let (classification, served) = self.inner.score(state, request, driver).await?;
         // An abstaining classifier passes the turn on, so it is not its to claim.
-        if classification.argmax(false)?.is_some() {
-            stamp_decision_source(state, self.source);
+        if let Some(winner) = classification.argmax(false)? {
+            record_routing_decision(self.source, &winner.target);
             driver.set_evidence_if_empty(serde_json::json!({
                 "source": self.source.as_str(),
             }));
@@ -114,7 +114,7 @@ impl Classifier for FallOpen {
         let target = driver.first_model_for(&category)?.clone();
         Ok((
             Classification::Scores(vec![Score {
-                value: driver.pool()?.position(&target)?,
+                target,
                 confidence: 0.0,
                 category: Some(category),
             }]),
@@ -163,8 +163,6 @@ pub struct StageRouterConfig {
     /// Capability judge consulted on turns the signals leave undecided. It uses
     /// the runtime judge model and the standalone capability route's settings.
     pub llm_fallback: Option<LlmFallback>,
-    /// N-category fallback: (custom judge configuration, recover upstream errors).
-    pub custom_fallback: Option<(super::llm_class::CustomClassifierConfig, bool)>,
 }
 
 impl StageRouterConfig {
@@ -183,7 +181,6 @@ impl StageRouterConfig {
             capable_system_prompt: None,
             efficient_system_prompt: None,
             llm_fallback: None,
-            custom_fallback: None,
         }
     }
 }
@@ -204,19 +201,6 @@ impl StageRouter {
     /// fallback judge configured to retain verdicts: it runs on every ambiguous
     /// turn, so `classify_trigger` and `message_hash_fallback` would do nothing.
     pub fn new(config: StageRouterConfig) -> Result<Self> {
-        if config.llm_fallback.is_some() && config.custom_fallback.is_some() {
-            return Err(LibsyError::AlgorithmError {
-                message: "configure only one stage fallback judge".into(),
-            });
-        }
-        if let Some((fallback, _)) = &config.custom_fallback
-            && (fallback.classify_trigger != ClassifyTrigger::EveryRequest
-                || fallback.message_hash_fallback)
-        {
-            return Err(LibsyError::AlgorithmError {
-                message: "stage fallback must classify every request without retention".into(),
-            });
-        }
         if let Some(fallback) = &config.llm_fallback
             && (fallback.config.classify_trigger != ClassifyTrigger::EveryRequest
                 || fallback.config.message_hash_fallback)
@@ -230,6 +214,31 @@ impl StageRouter {
         }
         Ok(Self {
             route: build_stage_route(config)?,
+        })
+    }
+    /// Uses the existing custom-schema classifier for an N-target fallback.
+    pub fn new_with_custom_fallback(
+        config: StageRouterConfig,
+        fallback: super::llm_class::CustomClassifierConfig,
+        fail_open: bool,
+    ) -> Result<Self> {
+        if config.llm_fallback.is_some() {
+            return Err(LibsyError::AlgorithmError {
+                message: "configure only one stage fallback judge".into(),
+            });
+        }
+        if fallback.classify_trigger != ClassifyTrigger::EveryRequest
+            || fallback.message_hash_fallback
+        {
+            return Err(LibsyError::AlgorithmError {
+                message: "stage fallback must classify every request without retention".into(),
+            });
+        }
+        Ok(Self {
+            route: build_stage_route_with_fallback(
+                config,
+                Some(LlmTaskClassifier::custom_classifier(&fallback, fail_open)?),
+            )?,
         })
     }
 }
@@ -252,6 +261,13 @@ impl Algorithm for StageRouter {
 /// Wires the cascade the wrapper drives. Exposed so a composition above can
 /// stack a prelude onto it.
 pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough> {
+    build_stage_route_with_fallback(config, None)
+}
+
+fn build_stage_route_with_fallback(
+    config: StageRouterConfig,
+    custom_fallback: Option<Arc<dyn Classifier>>,
+) -> Result<FallThrough> {
     for (name, threshold) in [
         ("confidence_threshold", config.confidence_threshold),
         ("capable_first_threshold", config.capable_first_threshold),
@@ -306,9 +322,9 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
             source: DecisionSource::LlmClassifier,
         }));
     }
-    if let Some((config, fail_open)) = config.custom_fallback {
+    if let Some(inner) = custom_fallback {
         router = router.with_classifier(Arc::new(SourceStamp {
-            inner: LlmTaskClassifier::custom_classifier(&config, fail_open)?,
+            inner,
             source: DecisionSource::LlmClassifier,
         }));
     }
@@ -350,11 +366,11 @@ mod tests {
             &self,
             _state: &mut State,
             _request: &mut Request,
-            driver: &Driver,
+            _driver: &Driver,
         ) -> Result<(Classification, Option<Response>)> {
             Ok((
                 Classification::Scores(vec![Score {
-                    value: driver.pool()?.position(&ModelId::from(self.0))?,
+                    target: ModelId::from(self.0),
                     confidence: 1.0,
                     category: None,
                 }]),
@@ -383,10 +399,7 @@ mod tests {
             inner,
             source: DecisionSource::LlmClassifier,
         };
-        let (driver, mut rx) = Driver::new(
-            "test",
-            Arc::new(crate::RuntimeModels::new(runtime_models())),
-        );
+        let (driver, mut rx) = Driver::new("test", Arc::new(crate::RuntimeModels::default()));
         stamp
             .score(&mut State::default(), &mut Request::default(), &driver)
             .await?;

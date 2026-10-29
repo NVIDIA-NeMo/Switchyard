@@ -5,25 +5,25 @@ use crate::core::algorithm::Driver;
 use crate::core::state::State;
 use crate::{LibsyError, Result};
 use async_trait::async_trait;
-use switchyard_protocol::{Category, Request, Response};
+use switchyard_protocol::{Category, ModelId, Request, Response};
 
-/// A position on the shared score line, with a separate confidence for ranking recommendations.
+/// One classifier's recommendation of a routing `target`, with a `[0.0, 1.0]` confidence.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Score {
-    /// `[0.0, 1.0]` confidence in this recommendation.
+    /// `[0.0, 1.0]` confidence in `target`.
     pub confidence: f64,
-    /// Position on the configured score line, independent of confidence.
-    pub value: f64,
-    /// The category a categorical decision was drawn from. The rest of
+    /// The target (model / tier) being recommended.
+    pub target: ModelId,
+    /// The category `target` was drawn from, when the classifier picked one. The rest of
     /// that category is what the turn falls through on failure. A decision made without
     /// a category leaves this `None`.
     pub category: Option<Category>,
 }
 
-/// A classifier's verdict for a request: line [`Score`]s, flagged by how
+/// A classifier's verdict for a request: a set of target [`Score`]s, flagged by how
 /// confident the classifier is that they are decisive.
 pub enum Classification {
-    /// Clear recommendations; [`argmax`](Self::argmax) yields the highest-confidence score.
+    /// Definite recommendations; [`argmax`](Self::argmax) always yields the top target.
     Scores(Vec<Score>),
     /// Recommendations the classifier considers ambiguous; [`argmax`](Self::argmax) yields
     /// nothing unless the caller opts to ignore ambiguity.
@@ -56,12 +56,11 @@ impl Classification {
 fn argmax(scores: &[Score]) -> Result<Option<Score>> {
     let mut best: Option<&Score> = None;
     for score in scores.iter() {
-        super::pool::validate_value(score.value)?;
         if score.confidence.is_nan() {
             return Err(LibsyError::AlgorithmError {
                 message: format!(
-                    "classifier returned NaN confidence at position {:?}",
-                    score.value
+                    "classifier returned NaN confidence for target {:?}",
+                    score.target
                 ),
             });
         }
@@ -74,9 +73,63 @@ fn argmax(scores: &[Score]) -> Result<Option<Score>> {
     Ok(best.cloned())
 }
 
+/// Optional scalar output for classifiers that use a configured target pool.
+pub enum ClassifierOutput {
+    /// An existing target-based verdict, passed through unchanged.
+    Decision(Classification),
+    /// A position on the configured score line.
+    Position {
+        /// Finite value in `[0, 1]`.
+        value: f64,
+        /// Confidence in this recommendation.
+        confidence: f64,
+        /// Continue to the next classifier when true.
+        ambiguous: bool,
+    },
+}
+
+impl ClassifierOutput {
+    /// Resolve a clear position once; preserve target decisions and abstention.
+    pub fn resolve(&self, driver: &Driver) -> Result<Option<Score>> {
+        match self {
+            Self::Decision(decision) => decision.argmax(false),
+            Self::Position {
+                value,
+                confidence,
+                ambiguous,
+            } => {
+                super::pool::validate_value(*value)?;
+                super::pool::validate_value(*confidence)?;
+                if *ambiguous {
+                    return Ok(None);
+                }
+                let pool = driver.pool().ok_or_else(|| LibsyError::AlgorithmError {
+                    message: "a scalar classifier output requires a target pool".into(),
+                })?;
+                Ok(Some(Score {
+                    target: pool.resolve(*value)?.clone(),
+                    confidence: *confidence,
+                    category: None,
+                }))
+            }
+        }
+    }
+}
+
 /// Scores targets from the current request and the composition's state.
 #[async_trait]
 pub trait Classifier: Send + Sync {
+    /// Optionally emit a scalar position. Existing classifiers keep their target decisions.
+    async fn classify(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: &Driver,
+    ) -> Result<(ClassifierOutput, Option<Response>)> {
+        let (decision, response) = self.score(state, request, driver).await?;
+        Ok((ClassifierOutput::Decision(decision), response))
+    }
+
     /// Score the classifier's targets given the current state and request.
     ///
     /// `driver` lets a classifier inspect runtime models and offload model calls.
@@ -98,16 +151,28 @@ pub trait Classifier: Send + Sync {
 mod tests {
     use super::*;
     use crate::core::testing::empty_driver;
-    use switchyard_protocol::{ModelId, text_request};
+    use switchyard_protocol::text_request;
+
+    #[test]
+    fn scalar_outputs_require_a_pool_and_validate_both_numbers() -> Result<()> {
+        let output = |value, confidence, ambiguous| ClassifierOutput::Position {
+            value,
+            confidence,
+            ambiguous,
+        };
+        assert!(output(0.5, 1.0, false).resolve(&empty_driver()).is_err());
+        assert_eq!(output(0.5, 1.0, true).resolve(&empty_driver())?, None);
+        for value in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
+            assert!(output(value, 1.0, true).resolve(&empty_driver()).is_err());
+            assert!(output(0.5, value, true).resolve(&empty_driver()).is_err());
+        }
+        Ok(())
+    }
 
     /// Terse `Score` builder for the assertions below.
     fn score(target: &str, confidence: f64) -> Score {
         Score {
-            value: match target {
-                "strong" | "second" | "b" => 1.0,
-                "mid" => 0.5,
-                _ => 0.0,
-            },
+            target: ModelId::from(target),
             confidence,
             category: None,
         }
@@ -126,7 +191,7 @@ mod tests {
         // Equal confidence: the earlier target in cascade order wins the tie.
         let scores = vec![score("first", 0.7), score("second", 0.7)];
         let best = Classification::Scores(scores).argmax(false)?;
-        assert_eq!(best.map(|s| s.value), Some(0.0));
+        assert_eq!(best.map(|s| s.target), Some(ModelId::from("first")));
         Ok(())
     }
 
@@ -145,13 +210,13 @@ mod tests {
         assert!(matches!(
             Classification::Scores(scores).argmax(false),
             Err(LibsyError::AlgorithmError { message })
-                if message == "classifier returned NaN confidence at position 1.0"
+                if message == "classifier returned NaN confidence for target \"strong\""
         ));
         // A lone NaN errors too, even with nothing to compare it against.
         assert!(matches!(
             Classification::Scores(vec![score("only", f64::NAN)]).argmax(false),
             Err(LibsyError::AlgorithmError { message })
-                if message == "classifier returned NaN confidence at position 0.0"
+                if message == "classifier returned NaN confidence for target \"only\""
         ));
     }
 
@@ -199,7 +264,7 @@ mod tests {
             let target = request.model_id().unwrap_or(ModelId::from("auto"));
             Ok((
                 Classification::Scores(vec![Score {
-                    value: if target == "strong" { 1.0 } else { 0.0 },
+                    target,
                     confidence: 1.0,
                     category: None,
                 }]),
@@ -219,7 +284,10 @@ mod tests {
         let (classification, _) = RecordingClassifier
             .score(&mut state, &mut request, &empty_driver())
             .await?;
-        assert_eq!(classification.argmax(false)?.map(|s| s.value), Some(1.0));
+        assert_eq!(
+            classification.argmax(false)?.map(|s| s.target),
+            Some(ModelId::from("strong"))
+        );
         assert_eq!(
             state.extra.get("ran"),
             Some(&crate::core::state::StateValue::Count(1))
@@ -241,7 +309,7 @@ mod tests {
             request.llm_request.model = Some("rewritten".to_string());
             Ok((
                 Classification::Scores(vec![Score {
-                    value: 1.0,
+                    target: ModelId::from("rewritten"),
                     confidence: 1.0,
                     category: None,
                 }]),

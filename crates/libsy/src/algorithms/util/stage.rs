@@ -280,29 +280,28 @@ pub(crate) fn selected_tier(
     match category {
         Some(Category::Capable) => Some(Tier::Capable),
         Some(Category::Efficient) => Some(Tier::Efficient),
-        _ if driver.models_for(&Category::Capable).first() == Some(target) => Some(Tier::Capable),
-        _ if driver.models_for(&Category::Efficient).first() == Some(target) => {
+        _ if driver.pool().is_some()
+            && driver.models_for(&Category::Capable).first() == Some(target) =>
+        {
+            Some(Tier::Capable)
+        }
+        _ if driver.pool().is_some()
+            && driver.models_for(&Category::Efficient).first() == Some(target) =>
+        {
             Some(Tier::Efficient)
         }
         _ => None,
     }
 }
 
-const DECISION_SOURCE_KEY: &str = "stage_decision_source";
-
-pub(crate) fn stamp_decision_source(state: &mut State, source: DecisionSource) {
-    state.extra.insert(
-        DECISION_SOURCE_KEY.into(),
-        StateValue::String(source.as_str().into()),
-    );
-}
+const POOL_DECISION_KEY: &str = "stage_pool_decision";
 
 /// Records one stage-router decision with bounded labels.
-pub(crate) fn record_routing_decision(source: &str, target_name: &str) {
+pub(crate) fn record_routing_decision(source: DecisionSource, target_name: &str) {
     meter().u64_counter(ROUTING_DECISIONS_METRIC).build().add(
         1,
         &[
-            KeyValue::new("decision_source", source.to_owned()),
+            KeyValue::new("decision_source", source.as_str()),
             KeyValue::new("target_name", target_name.to_string()),
         ],
     );
@@ -631,6 +630,16 @@ impl StageClassifier {
             .map_or_else(|| key.to_string(), |agent_id| format!("{key}:{agent_id}"))
     }
 
+    fn has_hold(state: &State, request: &Request) -> bool {
+        [CAPABLE_HOLD_KEY, EFFICIENT_HOLD_KEY].iter().any(|key| {
+            match state.extra.get(&Self::agent_key(request, key)) {
+                Some(StateValue::Bool(true)) => true,
+                Some(StateValue::Count(remaining)) => *remaining > 0,
+                _ => false,
+            }
+        })
+    }
+
     fn consume_hold(state: &mut State, key: &str) -> bool {
         // Reuse the existing state values: a true flag is an unbounded hold.
         if matches!(state.extra.get(key), Some(StateValue::Bool(true))) {
@@ -672,15 +681,8 @@ impl StageClassifier {
 impl Processor for StageClassifier {
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
         if let Event::Request { request, driver } = event {
-            state.extra.remove(DECISION_SOURCE_KEY);
-            let held = [CAPABLE_HOLD_KEY, EFFICIENT_HOLD_KEY].iter().any(|key| {
-                match state.extra.get(&Self::agent_key(request, key)) {
-                    Some(StateValue::Bool(true)) => true,
-                    Some(StateValue::Count(remaining)) => *remaining > 0,
-                    _ => false,
-                }
-            });
-            if held {
+            state.extra.remove(POOL_DECISION_KEY);
+            if Self::has_hold(state, request) {
                 state.tool_signals = None;
                 return Ok(());
             }
@@ -696,12 +698,9 @@ impl Processor for StageClassifier {
             driver,
         } = event
         {
-            let source = match state.extra.remove(DECISION_SOURCE_KEY) {
-                Some(StateValue::String(source)) => Some(source),
-                _ => None,
-            };
-            if let Some(source) = &source {
-                record_routing_decision(source, selected_model_id);
+            let from_pool = state.extra.remove(POOL_DECISION_KEY).is_some();
+            if from_pool {
+                record_routing_decision(DecisionSource::Dimensions, selected_model_id);
             }
             let (tier, hold_key, other_key, turns) =
                 match selected_tier(category.as_ref(), selected_model_id, driver) {
@@ -724,23 +723,20 @@ impl Processor for StageClassifier {
                         }),
                     ),
                     _ => {
-                        state.extra.insert(
-                            Self::agent_key(request, PREVIOUS_TIER_KEY),
-                            StateValue::String("intermediate".into()),
-                        );
-                        for key in [CAPABLE_HOLD_KEY, EFFICIENT_HOLD_KEY] {
-                            state.extra.remove(&Self::agent_key(request, key));
+                        if driver.pool().is_some() {
+                            state.extra.insert(
+                                Self::agent_key(request, PREVIOUS_TIER_KEY),
+                                StateValue::String("intermediate".into()),
+                            );
+                            for key in [CAPABLE_HOLD_KEY, EFFICIENT_HOLD_KEY] {
+                                state.extra.remove(&Self::agent_key(request, key));
+                            }
                         }
                         return Ok(());
                     }
                 };
-            let signal_source = match source.as_deref() {
-                Some("override") => Some(DecisionSource::Override),
-                Some("dimensions") => Some(DecisionSource::Dimensions),
-                _ => None,
-            };
-            if let Some(source) = signal_source {
-                self.apply_handoff_note(request, tier, source);
+            if from_pool {
+                self.apply_handoff_note(request, tier, DecisionSource::Dimensions);
                 if tier == Tier::Capable && self.capable_hold_turns > 0 {
                     Self::set_hold(
                         state,
@@ -765,12 +761,66 @@ impl Processor for StageClassifier {
 
 #[async_trait]
 impl Classifier for StageClassifier {
+    async fn classify(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: &Driver,
+    ) -> Result<(
+        crate::ClassifierOutput,
+        Option<switchyard_protocol::Response>,
+    )> {
+        // Existing target decisions own holds, overrides, and the binary default.
+        if let Some(pool) = driver.pool()
+            && !Self::has_hold(state, request)
+            && let Some(signal) = &state.tool_signals
+            && override_reason(signal).is_none()
+        {
+            let threshold = if fall_open_tier(state) == Some(Tier::Capable) {
+                self.capable_first_threshold
+            } else {
+                self.confidence_threshold
+            };
+            let value = score_signal(signal).probability();
+            let confidence = pool.confidence(value)?;
+            let ambiguous = !pool.is_clear(value, threshold)?;
+            record_score_metrics(
+                signal,
+                &PickOutcome::ConsultClassifier {
+                    probability: value,
+                    confidence,
+                    default_tier: fall_open_tier(state).unwrap_or(self.mode.default_tier()),
+                },
+            );
+            if !ambiguous {
+                state
+                    .extra
+                    .insert(POOL_DECISION_KEY.into(), StateValue::Bool(true));
+                driver.set_evidence(serde_json::json!({
+                    "source": DecisionSource::Dimensions.as_str(),
+                    "score": value, "confidence": confidence, "threshold": threshold,
+                }));
+            }
+            return Ok((
+                crate::ClassifierOutput::Position {
+                    value,
+                    confidence,
+                    ambiguous,
+                },
+                None,
+            ));
+        }
+        let (decision, response) = self.score(state, request, driver).await?;
+        Ok((crate::ClassifierOutput::Decision(decision), response))
+    }
+
     async fn score(
         &self,
         state: &mut State,
         request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<switchyard_protocol::Response>)> {
+        let capable_hold_key = Self::agent_key(request, CAPABLE_HOLD_KEY);
         for (key, category, source) in [
             (
                 CAPABLE_HOLD_KEY,
@@ -785,11 +835,11 @@ impl Classifier for StageClassifier {
         ] {
             if Self::consume_hold(state, &Self::agent_key(request, key)) {
                 let target = driver.first_model_for(&category)?.clone();
-                stamp_decision_source(state, source);
+                record_routing_decision(source, &target);
                 driver.set_evidence(serde_json::json!({"source": source.as_str()}));
                 return Ok((
                     Classification::Scores(vec![Score {
-                        value: driver.pool()?.position(&target)?,
+                        target,
                         confidence: 1.0,
                         category: Some(category),
                     }]),
@@ -807,73 +857,66 @@ impl Classifier for StageClassifier {
             Some(Tier::Efficient) => (PickerMode::EfficientFirst, self.confidence_threshold),
             None => (self.mode, self.confidence_threshold),
         };
-        if let Some(reason) = override_reason(&signal) {
-            record_score_metrics(
-                &signal,
-                &resolved(Tier::Capable, DecisionSource::Override, 0.5, Some(1.0)),
-            );
-            tracing::info!(override_reason = reason.as_str(), "stage router override");
-            stamp_decision_source(state, DecisionSource::Override);
-            driver.set_evidence(serde_json::json!({"source": DecisionSource::Override.as_str()}));
-            return Ok((
-                Classification::Scores(vec![driver.score_for(
-                    driver.first_model_for(&Category::Capable)?,
-                    1.0,
-                    Some(Category::Capable),
-                )?]),
-                None,
-            ));
-        }
-        let scored = score_signal(&signal);
-        let probability = scored.probability();
-        // Unconfigured routes retain binary tier selection, even with extra failover models.
-        let configured_pool = driver.has_configured_pool();
-        let (confidence, is_clear) = if configured_pool {
-            (
-                driver.pool()?.confidence(probability)?,
-                driver.pool()?.is_clear(probability, threshold)?,
-            )
-        } else {
-            (
-                scored.confidence,
-                probability < 0.5 - threshold / 2.0 || probability > 0.5 + threshold / 2.0,
-            )
-        };
-        record_score_metrics(
-            &signal,
-            &PickOutcome::ConsultClassifier {
+        let outcome = pick_tier(&signal, mode, threshold);
+        record_score_metrics(&signal, &outcome);
+        match outcome {
+            PickOutcome::Resolved {
+                tier,
+                source,
                 probability,
                 confidence,
-                default_tier: mode.default_tier(),
-            },
-        );
-        let score = if is_clear && !configured_pool {
-            let category = if probability > 0.5 {
-                Category::Capable
-            } else {
-                Category::Efficient
-            };
-            driver.score_for(
-                driver.first_model_for(&category)?,
-                confidence,
-                Some(category),
-            )?
-        } else {
-            Score {
-                value: probability,
-                confidence,
-                category: None,
+            } => {
+                let category = match tier {
+                    Tier::Capable => Category::Capable,
+                    Tier::Efficient => Category::Efficient,
+                };
+                let target = driver.first_model_for(&category)?;
+                if tier == Tier::Capable
+                    && self.capable_hold_turns > 0
+                    && matches!(
+                        source,
+                        DecisionSource::Override | DecisionSource::Dimensions
+                    )
+                {
+                    Self::set_hold(state, &capable_hold_key, self.capable_hold_turns);
+                }
+                record_routing_decision(source, target);
+                if source == DecisionSource::Override
+                    && let Some(reason) = override_reason(&signal)
+                {
+                    tracing::info!(
+                        decision_source = source.as_str(),
+                        override_reason = reason.as_str(),
+                        target = %target,
+                        "stage router override"
+                    );
+                }
+                // Only a resolved turn routes on this classifier's target, so it
+                // is the only branch whose tier the signals actually chose — an
+                // ambiguous turn is decided further down the cascade.
+                self.apply_handoff_note(request, tier, source);
+                let evidence = match (source, confidence) {
+                    (DecisionSource::Dimensions, Some(confidence)) => serde_json::json!({
+                        "source": source.as_str(),
+                        "confidence": confidence,
+                        "threshold": threshold,
+                    }),
+                    _ => serde_json::json!({"source": source.as_str()}),
+                };
+                driver.set_evidence(evidence);
+                // Prefer pick_tier's own confidence (e.g. 1.0 for an Override)
+                // over re-deriving it from the neutral 0.5 placeholder.
+                let conf = confidence.unwrap_or_else(|| 2.0 * (probability - 0.5).abs());
+                Ok((
+                    Classification::Scores(vec![Score {
+                        target: target.clone(),
+                        confidence: conf,
+                        category: Some(category),
+                    }]),
+                    None,
+                ))
             }
-        };
-        if is_clear {
-            stamp_decision_source(state, DecisionSource::Dimensions);
-            driver.set_evidence(serde_json::json!({
-                "source": DecisionSource::Dimensions.as_str(),
-                "score": probability, "confidence": confidence, "threshold": threshold,
-            }));
-            Ok((Classification::Scores(vec![score]), None))
-        } else {
-            Ok((Classification::Ambiguous(vec![score]), None))
+            PickOutcome::ConsultClassifier { .. } => Ok((Self::abstain(), None)),
         }
     }
 }
@@ -885,40 +928,6 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use switchyard_protocol::{Metadata, ModelId, Request, WireFormat, text_request};
-
-    impl StageClassifier {
-        async fn score_and_decide(
-            &self,
-            state: &mut State,
-            request: &mut Request,
-            driver: &Driver,
-        ) -> Result<(Classification, Option<switchyard_protocol::Response>)> {
-            let result = self.score(state, request, driver).await?;
-            if let Some(score) = result.0.argmax(false)? {
-                let target = driver.pool()?.resolve(score.value)?.clone();
-                self.process(
-                    state,
-                    Event::Decision {
-                        request,
-                        selected_model_id: &target,
-                        category: score.category,
-                        driver,
-                    },
-                )
-                .await?;
-            }
-            Ok(result)
-        }
-    }
-
-    fn resolved(score: &Score) -> ModelId {
-        driver()
-            .pool()
-            .unwrap()
-            .resolve(score.value)
-            .unwrap()
-            .clone()
-    }
 
     fn driver() -> Driver {
         Driver::new(
@@ -1265,10 +1274,10 @@ mod tests {
             set_fall_open(&mut state, tier);
             let (classification, _) = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
                 .with_capable_first_threshold(threshold)
-                .score_and_decide(&mut state, &mut Request::default(), &driver())
+                .score(&mut state, &mut Request::default(), &driver())
                 .await?;
             assert_eq!(
-                classification.argmax(false)?.map(|score| resolved(&score)),
+                classification.argmax(false)?.map(|score| score.target),
                 expected
             );
         }
@@ -1281,7 +1290,7 @@ mod tests {
         // and the turn belongs to whatever the cascade has behind them.
         let mut state = State::default();
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
-            .score_and_decide(&mut state, &mut Request::default(), &driver())
+            .score(&mut state, &mut Request::default(), &driver())
             .await?;
         assert!(classification.0.argmax(false)?.is_none());
         Ok(())
@@ -1297,12 +1306,12 @@ mod tests {
         let mut state = state_with(signal);
         let driver = driver();
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
-            .score_and_decide(&mut state, &mut Request::default(), &driver)
+            .score(&mut state, &mut Request::default(), &driver)
             .await?;
         match classification.0 {
             Classification::Scores(scores) => {
                 assert_eq!(scores.len(), 1);
-                assert_eq!(resolved(&scores[0]), "strong");
+                assert_eq!(scores[0].target, "strong");
                 // An override is maximally certain, not `score.abs() == 0.0`.
                 assert_eq!(scores[0].confidence, 1.0);
             }
@@ -1323,10 +1332,10 @@ mod tests {
         let mut state = state_with(signal);
         let driver = driver();
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
-            .score_and_decide(&mut state, &mut Request::default(), &driver)
+            .score(&mut state, &mut Request::default(), &driver)
             .await?;
         match classification.0 {
-            Classification::Scores(scores) => assert_eq!(resolved(&scores[0]), "weak"),
+            Classification::Scores(scores) => assert_eq!(scores[0].target, "weak"),
             _ => panic!("expected a definite classification"),
         }
         Ok(())
@@ -1340,17 +1349,14 @@ mod tests {
 
         for _ in 0..3 {
             let classification = classifier
-                .score_and_decide(&mut state, &mut Request::default(), &driver)
+                .score(&mut state, &mut Request::default(), &driver)
                 .await?;
-            assert_eq!(
-                resolved(&classification.0.argmax(false)?.unwrap()),
-                "strong"
-            );
+            assert_eq!(classification.0.argmax(false)?.unwrap().target, "strong");
             state.tool_signals = Some(ToolSignals::default());
         }
 
         let classification = classifier
-            .score_and_decide(&mut state, &mut Request::default(), &driver)
+            .score(&mut state, &mut Request::default(), &driver)
             .await?;
         assert!(classification.0.argmax(false)?.is_none());
         Ok(())
@@ -1362,7 +1368,7 @@ mod tests {
         let mut state = state_with(critical());
         let driver = driver();
         classifier
-            .score_and_decide(&mut state, &mut Request::default(), &driver)
+            .score(&mut state, &mut Request::default(), &driver)
             .await?;
         state.tool_signals = Some(ToolSignals {
             tests_passed: true,
@@ -1372,12 +1378,9 @@ mod tests {
         });
 
         let classification = classifier
-            .score_and_decide(&mut state, &mut Request::default(), &driver)
+            .score(&mut state, &mut Request::default(), &driver)
             .await?;
-        assert_eq!(
-            resolved(&classification.0.argmax(false)?.unwrap()),
-            "strong"
-        );
+        assert_eq!(classification.0.argmax(false)?.unwrap().target, "strong");
         assert_eq!(
             state.extra.get(CAPABLE_HOLD_KEY),
             Some(&StateValue::Count(1))
@@ -1397,9 +1400,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        classifier
-            .score_and_decide(&mut state, &mut parent, &driver)
-            .await?;
+        classifier.score(&mut state, &mut parent, &driver).await?;
 
         state.tool_signals = Some(ToolSignals::default());
         let mut child = Request {
@@ -1409,9 +1410,7 @@ mod tests {
             }),
             ..Default::default()
         };
-        let classification = classifier
-            .score_and_decide(&mut state, &mut child, &driver)
-            .await?;
+        let classification = classifier.score(&mut state, &mut child, &driver).await?;
 
         assert!(classification.0.argmax(false)?.is_none());
         assert!(matches!(
@@ -1428,12 +1427,12 @@ mod tests {
         let mut state = state_with(critical());
         let driver = driver();
         classifier
-            .score_and_decide(&mut state, &mut Request::default(), &driver)
+            .score(&mut state, &mut Request::default(), &driver)
             .await?;
         state.tool_signals = Some(ToolSignals::default());
 
         let classification = classifier
-            .score_and_decide(&mut state, &mut Request::default(), &driver)
+            .score(&mut state, &mut Request::default(), &driver)
             .await?;
         assert!(classification.0.argmax(false)?.is_none());
         Ok(())
@@ -1467,11 +1466,10 @@ mod tests {
                     state.tool_signals.is_none(),
                     "held turns must not extract signals"
                 );
-                let (classification, _) = classifier
-                    .score_and_decide(&mut state, &mut request, &driver)
-                    .await?;
+                let (classification, _) =
+                    classifier.score(&mut state, &mut request, &driver).await?;
                 let winner = classification.argmax(false)?.expect("a hold must resolve");
-                assert_eq!(resolved(&winner), target);
+                assert_eq!(winner.target, target);
                 assert_eq!(winner.category, Some(category.clone()));
                 assert_eq!(winner.confidence, 1.0);
                 assert_eq!(
@@ -1488,7 +1486,7 @@ mod tests {
         // A quiet signal corroborates neither axis, so the scorer abstains.
         let mut state = state_with(ToolSignals::default());
         let classification = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
-            .score_and_decide(&mut state, &mut Request::default(), &driver())
+            .score(&mut state, &mut Request::default(), &driver())
             .await?;
         assert!(classification.0.argmax(false)?.is_none());
         Ok(())
@@ -1593,7 +1591,7 @@ mod tests {
         let driver = driver();
 
         noting_classifier(PickerMode::EfficientFirst)
-            .score_and_decide(&mut state, &mut request, &driver)
+            .score(&mut state, &mut request, &driver)
             .await?;
 
         assert_eq!(trailing_text(&request), Some(format!("hi|{ESCALATION}")));
@@ -1607,16 +1605,12 @@ mod tests {
         let driver = driver();
 
         let mut first = request();
-        classifier
-            .score_and_decide(&mut state, &mut first, &driver)
-            .await?;
+        classifier.score(&mut state, &mut first, &driver).await?;
         assert_eq!(trailing_text(&first), Some(format!("hi|{ESCALATION}")));
 
         for _ in 0..2 {
             let mut held = request();
-            classifier
-                .score_and_decide(&mut state, &mut held, &driver)
-                .await?;
+            classifier.score(&mut state, &mut held, &driver).await?;
             assert_eq!(trailing_text(&held), Some("hi".to_string()));
         }
         Ok(())
@@ -1635,7 +1629,7 @@ mod tests {
         let driver = driver();
 
         noting_classifier(PickerMode::EfficientFirst)
-            .score_and_decide(&mut state, &mut request, &driver)
+            .score(&mut state, &mut request, &driver)
             .await?;
 
         assert_eq!(trailing_text(&request), Some(format!("hi|{DEESCALATION}")));
@@ -1650,7 +1644,7 @@ mod tests {
         let mut request = request();
 
         let classification = noting_classifier(PickerMode::CapableFirst)
-            .score_and_decide(&mut state, &mut request, &driver())
+            .score(&mut state, &mut request, &driver())
             .await?;
 
         assert!(matches!(classification.0, Classification::Ambiguous(_)));
@@ -1665,43 +1659,10 @@ mod tests {
         let driver = driver();
 
         StageClassifier::new(PickerMode::EfficientFirst, 0.5)
-            .score_and_decide(&mut state, &mut request, &driver)
+            .score(&mut state, &mut request, &driver)
             .await?;
 
         assert_eq!(trailing_text(&request), Some("hi".to_string()));
-        Ok(())
-    }
-    #[tokio::test]
-    async fn default_stage_does_not_promote_failover_models_to_scoring_targets() -> Result<()> {
-        let driver = Driver::new(
-            "test",
-            Arc::new(RuntimeModels::new(
-                [
-                    (
-                        Category::Efficient,
-                        vec!["weak".into(), "weak-backup".into()],
-                    ),
-                    (
-                        Category::Capable,
-                        vec!["strong".into(), "strong-backup".into()],
-                    ),
-                ]
-                .into(),
-            )),
-        )
-        .0;
-        let mut state = state_with(ToolSignals {
-            severity: 0.6,
-            turn_depth: 10,
-            tool_result_count: 10,
-            ..Default::default()
-        });
-        let (classification, _) = StageClassifier::new(PickerMode::EfficientFirst, 0.5)
-            .score(&mut state, &mut Request::default(), &driver)
-            .await?;
-        let score = classification.argmax(false)?.unwrap();
-        assert_eq!(driver.pool()?.resolve(score.value)?.as_str(), "strong");
-        assert_eq!(score.category, Some(Category::Capable));
         Ok(())
     }
 }

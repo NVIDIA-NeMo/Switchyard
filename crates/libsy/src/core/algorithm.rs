@@ -51,32 +51,26 @@ pub struct RuntimeModels {
     by_category: HashMap<Category, Vec<ModelId>>,
     subagent: Option<HashMap<Category, Vec<ModelId>>>,
     pool: Option<crate::TargetPool>,
-    configured_pool: bool,
-    subagent_pool: Option<crate::TargetPool>,
 }
 
 impl RuntimeModels {
     /// The models available to the algorithm itself.
     pub fn new(by_category: HashMap<Category, Vec<ModelId>>) -> Self {
         Self {
-            pool: crate::TargetPool::from_categories(&by_category),
-            configured_pool: false,
             by_category,
             subagent: None,
-            subagent_pool: None,
+            pool: None,
         }
     }
 
-    /// Sets the parent score line. Subagents use their own runtime groups.
+    /// Opt into a score line for the parent router. Subagents retain their own decisions.
     pub fn with_pool(mut self, pool: crate::TargetPool) -> Self {
         self.pool = Some(pool);
-        self.configured_pool = true;
         self
     }
 
     /// Adds the groups used for delegated sub-agent work.
     pub fn with_subagent(mut self, models: HashMap<Category, Vec<ModelId>>) -> Self {
-        self.subagent_pool = crate::TargetPool::from_categories(&models);
         self.subagent = Some(models);
         self
     }
@@ -509,31 +503,12 @@ impl Driver {
         }
     }
 
-    /// The score line for this routing scope. Binary defaults run efficient to capable.
-    pub fn pool(&self) -> Result<&crate::TargetPool> {
+    /// The optional parent score line; never inherited by delegated subagents.
+    pub fn pool(&self) -> Option<&crate::TargetPool> {
         match self.scope {
             Scope::Parent => self.models.pool.as_ref(),
-            Scope::Subagent => self.models.subagent_pool.as_ref(),
+            Scope::Subagent => None,
         }
-        .ok_or(LibsyError::NoTargets)
-    }
-
-    pub(crate) fn has_configured_pool(&self) -> bool {
-        matches!(self.scope, Scope::Parent) && self.models.configured_pool
-    }
-
-    /// Encode a categorical classifier result at its exact anchor.
-    pub fn score_for(
-        &self,
-        target: &ModelId,
-        confidence: f64,
-        category: Option<Category>,
-    ) -> Result<crate::Score> {
-        Ok(crate::Score {
-            value: self.pool()?.position(target)?,
-            confidence,
-            category,
-        })
     }
 
     /// The first available model for `category`.

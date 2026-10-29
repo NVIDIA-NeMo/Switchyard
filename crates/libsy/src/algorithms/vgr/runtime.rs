@@ -147,14 +147,14 @@ impl Classifier for VgrClassifier {
             None
         };
         if let Some(reason) = short_circuit {
-            return self.escalate(driver, reason, None, request, state, None);
+            return Ok(self.escalate(driver, reason, None, request, state, None));
         }
 
         let Some(budget) = self.remaining(started) else {
-            return self.escalate(driver, "efficient_timed_out", None, request, state, None);
+            return Ok(self.escalate(driver, "efficient_timed_out", None, request, state, None));
         };
         let Some(trial) = self.breaker.attempt() else {
-            return self.escalate(driver, "breaker_open", None, request, state, None);
+            return Ok(self.escalate(driver, "breaker_open", None, request, state, None));
         };
         let attempted = tokio::time::timeout(budget, async {
             let response = driver
@@ -175,11 +175,25 @@ impl Classifier for VgrClassifier {
                 if !fallback_eligible(&error) {
                     return Err(error);
                 }
-                return self.escalate(driver, "efficient_unavailable", None, request, state, None);
+                return Ok(self.escalate(
+                    driver,
+                    "efficient_unavailable",
+                    None,
+                    request,
+                    state,
+                    None,
+                ));
             }
             Err(_) => {
                 trial.failure();
-                return self.escalate(driver, "efficient_timed_out", None, request, state, None);
+                return Ok(self.escalate(
+                    driver,
+                    "efficient_timed_out",
+                    None,
+                    request,
+                    state,
+                    None,
+                ));
             }
         };
 
@@ -190,31 +204,38 @@ impl Classifier for VgrClassifier {
         };
         if rungs::has_tool_call(&buffered.agg) {
             if !tool_use_is_complete(&buffered.agg) {
-                return self.escalate(driver, "malformed_tool_call", None, request, state, None);
+                return Ok(self.escalate(
+                    driver,
+                    "malformed_tool_call",
+                    None,
+                    request,
+                    state,
+                    None,
+                ));
             }
             if self.verify_turn(&context, &buffered.agg, state).await {
-                return self.escalate(
+                return Ok(self.escalate(
                     driver,
                     "turn_verification_escalated",
                     None,
                     request,
                     state,
                     None,
-                );
+                ));
             }
             if self.config.mode == ServingMode::Shadow {
-                return self.escalate(
+                return Ok(self.escalate(
                     driver,
                     "turn_verification_complete",
                     None,
                     request,
                     state,
                     None,
-                );
+                ));
             }
             log(driver, "turn_verification_complete", None, Route::Efficient);
             set_flag(state, EFFICIENT_SERVED_KEY, true);
-            return Ok((decisive(driver, efficient)?, Some(buffered.into_response())));
+            return Ok((decisive(efficient), Some(buffered.into_response())));
         }
 
         let attempt = rungs::response_text(&buffered.agg).unwrap_or_default();
@@ -223,18 +244,18 @@ impl Classifier for VgrClassifier {
         let signals = self.gather(&context, &caps).await;
         let route = decide::decide(&caps, &signals, self.config.confirmed_min_clean_tail());
         if route == Route::Capable || self.config.mode == ServingMode::Shadow {
-            return self.escalate(
+            return Ok(self.escalate(
                 driver,
                 "decided",
                 Some(caps.branch),
                 request,
                 state,
                 Some(&attempt),
-            );
+            ));
         }
         log(driver, "decided", Some(caps.branch), Route::Efficient);
         set_flag(state, EFFICIENT_SERVED_KEY, true);
-        Ok((decisive(driver, efficient)?, Some(buffered.into_response())))
+        Ok((decisive(efficient), Some(buffered.into_response())))
     }
 }
 
@@ -261,12 +282,12 @@ impl VgrClassifier {
         request: &mut Request,
         state: &mut State,
         unverified_final: Option<&str>,
-    ) -> Result<Scored> {
+    ) -> Scored {
         if reason != "mode_off" {
             self.hand_off(request, state, unverified_final);
         }
         log(driver, reason, branch, Route::Capable);
-        Ok((decisive(driver, &self.config.targets.capable)?, None))
+        (decisive(&self.config.targets.capable), None)
     }
 
     /// Whether the current user turn has used up its efficient wall-clock budget.
