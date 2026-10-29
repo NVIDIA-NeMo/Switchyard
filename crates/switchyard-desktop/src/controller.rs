@@ -521,6 +521,7 @@ impl Controller {
         };
         self.route_reviews
             .retain(|key, _| listed.iter().any(|route| &route.name == key));
+        let selections = harness_selections();
         let mut routes = Vec::with_capacity(listed.len());
         for route in listed {
             let revision = self.remember_route(
@@ -552,7 +553,11 @@ impl Controller {
                     .iter()
                     .map(|&(tool, _)| (tool, login_mode(tool, &config, &route.name).err()))
                     .collect(),
-                dependents: known_dependents(&route.id),
+                dependents: selections
+                    .iter()
+                    .filter(|(model, _)| model.as_str() == &*route.id)
+                    .map(|(_, dependent)| dependent.clone())
+                    .collect(),
                 editable: algorithm.is_some(),
                 generated: config
                     .generated_by("routes", &route.name)
@@ -1191,8 +1196,10 @@ fn target_label(target: &switchyard_runner::ConfiguredTarget) -> String {
         None => format!("{} (no target has this name)", target.name),
     }
 }
-fn known_dependents(id: &str) -> Vec<Dependent> {
-    let mut dependents = Vec::new();
+/// This function reads each harness and account's settings once and pairs each one with the
+/// model it selects, so a snapshot does not reread every settings file for every route.
+fn harness_selections() -> Vec<(String, Dependent)> {
+    let mut selections = Vec::new();
     for &(tool, label) in harness::HARNESSES {
         let mut destinations = vec![(None, harness::paths(tool))];
         destinations.extend(
@@ -1204,19 +1211,23 @@ fn known_dependents(id: &str) -> Vec<Dependent> {
             let Ok(files) = files else {
                 continue;
             };
-            if harness::inspect(tool, &files)
-                .is_ok_and(|status| status.lines().next() == Some(format!("Model: {id}").as_str()))
-            {
-                dependents.push(Dependent {
+            let Some(model) = harness::inspect(tool, &files).ok().and_then(|status| {
+                Some(status.lines().next()?.strip_prefix("Model: ")?.to_owned())
+            }) else {
+                continue;
+            };
+            selections.push((
+                model,
+                Dependent {
                     tool,
                     label,
                     account,
                     files,
-                });
-            }
+                },
+            ));
         }
     }
-    dependents
+    selections
 }
 fn role_info(role: &crate::server_config::Role) -> RoleInfo {
     RoleInfo {

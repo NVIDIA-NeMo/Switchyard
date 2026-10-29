@@ -28,8 +28,8 @@ pub const HARNESSES: &[(Harness, &str)] = &[
     (Harness::Pi, "Pi"),
 ];
 
-/// This function uses the selected harness's environment variable when it is present.
-/// This function resolves the home directory only when that variable is absent.
+/// This function uses the selected harness's environment variable when it is set and not empty.
+/// This function resolves the home directory only when that variable is absent or empty.
 pub fn paths(tool: Harness) -> Result<Vec<PathBuf>, String> {
     let (variable, default, files): (&str, &str, &[&str]) = match tool {
         Harness::CodexCli => ("CODEX_HOME", "~/.codex", &["sy.config.toml"]),
@@ -41,8 +41,11 @@ pub fn paths(tool: Harness) -> Result<Vec<PathBuf>, String> {
             &["models.json", "settings.json"],
         ),
     };
-    let directory = match std::env::var_os(variable) {
-        Some(path) => PathBuf::from(path),
+    let directory = match std::env::var_os(variable).filter(|path| !path.is_empty()) {
+        // A relative directory would make Install and Restore write next to the app's working
+        // directory instead of the harness's settings.
+        Some(path) if Path::new(&path).is_absolute() => PathBuf::from(path),
+        Some(_) => return Err(format!("{variable} must be an absolute path.")),
         None => crate::config::expand_home(Path::new(default))?,
     };
     Ok(files.iter().map(|file| directory.join(file)).collect())
@@ -520,7 +523,13 @@ fn configured(
         Harness::Pi => {
             let mut doc = object(originals[0].as_deref().unwrap_or_default())?;
             let providers = map(&mut doc, "providers")?;
-            providers["switchyard"] = json!({"baseUrl":format!("{root}/v1"), "api":"openai-completions", "apiKey":"switchyard-local", "headers":{"x-switchyard-origin":"pi"}, "models":[{"id":model,"name":model,"reasoning":true,"input":["text"],"contextWindow":context_window.unwrap_or(128000),"maxTokens":16384,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}}]});
+            // Only the fields shown in the preview change; other keys on the provider stay.
+            let provider = map(providers, "switchyard")?;
+            provider["baseUrl"] = json!(format!("{root}/v1"));
+            provider["api"] = json!("openai-completions");
+            provider["apiKey"] = json!("switchyard-local");
+            provider["headers"] = json!({"x-switchyard-origin":"pi"});
+            provider["models"] = json!([{"id":model,"name":model,"reasoning":true,"input":["text"],"contextWindow":context_window.unwrap_or(128000),"maxTokens":16384,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0}}]);
             incoming.push(serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())? + "\n");
             let mut settings = object(originals[1].as_deref().unwrap_or_default())?;
             settings["defaultProvider"] = json!("switchyard");
@@ -832,17 +841,26 @@ fn replace(
             None => Ok(()),
         };
         if let Err(error) = result {
+            // The rollback tries every replaced file and keeps the error that stopped the install.
+            let mut failures = Vec::new();
             for (path, original) in files[..index].iter().zip(before) {
-                match original {
-                    Some(text) => {
-                        prepare(path, text)?
-                            .persist(path)
-                            .map_err(|e| e.to_string())?;
-                    }
-                    None => std::fs::remove_file(path).map_err(|e| e.to_string())?,
+                let undone = match original {
+                    Some(text) => prepare(path, text)
+                        .and_then(|temp| temp.persist(path).map(|_| ()).map_err(|e| e.to_string())),
+                    None => match std::fs::remove_file(path) {
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                        other => other.map_err(|e| e.to_string()),
+                    },
+                };
+                if let Err(e) = undone {
+                    failures.push(format!("{}: {e}", path.display()));
                 }
             }
-            return Err(error);
+            return Err(if failures.is_empty() {
+                error
+            } else {
+                format!("{error}. Could not undo: {}", failures.join("; "))
+            });
         }
     }
     Ok(())
