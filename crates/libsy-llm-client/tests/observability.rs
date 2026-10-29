@@ -2293,7 +2293,7 @@ async fn in_flight_gauge_clears_when_a_run_is_abandoned() -> switchyard_libsy::R
 #[tokio::test]
 async fn target_aliases_preserve_provider_model_metric_labels() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
-    let (_, exporter, provider, _, _) = telemetry();
+    let (store, exporter, provider, span_exporter, _) = telemetry();
     struct MappedClient {
         model: ModelId,
     }
@@ -2349,7 +2349,25 @@ async fn target_aliases_preserve_provider_model_metric_labels() -> switchyard_li
             )
             .await?;
             assert_eq!(selected, target);
+            let spans = store
+                .spans()
+                .into_iter()
+                .filter(|span| span.fields.get("algorithm").map(String::as_str) == Some(name))
+                .collect::<Vec<_>>();
+            let span = find_span(&spans, "libsy.client_call", "selected_target", target);
+            assert_eq!(span.fields["selected_model"], provider_model.as_str());
+            assert_eq!(span.fields["gen_ai.request.model"], provider_model.as_str());
+            assert_eq!(span.fields["otel.name"], format!("chat {provider_model}"));
         }
+        let exported = find_otel_span(
+            span_exporter,
+            &format!("chat {provider_model}"),
+            &provider_model,
+        );
+        assert_eq!(
+            otel_attribute(&exported, "selected_model"),
+            Some(&OtelValue::String(provider_model.to_string().into()))
+        );
         let snapshots = flushed_metrics(exporter, provider);
         for metric in ["switchyard.decisions", "switchyard.llm_calls"] {
             assert_eq!(

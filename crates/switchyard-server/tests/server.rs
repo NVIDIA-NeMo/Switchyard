@@ -4827,12 +4827,14 @@ format = "openai_chat"
 base_url = "{base_url}"
 
 [targets.shared]
-id = "model/shared"
+id = "model/route-sanity"
 llm_client = "upstream"
+reasoning_effort = "medium"
 
 [targets.capable]
-id = "model/capable"
+id = "model/route-sanity"
 llm_client = "upstream"
+reasoning_effort = "max"
 
 [routes.passthrough]
 id = "route/passthrough"
@@ -4852,41 +4854,158 @@ confidence_threshold = 1.0
     .with_routing_log(&log_path)?;
     let app = build_switchyard_router(state);
 
-    for route_id in ["route/passthrough", "route/stage"] {
-        let response = send(
-            &app,
-            "POST",
-            "/v1/chat/completions",
-            Some(json!({
-                "model": route_id,
-                "messages": [{"role": "user", "content": "hello"}]
-            })),
-        )
-        .await?;
-        assert_eq!(response.status, StatusCode::OK, "{route_id}");
-        assert_eq!(
-            response
-                .headers
-                .get("x-model-router-selected-model")
-                .and_then(|value| value.to_str().ok()),
-            Some("model/shared"),
-            "{route_id}"
-        );
+    let before = send(&app, "GET", "/metrics", None).await?;
+    let normal = json!([{"role": "user", "content": "hello"}]);
+    let critical = json!([
+        {"role": "user", "content": "fix the build"},
+        {"role": "assistant", "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "Bash", "arguments": "{\"command\": \"cargo test\"}"}
+        }]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "fatal runtime error: out of memory"}
+    ]);
+    for (route_id, messages) in [
+        ("route/passthrough", &normal),
+        ("route/stage", &normal),
+        ("route/stage", &critical),
+    ] {
+        for streaming in [false, true] {
+            let response = send_with_headers(
+                &app,
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({"model": route_id, "messages": messages, "stream": streaming})),
+                &[("x-switchyard-session-id", "route-sanity")],
+            )
+            .await?;
+            assert_eq!(response.status, StatusCode::OK, "{route_id}");
+            assert_eq!(
+                response.headers["x-model-router-selected-model"],
+                "model/route-sanity"
+            );
+            if streaming {
+                assert!(response.text()?.contains("model/route-sanity"));
+            } else {
+                assert_eq!(response.json()?["model"], "model/route-sanity");
+            }
+        }
     }
 
     let records = std::fs::read_to_string(&log_path)?
         .lines()
         .map(serde_json::from_str::<Value>)
         .collect::<Result<Vec<_>, _>>()?;
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0]["route_id"], "route/passthrough");
-    assert_eq!(records[0]["algorithm"], "passthrough");
-    assert_eq!(records[0]["model"], "model/shared");
-    assert_eq!(records[0]["target"], "shared");
-    assert_eq!(records[1]["route_id"], "route/stage");
-    assert_eq!(records[1]["algorithm"], "stage_router");
-    assert_eq!(records[1]["model"], "model/shared");
-    assert_eq!(records[1]["target"], "shared");
+    assert_eq!(records.len(), 6);
+    for (index, record) in records.iter().enumerate() {
+        let (route, algorithm) = if index < 2 {
+            ("route/passthrough", "passthrough")
+        } else {
+            ("route/stage", "stage_router")
+        };
+        let (target, effort) = if index < 4 {
+            ("shared", "medium")
+        } else {
+            ("capable", "max")
+        };
+        assert_eq!(record["route_id"], route);
+        assert_eq!(record["algorithm"], algorithm);
+        assert_eq!(record["model"], "model/route-sanity");
+        assert_eq!(record["target"], target);
+        assert_eq!(record["reasoning_effort"], effort);
+        assert_eq!(record["session_id"], "route-sanity");
+    }
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 6);
+    for (index, call) in calls.iter().enumerate() {
+        assert_eq!(call["model"], "model/route-sanity");
+        assert_eq!(
+            call["reasoning_effort"],
+            if index < 4 { "medium" } else { "max" }
+        );
+    }
+    drop(calls);
+
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    let session = send(
+        &app,
+        "GET",
+        "/v1/routing/session-stats?session_id=route-sanity",
+        None,
+    )
+    .await?
+    .json()?;
+    assert_eq!(stats["total_requests"], 6);
+    assert_eq!(stats["total_errors"], 0);
+    assert_eq!(session["total_calls"], 6);
+    for snapshot in [&stats, &session] {
+        assert_eq!(snapshot["models"].as_object().unwrap().len(), 1);
+        assert_eq!(snapshot["models"]["model/route-sanity"]["calls"], 6);
+        for (target, effort, calls) in [("shared", "medium", 4), ("capable", "max", 2)] {
+            assert_eq!(snapshot["targets"][target]["model"], "model/route-sanity");
+            assert_eq!(snapshot["targets"][target]["reasoning_effort"], effort);
+            assert_eq!(snapshot["targets"][target]["calls"], calls);
+        }
+    }
+    assert_eq!(
+        stats["total_tokens"]["prompt"],
+        session["total_prompt_tokens"]
+    );
+    assert_eq!(
+        stats["total_tokens"]["completion"],
+        session["total_completion_tokens"]
+    );
+    for source in ["override", "capable_hold"] {
+        assert_eq!(
+            stats["algorithm_stats"]["stage_router"]["routing_decisions"][source]["targets"]["model/route-sanity"],
+            1
+        );
+    }
+
+    let after = send(&app, "GET", "/metrics", None).await?;
+    for (metric, label, expected) in [
+        ("switchyard_requests_total", "model", 6.0),
+        (
+            "switchyard_prompt_tokens_total",
+            "model",
+            session["total_prompt_tokens"].as_f64().unwrap(),
+        ),
+        (
+            "switchyard_completion_tokens_total",
+            "model",
+            session["total_completion_tokens"].as_f64().unwrap(),
+        ),
+    ] {
+        assert_eq!(
+            metric_delta(
+                before.text()?,
+                after.text()?,
+                metric,
+                &[(label, "model/route-sanity")]
+            ),
+            Some(expected),
+            "{metric}"
+        );
+        for target in ["shared", "capable"] {
+            assert!(
+                metric_line(after.text()?, metric, &[(label, target)]).is_none(),
+                "{metric}"
+            );
+        }
+    }
+    for (algorithm, calls) in [("passthrough", 2.0), ("stage_router", 4.0)] {
+        assert_eq!(
+            metric_delta(
+                before.text()?,
+                after.text()?,
+                "switchyard_decisions_total",
+                &[
+                    ("algorithm", algorithm),
+                    ("selected_model", "model/route-sanity")
+                ],
+            ),
+            Some(calls),
+        );
+    }
     Ok(())
 }
 
