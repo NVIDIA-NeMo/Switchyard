@@ -393,7 +393,6 @@ impl DeploymentConfig {
     fn build(self) -> RunnerResult<Runner> {
         self.validate()?;
 
-
         let mut provider_api_keys = Vec::new();
         let clients = self.build_clients(&mut provider_api_keys)?;
         let decision_clients = self.build_decision_clients(&mut provider_api_keys)?;

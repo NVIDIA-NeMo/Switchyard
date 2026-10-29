@@ -144,6 +144,12 @@ impl Route {
         targets: Vec<DecisionTarget>,
         models: RuntimeModels,
     ) -> Self {
+        let models = models.with_provider_models(
+            targets
+                .iter()
+                .map(|target| (ModelId::from(target.target.as_str()), target.model.clone()))
+                .collect(),
+        );
         let targets = targets
             .into_iter()
             .map(|target| (ModelId::from(target.target.as_str()), target))
@@ -176,9 +182,14 @@ impl Route {
         self.caller_auth
     }
 
+    /// Returns non-secret metadata for a configured LLM target, including judges.
+    pub fn target(&self, selected: &ModelId) -> Option<&DecisionTarget> {
+        self.targets.get(selected)
+    }
+
     /// Resolves a selected model to this route's non-secret target metadata.
     pub(crate) fn decision_target(&self, model: &ModelId) -> Option<DecisionTarget> {
-        self.targets.get(model).cloned()
+        self.target(model).cloned()
     }
 
     /// The provider model that serves `selected`, or `selected` itself when it names no
