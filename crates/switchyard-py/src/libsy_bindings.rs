@@ -967,14 +967,14 @@ impl PyAlgorithmFactory {
             .map_err(|error| PyValueError::new_err(error.to_string()))?;
         algorithms
             .into_iter()
-            .map(|(id, configured)| {
+            .map(|(id, (algorithm, models))| {
                 Ok((
                     id,
                     Py::new(
                         py,
                         PyConfiguredAlgorithm {
-                            algorithm: configured.algorithm,
-                            models: Arc::new(configured.models),
+                            algorithm,
+                            models: Arc::new(models),
                         },
                     )?,
                 ))
