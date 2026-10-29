@@ -4,6 +4,7 @@
 //! [`TranslatingLlmClient`]: encode a neutral
 //! request, call the configured backend over HTTP, decode the neutral response.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::future::ready;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -362,6 +363,9 @@ impl TranslatingLlmClient {
         // After the merge on purpose: the effort override must win over both the caller's
         // value and any `reasoning` default a target set through `extra_body`.
         apply_reasoning_effort(&mut body, backend);
+        if matches!(backend, Backend::OpenAiResponses(_)) {
+            normalize_codex_string_input(&backend.url(), &mut body);
+        }
         if matches!(backend, Backend::Anthropic(_)) {
             if nvidia_inference_api_backend(backend) {
                 strip_anthropic_tool_strict(&mut body);
@@ -404,7 +408,14 @@ impl TranslatingLlmClient {
         streaming: bool,
     ) -> Result<EncodedResponse> {
         let max_retries = u64::from(backend.max_retries());
-        let max_attempts = max_retries + 1;
+        let max_attempts = max_retries
+            + 1
+            + u64::from(
+                matches!(backend, Backend::OpenAiChat(_))
+                    && body.get("chat_template_kwargs").is_some(),
+            );
+        let mut body = Cow::Borrowed(body);
+        let mut template_retry = false;
         let expires_at = backend
             .timeout()
             .map(|timeout| (tokio::time::sleep(timeout).deadline(), timeout));
@@ -430,9 +441,9 @@ impl TranslatingLlmClient {
                 "libsy.upstream_attempt",
                 model = %model,
                 wire_format = %backend.wire_format(),
-                attempt = attempt + 1,
+                attempt = attempt + 1 + u64::from(template_retry),
                 max_attempts,
-                retry = attempt > 0,
+                retry = attempt > 0 || template_retry,
                 openinference.span.kind = "CHAIN",
                 outcome = tracing::field::Empty,
                 status_code = tracing::field::Empty,
@@ -452,7 +463,7 @@ impl TranslatingLlmClient {
                 }
                 result = async {
                     attempt_started = true;
-                    self.send_once(url, backend, body, metadata, model, streaming).await
+                    self.send_once(url, backend, body.as_ref(), metadata, model, streaming).await
                 }.instrument(span.clone()) => result,
             };
             // The retained handle updates this same attempt span with its outcome.
@@ -461,7 +472,7 @@ impl TranslatingLlmClient {
                     span.record("outcome", "ok");
                     span.record("status_code", response.status());
                     span.record("will_retry", false);
-                    if attempt > 0 {
+                    if attempt > 0 || template_retry {
                         metrics::record_retry_recovered();
                     }
                     return Ok(match response {
@@ -478,7 +489,12 @@ impl TranslatingLlmClient {
                     });
                 }
                 Err(failure) => {
-                    let will_retry = attempt < max_retries && failure.is_retryable();
+                    let retry_without_template = matches!(backend, Backend::OpenAiChat(_))
+                        && body.get("chat_template_kwargs")
+                            == Some(&json!({"enable_thinking": false}))
+                        && rejects_template_options(&failure.error);
+                    let will_retry =
+                        retry_without_template || (attempt < max_retries && failure.is_retryable());
                     span.record("outcome", "error");
                     if let Some(status) = failure.status {
                         span.record("status_code", status.as_u16());
@@ -488,6 +504,14 @@ impl TranslatingLlmClient {
                         return Err(failure.error);
                     }
 
+                    if retry_without_template {
+                        if let Some(object) = body.to_mut().as_object_mut() {
+                            object.remove("chat_template_kwargs");
+                        }
+                        template_retry = true;
+                        span.record("retry_delay_ms", 0_u64);
+                        continue;
+                    }
                     let delay = retry_delay(attempt, failure.retry_after);
                     span.record("retry_delay_ms", duration_millis(delay));
                     // Close the attempt span before sleeping so backoff is not attempt latency.
@@ -1046,6 +1070,60 @@ fn set_json_model(body: &mut Value, model: &str) {
     if let Value::Object(object) = body {
         object.insert("model".to_string(), Value::String(model.to_string()));
     }
+}
+
+// The Codex Responses endpoint requires item-list input even on the preserved-body path.
+fn normalize_codex_string_input(url: &str, body: &mut Value) {
+    let codex = reqwest::Url::parse(url).ok().is_some_and(|url| {
+        url.path()
+            .trim_end_matches('/')
+            .ends_with("/backend-api/codex/responses")
+    });
+    if codex && let Some(input @ Value::String(_)) = body.get_mut("input") {
+        let text = input.take();
+        *input = json!([{"type": "message", "role": "user", "content": text}]);
+    }
+}
+
+fn rejects_template_options(error: &LlmClientError) -> bool {
+    let LlmClientError::UpstreamHttp { status, body } = error else {
+        return false;
+    };
+    if !matches!(
+        *status,
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+    ) {
+        return false;
+    }
+    let parsed = serde_json::from_str::<Value>(body).ok();
+    let error = parsed.as_ref().and_then(|value| value.get("error"));
+    let message = match &parsed {
+        Some(_) => error
+            .and_then(|error| error.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        None => body,
+    }
+    .to_ascii_lowercase();
+    let field = error
+        .and_then(|error| error.get("param"))
+        .and_then(Value::as_str);
+    let code = error
+        .and_then(|error| error.get("code"))
+        .and_then(Value::as_str);
+    (field == Some("chat_template_kwargs") || message.contains("chat_template_kwargs"))
+        && (matches!(code, Some("unknown_parameter" | "unsupported_parameter"))
+            || [
+                "unrecognized request argument",
+                "unknown parameter",
+                "unsupported parameter",
+                "unexpected keyword argument",
+                "unknown field",
+                "unsupported field",
+                "extra inputs are not permitted",
+            ]
+            .iter()
+            .any(|phrase| message.contains(phrase)))
 }
 
 const CODEX_NAMESPACE_SEPARATOR: &str = "__";
@@ -2234,6 +2312,165 @@ mod tests {
                 WireFormat::OpenAiResponses,
             )
             .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn template_rejection_retries_once_without_changing_other_fields()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
+        for (message, reject_retry, omit) in [
+            (
+                "Unrecognized request argument supplied: chat_template_kwargs",
+                false,
+                false,
+            ),
+            (
+                "Unrecognized request argument supplied: chat_template_kwargs",
+                true,
+                false,
+            ),
+            (
+                "Invalid temperature for chat_template_kwargs request",
+                false,
+                false,
+            ),
+            (
+                "Unrecognized request argument supplied: chat_template_kwargs",
+                false,
+                true,
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(move |request: &wiremock::Request| {
+                    let body: Value = serde_json::from_slice(&request.body).expect("request JSON");
+                    if body.get("chat_template_kwargs").is_some() || reject_retry {
+                        ResponseTemplate::new(400).set_body_json(json!({"error": {"message": message}}))
+                    } else {
+                        ResponseTemplate::new(200).set_body_json(json!({
+                            "id": "1", "model": "gpt", "choices": [{"index": 0,
+                                "message": {"role": "assistant", "content": "yes"}, "finish_reason": "stop"}],
+                            "usage": {}
+                        }))
+                    }
+                }).mount(&server).await;
+            let fields = if omit {
+                BTreeSet::from(["chat_template_kwargs".into()])
+            } else {
+                BTreeSet::new()
+            };
+            let client = TranslatingLlmClient::new(&chat_map_with_omit_body_fields(
+                &format!("{}/v1", server.uri()),
+                fields,
+            ))?;
+            let raw = json!({"model": "gpt", "messages": [{"role": "user", "content": "judge"}],
+                "reasoning_effort": "none", "logprobs": true, "top_logprobs": 8,
+                "chat_template_kwargs": {"enable_thinking": false}});
+            let result = client
+                .call_rewrite_model_raw(
+                    raw.clone(),
+                    None,
+                    Some(&ModelId::from("gpt")),
+                    WireFormat::OpenAiChat,
+                )
+                .await;
+            let rejects_field = message.starts_with("Unrecognized");
+            assert_eq!(result.is_ok(), omit || (rejects_field && !reject_retry));
+            let calls = server.received_requests().await.ok_or("missing requests")?;
+            assert_eq!(calls.len(), if !omit && rejects_field { 2 } else { 1 });
+            for (index, call) in calls.iter().enumerate() {
+                let mut expected = raw.clone();
+                if omit || index > 0 {
+                    expected
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("chat_template_kwargs");
+                }
+                assert_eq!(serde_json::from_slice::<Value>(&call.body)?, expected);
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn template_compatibility_preserves_the_transient_retry_budget()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
+        let server = MockServer::start().await;
+        let count = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&count);
+        Mock::given(method("POST"))
+            .respond_with(move |request: &wiremock::Request| {
+                let body: Value = serde_json::from_slice(&request.body).expect("request JSON");
+                match observed.fetch_add(1, Ordering::SeqCst) {
+                    0 => {
+                        assert!(body.get("chat_template_kwargs").is_some());
+                        ResponseTemplate::new(422).set_body_json(json!({"error": {
+                            "code": "unsupported_parameter", "param": "chat_template_kwargs"
+                        }}))
+                    }
+                    1 => {
+                        assert!(body.get("chat_template_kwargs").is_none());
+                        ResponseTemplate::new(503).insert_header("retry-after", "0")
+                    }
+                    _ => ResponseTemplate::new(200).set_body_json(json!({
+                        "id": "1", "model": "gpt", "choices": [{"index": 0,
+                            "message": {"role": "assistant", "content": "yes"}, "finish_reason": "stop"}],
+                        "usage": {}
+                    })),
+                }
+            }).mount(&server).await;
+        let client =
+            TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 1))?;
+        client
+            .call_rewrite_model_raw(
+                json!({"model": "gpt", "messages": [{"role": "user", "content": "judge"}],
+                "chat_template_kwargs": {"enable_thinking": false}}),
+                None,
+                Some(&ModelId::from("gpt")),
+                WireFormat::OpenAiChat,
+            )
+            .await?;
+        assert_eq!(count.load(Ordering::SeqCst), 3);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn preserved_codex_string_input_is_normalized_at_the_client_boundary()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send>> {
+        for root in ["/backend-api/codex", "/v1"] {
+            for input in [
+                json!("hello"),
+                json!([{"role": "user", "content": "hello"}]),
+            ] {
+                let server = MockServer::start().await;
+                Mock::given(method("POST"))
+                    .and(path(format!("{root}/responses")))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                        "id": "resp_1", "object": "response", "model": "gpt", "status": "completed", "output": [], "usage": {}
+                    }))).expect(1).mount(&server).await;
+                let client =
+                    TranslatingLlmClient::new(&responses_map(&format!("{}{root}", server.uri())))?;
+                let raw = json!({"model": "client-name", "input": input,
+                    "instructions": "Be brief.", "store": false, "metadata": {"task": "judge"},
+                    "custom_field": {"keep": true}});
+                client
+                    .call_rewrite_model_raw(
+                        raw.clone(),
+                        None,
+                        Some(&ModelId::from("gpt")),
+                        WireFormat::OpenAiResponses,
+                    )
+                    .await?;
+                let mut expected = raw;
+                expected["model"] = json!("gpt");
+                if root == "/backend-api/codex" && input.is_string() {
+                    expected["input"] =
+                        json!([{"type": "message", "role": "user", "content": input}]);
+                }
+                let calls = server.received_requests().await.ok_or("missing requests")?;
+                assert_eq!(serde_json::from_slice::<Value>(&calls[0].body)?, expected);
+            }
+        }
         Ok(())
     }
 
