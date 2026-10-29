@@ -767,6 +767,11 @@ pub trait Algorithm: Send + Sync + 'static {
     /// [`run_stream`](Self::run_stream) runs this method and exposes its work to the host.
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome>;
 
+    /// Whether the host should summarize served answers for [`Self::observe_answer`].
+    fn tracks_answers(&self) -> bool {
+        false
+    }
+
     /// Records the answer the host served for a request in `session_id`.
     ///
     /// The host reports a streamed answer before forwarding its final chunk, so the

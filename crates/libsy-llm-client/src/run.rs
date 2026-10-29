@@ -121,10 +121,12 @@ pub async fn run(
     if let Some(observer) = &observer {
         observer(RunObservation::RoutingOverhead(overhead));
     }
-    let response = match (result?, session_id(&outcome.request)) {
-        (response, Some(session)) => report_answer(algorithm, session, response).await,
-        (response, None) => response,
-    };
+    let mut response = result?;
+    if algorithm.tracks_answers()
+        && let Some(session) = session_id(&outcome.request)
+    {
+        response = report_answer(algorithm, session, response).await;
+    }
     Ok((selected_model_id, response))
 }
 
@@ -1610,6 +1612,7 @@ mod tests {
         #[derive(Default)]
         struct ReportingAlgorithm {
             answers: Mutex<Vec<(String, bool)>>,
+            tracking: bool,
         }
 
         #[async_trait]
@@ -1626,6 +1629,10 @@ mod tests {
                 Ok(RoutingOutcome::route_to("weak".into(), Vec::new(), request))
             }
 
+            fn tracks_answers(&self) -> bool {
+                self.tracking
+            }
+
             async fn observe_answer(&self, session_id: &str, answer: AnswerSummary) {
                 self.answers
                     .lock()
@@ -1633,12 +1640,17 @@ mod tests {
             }
         }
 
-        for (first, final_reply, cancel) in [
-            (FirstOutcome::StreamSuccess, true, false),
-            (FirstOutcome::MidStreamError, false, false),
-            (FirstOutcome::StreamSuccess, false, true),
+        assert!(!CandidateAlgorithm {}.tracks_answers());
+        for (tracking, first, final_reply, cancel) in [
+            (false, FirstOutcome::StreamSuccess, true, false),
+            (true, FirstOutcome::StreamSuccess, true, false),
+            (true, FirstOutcome::MidStreamError, false, false),
+            (true, FirstOutcome::StreamSuccess, false, true),
         ] {
-            let algorithm = Arc::new(ReportingAlgorithm::default());
+            let algorithm = Arc::new(ReportingAlgorithm {
+                tracking,
+                ..Default::default()
+            });
             let client = Arc::new(CandidateClient {
                 calls: Mutex::new(Vec::new()),
                 requests: Mutex::new(Vec::new()),
@@ -1662,6 +1674,14 @@ mod tests {
             let LlmResponse::Stream(mut stream) = response.llm_response else {
                 panic!("expected a streamed answer");
             };
+            if !tracking {
+                assert!(algorithm.answers.lock().is_empty());
+                while let Some(item) = stream.next().await {
+                    assert!(item.is_ok());
+                }
+                assert!(algorithm.answers.lock().is_empty());
+                continue;
+            }
             if cancel {
                 stream.next().await;
                 drop(stream);

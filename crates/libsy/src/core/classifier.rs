@@ -92,6 +92,11 @@ pub trait Classifier: Send + Sync {
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)>;
 
+    /// Whether a stateful composition should request served-answer reports.
+    fn tracks_answers(&self) -> bool {
+        false
+    }
+
     /// Folds the answer the host served for this session into the composition's state.
     fn observe_answer(&self, _state: &mut State, _answer: AnswerSummary) {}
 }

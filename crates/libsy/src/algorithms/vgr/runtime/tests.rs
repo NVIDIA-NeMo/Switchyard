@@ -1258,6 +1258,7 @@ async fn shadow_final_answer_commits_do_not_latch_but_rejections_do() -> Result<
 #[tokio::test]
 async fn client_recovery_messages_keep_the_turn_latch() -> Result<()> {
     let route = route(|_| {})?;
+    assert!(route.tracks_answers());
     let calls = Arc::new(Calls::default());
     let task = || session(vec![Message::text(Role::User, "fix the build")]);
     for _ in 0..2 {

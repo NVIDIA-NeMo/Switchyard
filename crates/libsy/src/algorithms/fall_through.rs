@@ -286,6 +286,14 @@ impl Algorithm for FallThrough {
         self.execute(driver, request).await
     }
 
+    fn tracks_answers(&self) -> bool {
+        self.session_states.is_some()
+            && self
+                .classifiers
+                .iter()
+                .any(|classifier| classifier.tracks_answers())
+    }
+
     async fn observe_answer(&self, session_id: &str, answer: AnswerSummary) {
         let Some(states) = &self.session_states else {
             return;
@@ -445,6 +453,10 @@ mod tests {
                 };
                 Ok((Classification::Scores(vec![score(target, 1.0)]), None))
             }
+            fn tracks_answers(&self) -> bool {
+                true
+            }
+
             fn observe_answer(&self, state: &mut State, answer: AnswerSummary) {
                 state.extra.insert(
                     "answered".into(),
@@ -452,7 +464,14 @@ mod tests {
                 );
             }
         }
+        assert!(!FallThrough::new_with_state().tracks_answers());
+        assert!(
+            !FallThrough::new()
+                .with_classifier(Arc::new(AnswerAware))
+                .tracks_answers()
+        );
         let router = Arc::new(FallThrough::new_with_state().with_classifier(Arc::new(AnswerAware)));
+        assert!(router.tracks_answers());
         let (before, _) = run_turn(&router, echo()).await?;
         router
             .observe_answer("unknown", AnswerSummary { final_reply: true })
