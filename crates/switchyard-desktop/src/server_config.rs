@@ -1428,6 +1428,7 @@ confidence_threshold = 0.5
         for (suffix, target, owned) in [
             (
                 "# >>> generated >>>\n\
+                 # This comment describes the removed route.\n\
                  [routes.generated]\n\
                  id='generated'\n\
                  type='passthrough'\n\
@@ -1479,6 +1480,31 @@ confidence_threshold = 0.5
                 owned,
                 "{}",
                 edited.text
+            );
+            assert!(
+                !edited.text.contains("describes the removed route"),
+                "{}",
+                edited.text
+            );
+        }
+    }
+
+    // A rename to the ID the route already has would open a review and restart for no change.
+    // A route without `id` uses its table name as the public ID.
+    #[test]
+    fn renaming_a_route_to_its_current_id_is_rejected() {
+        let config = ServerConfig::parse(&format!(
+            "{GATEWAY}\n[routes.named]\nid='public'\ntype='passthrough'\ntarget='m'\n\
+             [routes.unnamed]\ntype='passthrough'\ntarget='m'\n"
+        ))
+        .expect("config");
+        for (route, id) in [("named", "public"), ("unnamed", "unnamed")] {
+            assert_eq!(
+                config
+                    .change_route("rename", route, "", id, None, &[])
+                    .err()
+                    .as_deref(),
+                Some("The route already uses that public ID.")
             );
         }
     }
