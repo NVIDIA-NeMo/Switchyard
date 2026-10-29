@@ -82,9 +82,9 @@ capable_system_prompt = "Plan the work and resolve uncertain steps."
 efficient_system_prompt = "Continue implementing the plan."
 ```
 
-See [stage routing](stage_router_routing.md#knob-reference) for threshold,
-hold, tool-signal, and handoff behavior. Omitted settings inherit from `stage`,
-including the corresponding threshold. Prompts default to unset.
+Both profiles use the [stage tuning and prompt settings](stage_router_routing.md#knob-reference).
+Targets stay in `stage`, the classifier stays in `classifier`, and each profile's name fixes its picker.
+Omitted settings inherit from `stage`, including the corresponding threshold.
 A supplied `tool_semantics` or `handoff_notes` table replaces the shared table.
 
 Either table enables two profiles with separate hold state. Switching back

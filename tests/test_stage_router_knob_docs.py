@@ -82,7 +82,7 @@ def expected_keys() -> set[str]:
     keys: set[str] = set()
     for key in toml_keys(block(runner, "StageRouter {")):
         keys.update(key.split("|"))
-    for key in toml_keys(block(runner, "pub struct StageTierConfig {")):
+    for key in toml_keys(block(runner, "pub struct StageSettingsConfig {")):
         field = key.split("|")[0]
         if field == "tool_semantics":
             keys.update(

@@ -250,6 +250,8 @@ required columns.
 | `picker` | required | `efficient_first` or `capable_first` (experimental). Tier used when the signals are not confident. |
 | `confidence_threshold` | required | Corroboration a decisive pick needs, `0` to `1`. Alias `efficient_first_threshold`. |
 | `capable_first_threshold` | `0.0` | Used only after an outer `composite` classifier selects the capable tier. No effect on a standalone route. |
+| `capable_system_prompt` | unset | System prompt prepended for capable requests. |
+| `efficient_system_prompt` | unset | System prompt prepended for efficient requests. |
 | `recent_turn_window` | `3` | Trailing tool results the signals are computed over. |
 | `capable_hold_turns` | `2` | Requests kept on capable after switching to it; signal-driven capable decisions also start finite holds. `0` disables; `-1` pins after a switch. |
 | `efficient_hold_turns` | `0` | Requests kept on efficient after switching to it. `0` disables; `-1` pins after a switch. |
