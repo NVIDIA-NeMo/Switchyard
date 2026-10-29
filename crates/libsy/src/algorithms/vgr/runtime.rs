@@ -284,6 +284,10 @@ impl Classifier for VgrClassifier {
         Ok((decisive(efficient), Some(buffered.into_response())))
     }
 
+    fn tracks_answers(&self) -> bool {
+        true
+    }
+
     fn observe_answer(&self, state: &mut State, answer: AnswerSummary) {
         let finished = if answer.final_reply {
             unix_seconds().max(1)

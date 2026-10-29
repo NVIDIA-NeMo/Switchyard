@@ -171,8 +171,14 @@ recognized tag, Switchyard uses the message shape to identify a user turn.
 
 ## Served-answer reporting
 
-The SDK client reports served answers through `Algorithm::observe_answer`.
-Custom libsy hosts can report `AnswerSummary::of(&response)` for aggregate
+VGR opts into served-answer reporting through `Algorithm::tracks_answers`.
+The SDK summarizes answers only for opted-in algorithms with a session ID;
+other routers keep their responses and streams unchanged. Custom algorithms and
+classifiers default to no tracking. Stateful `FallThrough` routes opt in when a
+classifier requests reports.
+
+Custom libsy hosts can check `tracks_answers()` and report
+`AnswerSummary::of(&response)` through `Algorithm::observe_answer` for aggregate
 responses. For streams, report `final_reply = false` when serving begins and
 report the final summary before forwarding the terminal chunk. Use the request's
 session ID; requests without one retain the existing behavior.

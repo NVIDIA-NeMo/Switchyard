@@ -103,6 +103,10 @@ impl Algorithm for Vgr {
         Ok(outcome)
     }
 
+    fn tracks_answers(&self) -> bool {
+        self.route.tracks_answers()
+    }
+
     async fn observe_answer(&self, session_id: &str, answer: AnswerSummary) {
         self.route.observe_answer(session_id, answer).await;
     }
