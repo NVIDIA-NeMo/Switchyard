@@ -2425,7 +2425,7 @@ entry and leave the route's <code>context_window</code> unset. Switchyard then r
 service's <code>/props</code> response and advertises a positive context capacity when
 available. Missing or invalid properties leave the capacity unknown; routing
 continues normally. Discovery does not configure the service or load a model.</p>
-<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/95440c2abe8847f0725df04fe5504b6bc01e9f1c/examples/vgr-local-servers.toml">the local-server example</a>
+<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f113e1f406055b0a201a22325b565269443b6be5/examples/vgr-local-servers.toml">the local-server example</a>
 for an active llama.cpp configuration and commented Ollama/vLLM alternatives.
 For Ollama and vLLM, set <code>context_window</code> to match the running service; automatic
 discovery for those servers is not implemented.</p>
@@ -2495,8 +2495,13 @@ automatic continuations. Retries retain the original call's tag. Without a
 recognized tag, Switchyard uses the message shape to identify a user turn.
 <code>x-session-id</code> is also accepted as a session-header alias.</p>
 <h2 id="served-answer-reporting">Served-answer reporting<a class="headerlink" href="#served-answer-reporting" title="Permanent link">&para;</a></h2>
-<p>The SDK client reports served answers through <code>Algorithm::observe_answer</code>.
-Custom libsy hosts can report <code>AnswerSummary::of(&amp;response)</code> for aggregate
+<p>VGR opts into served-answer reporting through <code>Algorithm::tracks_answers</code>.
+The SDK summarizes answers only for opted-in algorithms with a session ID;
+other routers keep their responses and streams unchanged. Custom algorithms and
+classifiers default to no tracking. Stateful <code>FallThrough</code> routes opt in when a
+classifier requests reports.</p>
+<p>Custom libsy hosts can check <code>tracks_answers()</code> and report
+<code>AnswerSummary::of(&amp;response)</code> through <code>Algorithm::observe_answer</code> for aggregate
 responses. For streams, report <code>final_reply = false</code> when serving begins and
 report the final summary before forwarding the terminal chunk. Use the request's
 session ID; requests without one retain the existing behavior.</p>
