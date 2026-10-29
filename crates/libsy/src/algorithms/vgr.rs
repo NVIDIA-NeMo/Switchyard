@@ -17,7 +17,7 @@ use self::text::ToolRecord;
 use crate::Result;
 use crate::algorithms::fall_through::FallThrough;
 use crate::algorithms::util::affinity::AffinityRouter;
-use crate::core::algorithm::{Algorithm, Driver, RoutingOutcome};
+use crate::core::algorithm::{Algorithm, AnswerSummary, Driver, RoutingOutcome};
 
 mod compaction;
 mod config;
@@ -61,10 +61,13 @@ impl Vgr {
             breaker: safety::CircuitBreaker::new(config.breaker),
             config,
         });
-        let route = route
-            .with_processor(affinity.clone())
-            .with_classifier(Arc::new(runtime::Held(affinity, reason)))
-            .with_classifier(classifier.clone());
+        // Shadow always serves the capable tier; only a VGR escalation should hold it there.
+        if classifier.config.mode != ServingMode::Shadow {
+            route = route
+                .with_processor(affinity.clone())
+                .with_classifier(Arc::new(runtime::Held(affinity, reason)));
+        }
+        let route = route.with_classifier(classifier.clone());
         Ok(Self { route, classifier })
     }
 }
@@ -98,6 +101,14 @@ impl Algorithm for Vgr {
             outcome.fallback_request = Some(arrived);
         }
         Ok(outcome)
+    }
+
+    fn tracks_answers(&self) -> bool {
+        self.route.tracks_answers()
+    }
+
+    async fn observe_answer(&self, session_id: &str, answer: AnswerSummary) {
+        self.route.observe_answer(session_id, answer).await;
     }
 }
 

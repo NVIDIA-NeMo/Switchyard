@@ -12,9 +12,10 @@ use switchyard_protocol::{
 
 use super::super::config::{ACTIVE_APPROVAL, ServingMode, VgrConfig};
 use super::super::tests::{call, request, result};
+use super::{FOLLOW_UP_QUIET_SECS, LAST_ANSWER_FINAL_KEY, answers_final_reply, unix_seconds};
 use crate::Result;
 use crate::algorithms::vgr::Vgr;
-use crate::core::algorithm::Algorithm;
+use crate::core::algorithm::{Algorithm, AnswerSummary};
 use crate::core::state::{State, StateValue};
 use crate::core::testing::{category_models, reply, test_drive_with_models};
 
@@ -134,7 +135,10 @@ async fn malformed_tool_calls_escalate_and_complete_ones_are_judged() -> Result<
 
 #[tokio::test]
 async fn a_truncated_efficient_attempt_is_judged_before_it_escalates() -> Result<()> {
-    let route = route(|config| config.targets.judge = None)?;
+    let route = route(|config| {
+        config.targets.judge = None;
+        config.targets.capable_judge = None;
+    })?;
     let calls = Arc::new(Calls::default());
     let task = session(vec![Message::text(Role::User, "explain quicksort")]);
     let cut_off = || {
@@ -468,7 +472,7 @@ async fn decisions_attach_the_reason_and_exclude_efficient_capable_fallbacks() -
         assert_eq!(evidence["source"], "vgr");
         assert_eq!(evidence["reason_code"], reason);
         assert_eq!(evidence["verdict"], served);
-        assert_eq!(evidence["policy_version"], "1.1");
+        assert_eq!(evidence["policy_version"], "1.2");
         if reason == "decided" {
             assert_eq!(evidence["branch"], "DefaultVerified");
         }
@@ -1112,5 +1116,274 @@ async fn a_capable_decision_falls_back_to_efficient_without_the_handoff_note() -
             assert_eq!(fallback.llm_request.messages, task().llm_request.messages);
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_verification_asks_capable_evidence_then_answer() -> Result<()> {
+    for (evidence, answer, expected) in [
+        ("yes", "yes", "efficient"),
+        ("yes", "no", "capable"),
+        ("yes", "unclear", "capable"),
+        ("no", "yes", "capable"),
+        ("unclear", "yes", "capable"),
+    ] {
+        let route = route(|_| {})?;
+        let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&calls);
+        let (selected, _) = test_drive_with_models(
+            route,
+            session(vec![Message::text(Role::User, "explain quicksort")]),
+            category_models(Category::Any, &["efficient", "capable"]),
+            move |target: ModelId, request: Request| {
+                let seen = Arc::clone(&seen);
+                async move {
+                    Ok(match target.as_str() {
+                        "efficient" => reply("Choose a pivot and partition the input."),
+                        "judge" => scored(0.1),
+                        "capable-judge" => {
+                            let is_answer = request
+                                .llm_request
+                                .instructions
+                                .iter()
+                                .flat_map(|block| &block.content)
+                                .any(|block| {
+                                    matches!(block, ContentBlock::Text { text }
+                                    if text.starts_with("You are a strict answer verifier"))
+                                });
+                            seen.lock().push(is_answer);
+                            reply(if is_answer { answer } else { evidence })
+                        }
+                        _ => reply("capable answer"),
+                    })
+                }
+            },
+        )
+        .await?;
+        assert_eq!(selected.as_str(), expected, "{evidence}, {answer}");
+        assert_eq!(
+            *calls.lock(),
+            if evidence == "yes" {
+                vec![false, true]
+            } else {
+                vec![false]
+            }
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn shadow_keeps_judging_a_turn_until_vgr_escalates_it() -> Result<()> {
+    fn truncated() -> Response {
+        tool_call(json!(r#"{"command":"l"#), StopReason::MaxTokens)
+    }
+    for latch_escalation in [false, true] {
+        let route = route(|config| {
+            config.mode = ServingMode::Shadow;
+            config.latch_escalation = latch_escalation;
+        })?;
+        let calls = Arc::new(Calls::default());
+        let mut messages = vec![Message::text(Role::User, "fix the build")];
+        for (step, efficient) in [complete_call, complete_call, truncated, complete_call]
+            .into_iter()
+            .enumerate()
+        {
+            assert_eq!(
+                drive(
+                    &route,
+                    session(messages.clone()),
+                    calls.clone(),
+                    efficient,
+                    0.1
+                )
+                .await?,
+                "capable"
+            );
+            let id = format!("c{step}");
+            messages.extend([call(&id), result(&id, "ok")]);
+        }
+        assert_eq!(calls.0.load(Ordering::Relaxed), 3);
+        messages.push(Message::text(Role::User, "keep going"));
+        drive(
+            &route,
+            initiated_by(session(messages.clone()), "agent"),
+            calls.clone(),
+            complete_call,
+            0.1,
+        )
+        .await?;
+        assert_eq!(calls.0.load(Ordering::Relaxed), 3);
+        drive(
+            &route,
+            initiated_by(session(messages), "user"),
+            calls.clone(),
+            complete_call,
+            0.1,
+        )
+        .await?;
+        assert_eq!(calls.0.load(Ordering::Relaxed), 4);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn shadow_final_answer_commits_do_not_latch_but_rejections_do() -> Result<()> {
+    let route = route(|config| {
+        config.mode = ServingMode::Shadow;
+        config.targets.capable_judge = None;
+    })?;
+    let calls = Arc::new(Calls::default());
+    let mut messages = vec![Message::text(Role::User, "explain quicksort")];
+    for probability in [0.9, 0.9, 0.1, 0.9] {
+        let task = initiated_by(session(messages.clone()), "agent");
+        assert_eq!(
+            drive(
+                &route,
+                task,
+                calls.clone(),
+                || reply("Partition around a pivot."),
+                probability
+            )
+            .await?,
+            "capable"
+        );
+        messages.push(Message::text(Role::Assistant, "Partition around a pivot."));
+        messages.push(Message::text(Role::User, "continue"));
+    }
+    assert_eq!(calls.0.load(Ordering::Relaxed), 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn client_recovery_messages_keep_the_turn_latch() -> Result<()> {
+    let route = route(|_| {})?;
+    assert!(route.tracks_answers());
+    let calls = Arc::new(Calls::default());
+    let task = || session(vec![Message::text(Role::User, "fix the build")]);
+    for _ in 0..2 {
+        drive(&route, task(), calls.clone(), complete_call, 0.9).await?;
+    }
+    // Hermes-style recovery: a nudge after an empty answer, and one sent the moment a
+    // complete-looking answer promised a tool call it never made.
+    for (final_reply, previous, nudge) in [
+        (
+            false,
+            "(empty)",
+            "You just executed tool calls but returned an empty response.",
+        ),
+        (
+            true,
+            "Let me run the tests.",
+            "Your previous turn indicated a tool call but none was included.",
+        ),
+    ] {
+        route
+            .observe_answer("session-1", AnswerSummary { final_reply })
+            .await;
+        let recovery = session(vec![
+            Message::text(Role::User, "fix the build"),
+            Message::text(Role::Assistant, previous),
+            Message::text(Role::User, nudge),
+        ]);
+        assert_eq!(
+            drive(&route, recovery, calls.clone(), complete_call, 0.0).await?,
+            "capable"
+        );
+    }
+    assert_eq!(calls.0.load(Ordering::Relaxed), 2);
+    let next = initiated_by(
+        session(vec![
+            Message::text(Role::User, "fix the build"),
+            Message::text(Role::Assistant, "Let me run the tests."),
+            Message::text(Role::User, "now do another task"),
+        ]),
+        "user",
+    );
+    assert_eq!(
+        drive(&route, next, calls.clone(), complete_call, 0.0).await?,
+        "efficient"
+    );
+    assert_eq!(calls.0.load(Ordering::Relaxed), 3);
+    Ok(())
+}
+
+#[test]
+fn only_a_paused_reply_to_a_reported_final_answer_releases_the_latch() {
+    let messages = [
+        Message::text(Role::User, "fix the build"),
+        Message::text(Role::Assistant, "fixed"),
+        Message::text(Role::User, "now add a test"),
+    ];
+    let now = unix_seconds();
+    for (reported, releases) in [
+        (None, true),
+        (Some(0), false),
+        (Some(now), false),
+        (Some(now - FOLLOW_UP_QUIET_SECS), true),
+    ] {
+        let mut state = State::default();
+        if let Some(finished) = reported {
+            state
+                .extra
+                .insert(LAST_ANSWER_FINAL_KEY.into(), StateValue::Count(finished));
+        }
+        assert_eq!(
+            answers_final_reply(&state, &messages),
+            releases,
+            "{reported:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_failed_capable_verifier_still_offers_the_efficient_answer() -> Result<()> {
+    use crate::core::algorithm::Call;
+    use crate::core::testing::serve_decision;
+
+    let algorithm = route(|config| config.task_typing = true)?;
+    let task = || session(vec![Message::text(Role::User, "What is 1+1?")]);
+    // Exercise production error propagation through CallModel::respond.
+    let outcome = crate::drive(
+        algorithm,
+        task(),
+        Arc::new(category_models(Category::Any, &["efficient", "capable"]).into()),
+        |call| async move {
+            match call {
+                Call::Model(call) => {
+                    let target = call.models[0].clone();
+                    let readout = call
+                        .request
+                        .llm_request
+                        .extensions
+                        .fields
+                        .contains_key("logprobs");
+                    let response = match target.as_str() {
+                        "efficient" => Ok(reply("2")),
+                        "judge" if readout => Ok(scored(0.05)),
+                        "judge" => Ok(reply("Answer")),
+                        _ => Err(crate::LibsyError::client_call(
+                            target,
+                            LlmClientError::UpstreamHttp {
+                                status: http::StatusCode::BAD_GATEWAY,
+                                body: String::new(),
+                            },
+                        )),
+                    };
+                    call.respond(std::future::ready(response)).await
+                }
+                Call::Decision(call) => serve_decision(*call).await,
+            }
+        },
+    )
+    .await?;
+    assert_eq!(
+        outcome.selected_model_ids,
+        vec![ModelId::new("capable"), ModelId::new("efficient")]
+    );
+    let fallback = outcome
+        .fallback_request
+        .expect("an efficient fallback request");
+    assert_eq!(fallback.llm_request.messages, task().llm_request.messages);
     Ok(())
 }

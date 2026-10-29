@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::core::algorithm::Driver;
+use crate::core::algorithm::{AnswerSummary, Driver};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
 use async_trait::async_trait;
@@ -145,6 +145,14 @@ pub trait Classifier: Send + Sync {
         request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)>;
+
+    /// Whether a stateful composition should request served-answer reports.
+    fn tracks_answers(&self) -> bool {
+        false
+    }
+
+    /// Folds the answer the host served for this session into the composition's state.
+    fn observe_answer(&self, _state: &mut State, _answer: AnswerSummary) {}
 }
 
 #[cfg(test)]

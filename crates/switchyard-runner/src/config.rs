@@ -18,10 +18,11 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
+use crate::algorithm_factory::AlgorithmAndModels;
 use crate::runner::ModelPropertiesProbe;
 use crate::{
-    AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
-    Runner, RunnerError,
+    AlgorithmFactory, AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget,
+    ModelCapabilities, Route, Runner, RunnerError,
 };
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
@@ -59,6 +60,59 @@ pub fn api_key_variables(source: &str) -> Result<BTreeSet<String>, RunnerError> 
     Ok(variables)
 }
 
+/// RouteTargets lists the targets one route calls, as the runner reads them from the server config.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RouteTargets {
+    /// This field names the route's table under `[routes]`.
+    pub name: String,
+    /// This field holds the public model ID that callers send.
+    pub id: ModelId,
+    /// This field holds the route's `type`, such as `stage_router`.
+    pub kind: &'static str,
+    /// This field lists the targets that answer requests, in algorithm order. It includes
+    /// targets that only delegated sub-agent work uses.
+    pub answer_targets: Vec<ConfiguredTarget>,
+    /// This field lists the targets the route calls only to decide, such as a judge or an advisor.
+    pub judge_targets: Vec<ConfiguredTarget>,
+}
+
+/// ConfiguredTarget names one target that a route uses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfiguredTarget {
+    pub name: String,
+    /// This field holds the client and model from the `[targets]` or `[decision_targets]`
+    /// entry with this name. It is `None` when no entry has the name; the server refuses to
+    /// start with such a config.
+    pub model: Option<TargetModel>,
+}
+
+/// TargetModel identifies the model a target sends requests to and the client that serves it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TargetModel {
+    pub client: String,
+    pub id: ModelId,
+}
+
+/// This function lists each route's targets without building clients or reading credentials.
+/// It returns the same parse error the server reports for a config that does not match the schema.
+pub fn route_targets(source: &str) -> Result<Vec<RouteTargets>, RunnerError> {
+    let config: DeploymentConfig = toml::from_str(source).map_err(|error| {
+        RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
+    })?;
+    config.check_schema_version()?;
+    Ok(config
+        .routes
+        .iter()
+        .map(|(name, route)| RouteTargets {
+            name: name.clone(),
+            id: route.id.clone(),
+            kind: (&route.algorithm).into(),
+            answer_targets: config.configured_targets(route.routing_target_names()),
+            judge_targets: config.configured_targets(route.algorithm.judge_target_names()),
+        })
+        .collect())
+}
+
 type RunnerResult<T> = Result<T, RunnerError>;
 
 pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
@@ -78,10 +132,7 @@ pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
 }
 
 pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
-    let config: DeploymentConfig = toml::from_str(source).map_err(|error| {
-        RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
-    })?;
-    config.build()
+    AlgorithmFactory::from_toml(source)?.config.build()
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,8 +151,8 @@ pub(crate) struct DeploymentConfig {
 }
 
 #[derive(Debug)]
-struct RouteConfig {
-    id: ModelId,
+pub(crate) struct RouteConfig {
+    pub(crate) id: ModelId,
     context_window: Option<u32>,
     tool_calling: Option<bool>,
     reasoning: Option<bool>,
@@ -181,6 +232,40 @@ impl RouteConfig {
 }
 
 impl DeploymentConfig {
+    fn check_schema_version(&self) -> RunnerResult<()> {
+        if self.schema_version == SUPPORTED_SCHEMA_VERSION {
+            return Ok(());
+        }
+        Err(RunnerError::configuration(format!(
+            "unsupported schema_version {}; expected {SUPPORTED_SCHEMA_VERSION}",
+            self.schema_version
+        )))
+    }
+
+    /// This function looks up each name in `[targets]`, then in `[decision_targets]`. The server
+    /// rejects a name defined in both, so the lookup order does not change the result.
+    fn configured_targets(&self, names: Vec<&str>) -> Vec<ConfiguredTarget> {
+        names
+            .into_iter()
+            .map(|name| ConfiguredTarget {
+                name: name.to_string(),
+                model: self
+                    .targets
+                    .get(name)
+                    .map(|target| (&target.llm_client, &target.id))
+                    .or_else(|| {
+                        self.decision_targets
+                            .get(name)
+                            .map(|target| (&target.decision_client, &target.id))
+                    })
+                    .map(|(client, id)| TargetModel {
+                        client: client.clone(),
+                        id: id.clone(),
+                    }),
+            })
+            .collect()
+    }
+
     fn decision_target(&self, name: &str) -> Option<DecisionTarget> {
         let target = self.targets.get(name)?;
         let client = self.llm_clients.get(&target.llm_client)?;
@@ -193,13 +278,9 @@ impl DeploymentConfig {
         })
     }
 
-    fn build(self) -> RunnerResult<Runner> {
-        if self.schema_version != SUPPORTED_SCHEMA_VERSION {
-            return Err(RunnerError::configuration(format!(
-                "unsupported schema_version {}; expected {SUPPORTED_SCHEMA_VERSION}",
-                self.schema_version
-            )));
-        }
+    /// Checks route identity and target references without constructing clients.
+    pub(crate) fn validate(&self) -> RunnerResult<()> {
+        self.check_schema_version()?;
 
         let mut route_names_by_id = HashMap::new();
         for (route_name, config) in &self.routes {
@@ -215,6 +296,93 @@ impl DeploymentConfig {
             }
         }
 
+        for (name, target) in &self.targets {
+            validate_value("target name", name)?;
+            validate_value(&format!("target {name} id"), &target.id)?;
+            if !self.llm_clients.contains_key(&target.llm_client) {
+                return Err(RunnerError::configuration(format!(
+                    "target {name} references unknown llm client {}",
+                    target.llm_client
+                )));
+            }
+        }
+        for (name, target) in &self.decision_targets {
+            validate_value("decision target name", name)?;
+            validate_value(&format!("decision target {name} id"), &target.id)?;
+            if self.targets.contains_key(name) {
+                return Err(RunnerError::configuration(format!(
+                    "target {name} is defined as both an LLM and decision target"
+                )));
+            }
+            if !self.decision_clients.contains_key(&target.decision_client) {
+                return Err(RunnerError::configuration(format!(
+                    "decision target {name} references unknown decision client {}",
+                    target.decision_client
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolves each route once; native and host-owned execution share this path.
+    pub(crate) fn build_algorithms(
+        &self,
+    ) -> impl Iterator<Item = RunnerResult<(&str, &RouteConfig, AlgorithmAndModels)>> {
+        let targets = self.build_targets();
+        self.routes.iter().map(move |(route_name, config)| {
+            let decision_judge = config.algorithm.decision_judge();
+            for name in config.callable_target_names() {
+                let (exists, kind) = if decision_judge.is_some_and(|(judge, _)| judge == name) {
+                    (self.decision_targets.contains_key(name), "decision")
+                } else {
+                    (self.targets.contains_key(name), "LLM")
+                };
+                if !exists {
+                    return Err(RunnerError::configuration(format!(
+                        "route references unknown target {name}; route {route_name} requires target kind {kind}"
+                    )));
+                }
+            }
+            for name in config.routing_target_names().into_iter().chain(
+                decision_judge
+                    .into_iter()
+                    .flat_map(|(_, judge)| judge.candidates.values().map(String::as_str)),
+            ) {
+                if !self.targets.contains_key(name) {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} completion and candidate target {name} must be an LLM target"
+                    )));
+                }
+            }
+            if config.context_window == Some(0) {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} context_window must be greater than zero"
+                )));
+            }
+            let (algorithm, models) = config
+                .algorithm
+                .build_with_runtime_models(route_name, &targets)
+                .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+            if let Some(infra) = &config.infra {
+                if !matches!(&config.algorithm, AlgorithmSpec::LlmClassifier { config }
+                    if matches!(config.mode, None | Some(crate::ClassifierMode::Capability))
+                        && config.escalation.is_none())
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name}: infra requires capability llm_classifier without escalation"
+                    )));
+                }
+                infra.validate().map_err(|error| {
+                    RunnerError::configuration_source(format!("route {route_name}: {error}"), error)
+                })?;
+            }
+            Ok((route_name.as_str(), config, (algorithm, models)))
+        })
+    }
+
+    fn build(self) -> RunnerResult<Runner> {
+        self.validate()?;
+
         // The LLM client keeps one backend per model id, so two targets naming the same model on
         // the same client share it. That is harmless when their request settings agree (an alias
         // for a different system prompt, say) and silently wrong when they do not: the second
@@ -222,8 +390,6 @@ impl DeploymentConfig {
         let mut seen_client_model_ids: HashMap<(&str, &str), (&String, &TargetConfig)> =
             HashMap::new();
         for (target_name, target) in &self.targets {
-            validate_value("target name", target_name)?;
-            validate_value(&format!("target {target_name} id"), &target.id)?;
             match seen_client_model_ids.entry((target.llm_client.as_str(), target.id.as_str())) {
                 std::collections::hash_map::Entry::Vacant(slot) => {
                     slot.insert((target_name, target));
@@ -251,73 +417,12 @@ impl DeploymentConfig {
         let mut provider_api_keys = Vec::new();
         let clients = self.build_clients(&mut provider_api_keys)?;
         let decision_clients = self.build_decision_clients(&mut provider_api_keys)?;
-        for (name, target) in &self.decision_targets {
-            validate_value("decision target name", name)?;
-            validate_value(&format!("decision target {name} id"), &target.id)?;
-            if self.targets.contains_key(name) {
-                return Err(RunnerError::configuration(format!(
-                    "target {name} is defined as both an LLM and decision target"
-                )));
-            }
-            if !decision_clients.contains_key(&target.decision_client) {
-                return Err(RunnerError::configuration(format!(
-                    "decision target {name} references unknown decision client {}",
-                    target.decision_client
-                )));
-            }
-        }
-        let targets = self.build_targets();
         let fallback_base_url = self.fallback_base_url()?;
         let mut routes = Vec::with_capacity(self.routes.len());
         let mut model_properties_probes = BTreeMap::new();
-        for (route_name, config) in &self.routes {
-            let decision_judge = config.algorithm.decision_judge();
-            for name in config.callable_target_names() {
-                let (exists, kind) = if decision_judge.is_some_and(|(judge, _)| judge == name) {
-                    (self.decision_targets.contains_key(name), "decision")
-                } else {
-                    (self.targets.contains_key(name), "LLM")
-                };
-                if !exists {
-                    return Err(RunnerError::configuration(format!(
-                        "route references unknown target {name}; route {route_name} requires target kind {kind}"
-                    )));
-                }
-            }
-            for name in config.routing_target_names().into_iter().chain(
-                decision_judge
-                    .into_iter()
-                    .flat_map(|(_, judge)| judge.candidates.values().map(String::as_str)),
-            ) {
-                if !self.targets.contains_key(name) {
-                    return Err(RunnerError::configuration(format!(
-                        "route {route_name} completion and candidate target {name} must be an LLM target"
-                    )));
-                }
-            }
+        for entry in self.build_algorithms() {
+            let (route_name, config, (algorithm, models)) = entry?;
             let capabilities = config.capabilities();
-            if capabilities.context_window == Some(0) {
-                return Err(RunnerError::configuration(format!(
-                    "route {route_name} context_window must be greater than zero"
-                )));
-            }
-            let (algorithm, models) = config
-                .algorithm
-                .build_with_runtime_models(route_name, &targets)
-                .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
-            if let Some(infra) = &config.infra {
-                if !matches!(&config.algorithm, AlgorithmSpec::LlmClassifier { config }
-                    if matches!(config.mode, None | Some(crate::ClassifierMode::Capability))
-                        && config.escalation.is_none())
-                {
-                    return Err(RunnerError::configuration(format!(
-                        "route {route_name}: infra requires capability llm_classifier without escalation"
-                    )));
-                }
-                infra.validate().map_err(|error| {
-                    RunnerError::configuration_source(format!("route {route_name}: {error}"), error)
-                })?;
-            }
             if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
                 && let Some(probe) =
                     self.build_model_properties_probe(&vgr.efficient_target, &clients)

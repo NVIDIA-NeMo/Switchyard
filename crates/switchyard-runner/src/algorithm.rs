@@ -21,6 +21,7 @@ use libsy::{
 };
 use serde::Deserialize;
 use serde_json::Value;
+use strum_macros::IntoStaticStr;
 use switchyard_protocol::{Category, ModelId};
 
 /// Error returned when an algorithm description cannot be constructed.
@@ -375,9 +376,11 @@ impl SubagentRouteConfig {
     }
 }
 
-/// A routing algorithm described by configured target names.
-#[derive(Clone, Debug, Deserialize)]
+/// A routing algorithm described by configured target names. Converting it to `&str` gives
+/// the route's `type`, such as `stage_router`.
+#[derive(Clone, Debug, Deserialize, IntoStaticStr)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[strum(serialize_all = "snake_case")]
 pub enum AlgorithmSpec {
     /// Replies `OK` without calling any model. Useful for smoke tests.
     Noop {},
@@ -869,6 +872,7 @@ impl StageClassifierConfig {
 }
 
 impl AlgorithmSpec {
+    #[cfg(not(target_os = "wasi"))]
     pub(crate) fn decision_judge(&self) -> Option<(&str, &DecisionJudgeRouteConfig)> {
         match self {
             Self::LlmClassifier { config, .. } => config
@@ -968,6 +972,14 @@ impl AlgorithmSpec {
     /// a classifier also calls its judge, and that call needs a client too.
     pub fn callable_target_names(&self) -> Vec<&str> {
         let mut names = self.routing_target_names();
+        names.extend(self.judge_target_names());
+        names
+    }
+
+    /// Targets the algorithm calls only to decide, such as a judge or an advisor. A target
+    /// that also answers requests appears in [`routing_target_names`](Self::routing_target_names) too.
+    pub fn judge_target_names(&self) -> Vec<&str> {
+        let mut names = Vec::new();
         match self {
             // Custom mode names its judge in `models.judge`; the other two modes
             // use the top-level `classifier_target`.
@@ -983,7 +995,7 @@ impl AlgorithmSpec {
                             .map(String::as_str),
                     );
                 } else {
-                    names.push(&config.classifier_target);
+                    names.push(config.classifier_target.as_str());
                 }
             }
             Self::StageRouter {
@@ -1120,6 +1132,7 @@ impl AlgorithmSpec {
     }
 
     /// Response target and routing-only dependency for routers that answer while routing.
+    #[cfg(not(target_os = "wasi"))]
     pub(crate) fn routing_response_and_dependency(&self) -> Option<(&str, &str)> {
         match self {
             Self::LlmClassifier { config, .. }

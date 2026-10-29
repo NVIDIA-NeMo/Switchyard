@@ -26,13 +26,17 @@ use crate::algorithms::util::affinity::{AffinityRouter, has_new_user_turn, initi
 use crate::algorithms::util::buffered_response::buffer_response;
 use crate::algorithms::util::decisive;
 use crate::algorithms::util::prompts::append_note;
-use crate::core::algorithm::Driver;
+use crate::core::algorithm::{AnswerSummary, Driver};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::state::{State, StateValue};
 use crate::{LibsyError, Result};
 
 /// Whether turn verification latched the capable tier; cleared when the user responds.
 const TURN_LATCHED_KEY: &str = "vgr_turn_latched";
+/// Holds a shadow turn only after a VGR escalation.
+const SHADOW_HELD_KEY: &str = "vgr_shadow_held";
+const LAST_ANSWER_FINAL_KEY: &str = "vgr_last_answer_final";
+const FOLLOW_UP_QUIET_SECS: u32 = 2;
 pub(super) const TURN_STREAK_KEY: &str = "vgr_turn_streak";
 /// Unix seconds at the first request of the current user turn.
 const TURN_STARTED_KEY: &str = "vgr_turn_started";
@@ -115,10 +119,19 @@ impl Classifier for VgrClassifier {
         let messages = &request.llm_request.messages;
         let (new_turn, answered) = match initiated_by_user(request) {
             Some(by_user) => (by_user, by_user),
-            None => (has_new_user_turn(messages), answers_final_reply(messages)),
+            None => {
+                let answered = answers_final_reply(state, messages);
+                let new_turn = if state.extra.contains_key(LAST_ANSWER_FINAL_KEY) {
+                    answered
+                } else {
+                    has_new_user_turn(messages)
+                };
+                (new_turn, answered)
+            }
         };
         if new_turn {
             state.extra.remove(TURN_STARTED_KEY);
+            state.extra.remove(SHADOW_HELD_KEY);
             set_flag(state, HANDOFF_SENT_KEY, false);
         }
         if answered {
@@ -126,7 +139,9 @@ impl Classifier for VgrClassifier {
             set_count(state, TURN_STREAK_KEY, 0);
         }
         let turn_budget_spent = self.turn_budget_spent(state);
-        let short_circuit = if self.config.mode == ServingMode::Off {
+        let short_circuit = if flag(state, SHADOW_HELD_KEY) {
+            Some("turn_verification_latched")
+        } else if self.config.mode == ServingMode::Off {
             Some("mode_off")
         } else if self
             .config
@@ -224,7 +239,7 @@ impl Classifier for VgrClassifier {
                 ));
             }
             if self.config.mode == ServingMode::Shadow {
-                return Ok(self.escalate(
+                return Ok(self.serve_capable(
                     driver,
                     "turn_verification_complete",
                     None,
@@ -243,8 +258,18 @@ impl Classifier for VgrClassifier {
         let caps = derive_capabilities(request, &attempt, task_type);
         let signals = self.gather(&context, &caps).await;
         let route = decide::decide(&caps, &signals, self.config.confirmed_min_clean_tail());
-        if route == Route::Capable || self.config.mode == ServingMode::Shadow {
+        if route == Route::Capable {
             return Ok(self.escalate(
+                driver,
+                "decided",
+                Some(caps.branch),
+                request,
+                state,
+                Some(&attempt),
+            ));
+        }
+        if self.config.mode == ServingMode::Shadow {
+            return Ok(self.serve_capable(
                 driver,
                 "decided",
                 Some(caps.branch),
@@ -256,6 +281,19 @@ impl Classifier for VgrClassifier {
         log(driver, "decided", Some(caps.branch), Route::Efficient);
         set_flag(state, EFFICIENT_SERVED_KEY, true);
         Ok((decisive(efficient), Some(buffered.into_response())))
+    }
+
+    fn tracks_answers(&self) -> bool {
+        true
+    }
+
+    fn observe_answer(&self, state: &mut State, answer: AnswerSummary) {
+        let finished = if answer.final_reply {
+            unix_seconds().max(1)
+        } else {
+            0
+        };
+        set_count(state, LAST_ANSWER_FINAL_KEY, finished);
     }
 }
 
@@ -275,6 +313,21 @@ impl VgrClassifier {
     }
 
     fn escalate(
+        &self,
+        driver: &Driver,
+        reason: &'static str,
+        branch: Option<Branch>,
+        request: &mut Request,
+        state: &mut State,
+        unverified_final: Option<&str>,
+    ) -> Scored {
+        if self.config.mode == ServingMode::Shadow {
+            set_flag(state, SHADOW_HELD_KEY, true);
+        }
+        self.serve_capable(driver, reason, branch, request, state, unverified_final)
+    }
+
+    fn serve_capable(
         &self,
         driver: &Driver,
         reason: &'static str,
@@ -456,7 +509,7 @@ impl VgrClassifier {
                     signals.evidence_verifier = Some(capable_ask(Question::Evidence).await);
                 }
             }
-            Branch::Chat => {
+            Branch::Chat | Branch::DefaultVerified => {
                 signals.capable_judge = Some(capable_ask(Question::Evidence).await);
                 // Asked only once the first affirms, so a refutation costs one call.
                 if signals.capable_judge == Some(Tri::Yes) {
@@ -516,7 +569,7 @@ impl VgrClassifier {
         let outcome = tokio::time::timeout(budget, async {
             let response = context
                 .driver
-                .call_model(call, vec![target.clone()])
+                .call_model_with_error_recovery(call, vec![target.clone()], true)
                 .await?;
             response
                 .llm_response
@@ -593,7 +646,12 @@ fn log(driver: &Driver, reason: &'static str, branch: Option<Branch>, served: Ro
 }
 
 /// Whether the user is answering a finished assistant reply.
-fn answers_final_reply(messages: &[Message]) -> bool {
+fn answers_final_reply(state: &State, messages: &[Message]) -> bool {
+    if let Some(finished) = count(state, LAST_ANSWER_FINAL_KEY)
+        && (finished == 0 || unix_seconds().saturating_sub(finished) < FOLLOW_UP_QUIET_SECS)
+    {
+        return false;
+    }
     messages
         .len()
         .checked_sub(1)

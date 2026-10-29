@@ -4,7 +4,11 @@
 //! The terminal controller reloads settings and combines usage and server health into snapshots.
 //! It retains the log reader and health probe across refreshes.
 
-use crate::{config::Config, history, pricing, rollup, server};
+use crate::{
+    config::Config,
+    history, models, pricing, rollup, server,
+    server_config::{ALGORITHMS, Choice, ServerConfig},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf};
@@ -13,6 +17,14 @@ use std::{collections::BTreeMap, path::PathBuf};
 #[strum_discriminants(name(ActionKind), derive(strum::EnumIter))]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Action {
+    Models {
+        client: String,
+        refresh: bool,
+        key: Option<String>,
+        /// This field holds the endpoint's base URL when the user opened the key form. The
+        /// controller refuses `key` unless the endpoint still has this URL.
+        base_url: Option<String>,
+    },
     Restart {},
     PreviewUpdate {},
     Update {
@@ -48,6 +60,10 @@ pub struct Snapshot {
     pub update_status: Value,
     pub settings: Option<AppSettings>,
     pub data_state: DataState,
+
+    pub routes: Vec<RouteInfo>,
+    pub clients: Vec<ClientInfo>,
+    pub algorithms: Vec<AlgorithmInfo>,
     pub metrics: Metrics,
     pub today: chrono::NaiveDate,
     pub analytics: rollup::Usage,
@@ -75,6 +91,67 @@ pub struct AppSettings {
     pub refresh_seconds: u64,
     pub baseline_model: String,
     pub prices_file: Option<PathBuf>,
+}
+
+/// RouteInfo describes one entry under `[routes]` in the server config.
+#[derive(Clone, Default, Serialize)]
+pub struct RouteInfo {
+    /// This field names the route's table in the server config.
+    pub key: String,
+    /// This field holds the public model ID that harnesses send.
+    pub id: String,
+    pub kind: String,
+    /// Route edits send this token back. The controller rejects it after the file changes.
+    pub revision: String,
+    pub label: String,
+    /// This field lists the models that answer requests, as `client / model`. The runner
+    /// finds them, so it includes models the editor cannot change, such as sub-agent models.
+    pub models: Vec<String>,
+    /// This field lists the models the route calls only to decide, such as a judge or an advisor.
+    pub judges: Vec<String>,
+    /// This field lists the editor's current model for each role. It is empty when the apps
+    /// cannot edit the route's algorithm.
+    pub choices: Vec<Choice>,
+    /// This field lists the tier of each role in role order. It is `None` when the apps
+    /// cannot edit the route's algorithm.
+    pub tiers: Option<Vec<Option<String>>>,
+    pub editable: bool,
+    /// This field holds the marker of the generated block that contains the route. The tool
+    /// that wrote the block replaces the route the next time it runs.
+    pub generated: Option<String>,
+}
+
+/// ClientInfo describes one endpoint under `[llm_clients]` in the server config.
+#[derive(Clone, Default, Serialize)]
+pub struct ClientInfo {
+    pub name: String,
+    /// This field holds the URL that the app sends a model-list key to.
+    pub base_url: String,
+    pub host: String,
+    /// This field lists the model IDs that targets in the server config name on this endpoint.
+    pub models: Vec<String>,
+    /// This field is true when the app cannot ask the endpoint for its model list.
+    pub unlisted: bool,
+    pub accepts_key: bool,
+    /// This field explains why the endpoint cannot list models without a saved key.
+    pub note: Option<String>,
+}
+
+/// AlgorithmInfo describes one routing algorithm that the apps can write and the roles
+/// that a new route of that algorithm needs.
+#[derive(Clone, Default, Serialize)]
+pub struct AlgorithmInfo {
+    pub kind: &'static str,
+    pub title: &'static str,
+    pub summary: &'static str,
+    pub roles: Vec<RoleInfo>,
+}
+
+#[derive(Clone, Default, Serialize)]
+pub struct RoleInfo {
+    pub label: String,
+    pub hint: &'static str,
+    pub tier: Option<String>,
 }
 
 #[derive(Clone, Default, Serialize)]
@@ -130,11 +207,56 @@ impl Reply {
     }
 }
 
+// Review keeps exact file bytes in the controller so later edits require a new review.
+// Only the UUID token goes to the frontend; reviewed files can contain credentials.
+struct Review {
+    token: String,
+
+    files: Vec<(PathBuf, Option<std::sync::Arc<[u8]>>)>,
+}
+impl Review {
+    fn capture(paths: Vec<PathBuf>) -> Result<Self, String> {
+        let files = paths
+            .into_iter()
+            .map(|path| {
+                let bytes = match std::fs::read(&path) {
+                    Ok(bytes) => Some(std::sync::Arc::<[u8]>::from(bytes)),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(format!("Read {}: {error}", path.display())),
+                };
+                Ok((path, bytes))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Self {
+            token: uuid::Uuid::now_v7().to_string(),
+            files,
+        })
+    }
+    fn original(&self) -> Result<&str, String> {
+        let (path, bytes) = self
+            .files
+            .first()
+            .ok_or("The app did not read a server config.")?;
+        let bytes = bytes
+            .as_deref()
+            .ok_or_else(|| format!("The server config {} does not exist.", path.display()))?;
+        std::str::from_utf8(bytes).map_err(|error| {
+            format!(
+                "The server config {} is not valid UTF-8: {error}",
+                path.display()
+            )
+        })
+    }
+}
+
 pub struct Controller {
+    health_probe: crate::health::Probe,
     settings: PathBuf,
     config: Config,
     reader: rollup::Reader,
-    health_probe: crate::health::Probe,
+    // The generation ties a draft to the server config file selected by the settings.
+    generation: u64,
+    route_reviews: std::collections::HashMap<String, Review>,
     update_review: Option<(String, Value)>,
 }
 impl Controller {
@@ -142,13 +264,21 @@ impl Controller {
         Self {
             config,
             settings,
-            reader: rollup::Reader::default(),
             health_probe: crate::health::Probe::default(),
+            reader: rollup::Reader::default(),
+            generation: 0,
+            route_reviews: Default::default(),
             update_review: None,
         }
     }
     fn reload(&mut self) -> Result<(), String> {
-        self.config = Config::load(&self.settings)?;
+        let config = Config::load(&self.settings)?;
+        if config.config_file != self.config.config_file {
+            self.generation += 1;
+            self.route_reviews.clear();
+        }
+        self.config = config;
+
         Ok(())
     }
     // Key actions accept only names that the server config declares.
@@ -162,6 +292,115 @@ impl Controller {
                 "The server config does not name {name} with api_key_env. Refresh and try again."
             ))
         }
+    }
+    fn routes(&self) -> Result<ServerConfig, String> {
+        let text = std::fs::read_to_string(&self.config.config_file).map_err(|e| e.to_string())?;
+        ServerConfig::parse(&text).map_err(|_| {
+            "The server config contains invalid TOML. Open it in Settings to fix it.".into()
+        })
+    }
+    // Unchanged bytes keep the draft revision when the editor switches algorithms.
+    fn remember_route(&mut self, route: &str, mut review: Review) -> String {
+        if let Some(previous) = self.route_reviews.get(route)
+            && previous.files == review.files
+        {
+            review.token = previous.token.clone();
+        }
+        let revision = review.token.clone();
+        self.route_reviews.insert(route.to_string(), review);
+        revision
+    }
+    /// This function reads the routes and endpoints in the server config. The runner lists each
+    /// route's targets, so the Routes page shows every model the server would call. The editor
+    /// fields come from the same text and do not limit which models the page shows.
+    fn server_config(&mut self, errors: &mut Vec<String>) -> (Vec<RouteInfo>, Vec<ClientInfo>) {
+        let review = match Review::capture(vec![self.config.config_file.clone()]) {
+            Ok(review) => review,
+            Err(error) => {
+                errors.push(error);
+                return Default::default();
+            }
+        };
+        let text = match review.original() {
+            Ok(text) => text,
+            Err(error) => {
+                errors.push(error);
+                return Default::default();
+            }
+        };
+        // Parse errors can quote config lines, and those lines can hold header credentials, so
+        // the snapshot names only the action that shows the full error.
+        let Ok(config) = ServerConfig::parse(text) else {
+            errors.push(
+                "The server config contains invalid TOML. Open it in Settings to fix it.".into(),
+            );
+            return Default::default();
+        };
+        let clients = config
+            .clients()
+            .iter()
+            .map(|c| ClientInfo {
+                name: c.name.clone(),
+                base_url: c.base_url.clone(),
+                host: c.host().to_string(),
+                models: config.models_on(&c.name),
+                unlisted: models::unlisted(c),
+                accepts_key: cfg!(any(target_os = "macos", windows))
+                    && !models::unlisted(c)
+                    && (c.forward_auth || c.api_key_env.is_some()),
+                note: models::missing_env(c).map(models::missing_env_note),
+            })
+            .collect();
+        let Ok(listed) = switchyard_runner::route_targets(text) else {
+            errors.push(
+                "The server cannot read the routes in the server config. \
+                 Run Check server config in Settings to see why."
+                    .into(),
+            );
+            return (Vec::new(), clients);
+        };
+        self.route_reviews
+            .retain(|key, _| listed.iter().any(|route| &route.name == key));
+        let mut routes = Vec::with_capacity(listed.len());
+        for route in listed {
+            let revision = self.remember_route(
+                &route.name,
+                Review {
+                    token: uuid::Uuid::now_v7().to_string(),
+                    files: review.files.clone(),
+                },
+            );
+            let models: Vec<String> = route.answer_targets.iter().map(target_label).collect();
+            let judges: Vec<String> = route.judge_targets.iter().map(target_label).collect();
+            let algorithm = config.algorithm(&route.name);
+            routes.push(RouteInfo {
+                label: format!(
+                    "{} · {} · {}",
+                    route.id,
+                    route.kind,
+                    [models.as_slice(), judges.as_slice()].concat().join(" → ")
+                ),
+                tiers: algorithm.map(|a| {
+                    config
+                        .roles(&route.name, a)
+                        .iter()
+                        .map(|r| r.tier.map(|t| format!("{t:?}")))
+                        .collect()
+                }),
+                editable: algorithm.is_some(),
+                generated: config
+                    .generated_by("routes", &route.name)
+                    .map(str::to_string),
+                choices: config.choices(&route.name),
+                id: route.id.to_string(),
+                kind: route.kind.to_string(),
+                key: route.name,
+                revision,
+                models,
+                judges,
+            });
+        }
+        (routes, clients)
     }
     pub fn snapshot(&mut self) -> Result<Snapshot, String> {
         self.reload()?;
@@ -203,6 +442,7 @@ impl Controller {
         } else {
             crate::health::ServerStatus::Stopped
         };
+        let (routes, clients) = self.server_config(&mut errors);
         let mut history_state = Availability::Available;
         let history = history::load(&self.config.routing_log).unwrap_or_else(|error| {
             history_state = Availability::Unavailable;
@@ -247,6 +487,18 @@ impl Controller {
                 },
                 health,
             },
+
+            routes,
+            clients,
+            algorithms: ALGORITHMS
+                .iter()
+                .map(|a| AlgorithmInfo {
+                    kind: a.kind,
+                    title: a.title,
+                    summary: a.summary,
+                    roles: a.new_route_roles().iter().map(role_info).collect(),
+                })
+                .collect(),
             metrics: Metrics {
                 server_url: server_url.clone(),
                 running: server_status == crate::health::ServerStatus::Running,
@@ -306,6 +558,70 @@ impl Controller {
             Action::OpenLogs {} => {
                 server::command("open", &[&logs_dir()?.display().to_string()])?;
                 Ok(Reply::message("Opened Switchyard logs.".into()))
+            }
+            Action::Models {
+                client,
+                refresh,
+                key,
+                base_url,
+            } => {
+                let config = self.routes()?;
+                let client = config
+                    .clients()
+                    .into_iter()
+                    .find(|c| c.name == client)
+                    .ok_or("Unknown endpoint.")?;
+                if let Some(key) = &key {
+                    if key.trim().is_empty() || models::has_line_break(key) {
+                        return Err("Enter a nonempty key without line breaks.".into());
+                    }
+                    if base_url.as_deref() != Some(client.base_url.as_str()) {
+                        return Err(format!(
+                            "The URL for {} changed after this form opened, so the app did \
+                             not send the key. Open the form again to check the endpoint.",
+                            client.name
+                        ));
+                    }
+                    if models::unlisted(&client)
+                        || !(client.forward_auth || client.api_key_env.is_some())
+                    {
+                        return Err("This endpoint does not accept a model-list key. \
+                                    Choose an endpoint configured for model-list authentication."
+                            .into());
+                    }
+                    #[cfg(not(any(target_os = "macos", windows)))]
+                    models::save_key(&client.base_url, key)?;
+                }
+                let cache = self.settings.with_file_name(models::CACHE_FILE);
+                let loaded =
+                    models::load(&cache, &client, refresh || key.is_some(), key.as_deref());
+                if let Some(key) = &key {
+                    match &loaded.error {
+                        None | Some(models::ListError::NotCached(_)) => {
+                            models::save_key(&client.base_url, key)?
+                        }
+                        Some(error) => return Err(error.reason()),
+                    }
+                }
+                // Fetch and cache-write failures need a warning even when a model list remains usable.
+                let warning = loaded.error.is_some();
+                let fetched_at = loaded.list.as_ref().map(|list| list.fetched_at);
+                let source = loaded.list.as_ref().map_or("config", |_| loaded.source);
+                let message = loaded
+                    .error
+                    .map(|e| match e.advice() {
+                        "" => e.reason(),
+                        advice => format!("{} {advice}", e.reason()),
+                    })
+                    .unwrap_or_else(|| "Model list loaded.".into());
+                let models = loaded
+                    .list
+                    .map(|l| l.models)
+                    .unwrap_or_else(|| config.models_on(&client.name));
+                Ok(Reply {
+                    message,
+                    data: json!({"client":client.name,"count":models.len(),"models":models,"warning":warning,"source":source,"fetched_at":fetched_at}),
+                })
             }
             Action::Restart {} => server::restart_checked(&self.config).map(Reply::message),
             Action::CheckConfig {} => server::check_config(&self.config)
@@ -414,6 +730,21 @@ impl Controller {
 fn logs_dir() -> Result<PathBuf, String> {
     crate::config::expand_home(std::path::Path::new("~/.switchyard/logs"))
 }
+/// This function shows a target as `client / model`, or names it when no target entry has its
+/// name, which the server rejects at startup.
+fn target_label(target: &switchyard_runner::ConfiguredTarget) -> String {
+    match &target.model {
+        Some(model) => format!("{} / {}", model.client, model.id),
+        None => format!("{} (no target has this name)", target.name),
+    }
+}
+fn role_info(role: &crate::server_config::Role) -> RoleInfo {
+    RoleInfo {
+        label: role.label.clone(),
+        hint: role.hint,
+        tier: role.tier.map(|t| format!("{t:?}")),
+    }
+}
 
 fn install_metadata(settings: &std::path::Path) -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -490,5 +821,136 @@ mod tests {
             controller.dispatch(update()).err().as_deref(),
             Some("Review the source update first.")
         );
+    }
+
+    // The editor supports only some route fields, so the page must not limit models to them:
+    // a sub-agent model, a stage router's judge, and a custom classifier's groups all show.
+    #[test]
+    fn routes_list_every_model_the_runner_calls() {
+        let directory = tempfile::tempdir().expect("directory");
+        let settings = directory.path().join("desktop.toml");
+        let server_config = directory.path().join("server.toml");
+        std::fs::write(
+            &settings,
+            format!("server_url = 'http://127.0.0.1:9'\nconfig_file = {server_config:?}\n"),
+        )
+        .expect("settings");
+        std::fs::write(
+            &server_config,
+            r#"schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[targets.strong]
+id = "strong/model"
+llm_client = "primary"
+
+[targets.weak]
+id = "weak/model"
+llm_client = "primary"
+
+[targets.judge]
+id = "judge/model"
+llm_client = "primary"
+
+[routes.direct]
+id = "direct"
+type = "passthrough"
+target = "strong"
+
+[routes.direct.subagents]
+type = "passthrough"
+target = "weak"
+
+[routes.stage]
+id = "stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+
+[routes.stage.classifier]
+target = "judge"
+
+[routes.custom]
+id = "custom"
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["judge"], capable = ["strong"], efficient = ["weak"], any = ["strong", "weak"] }
+default_target = "efficient"
+prompt = "Pick a target."
+response_schema = '{"type":"object"}'
+policy = { type = "target_selector", selector = "/target" }
+"#,
+        )
+        .expect("server config");
+        let config = Config::load(&settings).expect("config");
+        let snapshot = Controller::new(config, settings)
+            .snapshot()
+            .expect("snapshot");
+        let routes: Vec<_> = snapshot
+            .routes
+            .iter()
+            .map(|route| {
+                (
+                    route.key.as_str(),
+                    route.models.clone(),
+                    route.judges.clone(),
+                )
+            })
+            .collect();
+        let both = || {
+            vec![
+                "primary / strong/model".to_string(),
+                "primary / weak/model".to_string(),
+            ]
+        };
+        let judge = || vec!["primary / judge/model".to_string()];
+        assert_eq!(
+            routes,
+            [
+                ("custom", both(), judge()),
+                ("direct", both(), Vec::new()),
+                ("stage", both(), judge()),
+            ],
+            "{:?}",
+            snapshot.errors
+        );
+    }
+
+    // The key form keeps the URL it opened with. If the server config moves the endpoint
+    // before the user submits, the controller must not send the key to the new URL.
+    #[test]
+    fn model_keys_go_only_to_the_url_the_form_opened_with() {
+        let directory = tempfile::tempdir().expect("directory");
+        let settings = directory.path().join("desktop.toml");
+        let server_config = directory.path().join("server.toml");
+        std::fs::write(
+            &settings,
+            format!("server_url = 'http://127.0.0.1:9'\nconfig_file = {server_config:?}\n"),
+        )
+        .expect("settings");
+        std::fs::write(
+            &server_config,
+            "schema_version = 1\n\n[llm_clients.primary]\nformat = \"openai_chat\"\n\
+             base_url = \"https://new.example.test/v1\"\napi_key_env = \"PRIMARY_KEY\"\n",
+        )
+        .expect("server config");
+        let config = Config::load(&settings).expect("config");
+        let mut controller = Controller::new(config, settings);
+        for base_url in [Some("https://old.example.test/v1".to_string()), None] {
+            let error = controller
+                .dispatch(Action::Models {
+                    client: "primary".into(),
+                    refresh: true,
+                    key: Some("secret".into()),
+                    base_url,
+                })
+                .err()
+                .expect("the URL changed");
+            assert!(error.starts_with("The URL for primary changed"), "{error}");
+        }
     }
 }
