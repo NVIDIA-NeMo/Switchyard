@@ -448,6 +448,15 @@ impl ServerConfig {
         if id.trim().is_empty() || id.contains(['\n', '\r']) {
             return Err("Enter a nonempty public route ID without line breaks.".into());
         }
+        // A rename to the current ID would ask the user to save and restart for no change.
+        if operation == "rename"
+            && self
+                .routes()
+                .iter()
+                .any(|existing| existing.key == route && existing.id == id)
+        {
+            return Err("The route already uses that public ID.".into());
+        }
         if self
             .routes()
             .iter()
@@ -1232,17 +1241,22 @@ fn login_hosts<'c>(clients: &'c [Client], choices: &[Choice]) -> Vec<&'c str> {
 }
 
 // Generated-block markers can occur on nested route tables and still apply to retained targets.
+// Only the marker lines move to the next table; other comments describe the removed route and
+// leave with it.
 fn retain_block_markers(doc: &mut DocumentMut, removed: &Item) {
     let mut markers = Vec::new();
     let mut tables: Vec<_> = removed.as_table().into_iter().collect();
     while let Some(table) = tables.pop() {
         if let Some(position) = table.position()
             && let Some(prefix) = table.decor().prefix().and_then(|value| value.as_str())
-            && prefix
-                .lines()
-                .any(|line| line.trim().starts_with("# >>>") || line.trim().starts_with("# <<<"))
         {
-            markers.push((position, prefix.to_string()));
+            let kept: String = prefix
+                .split_inclusive('\n')
+                .filter(|line| line.trim().starts_with("# >>>") || line.trim().starts_with("# <<<"))
+                .collect();
+            if !kept.is_empty() {
+                markers.push((position, kept));
+            }
         }
         tables.extend(table.iter().filter_map(|(_, item)| item.as_table()));
     }
