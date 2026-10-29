@@ -150,7 +150,7 @@ const SESSIONS_KEYS: &[Key] = &[
     (
         "s",
         "session",
-        "Select the next recorded session and show its details.",
+        "Select the next recorded session. o opens its folder and d removes it.",
     ),
 ];
 const SETTINGS_KEYS: &[Key] = &[
@@ -4927,7 +4927,6 @@ fn launch_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
 /// and the Git-ignored files that cleanup deletes. Like the desktop app, it names at most 20
 /// files and counts the rest.
 fn cleanup_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
-    const NAMED: usize = 20;
     let field = |name: &str, value: String| labeled(theme, name, 11, value);
     let mut lines = vec![
         Line::from(text(preview, "cleanup_notice")),
@@ -4956,17 +4955,9 @@ fn cleanup_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
         .collect();
     if !ignored.is_empty() {
         lines.push(Line::default());
+        // The review lists every path the confirmation deletes; the popup scrolls.
         lines.push(Line::from("Cleanup also deletes these Git-ignored files:"));
-        lines.extend(
-            ignored
-                .iter()
-                .take(NAMED)
-                .map(|file| Line::from(file.to_string())),
-        );
-        if ignored.len() > NAMED {
-            let more = format!("…and {} more", ignored.len() - NAMED);
-            lines.push(Line::styled(more, theme.muted));
-        }
+        lines.extend(ignored.iter().map(|file| Line::from(file.to_string())));
     }
     lines
 }
