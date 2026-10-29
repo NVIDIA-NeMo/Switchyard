@@ -1501,7 +1501,7 @@ new = ["send_message"]
                 );
             }
             runner_from_toml(&format!(
-                "{}\n[routes.composed.{profile}]\n",
+                "{}\n[routes.composed.{profile}]\ncapable_system_prompt = 'Plan'\nefficient_system_prompt = 'Implement'\n",
                 composite_config()
             ))?;
         }

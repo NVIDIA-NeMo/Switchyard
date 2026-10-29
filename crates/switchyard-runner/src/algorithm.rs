@@ -677,21 +677,13 @@ pub struct StageTierConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct StageProfileConfig {
-    /// Signal confidence required for a decisive pick.
     pub confidence_threshold: Option<f64>,
-    /// Trailing tool results used to compute signals.
     pub recent_turn_window: Option<usize>,
-    /// Exact tool names added to the built-in vocabulary.
     pub tool_semantics: Option<ToolSemantics>,
-    /// Requests to remain capable after an escalation.
     pub capable_hold_turns: Option<i64>,
-    /// Requests to remain efficient after a switch.
     pub efficient_hold_turns: Option<i64>,
-    /// Guidance appended when signals select a tier.
     pub handoff_notes: Option<HandoffNoteConfig>,
-    /// System prompt prepended for the capable tier.
     pub capable_system_prompt: Option<String>,
-    /// System prompt prepended for the efficient tier.
     pub efficient_system_prompt: Option<String>,
 }
 
@@ -1771,18 +1763,9 @@ fn build_algorithm(
                         .stage_config(stage, PickerMode::CapableFirst),
                 )
             } else {
-                let mut stage_config = StageRouterConfig::new(
-                    PickerMode::EfficientFirst,
-                    stage.confidence_threshold.unwrap_or(0.5),
-                );
+                let mut stage_config =
+                    StageProfileConfig::default().stage_config(stage, PickerMode::EfficientFirst);
                 stage_config.capable_first_threshold = stage.capable_first_threshold;
-                stage_config.recent_window = stage.recent_turn_window;
-                if let Some(turns) = stage.capable_hold_turns {
-                    stage_config.capable_hold_turns = turns;
-                }
-                stage_config.efficient_hold_turns = stage.efficient_hold_turns;
-                stage_config.tool_semantics = stage.tool_semantics.clone();
-                stage_config.handoff_notes = stage.handoff_notes.clone();
                 CompositeRouter::new(CompositeRouterConfig {
                     judge,
                     stage: stage_config,
