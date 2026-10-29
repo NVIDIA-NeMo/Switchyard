@@ -31,7 +31,10 @@ pub fn validate(tool: Harness, path: &Path) -> Result<(), String> {
     if path.parent() != Some(root.as_path())
         || !std::fs::symlink_metadata(path).is_ok_and(|m| m.is_dir() && !m.file_type().is_symlink())
     {
-        return Err("Choose a supported harness.".into());
+        return Err(format!(
+            "{} is not a saved account folder. Choose an account folder that exists and is not a symlink.",
+            path.display()
+        ));
     }
     Ok(())
 }

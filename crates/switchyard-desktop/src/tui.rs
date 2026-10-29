@@ -1131,9 +1131,10 @@ struct App {
     /// This field indexes `data.tools`, which lists every harness in a fixed order.
     harness: usize,
     destination: Destination,
-    /// This field holds the last install preview and the action that produced it. The
-    /// Harnesses page shows it only while that action matches the selection.
-    install_preview: Option<(Action, Value)>,
+    /// This field holds the last install preview, the action that produced it, and the route
+    /// revision it was built from. The Harnesses page shows it only while that action matches
+    /// the selection and the route is unchanged.
+    install_preview: Option<(Action, String, Value)>,
     /// This field holds the last `ServerKeys` reply. It is `None` until the user checks the keys,
     /// and a failed check clears it so the page never shows outdated key states.
     server_keys: Option<Value>,
@@ -1299,6 +1300,7 @@ impl App {
                 id,
                 settings_file,
             },
+            revision,
             preview,
         ) = self.install_preview.as_ref()?
         else {
@@ -1314,7 +1316,8 @@ impl App {
         let current = destination
             && self.harness().is_ok_and(|harness| harness.tool == *tool)
             && selected.key == *route
-            && selected.id == *id;
+            && selected.id == *id
+            && selected.revision == *revision;
         current.then_some(preview)
     }
 
@@ -1470,7 +1473,15 @@ impl App {
                         popup_matches,
                     );
                 }
-                self.install_preview = Some((previewed, reply.data));
+                // The revision comes from the last snapshot. An older snapshot only hides the
+                // preview early; edits made outside the app are caught by the install recheck.
+                let revision = self
+                    .data
+                    .routes
+                    .iter()
+                    .find(|route| matches!(&previewed, Action::PreviewInstall { route: key, .. } if *key == route.key))
+                    .map(|route| route.revision.clone())?;
+                self.install_preview = Some((previewed, revision, reply.data));
             }
             (Some(ActionKind::Editor), Ok(reply)) if popup_matches => {
                 if let Some(Action::Editor {
