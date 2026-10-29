@@ -8,10 +8,10 @@ base_url = "https://inference-api.nvidia.com/v1"
 api_key_env = "NVIDIA_API_KEY"
 
 [decision_clients.decisions]
-format = "system_one"
-endpoint = "https://openrouter.ai/api/alpha/decisions"
-api_key_env = "OPENROUTER_API_KEY"
-timeout_ms = 15000
+format = "openai_decisions"
+endpoint = "https://inference-api.nvidia.com/v1/decisions"
+api_key_env = "NVIDIA_API_KEY"
+timeout_ms = 5000
 
 # The three models our algos use
 
@@ -26,7 +26,7 @@ llm_client = "inference_hub"
 extra_body = { reasoning = { effort = "medium" } }
 
 [decision_targets.classifier]
-id = "inception/mercury-decide:free"
+id = "openai/openai/gpt-6-luna"
 decision_client = "decisions"
 
 # Best route

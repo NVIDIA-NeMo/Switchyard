@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Switchyard</title>
+  <link rel="stylesheet" href="basic.css">
+  <script defer src="basic.js"></script>
+</head>
+<body>
+  <main>
+    <h1>Switchyard</h1>
+    <p id="server" role="status">Checking the server…</p>
+    <p id="server-url"></p>
+    <section aria-label="Recorded usage">
+      <h2>Recorded usage</h2>
+      <p id="today">Today: loading…</p>
+      <p id="week">Last 7 days: loading…</p>
+      <p>Requests count answers. Tokens include classifier calls.</p>
+    </section>
+    <div class="actions">
+      <button id="refresh">Refresh</button>
+      <button id="open-config">Open server config</button>
+      <button id="open-logs">Open routing log</button>
+      <button id="quit">Quit</button>
+    </div>
+    <p id="message" role="status" aria-live="polite"></p>
+  </main>
+</body>
+</html>

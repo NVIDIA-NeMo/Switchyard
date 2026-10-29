@@ -1388,6 +1388,7 @@ mod tests {
                         call.request.context,
                         json!({
                             "task": expected_task,
+                            "session": "session-1",
                             "candidates": ["a", "b", "c"],
                             "comparison": {"capable": "a", "efficient": "b"},
                             "evidence": settings.evidence,

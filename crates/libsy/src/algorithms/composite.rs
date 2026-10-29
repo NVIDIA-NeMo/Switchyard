@@ -264,7 +264,77 @@ mod tests {
         router_with_trigger(ClassifyTrigger::UserTurn)
     }
 
+    #[tokio::test]
+    async fn capable_first_defaults_to_pinning_efficient_after_a_switch() -> Result<()> {
+        for capable_first in [false, true] {
+            for turns in [None, Some(0), Some(1), Some(-1)] {
+                let mut stage = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
+                stage.efficient_hold_turns = turns;
+                let router = router_with_stage(ClassifyTrigger::UserTurn, stage)?;
+                let recorder = Arc::new(Recorder::default());
+                *recorder.judge_p_solve.lock() = if capable_first { 0.0 } else { 1.0 };
+                let mut initial = turn_request(false);
+                initial.llm_request.messages.truncate(1);
+                let mut write = turn_request(false);
+                if let switchyard_protocol::ContentBlock::ToolCall(call) =
+                    &mut write.llm_request.messages[1].content[0]
+                {
+                    call.name = "Write".into();
+                }
+                for request in [
+                    initial,
+                    turn_request(true),
+                    write.clone(),
+                    write.clone(),
+                    write,
+                    turn_request(true),
+                    turn_request(true),
+                    turn_request(true),
+                ] {
+                    test_drive_with_models(
+                        router.clone(),
+                        request,
+                        runtime_models(),
+                        recorder.serve(),
+                    )
+                    .await?;
+                }
+                let actual: Vec<_> = recorder
+                    .routed()
+                    .into_iter()
+                    .map(|call| call.target)
+                    .collect();
+                let initial = if capable_first { "strong" } else { "weak" };
+                let mut expected = vec![initial, "strong", "strong", "strong", "weak"];
+                let count = turns.unwrap_or(if capable_first { -1 } else { 0 });
+                expected.extend((0..3).map(|i| {
+                    if count == -1 || i < count {
+                        "weak"
+                    } else {
+                        "strong"
+                    }
+                }));
+                assert_eq!(
+                    actual, expected,
+                    "capable_first={capable_first}, turns={turns:?}"
+                );
+                assert_eq!(recorder.judge_calls(), 1);
+            }
+        }
+        Ok(())
+    }
+
     fn router_with_trigger(classify_trigger: ClassifyTrigger) -> Result<Arc<CompositeRouter>> {
+        router_with_stage(
+            classify_trigger,
+            StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
+        )
+    }
+
+    fn router_with_stage(
+        classify_trigger: ClassifyTrigger,
+        stage: StageRouterConfig,
+    ) -> Result<Arc<CompositeRouter>> {
         Ok(Arc::new(CompositeRouter::new(CompositeRouterConfig {
             judge: CompositeJudgeConfig::Capability(TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
@@ -274,7 +344,7 @@ mod tests {
                 classify_trigger,
                 ..Default::default()
             }),
-            stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
+            stage,
         })?))
     }
 

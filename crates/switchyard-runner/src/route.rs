@@ -120,6 +120,7 @@ pub struct Route {
     responses_auxiliary_target: Option<AuxiliaryTarget>,
     decision_targets: Vec<DecisionTarget>,
     models: Arc<RuntimeModels>,
+    infra: Option<libsy::InfraPolicy>,
 }
 
 /// The selected model and untouched response produced by a route execution.
@@ -150,6 +151,7 @@ impl Route {
             responses_auxiliary_target,
             decision_targets,
             models: Arc::new(models),
+            infra: None,
         }
     }
 
@@ -221,6 +223,28 @@ impl Route {
         )
         .await
         .map_err(Into::into)
+    }
+
+    pub(crate) fn with_infra(mut self, infra: Option<libsy::InfraPolicy>) -> Self {
+        self.infra = infra;
+        self
+    }
+
+    /// Apply the optional queue policy to a completed task decision.
+    ///
+    /// The host must hold its in-flight accounting lock through this call and the
+    /// increment for the selected model. Ordinary `decide` leaves task routing unchanged.
+    pub fn apply_infra(
+        &self,
+        outcome: &mut RoutingOutcome,
+        signals: &switchyard_protocol::InfraSignals,
+    ) -> Result<bool, RunnerError> {
+        match &self.infra {
+            Some(policy) => policy
+                .apply(outcome, &self.models, signals)
+                .map_err(Into::into),
+            None => Ok(false),
+        }
     }
 
     /// Routes with a host-owned client for routing-time LLM calls, such as judges.

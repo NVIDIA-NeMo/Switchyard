@@ -47,6 +47,7 @@ test("decision request, cutoff, and branch-owned state", async () => {
       assert.deepEqual(request.context, {
         task: messages, candidates: ["a", "b"], comparison: { capable: "a", efficient: "b" },
         evidence: options.classifier.decision.evidence,
+        session: null,
       });
       assert.deepEqual(Object.keys(request.questions), ["route"]);
       assert.deepEqual(request.questions.route.instructions, instructions);
@@ -64,7 +65,10 @@ test("decision request, cutoff, and branch-owned state", async () => {
     assert.deepEqual(await router.route(continuation, { state, decide: unexpectedDecision }), { model });
     assert.deepEqual(state, saved);
   }
-  assert.deepEqual(await router.route(continuation, { decide: unexpectedDecision }), { model: options.targets.efficient });
+  assert.deepEqual(await router.route(continuation, { decide: unexpectedDecision }), {
+    model: options.targets.efficient,
+    state: { stage_previous_tier: { string: "weak" } },
+  });
 
   const once = structuredClone(options);
   once.classifier.classify_trigger = "new_session";
@@ -73,12 +77,59 @@ test("decision request, cutoff, and branch-owned state", async () => {
   assert.deepEqual(await sessionRouter.route(messages, { state, decide: unexpectedDecision }), { model: options.targets.capable });
 });
 
+test("serialized state preserves capable holds until they expire", async () => {
+  const router = CompositeRouter.create(options);
+  let selected = await router.route(continuation, { decide: unexpectedDecision });
+  assert.equal(selected.model, options.targets.efficient);
+
+  const failed = structuredClone(continuation);
+  failed.at(-1).content[0].is_error = true;
+  failed.at(-1).content[0].content[0].text = "Out of memory: kill process 1234";
+  const requests = [failed, continuation, continuation, continuation];
+  const expected = [options.targets.capable, options.targets.capable, options.targets.capable, options.targets.efficient];
+  for (const [i, request] of requests.entries()) {
+    assert.ok(selected.state);
+    const state = JSON.parse(JSON.stringify(selected.state));
+    const saved = structuredClone(state);
+    selected = await router.route(request, { state, decide: unexpectedDecision });
+    assert.equal(selected.model, expected[i]);
+    assert.deepEqual(state, saved);
+    // A separate branch without the returned state has no hold.
+    assert.equal((await router.route(continuation, { decide: unexpectedDecision })).model, options.targets.efficient);
+  }
+});
+
+test("capable-first pins efficient by default and accepts an explicit opt-out", async () => {
+  for (const turns of [undefined, 0]) {
+    const config = structuredClone(options);
+    config.stage.efficient_hold_turns = turns;
+    const router = CompositeRouter.create(config);
+    const initial = await router.route(messages, { decide: async () => response(0.41) });
+    assert.equal(initial.model, options.targets.capable);
+    const write = structuredClone(continuation);
+    write[1].content[0].name = "write";
+    let selected = await router.route(write, { state: initial.state, decide: unexpectedDecision });
+    assert.equal(selected.model, options.targets.efficient);
+    const failed = structuredClone(continuation);
+    failed.at(-1).content[0].is_error = true;
+    failed.at(-1).content[0].content[0].text = "Out of memory: kill process 1234";
+    let state = selected.state;
+    for (let i = 0; i < 3; i++) {
+      assert.ok(state);
+      selected = await router.route(failed, { state: JSON.parse(JSON.stringify(state)), decide: unexpectedDecision });
+      assert.equal(selected.model, turns === 0 ? options.targets.capable : options.targets.efficient);
+      state = selected.state ?? state;
+    }
+  }
+});
+
 test("validation and decision failure policy", async () => {
   for (const change of [
     (config) => { config.targets.efficient = config.targets.capable; },
     (config) => { config.classifier.decision.cutoff = 2; },
     (config) => { config.classifier.decision.extra = true; },
     (config) => { config.classifier.classify_trigger = "every_request"; },
+    (config) => { config.stage.efficient_hold_turns = -2; },
   ]) {
     const config = structuredClone(options);
     change(config);
@@ -104,7 +155,10 @@ test("validation and decision failure policy", async () => {
   const fallback = CompositeRouter.create(config);
   const { state } = await fallback.route(messages, { decide: async () => response(0.41) });
   assert.deepEqual(await fallback.route(messages, { state, decide }), { model: options.targets.capable });
-  assert.deepEqual(await fallback.route(messages, { decide }), { model: options.targets.efficient });
+  assert.deepEqual(await fallback.route(messages, { decide }), {
+    model: options.targets.efficient,
+    state: { stage_previous_tier: { string: "weak" } },
+  });
   assert.deepEqual(await router.route(messages, { state, decide: async () => ({ answers: {} }) }), { model: options.targets.capable });
 });
 

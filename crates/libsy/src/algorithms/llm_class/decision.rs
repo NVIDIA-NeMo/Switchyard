@@ -124,6 +124,7 @@ impl Classifier for DecisionClassifier {
             model: None,
             context: json!({
                 "task": self.input.messages(request),
+                "session": request.metadata.as_ref().and_then(|m| m.session_id.as_deref()),
                 "candidates": self.config.candidates.keys().collect::<Vec<_>>(),
                 "comparison": {
                     "capable": self.config.candidate(capable)?,

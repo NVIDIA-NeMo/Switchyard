@@ -176,6 +176,9 @@ if TYPE_CHECKING:
         def request(self) -> dict[str, object]: ...
 
         @property
+        def fallback_request(self) -> dict[str, object] | None: ...
+
+        @property
         def response(self) -> LlmResponse.Agg | LlmResponse.Stream | None: ...
 
     class Step:

@@ -5,7 +5,7 @@
 `switchyard-server`, which picks the target model for each call. pi does not read
 `OPENAI_BASE_URL`, so a provider entry is how you point pi at a proxy. This
 page was tested with pi 0.84.3 against the
-[Getting Started](../getting_started.md#server-path) server on `http://localhost:4000`
+[local evaluation](../operations/local_evaluation.md) server on `http://localhost:4000`
 with route id `switchyard`.
 
 ## Configure
@@ -70,7 +70,7 @@ pi -p --provider switchyard --model switchyard "List the files in this directory
 The command `curl -s localhost:4000/v1/stats | jq '.models | map_values({calls, prompt_tokens})'`
 lists each target model with its call count. For a step-by-step check with an
 escalating request, see
-[Verify routing is active](../getting_started.md#verify-routing-is-active). Every response carries the header
+[Verify routing is active](../operations/local_evaluation.md#verify-routing-is-active). Every response carries the header
 `x-model-router-selected-model`. With `--routing-log-file PATH`, the server writes one
 record per call. In the record below, `session_id` is the value of pi's `x-session-id`
 header:
@@ -187,9 +187,30 @@ Put each quoted model ID in a top-level table, as shown above. Quotes keep dots
 within the ID. The `.toml` extension check ignores case; other filenames are read
 as JSON, so existing JSON overrides still work.
 
-For your own models, copy the entry for each model and replace the key with its exact
-`model` value from the routing log. Use the served model ID rather than the routing alias,
-and replace the example's numbers with your provider's rates. List recorded model IDs with:
+To maintain one set of rates for several exact IDs, list them in a group:
+
+```toml
+[[prices]]
+models = ["claude-haiku-4-5", "anthropic/claude-haiku-4.5"]
+input = 1
+output = 5
+cache_read = 0.1
+cache_write = 1.25
+cache_write_1h = 2
+```
+
+Use one `[[prices]]` record per group, with at least one ID in `models`. JSON accepts
+the same records in a top-level `prices` array. Each file uses either grouped records
+or model-keyed tables. The bundled table uses groups and can also be loaded with
+`--pricing-file`.
+
+All IDs in a group share every rate, including `cache_write_1h` when present. Keep
+separate groups when provider prices differ. The loader rejects duplicate IDs within
+or across groups, invalid IDs or rates, and unknown fields before using the table.
+
+For your own models, use each exact `model` value from the routing log as a table key
+or an ID in a group. Use the served model ID rather than the routing alias, and replace
+the example's numbers with your provider's rates. List recorded model IDs with:
 
 ```bash
 jq -r '.model' PATH | sort -u
@@ -199,8 +220,9 @@ Every entry requires `input`, `output`, `cache_read`, and `cache_write`. Set a r
 only when that usage is free. Each rate must be a finite number from 0 to 10000 USD per
 million tokens.
 
-The example's `cache_write` price is for a 5-minute cache. A 1-hour cache costs 2 times
-the input price instead of 1.25 times; set `cache_write_1h` to `4.00` for that example.
+The Claude Sonnet 5 example uses the 5-minute `cache_write` price. A 1-hour cache
+costs 2 times the input price instead of 1.25 times; set `cache_write_1h` to `4.00`
+for that example.
 Include that rate to estimate reported one-hour cache writes; without it, the estimate
 remains unknown.
 

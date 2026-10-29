@@ -50,14 +50,25 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 |---|:---:|---|---|
 | `format` | Yes | — | `openai_chat`, `openai_responses`, or `anthropic_messages`. |
 | `base_url` | Yes | — | Upstream base URL. |
-| `context_discovery` | No | unset | Set to `"llama_cpp"` to enable `/props` context discovery for VGR local targets. Disabled when unset. An explicit route `context_window` takes precedence. |
+| `context_discovery` | No | unset | Set to `"llama_cpp"` to enable `/props` context discovery for VGR efficient targets. Disabled when unset. An explicit route `context_window` takes precedence. |
 | `api_key_env` | No | unset | Name of the environment variable holding the key. Omit to send no authentication. |
 | `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. A route's forwarding clients must use one credential family unless they all use the same scheme, host, and port, such as one LLM gateway. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
+| `responses_reasoning` | No | `"preserve_encrypted"` | Responses reasoning replay: `"preserve_encrypted"` or `"drop"`. Only valid for `openai_responses`. |
 | `fallback_on_rate_limit` | No | `true` | Try another completion candidate after an upstream HTTP 429 exhausts retries. Set to `false` to return the 429 instead. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
 | `failure_cooldown_ms` | No | `5000` (5 seconds) | Skip a backend for this many milliseconds after an exhausted transient completion failure. Zero disables it. |
 | `timeout_ms` | No | unset | Deadline in milliseconds for all attempts, retry delays, and the complete response, including stream reads. Must be at least `1`. Unset leaves the wait unbounded. |
+
+For `openai_responses`, `responses_reasoning` controls replay of reasoning
+history. Every client defaults to `"preserve_encrypted"`: reasoning items with
+non-empty `encrypted_content` or a stored reasoning `id` are retained with empty
+`content`. ID-only reasoning is removed when the request sets `store: false`.
+Switchyard's translated Anthropic reasoning is always removed.
+Reasoning without either is removed. Set `responses_reasoning = "drop"` explicitly for a backend
+that cannot consume provider reasoning. Both modes keep messages, tool
+calls and tool results. The setting is rejected on other client formats, even
+when no target uses the client. It is not inferred from the model name or URL.
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
 must exist and be non-empty when the server loads.
@@ -216,6 +227,25 @@ Every route takes the common keys below, plus the keys for its type.
 | `reasoning` | No | unset | When `false`, the server rejects reasoning controls with HTTP 400 before dispatch. Explicit `true` and unset values do not restrict requests. The server does not include this declaration in `GET /v1/models`. |
 | `vision` | No | unset | Image-input support advertised in `GET /v1/models` under `data[].capabilities.vision`. When `false`, the server rejects images with HTTP 400 before dispatch, including images in tool results. Unset values appear as `null`. Explicit `true` and unset values do not restrict requests. Declare `true` only when every target the route can select accepts images. |
 
+### Optional infrastructure check
+
+A capability `llm_classifier` route without escalation may include `[routes.<name>.infra]`. Both tiers must have one model; each model may have
+multiple workers. A host applies the policy explicitly with `Route::apply_infra`
+after `Route::decide`, using periodically collected model-pool metrics and local in-flight
+counts. Plain `decide` and `execute` retain task routing. Sub-agent routing is unchanged.
+
+```toml
+[routes.example.infra]
+max_signal_age_ms = 3000
+min_waiting_requests = 4
+max_capable_inflight = 2
+```
+
+All keys are required. Limits must be positive. Missing or stale observations retain
+the task decision. See the
+[Dynamo PreProc example](../../examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing)
+for collection and capacity safeguards.
+
 ### `noop`
 
 Returns a buffered assistant response containing `OK` without calling an
@@ -350,7 +380,9 @@ Custom mode validates the judge's JSON against `response_schema`, resolves the
 policy selector, and routes to a runtime model group. A verdict names a group and
 the first model in it serves the turn. An eligible non-timeout failure tries the
 rest of that group, then any remaining models in `models.any`. A timeout stops
-the request without trying another model.
+the request without trying another model. A connection that times out before it
+is established counts as a connection failure, not a timeout, so it tries the
+next model.
 
 The `[routes.<name>.models]` table takes any group name you choose. `any` and
 `judge` are reserved and required; `capable` and `efficient` are reserved for the
@@ -394,7 +426,8 @@ the signals work and for tuning.
 | `confidence_threshold` | Yes | — | Corroboration a decisive pick needs. In `[0, 1]`. `efficient_first_threshold` is accepted as an alias. |
 | `capable_first_threshold` | No | `0.0` | Threshold used after an outer classifier selects the capable tier. Only a [composite](#composite) route sets that tier, so this key has no effect on a standalone `stage_router` route. |
 | `recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
-| `capable_hold_turns` | No | `2` | Requests kept on the capable tier after an escalation the signals or a hard override picked. A clean test pass clears the hold early; `0` disables it. |
+| `capable_hold_turns` | No | `2` | Requests kept on capable after a switch. Signal-driven capable decisions also start finite holds. Active holds skip signal processing and classification; `0` disables; `-1` pins after a switch. |
+| `efficient_hold_turns` | No | `0` | Requests kept on efficient after a switch, even when errors appear. `0` disables; `-1` pins after a switch. |
 | `tool_semantics.observe` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as read-only investigation. |
 | `tool_semantics.mutate` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as state-changing production. |
 | `tool_semantics.plan` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as planning or task decomposition. |
@@ -409,7 +442,7 @@ the signals work and for tuning.
 |---|:---:|---|---|
 | `handoff_notes.escalation_note` | Yes, when the table is present | — | Note appended to the request when the signals or a hard override escalate to the capable tier. |
 | `handoff_notes.deescalation_note` | No | unset | Note appended to the request whenever the signals select the efficient tier, whether or not a capable turn came before. |
-| `handoff_notes.only_on_wrong_signal_escalation` | No | `true` | When `true`, only the escalating turn itself carries the escalation note. `false` also adds it to the capable-hold turns that follow. |
+| `handoff_notes.only_on_wrong_signal_escalation` | No | `true` | When `true`, restricts escalation notes to signal-driven capable decisions. Held turns receive no notes with either setting. |
 
 #### `classifier` keys
 
@@ -424,8 +457,8 @@ so it is consulted on every ambiguous turn and never retains a verdict.
 | `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classifier.fail_open` | No | `true` | When `true`, judge client failures and deadlines let the turn fall open to the picker default and record fail-open evidence. When `false`, they stop the request. |
 | `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. It cannot be combined with `base_threshold`, `threshold_step`, `prompt`, `response_format_type`, or `max_output_tokens`; the load error is `decision cannot use LLM judge settings`. See [Decision model classifier](../routing_algorithms/composite_routing.md#decision-model-classifier). |
-| `classifier.classify_trigger` | No | `every_request` | Accepted for compatibility with `llm_classifier`. No effect on the stage fallback judge: it runs on every ambiguous turn and retains no verdict, so `user_turn` and `new_session` change nothing here. Use a [composite](#composite) route to judge once per user turn. |
-| `classifier.message_hash_fallback` | No | `false` | Accepted for compatibility. No effect on the stage fallback judge. Setting it with the default trigger is a load error. |
+| `classifier.classify_trigger` | No | `every_request` | Only the default is accepted here. The stage fallback judge runs on every ambiguous turn and retains no verdict, so `user_turn` and `new_session` are rejected at load. Use a [composite](#composite) route to judge once per user turn. |
+| `classifier.message_hash_fallback` | No | `false` | Rejected at load on a `stage_router` route. The fallback judge retains nothing to key on. |
 | `classifier.recent_turn_window` | No | unset | When unset, the judge sees the opening task and the latest user follow-up. When set, it also sees that many trailing messages. This counts messages, while the route's `recent_turn_window` counts tool results, so the two values are different units. |
 | `classifier.prompt` | No | packaged prompt | Replaces the capability judge prompt. The verdict schema is unchanged. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the LLM judge. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Not with `classifier.decision`. |
@@ -502,7 +535,8 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `stage.efficient_first_threshold` | No | `0.5` | Signal confidence required after an Efficient classification. In `[0, 1]`. Also accepts `confidence_threshold`. |
 | `stage.capable_first_threshold` | No | `0.0` | Signal confidence required after a Capable classification. In `[0, 1]`. |
 | `stage.recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
-| `stage.capable_hold_turns` | No | `2` | Requests kept on the capable tier after escalation. A clean test pass clears the hold early; `0` disables it. |
+| `stage.capable_hold_turns` | No | `2` | Same capable hold as `stage_router`: `0` disables; `-1` pins after a switch. |
+| `stage.efficient_hold_turns` | No | CF: `-1`; EF: `0` | Defaults to pinning efficient after a switch when the classifier selected capable-first. Explicit `0` disables; positive values hold that many requests. |
 | `stage.tool_semantics.observe` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as observation. |
 | `stage.tool_semantics.mutate` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as mutation. |
 | `stage.tool_semantics.plan` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as planning. |

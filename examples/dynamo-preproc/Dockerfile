@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends cmake && rm -rf
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY examples/claude ./examples/claude
 COPY examples/dynamo-preproc ./examples/dynamo-preproc
 RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/app/target cargo build -p switchyard-preproc --release --locked && cp target/release/switchyard-preproc /app/switchyard-preproc
 

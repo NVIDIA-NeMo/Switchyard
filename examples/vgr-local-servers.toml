@@ -5,7 +5,7 @@
 schema_version = 1
 
 # llama.cpp is active in this example. Discovery must be explicitly enabled.
-[llm_clients.local]
+[llm_clients.efficient]
 format = "openai_chat"
 base_url = "http://localhost:8080/v1"
 context_discovery = "llama_cpp"
@@ -14,34 +14,34 @@ context_discovery = "llama_cpp"
 # Also set context_window in routes.assistant to match the running service.
 #
 # Ollama:
-# [llm_clients.local]
+# [llm_clients.efficient]
 # format = "openai_chat"
 # base_url = "http://localhost:11434/v1"
 #
 # vLLM:
-# [llm_clients.local]
+# [llm_clients.efficient]
 # format = "openai_chat"
 # base_url = "http://localhost:8000/v1"
 
-[llm_clients.cloud]
+[llm_clients.capable]
 format = "openai_chat"
 base_url = "https://api.openai.com/v1"
 # api_key_env = "OPENAI_API_KEY"
 
-[targets.local]
+[targets.efficient]
 # Use the llama.cpp alias, Ollama model tag, or vLLM served model name.
-id = "local-model"
-llm_client = "local"
+id = "efficient-model"
+llm_client = "efficient"
 
-[targets.cloud]
-id = "cloud-model"
-llm_client = "cloud"
+[targets.capable]
+id = "capable-model"
+llm_client = "capable"
 
 [routes.assistant]
 id = "switchyard/vgr"
 type = "vgr"
-local_target = "local"
-cloud_target = "cloud"
+efficient_target = "efficient"
+capable_target = "capable"
 mode = "shadow"
 # Explicit context_window takes precedence and skips discovery.
 # Set this for Ollama/vLLM, or to set a deliberate limit with llama.cpp.

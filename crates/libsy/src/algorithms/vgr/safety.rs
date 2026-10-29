@@ -11,7 +11,7 @@ use switchyard_protocol::LlmClientError;
 
 use crate::LibsyError;
 
-/// Operator-controlled stop for local attempts.
+/// Operator-controlled stop for efficient attempts.
 #[derive(Clone, Debug, Default)]
 pub struct KillSwitch(Arc<AtomicBool>);
 
@@ -21,17 +21,17 @@ impl KillSwitch {
         Self::default()
     }
 
-    /// Stops local attempts for subsequent requests.
+    /// Stops efficient attempts for subsequent requests.
     pub fn engage(&self) {
         self.0.store(true, Ordering::Relaxed);
     }
 
-    /// Allows local attempts again.
+    /// Allows efficient attempts again.
     pub fn release(&self) {
         self.0.store(false, Ordering::Relaxed);
     }
 
-    /// Reports whether local attempts are stopped.
+    /// Reports whether efficient attempts are stopped.
     pub fn is_engaged(&self) -> bool {
         self.0.load(Ordering::Relaxed)
     }
@@ -97,6 +97,11 @@ impl CircuitBreaker {
         *self.state.lock() = BreakerState::default();
     }
 
+    /// Whether repeated failures have opened the breaker; it stays open until a trial succeeds.
+    pub(super) fn is_open(&self) -> bool {
+        self.state.lock().opened_at.is_some()
+    }
+
     pub(super) fn failure(&self) {
         let mut state = self.state.lock();
         state.failures = state.failures.saturating_add(1);
@@ -107,7 +112,7 @@ impl CircuitBreaker {
     }
 }
 
-/// Releases a recovery trial if its local call is cancelled or abandoned.
+/// Releases a recovery trial if its efficient call is cancelled or abandoned.
 pub(super) struct Attempt<'a> {
     breaker: &'a CircuitBreaker,
     recovery: bool,
@@ -141,7 +146,8 @@ pub(super) fn fallback_eligible(error: &LibsyError) -> bool {
         LibsyError::ClientCall { source, .. } if match source {
             LlmClientError::ContextWindowExceeded { .. }
                 | LlmClientError::Transport { .. }
-                | LlmClientError::Timeout { .. } => true,
+                | LlmClientError::Timeout { .. }
+                | LlmClientError::TemporarilyUnavailable => true,
             LlmClientError::UpstreamHttp { status, .. } =>
                 matches!(
                     *status,
@@ -159,7 +165,9 @@ pub(super) fn endpoint_failure(error: &LibsyError) -> bool {
     matches!(
         error,
         LibsyError::ClientCall { source, .. } if match source {
-            LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
+            LlmClientError::Transport { .. }
+            | LlmClientError::Timeout { .. }
+            | LlmClientError::TemporarilyUnavailable => true,
             LlmClientError::UpstreamHttp { status, .. } => matches!(
                 *status,
                 StatusCode::BAD_GATEWAY
