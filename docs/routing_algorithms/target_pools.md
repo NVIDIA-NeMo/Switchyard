@@ -68,29 +68,48 @@ target decisions, category-based failover, request mutations, and served-respons
 reuse remain available. An explicit target must belong to the runtime completion
 group; it need not be an anchor in a smaller optional pool.
 
-## Anchors and bands
+## Anchors and ambiguity bands
 
-Configure ordered target anchors from `0` to `1`. Omitted positions are evenly
-spaced. N targets have N anchors, N−2 interior anchors, and N−1 adjacent intervals.
-For adjacent anchors `a` and `b`, the boundary is `(a+b)/2`. Stage's closed
-ambiguity band extends `t * (b-a)/2` on either side of that boundary, where `t` is
-its confidence threshold.
+Order N targets on a score line with anchors `a_1 = 0 < ... < a_N = 1`.
+Omitted anchor positions are evenly spaced. There are N−2 interior anchors and
+N−1 intervals between adjacent anchors.
 
-For anchors `[0.0, 0.4, 1.0]` and `t=0.5`, the two bands differ in width because
-the anchor intervals differ. The diagram labels the exact values; spacing is
-schematic.
+For each adjacent pair `a_i`, `a_(i+1)`, Stage defines:
+
+- Midpoint: `m_i = (a_i + a_(i+1)) / 2`.
+- Ambiguous band: `[L_i, U_i]`, where `L_i = m_i - t * (a_(i+1) - a_i) / 2`
+  and `U_i = m_i + t * (a_(i+1) - a_i) / 2`.
+- Clear bands: the remaining regions around the anchors. A clear score selects
+  that anchor's target; an ambiguous score continues to the next classifier.
+
+Here `t` is Stage's `confidence_threshold`. Both kinds of band appear on the same
+line below, in increasing score order. The middle pattern repeats for N targets;
+with two targets, there is just one ambiguous band between the two clear bands.
+Spacing is schematic.
 
 ```mermaid
 flowchart LR
-    S(("Small<br/>0.00")) --- B1["Ambiguous: 0.10–0.30<br/>Boundary: 0.20"]
-    B1 --- M(("Medium<br/>0.40"))
-    M --- B2["Ambiguous: 0.55–0.85<br/>Boundary: 0.70"]
-    B2 --- L(("Large<br/>1.00"))
-    classDef anchor fill:#e8f5e9,stroke:#287a3c,color:#163d20
-    classDef band fill:#fff3df,stroke:#a36400,color:#573700
-    class S,M,L anchor
-    class B1,B2 band
+    C1["Clear → target 1<br/>[a₁, L₁)"] --- A1["Ambiguous<br/>[L₁, U₁]"]
+    A1 --- C2["Clear → target 2<br/>(U₁, L₂)"]
+    C2 --- More["⋯"]
+    More --- AN["Ambiguous<br/>[Lₙ₋₁, Uₙ₋₁]"]
+    AN --- CN["Clear → target N<br/>(Uₙ₋₁, aₙ]"]
+    classDef clear fill:#e8f5e9,stroke:#287a3c,color:#163d20
+    classDef ambiguous fill:#fff3df,stroke:#a36400,color:#573700
+    class C1,C2,CN clear
+    class A1,AN ambiguous
 ```
+
+Square brackets include a boundary; parentheses exclude it. For any interior
+target `i`, the clear band is `(U_(i-1), L_i)`. At `t=1`, the clear bands are empty.
+These bands describe Stage's ambiguity policy; the shared pool maps accepted
+clear scores to targets, and other classifiers can define their own policy.
+
+### Example: three targets
+
+For small, medium, and large at anchors `[0.0, 0.4, 1.0]`, with `t=0.5`, the
+midpoints are `0.20` and `0.70`. The ambiguous bands have different widths because
+the anchor intervals differ.
 
 | Score position | Stage result at `t=0.5` |
 |---|---|
