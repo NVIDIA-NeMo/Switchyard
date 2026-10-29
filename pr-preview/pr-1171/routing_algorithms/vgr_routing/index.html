@@ -2469,16 +2469,19 @@ entry and leave the route's <code>context_window</code> unset. Switchyard then r
 service's <code>/props</code> response and advertises a positive context capacity when
 available. Missing or invalid properties leave the capacity unknown; routing
 continues normally. Discovery does not configure the service or load a model.</p>
-<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f71d232dbc969483bbf5a5f29e0bfd1216a87c6a/examples/vgr-local-servers.toml">the local-server example</a>
+<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/bf379774348df534547bec0bdc0d0001e8cc3439/examples/vgr-local-servers.toml">the local-server example</a>
 for an active llama.cpp configuration and commented Ollama/vLLM alternatives.
 For Ollama and vLLM, set <code>context_window</code> to match the running service; automatic
 discovery for those servers is not implemented.</p>
 <p>The judge reads its verdicts from the first token's logprobs, so its scored calls
 turn thinking off: they send <code>reasoning_effort = "none"</code> and
 <code>chat_template_kwargs = {"enable_thinking": false}</code> on <code>openai_chat</code> targets.
-Candidates and the judge's deliberation keep the target's own setting. A backend
-that rejects <code>chat_template_kwargs</code> can drop it with the target's
-<code>omit_body_fields</code>.</p>
+Candidates and the judge's deliberation keep the target's own setting. If a Chat
+backend explicitly rejects this template switch with HTTP 400 or 422, the SDK
+retries once without it, within the same deadline. Other request fields and the
+configured transient retry budget are preserved. The target's <code>omit_body_fields</code>
+can omit the switch from the first call. Custom hosts must handle provider
+compatibility themselves.</p>
 <p>The server caches the model catalog, including unavailable discovery results,
 for one minute. Discovery probes run concurrently with a two-second total budget
 per refresh. Completed discoveries are retained when that budget expires.</p>
@@ -2525,7 +2528,7 @@ Client and upstream HTTP timeouts still apply. Configure those timeouts in the
 harness and Switchyard client for long-running decisions. Configured durations
 must remain positive even when these VGR limits are disabled.</p>
 <h2 id="hermes-auxiliary-routing">Hermes auxiliary routing<a class="headerlink" href="#hermes-auxiliary-routing" title="Permanent link">&para;</a></h2>
-<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f71d232dbc969483bbf5a5f29e0bfd1216a87c6a/examples/vgr-local-servers.toml">local-server example</a> exposes
+<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/bf379774348df534547bec0bdc0d0001e8cc3439/examples/vgr-local-servers.toml">local-server example</a> exposes
 <code>switchyard/only-efficient</code> through the existing passthrough router. Hermes can
 use it for titles and approval checks, independently of the conversation's VGR
 route. Configure Hermes against the same Switchyard server:</p>
@@ -2565,8 +2568,13 @@ automatic continuations. Retries retain the original call's tag. Without a
 recognized tag, Switchyard uses the message shape to identify a user turn.
 <code>x-session-id</code> is also accepted as a session-header alias.</p>
 <h2 id="served-answer-reporting">Served-answer reporting<a class="headerlink" href="#served-answer-reporting" title="Permanent link">&para;</a></h2>
-<p>The SDK client reports served answers through <code>Algorithm::observe_answer</code>.
-Custom libsy hosts can report <code>AnswerSummary::of(&amp;response)</code> for aggregate
+<p>VGR opts into served-answer reporting through <code>Algorithm::tracks_answers</code>.
+The SDK summarizes answers only for opted-in algorithms with a session ID;
+other routers keep their responses and streams unchanged. Custom algorithms and
+classifiers default to no tracking. Stateful <code>FallThrough</code> routes opt in when a
+classifier requests reports.</p>
+<p>Custom libsy hosts can check <code>tracks_answers()</code> and report
+<code>AnswerSummary::of(&amp;response)</code> through <code>Algorithm::observe_answer</code> for aggregate
 responses. For streams, report <code>final_reply = false</code> when serving begins and
 report the final summary before forwarding the terminal chunk. Use the request's
 session ID; requests without one retain the existing behavior.</p>
@@ -2575,7 +2583,10 @@ immediate recovery nudges retain the turn hold and budget. A reply to a complete
 final answer releases them after a two-second quiet period. Explicit user/agent
 headers take precedence. Hosts that omit reporting retain message-shape detection.</p>
 <h2 id="verification-and-capable-tier-outages">Verification and capable-tier outages<a class="headerlink" href="#verification-and-capable-tier-outages" title="Permanent link">&para;</a></h2>
-<p>Policy version <code>1.1</code> verifies typed factual answers on the answer itself, including
+<p>Policy version <code>1.2</code> allows the default verification branch to accept a clean
+efficient attempt when the capable judge approves both the evidence and the
+answer. A negative or unavailable evidence verdict skips the answer check.</p>
+<p>Typed factual answers are verified on the answer itself, including
 later user turns without tool work. A readout of at least 0.9 can serve the
 efficient answer; lower scores require capable-tier verification. Scored verdicts
 require yes and no together to hold at least half the first token's probability.</p>
@@ -2589,7 +2600,10 @@ image request the efficient tier cannot serve.</p>
 <h2 id="serving-modes">Serving modes<a class="headerlink" href="#serving-modes" title="Permanent link">&para;</a></h2>
 <ul>
 <li><code>off</code> skips candidate generation and serves the capable tier. This is the default.</li>
-<li><code>shadow</code> computes a decision but serves the capable tier.</li>
+<li><code>shadow</code> computes a decision but serves the capable tier. It continues evaluating
+  subsequent steps until VGR escalates, then holds the capable tier for the rest
+  of the user turn. A new user turn resumes evaluation, including when
+  <code>latch_escalation = true</code>.</li>
 <li><code>evaluate</code> serves the policy decision for isolated evaluation.</li>
 <li><code>active</code> serves the policy decision in production and requires
   <code>active_approval = "prospective-validation-and-canary-approved"</code>.</li>

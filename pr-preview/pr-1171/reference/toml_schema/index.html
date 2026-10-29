@@ -2802,6 +2802,12 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 <td>Custom HTTP headers sent to the model server. Set credentials with <code>api_key_env</code> or <code>forward_auth</code>; the server rejects headers owned by the selected auth mode. Header names are case-insensitive.</td>
 </tr>
 <tr>
+<td><code>responses_reasoning</code></td>
+<td style="text-align: center;">No</td>
+<td><code>"preserve_encrypted"</code></td>
+<td>Responses reasoning replay: <code>"preserve_encrypted"</code> or <code>"drop"</code>. Only valid for <code>openai_responses</code>.</td>
+</tr>
+<tr>
 <td><code>fallback_on_rate_limit</code></td>
 <td style="text-align: center;">No</td>
 <td><code>true</code></td>
@@ -2827,6 +2833,15 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 </tr>
 </tbody>
 </table>
+<p>For <code>openai_responses</code>, <code>responses_reasoning</code> controls replay of reasoning
+history. Every client defaults to <code>"preserve_encrypted"</code>: reasoning items with
+non-empty <code>encrypted_content</code> or a stored reasoning <code>id</code> are retained with empty
+<code>content</code>. ID-only reasoning is removed when the request sets <code>store: false</code>.
+Switchyard's translated Anthropic reasoning is always removed.
+Reasoning without either is removed. Set <code>responses_reasoning = "drop"</code> explicitly for a backend
+that cannot consume provider reasoning. Both modes keep messages, tool
+calls and tool results. The setting is rejected on other client formats, even
+when no target uses the client. It is not inferred from the model name or URL.</p>
 <p>The TOML never contains the secret itself. <code>api_key_env</code> names a variable that
 must exist and be non-empty when the server loads.</p>
 <p>Cooldown is enabled by default for 5 seconds. Set <code>failure_cooldown_ms = 0</code> to disable it.
@@ -3069,7 +3084,7 @@ counts. Plain <code>decide</code> and <code>execute</code> retain task routing. 
 </span></code></pre></div>
 <p>All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f71d232dbc969483bbf5a5f29e0bfd1216a87c6a/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/bf379774348df534547bec0bdc0d0001e8cc3439/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
 for collection and capacity safeguards.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
@@ -3450,7 +3465,9 @@ dependencies available in the active virtual environment.</p>
 policy selector, and routes to a runtime model group. A verdict names a group and
 the first model in it serves the turn. An eligible non-timeout failure tries the
 rest of that group, then any remaining models in <code>models.any</code>. A timeout stops
-the request without trying another model.</p>
+the request without trying another model. A connection that times out before it
+is established counts as a connection failure, not a timeout, so it tries the
+next model.</p>
 <p>The <code>[routes.&lt;name&gt;.models]</code> table takes any group name you choose. <code>any</code> and
 <code>judge</code> are reserved and required; <code>capable</code> and <code>efficient</code> are reserved for the
 tier meaning the other algorithms give them. Every other key is yours, which is

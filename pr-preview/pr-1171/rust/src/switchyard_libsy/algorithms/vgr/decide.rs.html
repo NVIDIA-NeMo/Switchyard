@@ -9,7 +9,7 @@
 <a href=#9 id=9 data-nosnippet>9</a></span><span class="kw">use super</span>::{Branch, Capabilities};
 <a href=#10 id=10 data-nosnippet>10</a>
 <a href=#11 id=11 data-nosnippet>11</a><span class="doccomment">/// Version of these rules and dials, carried on every decision record.
-<a href=#12 id=12 data-nosnippet>12</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">const </span>POLICY_VERSION: <span class="kw-2">&amp;</span>str = <span class="string">"1.1"</span>;
+<a href=#12 id=12 data-nosnippet>12</a></span><span class="kw">pub</span>(<span class="kw">super</span>) <span class="kw">const </span>POLICY_VERSION: <span class="kw-2">&amp;</span>str = <span class="string">"1.2"</span>;
 <a href=#13 id=13 data-nosnippet>13</a>
 <a href=#14 id=14 data-nosnippet>14</a><span class="kw">const </span>READOUT: f64 = <span class="number">0.9</span>;
 <a href=#15 id=15 data-nosnippet>15</a><span class="kw">const </span>DELIBERATION: f64 = <span class="number">0.5</span>;
@@ -140,12 +140,16 @@
 <a href=#140 id=140 data-nosnippet>140</a>                    AgenticRun::Vetoed =&gt; <span class="bool-val">false</span>,
 <a href=#141 id=141 data-nosnippet>141</a>                }
 <a href=#142 id=142 data-nosnippet>142</a>        }
-<a href=#143 id=143 data-nosnippet>143</a>        Branch::DefaultVerified =&gt; clean &amp;&amp; efficient_verified(branch, signals),
-<a href=#144 id=144 data-nosnippet>144</a>    };
-<a href=#145 id=145 data-nosnippet>145</a>    <span class="kw">if </span>commit {
-<a href=#146 id=146 data-nosnippet>146</a>        Route::Efficient
-<a href=#147 id=147 data-nosnippet>147</a>    } <span class="kw">else </span>{
-<a href=#148 id=148 data-nosnippet>148</a>        Route::Capable
-<a href=#149 id=149 data-nosnippet>149</a>    }
-<a href=#150 id=150 data-nosnippet>150</a>}
+<a href=#143 id=143 data-nosnippet>143</a>        Branch::DefaultVerified =&gt; {
+<a href=#144 id=144 data-nosnippet>144</a>            clean
+<a href=#145 id=145 data-nosnippet>145</a>                &amp;&amp; (efficient_verified(branch, signals)
+<a href=#146 id=146 data-nosnippet>146</a>                    || (affirms(signals.capable_judge) &amp;&amp; affirms(signals.evidence_confirm)))
+<a href=#147 id=147 data-nosnippet>147</a>        }
+<a href=#148 id=148 data-nosnippet>148</a>    };
+<a href=#149 id=149 data-nosnippet>149</a>    <span class="kw">if </span>commit {
+<a href=#150 id=150 data-nosnippet>150</a>        Route::Efficient
+<a href=#151 id=151 data-nosnippet>151</a>    } <span class="kw">else </span>{
+<a href=#152 id=152 data-nosnippet>152</a>        Route::Capable
+<a href=#153 id=153 data-nosnippet>153</a>    }
+<a href=#154 id=154 data-nosnippet>154</a>}
 </code></pre></div></section></main></body></html>
