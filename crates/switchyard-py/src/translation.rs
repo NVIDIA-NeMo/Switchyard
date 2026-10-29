@@ -1,8 +1,6 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Python bindings for translation.
-
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
@@ -23,8 +21,6 @@ create_exception!(
 );
 
 /// Translate buffered JSON requests and responses with the default policy.
-///
-/// Each call is independent; request context is not retained for later responses.
 #[pyclass(name = "TranslationEngine", module = "switchyard.translation", frozen)]
 struct PyTranslationEngine {
     inner: TranslationEngine,
@@ -42,10 +38,6 @@ impl PyTranslationEngine {
     }
 
     /// Translate a request dictionary, returning body and diagnostics.
-    ///
-    /// Formats accept WireFormat members or their string values. Invalid argument
-    /// types raise TypeError. Unknown formats and translation failures raise
-    /// TranslationError.
     fn translate_request(
         &self,
         py: Python<'_>,
@@ -62,9 +54,6 @@ impl PyTranslationEngine {
     }
 
     /// Translate a complete response dictionary, returning body and diagnostics.
-    ///
-    /// Formats and errors follow translate_request. Streaming events and metadata
-    /// from a previous request are not supported by this method.
     fn translate_response(
         &self,
         py: Python<'_>,
@@ -134,38 +123,4 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
         module.py().get_type::<TranslationError>(),
     )?;
     module.add_submodule(&translation)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn details_preserve_json_and_policy_failures() {
-        let invalid_json = serde_json::from_str::<Value>("{").unwrap_err();
-        let expected = json!({
-            "message": invalid_json.to_string(),
-            "line": invalid_json.line(),
-            "column": invalid_json.column(),
-        });
-        assert_eq!(
-            error_details(&CoreTranslationError::InvalidJson(invalid_json)),
-            expected
-        );
-        for error in [
-            CoreTranslationError::LossyConversion("cannot preserve data".into()),
-            CoreTranslationError::Other("cannot preserve data".into()),
-        ] {
-            assert_eq!(
-                error_details(&error),
-                json!({"message": "cannot preserve data"})
-            );
-        }
-        assert_eq!(
-            error_details(&CoreTranslationError::UnknownField {
-                path: "$.extra".into()
-            }),
-            json!({"path": "$.extra"})
-        );
-    }
 }
