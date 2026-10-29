@@ -14,8 +14,7 @@ use crate::routing_log::RoutingLogContext;
 use crate::stats::{StatsAccumulator, TokenUsage};
 
 /// Observes a routed response without changing its aggregate or streaming contents.
-/// `model` is the served target, which keys stats. `provider_model` is what the routing log
-/// records as the model.
+/// `model` is the served target; stats retain both target and provider aggregates.
 pub(crate) fn observe(
     response: Response,
     model: &str,
@@ -143,8 +142,9 @@ fn record_terminal(
     cache_eligible: f64,
 ) {
     let total_latency = started.elapsed();
-    record_usage(usage, model);
-    record_latency(model, total_latency);
+    let provider_model = stats.provider_model(&model.into());
+    record_usage(usage, &provider_model);
+    record_latency(&provider_model, total_latency);
     let mut token_usage = token_usage(usage);
     token_usage.cacheable_prompt_tokens =
         (token_usage.prompt_tokens as f64 * cache_eligible).round() as u64;

@@ -2288,3 +2288,100 @@ async fn in_flight_gauge_clears_when_a_run_is_abandoned() -> switchyard_libsy::R
     );
     Ok(())
 }
+
+/// Routing keys remain distinct while both routing-time and answer metrics aggregate by provider.
+#[tokio::test]
+async fn target_aliases_preserve_provider_model_metric_labels() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (_, exporter, provider, _, _) = telemetry();
+    struct MappedClient {
+        model: ModelId,
+    }
+    #[async_trait]
+    impl RoutedLlmClient for MappedClient {
+        fn provider_model<'a>(&'a self, _: &'a ModelId) -> &'a ModelId {
+            &self.model
+        }
+        async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
+            UsageClient {
+                usage: Usage::default(),
+            }
+            .call(request)
+            .await
+        }
+    }
+    for routing_time in [false, true] {
+        let name = if routing_time {
+            "mapped-routing"
+        } else {
+            "mapped-answer"
+        };
+        let provider_model = ModelId::from(format!("provider/{name}"));
+        let client = Arc::new(MappedClient {
+            model: provider_model.clone(),
+        });
+        let models = Arc::new(
+            RuntimeModels::default().with_provider_models(
+                ["efficient", "capable"]
+                    .into_iter()
+                    .map(|target| (ModelId::from(target), provider_model.clone()))
+                    .collect(),
+            ),
+        );
+        for target in ["efficient", "capable"] {
+            let algorithm = if routing_time {
+                Arc::new(RoutingCallAlgo {
+                    name: name.into(),
+                    target: target.into(),
+                }) as Arc<dyn Algorithm>
+            } else {
+                algo(name, target)
+            };
+            let (selected, _) = switchyard_llm_client::run(
+                algorithm,
+                ClientRouter::single(client.clone()),
+                Request {
+                    llm_request: text_request(None, "hello"),
+                    ..Request::default()
+                },
+                models.clone(),
+                None,
+            )
+            .await?;
+            assert_eq!(selected, target);
+        }
+        let snapshots = flushed_metrics(exporter, provider);
+        for metric in ["switchyard.decisions", "switchyard.llm_calls"] {
+            assert_eq!(
+                u64_counter_value(
+                    &snapshots,
+                    metric,
+                    &[
+                        ("algorithm", name),
+                        ("selected_model", provider_model.as_str())
+                    ]
+                ),
+                Some(2)
+            );
+            for target in ["efficient", "capable"] {
+                assert_eq!(
+                    u64_counter_value(
+                        &snapshots,
+                        metric,
+                        &[("algorithm", name), ("selected_model", target)]
+                    ),
+                    None
+                );
+            }
+        }
+        assert_eq!(
+            u64_counter_value(
+                &snapshots,
+                "switchyard.requests",
+                &[("model", provider_model.as_str())]
+            ),
+            Some(2)
+        );
+    }
+    Ok(())
+}

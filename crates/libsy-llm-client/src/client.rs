@@ -835,6 +835,10 @@ impl TranslatingLlmClient {
 
 #[async_trait]
 impl RoutedLlmClient for TranslatingLlmClient {
+    fn provider_model<'a>(&'a self, target: &'a ModelId) -> &'a ModelId {
+        TranslatingLlmClient::provider_model(self, target)
+    }
+
     async fn call(&self, request: Request) -> Result<Response> {
         self.call_rewrite_model(request, None).await
     }

@@ -467,7 +467,11 @@ fn stats_observer(
             } else {
                 if let Some((log, context)) = classifier_log.as_ref() {
                     log.append(
-                        context.clone(),
+                        context.clone().with_reasoning_effort(
+                            route
+                                .target(&call.selected_model)
+                                .and_then(|target| target.reasoning_effort.as_deref()),
+                        ),
                         &call.selected_model,
                         route.provider_model(&call.selected_model),
                         None,
@@ -482,7 +486,11 @@ fn stats_observer(
             if let Some((log, context)) = classifier_log.as_ref() {
                 let model = route.provider_model(&call.selected_model);
                 log.append(
-                    context.clone(),
+                    context.clone().with_reasoning_effort(
+                        route
+                            .target(&call.selected_model)
+                            .and_then(|target| target.reasoning_effort.as_deref()),
+                    ),
                     &call.selected_model,
                     model,
                     Some(CLASSIFIER_TIER),
@@ -1098,8 +1106,9 @@ async fn handle_llm_request(
     });
     // Only the Codex namespace mapping is needed downstream, not the whole request.
     let request_extensions = request.llm_request.extensions.clone();
+    let stats = state.stats.for_route(route.clone());
     let observer = stats_observer(
-        state.stats.clone(),
+        stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
         route.clone(),
     );
@@ -1114,7 +1123,7 @@ async fn handle_llm_request(
                     | LlmClientError::ResponseStateConflict,
             }) = &error
             {
-                state.stats.record_response_error(target);
+                stats.record_response_error(target);
             }
             return runner_error(error);
         }
@@ -1126,21 +1135,28 @@ async fn handle_llm_request(
     // The response carries the candidate that actually served it. Fall back to the routing
     // selection for algorithms that return a response without an offloaded model call.
     let served_model = response.served_model().cloned().or(Some(selected_model));
-    // Stats and logs use the target. The caller sees the provider model that answered.
+    // Keep the provider identity separate from the selected target for reporting.
     let provider_model = served_model
         .as_ref()
         .map(|model| route.provider_model(model).to_string());
     let mut response = if let Some(served_model) = served_model.as_ref() {
         let cache_eligible = cache_probe
             .as_ref()
-            .map(|probe| state.stats.prefix_eligibility(served_model, probe))
+            .map(|probe| stats.prefix_eligibility(served_model, probe))
             .unwrap_or(0.0);
+        let routing_log_context = routing_log_context.map(|context| {
+            context.with_reasoning_effort(
+                route
+                    .target(served_model)
+                    .and_then(|target| target.reasoning_effort.as_deref()),
+            )
+        });
         usage_metrics::observe(
             response,
             served_model.as_str(),
             provider_model.as_deref().unwrap_or(served_model.as_str()),
             started.0,
-            state.stats,
+            stats,
             cache_eligible,
             state.routing_log.zip(routing_log_context),
         )

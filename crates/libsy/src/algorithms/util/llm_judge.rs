@@ -252,7 +252,7 @@ where
     fn report_fail_open(&self, driver: &Driver, error: String, reason: &'static str) {
         let judge_target = driver
             .first_model_for(&Category::Judge)
-            .map(|c| c.as_str())
+            .map(|c| driver.provider_model(c).as_str())
             .unwrap_or("missing");
         report_fail_open(judge_target, error, reason);
         if self.evidence.is_some() {

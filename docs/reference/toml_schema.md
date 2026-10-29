@@ -187,7 +187,16 @@ reasoning_effort = "medium"
 ```
 
 Responses, the `x-model-router-selected-model` header, and the routing log `model` field name the
-target's `id`. The routing log also has a `target` field. Stats and metrics name the target.
+target's `id`. Existing model metric labels and the `models` keys in `/v1/stats` and
+`/v1/routing/session-stats` also use provider IDs. Targets sharing a provider model contribute
+to one model aggregate.
+
+Both stats endpoints add a separate `targets` breakdown keyed by TOML target name. Each entry
+includes `model`, configured `reasoning_effort` (or `null`), and that target's counters. The
+process stats also include `classifier.targets` for routing-time calls. Totals count each call
+once; the model and target breakdowns are two views of those calls. Routing log rows retain
+`model` and `target`, and include `reasoning_effort` when configured. Older rows without a
+target still contribute to model totals.
 
 Each selected or fallback target is prepared from the routed request independently. A prompt
 configured for one target is therefore not carried into another target's fallback request.

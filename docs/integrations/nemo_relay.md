@@ -398,8 +398,11 @@ supported trace projections, but Relay's OTLP logs default to Info. Set
 `minimum_severity` to `debug` to include these call records in
 [log export](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/opentelemetry#log-export).
 
-Switchyard marks use the target's TOML key, such as `capable`, not its upstream model ID.
-Targets that share one model ID therefore stay distinct.
+Switchyard marks keep provider model IDs in `selected_model` and `served_model`.
+Decision marks also include `selected_target`, `served_target`, and the served target's
+configured `reasoning_effort`. Targets sharing one provider model remain distinguishable.
+`fallback_used` compares target identities, so a fallback between two targets sharing a
+provider model is still reported.
 Relay request telemetry normally uses the Switchyard route ID, while response
 telemetry can report the model that answered.
 

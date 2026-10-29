@@ -81,7 +81,7 @@ impl Classifier for SourceStamp {
         let (classification, served) = self.inner.score(state, request, driver).await?;
         // An abstaining classifier passes the turn on, so it is not its to claim.
         if let Some(winner) = classification.argmax(false)? {
-            record_routing_decision(self.source, &winner.target);
+            record_routing_decision(self.source, driver.provider_model(&winner.target));
             driver.set_evidence_if_empty(serde_json::json!({
                 "source": self.source.as_str(),
             }));
