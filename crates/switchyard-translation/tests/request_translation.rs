@@ -2926,6 +2926,29 @@ fn openai_request_translates_system_developer_and_reasoning_to_anthropic() -> Te
         output["messages"][0]["content"][0],
         json!({"type": "text", "text": "Describe"})
     );
+
+    // OpenAI also accepts "none" and "minimal", which Anthropic rejects as efforts.
+    for (effort, thinking, anthropic_effort) in [
+        ("none", json!({"type": "disabled"}), None),
+        ("minimal", json!({"type": "adaptive"}), Some(json!("low"))),
+    ] {
+        let mut body = body.clone();
+        body["reasoning_effort"] = json!(effort);
+        let output = engine
+            .translate_request(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &body,
+                &TranslationPolicy::default(),
+            )?
+            .body;
+        assert_eq!(output["thinking"], thinking, "{effort}");
+        assert_eq!(
+            output["output_config"].get("effort"),
+            anthropic_effort.as_ref(),
+            "{effort}"
+        );
+    }
     Ok(())
 }
 
