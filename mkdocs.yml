@@ -41,6 +41,7 @@ nav:
           - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md
           - Advisor-Gate Routing: routing_algorithms/advisor_gate_routing.md
           - Verification-Gated Routing: routing_algorithms/vgr_routing.md
+      - N-target Pools and FallThrough: routing_algorithms/target_pools.md
       - Choose Models: routing_algorithms/model_selection.md
   - Evaluate Routing:
       - Benchmarks: benchmarks.md

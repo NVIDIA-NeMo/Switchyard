@@ -478,8 +478,8 @@ Schema with one choice per target. Omit `classifier.mode`,
 `classifier.base_threshold`, `classifier.threshold_step`, and `classifier.decision`.
 `classifier.response_format_type` must be `json_schema`. `classifier.prompt`
 customizes the instructions before the generated choices. See
-[Multi-target Stage routing](../routing_algorithms/stage_router_routing.md#optional-more-than-two-targets)
-for the score line and ambiguity-band formula.
+[N-target pools and FallThrough](../routing_algorithms/target_pools.md)
+for the score line, ambiguity bands, and current Stage integration.
 
 ### `auto`
 

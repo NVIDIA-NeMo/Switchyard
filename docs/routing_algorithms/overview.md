@@ -9,6 +9,10 @@ configuration and tuning. [Mechanics of Libsy](../mechanics_of_libsy.md) explain
 the execution model; [Switchyard Protocols](../protocols/index.md) explains the
 request and response data.
 
+The shared [N-target pool](target_pools.md) lets compatible FallThrough classifiers
+separate scoring from target selection. Stage is its current configurable
+integration, including the Stage component of Composite.
+
 ## Choose a strategy
 
 Start with **Auto**. Choose Task or Execution when you want more control over

@@ -350,21 +350,10 @@ target = "judge"
 recent_turn_window = 8
 ```
 
-`positions` assigns one anchor per target. Omit it for evenly spaced anchors.
-Positions must be finite, strictly increasing, and span `0` to `1`. With N targets,
-there are N−2 interior anchors and N−1 adjacent intervals.
-
-For adjacent anchors `a` and `b`, the boundary is `(a+b)/2`. The closed ambiguity
-band extends `confidence_threshold * (b-a)/2` on either side. The example has
-boundaries at `0.2` and `0.7`, with ambiguous bands `[0.1, 0.3]` and `[0.55, 0.85]`.
-At threshold zero, only exact boundaries remain ambiguous. At threshold one,
-continuous scores always consult the fallback. The existing two-target band is
-unchanged.
-
-Stage can return a clear or ambiguous position on this shared line. Ambiguous
-results continue the cascade. The first clear position is resolved once by the
-pool to the nearest target. Existing categorical classifiers return target
-decisions directly; these remain clear even at threshold one.
+This configures the shared [N-target pool and FallThrough](target_pools.md)
+mechanism for Stage. The guide explains anchors, ambiguity bands, cascade branches,
+validation, and the unchanged valid two-target behavior. `positions` assigns one
+anchor per target; omit it for evenly spaced anchors.
 
 For pools larger than two targets, the fallback uses the existing custom-schema
 LLM classifier. It generates one choice per target (`target_0`, `target_1`, …),
@@ -381,32 +370,6 @@ intermediate target to an endpoint counts as a switch for that endpoint's hold.
 `efficient_first` falls open to the first target; `capable_first` to the last.
 Composite routes accept the same pool under `[routes.agent.stage.pool]`; their outer
 judge still selects the EF or CF policy. Subagent routing keeps its own target groups.
-
-The existing Rust `Score.target`, `Classification`, and `Classifier::score` API
-remain unchanged. The optional `Classifier::classify` method defaults to that API;
-classifiers can override it to return `ClassifierOutput::Position` when a pool is
-configured. `RuntimeModels::with_pool(pool)?` validates pool membership and opts in.
-Without a pool, routing keeps the existing decision path. Category-based failover and already-served responses remain
-supported.
-
-Capability, decision, escalation, and VGR model-selection classifiers are binary.
-The cascade checks every classifier's `max_pool_targets` before running processors
-or classifiers and rejects an incompatible pool, even if an earlier classifier
-could decide. Custom classifiers can declare this optional limit. Composite's
-outer judge selects an EF/CF policy and remains valid with an N-target Stage pool.
-Categorical custom-schema judges, random selection, affinity, and fixed-target
-fallbacks can operate with N targets. Advisor's direct-response path is unchanged.
-
-Configuration errors reject invalid pools, thresholds, holds, and judge settings.
-Classifier confidence must be finite and within `[0,1]`, including ambiguous
-verdicts. Numeric output requires a pool even when ambiguous. Invalid selections
-return errors before an answer call; unavailable judge verdicts use the existing
-warning and recovery policy.
-
-Info logs report pool setup, categorical fallback setup, score/threshold/ambiguity,
-and the final target, classifier index, output kind, and response reuse. Debug logs
-show cascade continuation; a warning identifies a discarded response from an
-abstaining classifier. These events omit prompts and tool output.
 
 ### Optional: custom tool semantics
 
