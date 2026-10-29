@@ -1,38 +1,30 @@
-# Embedded Go routing
+# NVIDIA NeMo Switchyard
 
-Run Switchyard algorithms in a Go host that owns model eligibility, credentials,
-provider calls, and retries. These bindings call libsy through the C ABI; they do
-not start a server.
+NVIDIA NeMo Switchyard is a library for routing LLM requests between models.
+These Go bindings run Switchyard algorithms inside your application. Your
+application owns model eligibility, credentials, provider calls, and retries.
 
-## Build and test
+## Installation
 
-Requires Go 1.22+, cgo, a C compiler, and the repository's Rust toolchain. Build
-the native library for the same platform as the Go host:
+Requires Go 1.22+, cgo, a C compiler, and the repository's Rust toolchain. This is
+a source-only module. From a checkout of this repository, build the native
+library for the same platform as your Go application:
 
 ```sh
 cargo build -p switchyard-ffi --release --locked
-cd bindings/go
-go test -race ./...
-GOEXPERIMENT=cgocheck2 go test -race ./...
-go vet ./...
+```
+
+From your application's Go module, point Go at that checkout. Replace the path
+below with its absolute location:
+
+```sh
+go mod edit -replace=github.com/NVIDIA-NeMo/Switchyard/bindings/go=/absolute/path/to/Switchyard/bindings/go
+go get github.com/NVIDIA-NeMo/Switchyard/bindings/go
 ```
 
 Native builds link `target/release/libswitchyard_ffi.a` into the Go host artifact.
 The native path still requires cgo and platform system libraries.
-Rebuild Go with `go test -a` after changing the C header or native library; Go's
-cache does not track headers outside the package directory. Native artifacts
-are not downloaded or published by this package.
-
-### Go versions
-
-`go 1.22` in `go.mod` is the compatibility minimum, not a compiler pin. Use the
-latest patch of a [supported Go release](https://go.dev/doc/devel/release#policy)
-for development and production; compatibility with an older release does not
-make it a recommended production toolchain.
-
-Before merging changes, run the checks above with the latest patch of the
-declared minimum and the latest stable Go. Raise the minimum only when the
-binding or a dependency needs newer Go, and call out that change.
+Native artifacts are not downloaded or published by this package.
 
 ## Use
 
@@ -55,8 +47,7 @@ outcome, err := router.Route(ctx, switchyard.Input{
 ```
 
 Import `encoding/json` and
-`github.com/NVIDIA-NeMo/Switchyard/bindings/go`. This is a source-only module;
-use a local Go module `replace` to point your host at this directory.
+`github.com/NVIDIA-NeMo/Switchyard/bindings/go`.
 
 Supply the model groups needed by the configured algorithm. Composite needs
 `any` for eligible answer targets, plus `capable`, `efficient`, and `judge`.
@@ -98,3 +89,28 @@ Call `Close` when finished; Go garbage collection does not release the router.
 `New` checks ABI generation 1 against the linked library. Scope session and agent
 IDs to the host's tenant and conversation. `Input.Metadata` and
 `Input.SubagentModels` carry routing context separately from provider requests.
+
+## Test
+
+From the repository root, after building the native library:
+
+```sh
+cd bindings/go
+go test -race ./...
+GOEXPERIMENT=cgocheck2 go test -race ./...
+go vet ./...
+```
+
+Rebuild Go with `go test -a` after changing the C header or native library; Go's
+cache does not track headers outside the package directory.
+
+### Go versions
+
+`go 1.22` in `go.mod` is the compatibility minimum, not a compiler pin. Use the
+latest patch of a [supported Go release](https://go.dev/doc/devel/release#policy)
+for development and production; compatibility with an older release does not
+make it a recommended production toolchain.
+
+Before merging changes, run the checks above with the latest patch of the
+declared minimum and the latest stable Go. Raise the minimum only when the
+binding or a dependency needs newer Go, and call out that change.
