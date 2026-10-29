@@ -17,7 +17,7 @@
 <a href=#17 id=17 data-nosnippet>17</a><span class="kw">use </span><span class="kw">crate</span>::Result;
 <a href=#18 id=18 data-nosnippet>18</a><span class="kw">use </span><span class="kw">crate</span>::algorithms::fall_through::FallThrough;
 <a href=#19 id=19 data-nosnippet>19</a><span class="kw">use </span><span class="kw">crate</span>::algorithms::util::affinity::AffinityRouter;
-<a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span><span class="kw">crate</span>::core::algorithm::{Algorithm, Driver, RoutingOutcome};
+<a href=#20 id=20 data-nosnippet>20</a><span class="kw">use </span><span class="kw">crate</span>::core::algorithm::{Algorithm, AnswerSummary, Driver, RoutingOutcome};
 <a href=#21 id=21 data-nosnippet>21</a>
 <a href=#22 id=22 data-nosnippet>22</a><span class="kw">mod </span>compaction;
 <a href=#23 id=23 data-nosnippet>23</a><span class="kw">mod </span>config;
@@ -102,92 +102,100 @@
 <a href=#102 id=102 data-nosnippet>102</a>        }
 <a href=#103 id=103 data-nosnippet>103</a>        <span class="prelude-val">Ok</span>(outcome)
 <a href=#104 id=104 data-nosnippet>104</a>    }
-<a href=#105 id=105 data-nosnippet>105</a>}
-<a href=#106 id=106 data-nosnippet>106</a>
-<a href=#107 id=107 data-nosnippet>107</a><span class="doccomment">/// The verification regime a request's capabilities license.
-<a href=#108 id=108 data-nosnippet>108</a></span><span class="attr">#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-<a href=#109 id=109 data-nosnippet>109</a></span><span class="kw">enum </span>Branch {
-<a href=#110 id=110 data-nosnippet>110</a>    <span class="doccomment">/// Code or test activity, with no sandboxed checker to appeal to.
-<a href=#111 id=111 data-nosnippet>111</a>    </span>Coding,
-<a href=#112 id=112 data-nosnippet>112</a>    <span class="doccomment">/// A single-turn request typed as answer-seeking.
-<a href=#113 id=113 data-nosnippet>113</a>    </span>Answer,
-<a href=#114 id=114 data-nosnippet>114</a>    <span class="doccomment">/// Conversational traffic.
-<a href=#115 id=115 data-nosnippet>115</a>    </span>Chat,
-<a href=#116 id=116 data-nosnippet>116</a>    <span class="doccomment">/// A tool-using session verified from its trajectory.
-<a href=#117 id=117 data-nosnippet>117</a>    </span>Agentic,
-<a href=#118 id=118 data-nosnippet>118</a>    <span class="doccomment">/// Anything else with an attempt to verify.
-<a href=#119 id=119 data-nosnippet>119</a>    </span>DefaultVerified,
-<a href=#120 id=120 data-nosnippet>120</a>    <span class="doccomment">/// Nothing to verify.
-<a href=#121 id=121 data-nosnippet>121</a>    </span><span class="attr">#[default]
-<a href=#122 id=122 data-nosnippet>122</a>    </span>Unknown,
-<a href=#123 id=123 data-nosnippet>123</a>}
-<a href=#124 id=124 data-nosnippet>124</a>
-<a href=#125 id=125 data-nosnippet>125</a><span class="doccomment">/// A task type produced by the router's own typing call; `None` abstains.
-<a href=#126 id=126 data-nosnippet>126</a></span><span class="attr">#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-<a href=#127 id=127 data-nosnippet>127</a></span><span class="kw">enum </span>TaskType {
-<a href=#128 id=128 data-nosnippet>128</a>    Coding,
-<a href=#129 id=129 data-nosnippet>129</a>    Agentic,
-<a href=#130 id=130 data-nosnippet>130</a>    Answer,
-<a href=#131 id=131 data-nosnippet>131</a>    Chat,
-<a href=#132 id=132 data-nosnippet>132</a>}
-<a href=#133 id=133 data-nosnippet>133</a>
-<a href=#134 id=134 data-nosnippet>134</a><span class="doccomment">/// The complete input the decision core sees.
-<a href=#135 id=135 data-nosnippet>135</a></span><span class="attr">#[derive(Default)]
-<a href=#136 id=136 data-nosnippet>136</a></span><span class="kw">struct </span>Capabilities {
-<a href=#137 id=137 data-nosnippet>137</a>    branch: Branch,
-<a href=#138 id=138 data-nosnippet>138</a>    <span class="doccomment">/// The judged view of the request and attempt.
-<a href=#139 id=139 data-nosnippet>139</a>    </span>transcript: <span class="prelude-ty">Option</span>&lt;String&gt;,
-<a href=#140 id=140 data-nosnippet>140</a>    <span class="doccomment">/// The router's own tool-result record; unused by the answer regime.
-<a href=#141 id=141 data-nosnippet>141</a>    </span>tools: <span class="prelude-ty">Option</span>&lt;ToolRecord&gt;,
-<a href=#142 id=142 data-nosnippet>142</a>}
-<a href=#143 id=143 data-nosnippet>143</a>
-<a href=#144 id=144 data-nosnippet>144</a><span class="doccomment">/// Derives capabilities from the router's own evidence, failing closed.
-<a href=#145 id=145 data-nosnippet>145</a></span><span class="kw">fn </span>derive_capabilities(
-<a href=#146 id=146 data-nosnippet>146</a>    request: <span class="kw-2">&amp;</span>Request,
-<a href=#147 id=147 data-nosnippet>147</a>    attempt: <span class="kw-2">&amp;</span>str,
-<a href=#148 id=148 data-nosnippet>148</a>    task_type: <span class="prelude-ty">Option</span>&lt;TaskType&gt;,
-<a href=#149 id=149 data-nosnippet>149</a>) -&gt; Capabilities {
-<a href=#150 id=150 data-nosnippet>150</a>    <span class="kw">let </span>(turns, unsupported) = text::turns(request);
-<a href=#151 id=151 data-nosnippet>151</a>    <span class="kw">if </span>unsupported || text::user_task_text(<span class="kw-2">&amp;</span>turns).trim().is_empty() || attempt.trim().is_empty() {
-<a href=#152 id=152 data-nosnippet>152</a>        <span class="kw">return </span>Capabilities::default();
-<a href=#153 id=153 data-nosnippet>153</a>    }
-<a href=#154 id=154 data-nosnippet>154</a>    <span class="kw">let </span>caps = |branch, transcript| Capabilities {
-<a href=#155 id=155 data-nosnippet>155</a>        branch,
-<a href=#156 id=156 data-nosnippet>156</a>        transcript,
-<a href=#157 id=157 data-nosnippet>157</a>        tools: <span class="prelude-val">Some</span>(ToolRecord::from_request(request)),
-<a href=#158 id=158 data-nosnippet>158</a>    };
-<a href=#159 id=159 data-nosnippet>159</a>
-<a href=#160 id=160 data-nosnippet>160</a>    <span class="comment">// Typing abstains on a request that leans on earlier context, so a typed answer stands
-<a href=#161 id=161 data-nosnippet>161</a>    // on its own; only tool use in the current user turn takes it off this branch.
-<a href=#162 id=162 data-nosnippet>162</a>    </span><span class="kw">if </span>task_type == <span class="prelude-val">Some</span>(TaskType::Answer) &amp;&amp; !text::turn_has_tool_trajectory(request) {
-<a href=#163 id=163 data-nosnippet>163</a>        <span class="kw">return </span>Capabilities {
-<a href=#164 id=164 data-nosnippet>164</a>            tools: <span class="prelude-val">None</span>,
-<a href=#165 id=165 data-nosnippet>165</a>            ..caps(
-<a href=#166 id=166 data-nosnippet>166</a>                Branch::Answer,
-<a href=#167 id=167 data-nosnippet>167</a>                <span class="prelude-val">Some</span>(render::render_session(<span class="kw-2">&amp;</span>turns, attempt)),
-<a href=#168 id=168 data-nosnippet>168</a>            )
-<a href=#169 id=169 data-nosnippet>169</a>        };
-<a href=#170 id=170 data-nosnippet>170</a>    }
-<a href=#171 id=171 data-nosnippet>171</a>    <span class="comment">// A tool trajectory is judged as agentic work unless typed conversational.
-<a href=#172 id=172 data-nosnippet>172</a>    </span><span class="kw">if </span>task_type == <span class="prelude-val">Some</span>(TaskType::Agentic)
-<a href=#173 id=173 data-nosnippet>173</a>        || (text::has_tool_trajectory(request)
-<a href=#174 id=174 data-nosnippet>174</a>            &amp;&amp; !<span class="macro">matches!</span>(task_type, <span class="prelude-val">Some</span>(TaskType::Answer | TaskType::Chat)))
-<a href=#175 id=175 data-nosnippet>175</a>    {
-<a href=#176 id=176 data-nosnippet>176</a>        <span class="kw">return </span>caps(
-<a href=#177 id=177 data-nosnippet>177</a>            Branch::Agentic,
-<a href=#178 id=178 data-nosnippet>178</a>            <span class="prelude-val">Some</span>(render::render_agentic_view(request, <span class="kw-2">&amp;</span>turns, attempt)),
-<a href=#179 id=179 data-nosnippet>179</a>        );
-<a href=#180 id=180 data-nosnippet>180</a>    }
-<a href=#181 id=181 data-nosnippet>181</a>    <span class="kw">let </span>transcript = <span class="prelude-val">Some</span>(render::render_session(<span class="kw-2">&amp;</span>turns, attempt));
-<a href=#182 id=182 data-nosnippet>182</a>    <span class="kw">if </span>text::observed_hardening(attempt) || task_type == <span class="prelude-val">Some</span>(TaskType::Coding) {
-<a href=#183 id=183 data-nosnippet>183</a>        <span class="kw">return </span>caps(Branch::Coding, transcript);
-<a href=#184 id=184 data-nosnippet>184</a>    }
-<a href=#185 id=185 data-nosnippet>185</a>    <span class="kw">if </span>text::observed_tool_activity(attempt) {
-<a href=#186 id=186 data-nosnippet>186</a>        caps(Branch::Agentic, transcript)
-<a href=#187 id=187 data-nosnippet>187</a>    } <span class="kw">else if </span><span class="macro">matches!</span>(task_type, <span class="prelude-val">Some</span>(TaskType::Chat | TaskType::Answer)) {
-<a href=#188 id=188 data-nosnippet>188</a>        caps(Branch::Chat, transcript)
-<a href=#189 id=189 data-nosnippet>189</a>    } <span class="kw">else </span>{
-<a href=#190 id=190 data-nosnippet>190</a>        caps(Branch::DefaultVerified, transcript)
-<a href=#191 id=191 data-nosnippet>191</a>    }
-<a href=#192 id=192 data-nosnippet>192</a>}
+<a href=#105 id=105 data-nosnippet>105</a>
+<a href=#106 id=106 data-nosnippet>106</a>    <span class="kw">fn </span>tracks_answers(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; bool {
+<a href=#107 id=107 data-nosnippet>107</a>        <span class="self">self</span>.route.tracks_answers()
+<a href=#108 id=108 data-nosnippet>108</a>    }
+<a href=#109 id=109 data-nosnippet>109</a>
+<a href=#110 id=110 data-nosnippet>110</a>    <span class="kw">async fn </span>observe_answer(<span class="kw-2">&amp;</span><span class="self">self</span>, session_id: <span class="kw-2">&amp;</span>str, answer: AnswerSummary) {
+<a href=#111 id=111 data-nosnippet>111</a>        <span class="self">self</span>.route.observe_answer(session_id, answer).<span class="kw">await</span>;
+<a href=#112 id=112 data-nosnippet>112</a>    }
+<a href=#113 id=113 data-nosnippet>113</a>}
+<a href=#114 id=114 data-nosnippet>114</a>
+<a href=#115 id=115 data-nosnippet>115</a><span class="doccomment">/// The verification regime a request's capabilities license.
+<a href=#116 id=116 data-nosnippet>116</a></span><span class="attr">#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+<a href=#117 id=117 data-nosnippet>117</a></span><span class="kw">enum </span>Branch {
+<a href=#118 id=118 data-nosnippet>118</a>    <span class="doccomment">/// Code or test activity, with no sandboxed checker to appeal to.
+<a href=#119 id=119 data-nosnippet>119</a>    </span>Coding,
+<a href=#120 id=120 data-nosnippet>120</a>    <span class="doccomment">/// A single-turn request typed as answer-seeking.
+<a href=#121 id=121 data-nosnippet>121</a>    </span>Answer,
+<a href=#122 id=122 data-nosnippet>122</a>    <span class="doccomment">/// Conversational traffic.
+<a href=#123 id=123 data-nosnippet>123</a>    </span>Chat,
+<a href=#124 id=124 data-nosnippet>124</a>    <span class="doccomment">/// A tool-using session verified from its trajectory.
+<a href=#125 id=125 data-nosnippet>125</a>    </span>Agentic,
+<a href=#126 id=126 data-nosnippet>126</a>    <span class="doccomment">/// Anything else with an attempt to verify.
+<a href=#127 id=127 data-nosnippet>127</a>    </span>DefaultVerified,
+<a href=#128 id=128 data-nosnippet>128</a>    <span class="doccomment">/// Nothing to verify.
+<a href=#129 id=129 data-nosnippet>129</a>    </span><span class="attr">#[default]
+<a href=#130 id=130 data-nosnippet>130</a>    </span>Unknown,
+<a href=#131 id=131 data-nosnippet>131</a>}
+<a href=#132 id=132 data-nosnippet>132</a>
+<a href=#133 id=133 data-nosnippet>133</a><span class="doccomment">/// A task type produced by the router's own typing call; `None` abstains.
+<a href=#134 id=134 data-nosnippet>134</a></span><span class="attr">#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+<a href=#135 id=135 data-nosnippet>135</a></span><span class="kw">enum </span>TaskType {
+<a href=#136 id=136 data-nosnippet>136</a>    Coding,
+<a href=#137 id=137 data-nosnippet>137</a>    Agentic,
+<a href=#138 id=138 data-nosnippet>138</a>    Answer,
+<a href=#139 id=139 data-nosnippet>139</a>    Chat,
+<a href=#140 id=140 data-nosnippet>140</a>}
+<a href=#141 id=141 data-nosnippet>141</a>
+<a href=#142 id=142 data-nosnippet>142</a><span class="doccomment">/// The complete input the decision core sees.
+<a href=#143 id=143 data-nosnippet>143</a></span><span class="attr">#[derive(Default)]
+<a href=#144 id=144 data-nosnippet>144</a></span><span class="kw">struct </span>Capabilities {
+<a href=#145 id=145 data-nosnippet>145</a>    branch: Branch,
+<a href=#146 id=146 data-nosnippet>146</a>    <span class="doccomment">/// The judged view of the request and attempt.
+<a href=#147 id=147 data-nosnippet>147</a>    </span>transcript: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#148 id=148 data-nosnippet>148</a>    <span class="doccomment">/// The router's own tool-result record; unused by the answer regime.
+<a href=#149 id=149 data-nosnippet>149</a>    </span>tools: <span class="prelude-ty">Option</span>&lt;ToolRecord&gt;,
+<a href=#150 id=150 data-nosnippet>150</a>}
+<a href=#151 id=151 data-nosnippet>151</a>
+<a href=#152 id=152 data-nosnippet>152</a><span class="doccomment">/// Derives capabilities from the router's own evidence, failing closed.
+<a href=#153 id=153 data-nosnippet>153</a></span><span class="kw">fn </span>derive_capabilities(
+<a href=#154 id=154 data-nosnippet>154</a>    request: <span class="kw-2">&amp;</span>Request,
+<a href=#155 id=155 data-nosnippet>155</a>    attempt: <span class="kw-2">&amp;</span>str,
+<a href=#156 id=156 data-nosnippet>156</a>    task_type: <span class="prelude-ty">Option</span>&lt;TaskType&gt;,
+<a href=#157 id=157 data-nosnippet>157</a>) -&gt; Capabilities {
+<a href=#158 id=158 data-nosnippet>158</a>    <span class="kw">let </span>(turns, unsupported) = text::turns(request);
+<a href=#159 id=159 data-nosnippet>159</a>    <span class="kw">if </span>unsupported || text::user_task_text(<span class="kw-2">&amp;</span>turns).trim().is_empty() || attempt.trim().is_empty() {
+<a href=#160 id=160 data-nosnippet>160</a>        <span class="kw">return </span>Capabilities::default();
+<a href=#161 id=161 data-nosnippet>161</a>    }
+<a href=#162 id=162 data-nosnippet>162</a>    <span class="kw">let </span>caps = |branch, transcript| Capabilities {
+<a href=#163 id=163 data-nosnippet>163</a>        branch,
+<a href=#164 id=164 data-nosnippet>164</a>        transcript,
+<a href=#165 id=165 data-nosnippet>165</a>        tools: <span class="prelude-val">Some</span>(ToolRecord::from_request(request)),
+<a href=#166 id=166 data-nosnippet>166</a>    };
+<a href=#167 id=167 data-nosnippet>167</a>
+<a href=#168 id=168 data-nosnippet>168</a>    <span class="comment">// Typing abstains on a request that leans on earlier context, so a typed answer stands
+<a href=#169 id=169 data-nosnippet>169</a>    // on its own; only tool use in the current user turn takes it off this branch.
+<a href=#170 id=170 data-nosnippet>170</a>    </span><span class="kw">if </span>task_type == <span class="prelude-val">Some</span>(TaskType::Answer) &amp;&amp; !text::turn_has_tool_trajectory(request) {
+<a href=#171 id=171 data-nosnippet>171</a>        <span class="kw">return </span>Capabilities {
+<a href=#172 id=172 data-nosnippet>172</a>            tools: <span class="prelude-val">None</span>,
+<a href=#173 id=173 data-nosnippet>173</a>            ..caps(
+<a href=#174 id=174 data-nosnippet>174</a>                Branch::Answer,
+<a href=#175 id=175 data-nosnippet>175</a>                <span class="prelude-val">Some</span>(render::render_session(<span class="kw-2">&amp;</span>turns, attempt)),
+<a href=#176 id=176 data-nosnippet>176</a>            )
+<a href=#177 id=177 data-nosnippet>177</a>        };
+<a href=#178 id=178 data-nosnippet>178</a>    }
+<a href=#179 id=179 data-nosnippet>179</a>    <span class="comment">// A tool trajectory is judged as agentic work unless typed conversational.
+<a href=#180 id=180 data-nosnippet>180</a>    </span><span class="kw">if </span>task_type == <span class="prelude-val">Some</span>(TaskType::Agentic)
+<a href=#181 id=181 data-nosnippet>181</a>        || (text::has_tool_trajectory(request)
+<a href=#182 id=182 data-nosnippet>182</a>            &amp;&amp; !<span class="macro">matches!</span>(task_type, <span class="prelude-val">Some</span>(TaskType::Answer | TaskType::Chat)))
+<a href=#183 id=183 data-nosnippet>183</a>    {
+<a href=#184 id=184 data-nosnippet>184</a>        <span class="kw">return </span>caps(
+<a href=#185 id=185 data-nosnippet>185</a>            Branch::Agentic,
+<a href=#186 id=186 data-nosnippet>186</a>            <span class="prelude-val">Some</span>(render::render_agentic_view(request, <span class="kw-2">&amp;</span>turns, attempt)),
+<a href=#187 id=187 data-nosnippet>187</a>        );
+<a href=#188 id=188 data-nosnippet>188</a>    }
+<a href=#189 id=189 data-nosnippet>189</a>    <span class="kw">let </span>transcript = <span class="prelude-val">Some</span>(render::render_session(<span class="kw-2">&amp;</span>turns, attempt));
+<a href=#190 id=190 data-nosnippet>190</a>    <span class="kw">if </span>text::observed_hardening(attempt) || task_type == <span class="prelude-val">Some</span>(TaskType::Coding) {
+<a href=#191 id=191 data-nosnippet>191</a>        <span class="kw">return </span>caps(Branch::Coding, transcript);
+<a href=#192 id=192 data-nosnippet>192</a>    }
+<a href=#193 id=193 data-nosnippet>193</a>    <span class="kw">if </span>text::observed_tool_activity(attempt) {
+<a href=#194 id=194 data-nosnippet>194</a>        caps(Branch::Agentic, transcript)
+<a href=#195 id=195 data-nosnippet>195</a>    } <span class="kw">else if </span><span class="macro">matches!</span>(task_type, <span class="prelude-val">Some</span>(TaskType::Chat | TaskType::Answer)) {
+<a href=#196 id=196 data-nosnippet>196</a>        caps(Branch::Chat, transcript)
+<a href=#197 id=197 data-nosnippet>197</a>    } <span class="kw">else </span>{
+<a href=#198 id=198 data-nosnippet>198</a>        caps(Branch::DefaultVerified, transcript)
+<a href=#199 id=199 data-nosnippet>199</a>    }
+<a href=#200 id=200 data-nosnippet>200</a>}
 </code></pre></div></section></main></body></html>
