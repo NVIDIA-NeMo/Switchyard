@@ -11,7 +11,9 @@ use std::{
     time::Duration,
 };
 
-use super::{SERVER, Settings, err, present, remove, run, write, xml};
+use crate::config::SERVER_LABEL as SERVER;
+
+use super::{Settings, err, present, remove, run, write, xml};
 
 const DESKTOP: &str = "com.nvidia.switchyard.desktop";
 

@@ -32,29 +32,48 @@ pub const MODEL_HEADER: &str = "x-gateway-model-name";
 const SESSION_TTL: Duration = Duration::from_secs(60 * 60);
 type SessionIdentity = (String, String, Option<String>);
 
+#[derive(serde::Deserialize)]
+struct RequestModel {
+    model: String,
+}
+
 pub struct Router {
     runner: Runner,
     sessions: Mutex<HashMap<SessionIdentity, Instant>>,
+    pub(crate) metrics: Option<crate::metrics::Metrics>,
 }
 
 impl Router {
     pub fn load(routes: impl AsRef<Path>) -> Result<Self> {
         // SDK parse/build access would allow validation of decision-only options before construction.
-        Ok(Self::new(Runner::load(routes)?))
+        let mut router = Self::new(Runner::load(routes)?);
+        router.metrics = std::env::var("METRICS_CONFIG")
+            .ok()
+            .map(|path| crate::metrics::Metrics::load(Path::new(&path)))
+            .transpose()?;
+        Ok(router)
     }
 
     pub fn new(runner: Runner) -> Self {
         Self {
             runner,
             sessions: Mutex::new(HashMap::new()),
+            metrics: None,
         }
+    }
+
+    pub fn is_passthrough(&self, body: &[u8]) -> bool {
+        serde_json::from_slice::<RequestModel>(body)
+            .ok()
+            .and_then(|request| self.runner.route(&request.model))
+            .is_some_and(|route| route.algorithm_name() == "passthrough")
     }
 
     pub async fn decide(
         &self,
         body: &[u8],
         headers: &http::HeaderMap,
-    ) -> Result<(Vec<u8>, String)> {
+    ) -> Result<(Vec<u8>, String, Option<crate::metrics::InFlight>)> {
         let started = Instant::now();
         let request = {
             let raw = serde_json::from_slice(body)?;
@@ -103,10 +122,16 @@ impl Router {
         };
         let mut original_ir = request.llm_request.clone();
         original_ir.model = None;
-        let outcome = tokio::time::timeout(Duration::from_secs(1), route.decide(request))
+        // The server's deadline includes body receipt and the classifier call.
+        let mut outcome = route
+            .decide(request)
             .await
-            .map_err(|_| crate::server::Error::new(504, "SDK routing deadline exceeded"))?
             .map_err(|_| crate::server::Error::new(500, "SDK routing failed"))?;
+        let inflight = self
+            .metrics
+            .as_ref()
+            .map(|metrics| metrics.track(route, &mut outcome))
+            .transpose()?;
         if is_session_final && let Some((identity, seen)) = admission {
             let mut sessions = self.sessions.lock().unwrap_or_else(|p| p.into_inner());
             // A newer request for this identity must retain its admission slot.
@@ -129,7 +154,7 @@ impl Router {
             elapsed_us,
             "routing decision"
         );
-        Ok((output, model.as_str().to_owned()))
+        Ok((output, model.as_str().to_owned(), inflight))
     }
 }
 
@@ -205,7 +230,7 @@ mod tests {
             "precise_decimal":0.12345678901234567890123456789,
             "custom\u005ffield":{ "nested": [18446744073709551617, {"text":"\u0061"}] }
         }"#;
-        let (output, model) = router()
+        let (output, model, _) = router()
             .decide(input, &http::HeaderMap::new())
             .await
             .unwrap();
@@ -222,5 +247,14 @@ mod tests {
                 assert_eq!(rewritten[&key].get(), value.get(), "changed {key}");
             }
         }
+        let classifier =
+            Router::new(Runner::from_toml(include_str!("../config/task-classifier.toml")).unwrap());
+        let direct = replace_model(input, "Qwen/Qwen3-1.7B").unwrap();
+        let (output, model, _) = classifier
+            .decide(&direct, &http::HeaderMap::new())
+            .await
+            .unwrap();
+        assert_eq!(model, "Qwen/Qwen3-1.7B");
+        assert_eq!(output, direct);
     }
 }

@@ -302,6 +302,12 @@ esac
             &settings,
             &("baseline_model = 'custom'\n".to_owned() + &url(f.s.port)),
         );
+        let app =
+            switchyard_desktop::config::Config::load(&settings).expect("partial app settings");
+        assert_eq!(app.routing_log, sy_home.join("routing.jsonl"));
+        assert!(app.prices_file.is_none());
+        assert_eq!(app.config_file, sy_home.join("composite.toml"));
+        assert_eq!(app.server_url, format!("http://127.0.0.1:{}", f.s.port));
         let first = read(&f.profile());
         let profile = toml(&f.profile());
         assert_eq!(profile["model"].as_str(), Some(f.s.model.as_str()));

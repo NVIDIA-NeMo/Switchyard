@@ -45,6 +45,43 @@ fn branch(request: &Request, attempt: &str, task_type: Option<TaskType>) -> Bran
 }
 
 #[test]
+fn tool_trajectory_respects_the_current_request_initiator() {
+    for (finished, initiator, expected) in [
+        (true, Some("agent"), true),
+        (true, Some("user"), false),
+        (true, None, false),
+        (false, Some("agent"), true),
+        (false, Some("user"), false),
+        (false, None, true),
+    ] {
+        let mut messages = vec![
+            Message::text(Role::User, "fix the build"),
+            call("c1"),
+            result("c1", "ok"),
+        ];
+        if finished {
+            messages.push(Message::text(Role::Assistant, "done"));
+        }
+        messages.push(Message::text(Role::User, "verify the change"));
+        let mut request = request(messages);
+        if let Some(initiator) = initiator {
+            let mut headers = http::HeaderMap::new();
+            headers.insert("x-initiator", initiator.parse().expect("header"));
+            request.metadata = Some(switchyard_protocol::Metadata {
+                http_headers: Some(headers),
+                ..Default::default()
+            });
+        }
+        assert_eq!(
+            super::text::turn_has_tool_trajectory(&request),
+            expected,
+            "finished={finished}, initiator={initiator:?}"
+        );
+    }
+    assert!(!super::text::turn_has_tool_trajectory(&Request::default()));
+}
+
+#[test]
 // Router typing selects a branch; tool history takes precedence over coding.
 fn router_typing_selects_the_verification_regime() {
     let single = request(vec![Message::text(Role::User, "Help with this task")]);
@@ -70,10 +107,26 @@ fn router_typing_selects_the_verification_regime() {
     );
     assert_eq!(branch(&session, "done", Some(TaskType::Chat)), Branch::Chat);
     assert_eq!(branch(&single, "```\nx\n```", None), Branch::Coding);
+
+    // A typed answer keeps its branch after earlier turns, unless this turn used tools.
+    let mut follow_up = session.llm_request.messages.clone();
+    follow_up.extend([
+        Message::text(Role::Assistant, "The build passes."),
+        Message::text(Role::User, "What is 1+1?"),
+    ]);
+    let follow_up = request(follow_up);
+    assert_eq!(
+        branch(&follow_up, "2", Some(TaskType::Answer)),
+        Branch::Answer
+    );
+    assert_eq!(
+        branch(&session, "done", Some(TaskType::Answer)),
+        Branch::Chat
+    );
 }
 
 #[test]
-// Missing text and unsupported content cannot license a local answer.
+// Missing text and unsupported content cannot license an efficient answer.
 fn missing_or_unrepresentable_evidence_fails_closed() {
     let task = request(vec![Message::text(Role::User, "task")]);
     assert_eq!(branch(&task, " ", None), Branch::Unknown);
@@ -284,25 +337,28 @@ mod decide {
 
     #[test]
     fn agentic_runs_commit_only_on_a_clean_or_recovered_record() {
-        assert_eq!(decide(&agentic(0, 3, 3), &readout(0.2), None), Route::Local);
+        assert_eq!(
+            decide(&agentic(0, 3, 3), &readout(0.2), None),
+            Route::Efficient
+        );
         assert_eq!(
             decide(&agentic(0, 3, 3), &readout(0.19), None),
-            Route::Cloud
+            Route::Capable
         );
 
         let short = agentic(2, 100, 1);
         assert_eq!(agentic_run(&short, None), AgenticRun::ShortRecovered);
-        assert_eq!(decide(&short, &readout(0.9), None), Route::Local);
+        assert_eq!(decide(&short, &readout(0.9), None), Route::Efficient);
         let unrecovered = agentic(2, 100, 0);
-        assert_eq!(decide(&unrecovered, &readout(1.0), Some(1)), Route::Cloud);
+        assert_eq!(decide(&unrecovered, &readout(1.0), Some(1)), Route::Capable);
 
         let long = agentic(2, 101, 1);
         assert_eq!(agentic_run(&long, None), AgenticRun::Vetoed);
         assert_eq!(agentic_run(&long, Some(1)), AgenticRun::ConfirmedRecovery);
         let mut confirmed = readout(0.9);
-        assert_eq!(decide(&long, &confirmed, Some(1)), Route::Cloud);
-        confirmed.cloud_judge = Some(Tri::Yes);
-        assert_eq!(decide(&long, &confirmed, Some(1)), Route::Local);
+        assert_eq!(decide(&long, &confirmed, Some(1)), Route::Capable);
+        confirmed.capable_judge = Some(Tri::Yes);
+        assert_eq!(decide(&long, &confirmed, Some(1)), Route::Efficient);
     }
 
     #[test]
@@ -310,34 +366,57 @@ mod decide {
         let mut chat = agentic(0, 0, 0);
         chat.branch = Branch::Chat;
         let mut signals = Signals {
-            cloud_judge: Some(Tri::Yes),
+            capable_judge: Some(Tri::Yes),
             ..Signals::default()
         };
-        assert_eq!(decide(&chat, &signals, None), Route::Cloud);
+        assert_eq!(decide(&chat, &signals, None), Route::Capable);
         signals.evidence_confirm = Some(Tri::Unknown);
-        assert_eq!(decide(&chat, &signals, None), Route::Cloud);
+        assert_eq!(decide(&chat, &signals, None), Route::Capable);
         signals.evidence_confirm = Some(Tri::Yes);
-        assert_eq!(decide(&chat, &signals, None), Route::Local);
+        assert_eq!(decide(&chat, &signals, None), Route::Efficient);
 
         chat.tools = Some(ToolRecord {
             errors: 1,
             ..ToolRecord::default()
         });
-        assert_eq!(decide(&chat, &signals, None), Route::Cloud);
+        assert_eq!(decide(&chat, &signals, None), Route::Capable);
         chat.branch = Branch::Coding;
-        assert_eq!(decide(&chat, &readout(1.0), None), Route::Cloud);
+        assert_eq!(decide(&chat, &readout(1.0), None), Route::Capable);
     }
 
     #[test]
-    fn deliberation_commits_only_on_an_affirmative_verdict() {
+    fn default_verification_requires_both_capable_verdicts_and_a_clean_record() {
+        let mut caps = agentic(0, 0, 0);
+        caps.branch = Branch::DefaultVerified;
+        for first in [None, Some(Tri::Unknown), Some(Tri::No), Some(Tri::Yes)] {
+            for second in [None, Some(Tri::Unknown), Some(Tri::No), Some(Tri::Yes)] {
+                let signals = Signals {
+                    capable_judge: first,
+                    evidence_confirm: second,
+                    ..Signals::default()
+                };
+                let expected = if first == Some(Tri::Yes) && second == Some(Tri::Yes) {
+                    Route::Efficient
+                } else {
+                    Route::Capable
+                };
+                assert_eq!(decide(&caps, &signals, None), expected);
+                caps.tools.as_mut().unwrap().errors = 1;
+                assert_eq!(decide(&caps, &signals, None), Route::Capable);
+                caps.tools.as_mut().unwrap().errors = 0;
+            }
+        }
+    }
+
+    #[test]
+    fn deliberation_commits_only_on_an_affirmative_score() {
         for branch in [Branch::Chat, Branch::Agentic, Branch::DefaultVerified] {
             let mut caps = agentic(0, 1, 1);
             caps.branch = branch;
             for (verdict, expected) in [
-                (Some(Tri::Yes), Route::Local),
-                (Some(Tri::No), Route::Cloud),
-                (Some(Tri::Unknown), Route::Cloud),
-                (None, Route::Cloud),
+                (Some(0.5), Route::Efficient),
+                (Some(0.49), Route::Capable),
+                (None, Route::Capable),
             ] {
                 let signals = Signals {
                     deliberation: verdict,
@@ -350,5 +429,35 @@ mod decide {
                 );
             }
         }
+    }
+
+    #[test]
+    fn coding_commits_on_a_confident_readout_or_a_capable_tier_affirmation() {
+        let mut coding = agentic(0, 0, 0);
+        coding.branch = Branch::Coding;
+        let mut signals = readout(0.2);
+        assert_eq!(decide(&coding, &signals, None), Route::Capable);
+        signals.capable_judge = Some(Tri::Unknown);
+        assert_eq!(decide(&coding, &signals, None), Route::Capable);
+        signals.capable_judge = Some(Tri::Yes);
+        assert_eq!(decide(&coding, &signals, None), Route::Efficient);
+        signals.readout = Some(0.19);
+        assert_eq!(decide(&coding, &signals, None), Route::Capable);
+        assert_eq!(decide(&coding, &readout(0.6), None), Route::Efficient);
+        assert_eq!(decide(&coding, &readout(0.59), None), Route::Capable);
+    }
+
+    #[test]
+    fn answers_commit_on_a_confident_readout_or_a_capable_tier_verdict() {
+        let answer = Capabilities {
+            branch: Branch::Answer,
+            transcript: Some("view".into()),
+            tools: None,
+        };
+        assert_eq!(decide(&answer, &readout(0.9), None), Route::Efficient);
+        let mut signals = readout(0.89);
+        assert_eq!(decide(&answer, &signals, None), Route::Capable);
+        signals.answer_verifier = Some(Tri::Yes);
+        assert_eq!(decide(&answer, &signals, None), Route::Efficient);
     }
 }

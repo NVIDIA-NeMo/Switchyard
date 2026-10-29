@@ -67,6 +67,7 @@ evidence = { candidates = { a = "Higher-quality model", b = "Lower-cost model" }
   Supply evidence from your evaluations and choose a cutoff using those results.
 - `decision.instructions` can replace the default relative-advantage instructions.
   It must preserve the meaning of `advantage` and `no_advantage`. Evidence is passed unchanged.
+- The context includes `session`, the request's session ID, or `null` when the request has none.
 - The capable tier is selected only when its advantage score exceeds `cutoff`.
   Client failures and deadlines use the capable tier by default; set `fail_open = false`
   on the route to propagate those errors.

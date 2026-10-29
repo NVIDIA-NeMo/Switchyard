@@ -5,8 +5,9 @@ becomes a model ID available through OpenAI Chat Completions, Anthropic Messages
 and OpenAI Responses requests.
 
 Use this page to choose a routing strategy, then open its detailed page for
-configuration and tuning. For the vocabulary these pages use, see
-[Core Concepts](../core_concepts.md).
+configuration and tuning. [Mechanics of Libsy](../mechanics_of_libsy.md) explains
+the execution model; [Switchyard Protocols](../protocols/index.md) explains the
+request and response data.
 
 ## Choose a strategy
 
@@ -40,7 +41,7 @@ quality, follow the [tuning loop](../tuning/index.md).
 | [Escalation](escalation_router_routing.md) | `llm_classifier`, `mode = "escalation"` | The weak model serves until a judge reports the same failure on consecutive turns. Then the session latches to the strong model. |
 | [Custom](llm_classifier_routing.md#custom-multi-target-routing) | `llm_classifier`, `mode = "custom"` | Your own judge prompt and schema choose among any number of targets. |
 | [Advisor Gate](advisor_gate_routing.md) | `advisor` | One executor serves every turn. A stronger advisor reviews its plans and "done" claims. |
-| [Verification-Gated](vgr_routing.md) | `vgr` | A local model drafts. Verified answers stay local, and everything else goes to the cloud model. |
+| [Verification-Gated](vgr_routing.md) | `vgr` | An efficient model drafts. Verified answers stay on the efficient tier, and everything else goes to the capable model. |
 | [Prefill](prefill_routing.md) | `prefill_router` | A classifier you train on the prompt's hidden states picks the target. Experimental: Switchyard supplies no checkpoint, exporter, or encoder assets. |
 | [Random](random_routing.md) | `random` | A fixed traffic split. |
 | [Fixed](#direct-model-routes) | `passthrough` | One target, no decision. |
@@ -50,7 +51,7 @@ quality, follow the [tuning loop](../tuning/index.md).
 
 | Route `type` | Decides from | Extra model calls | Switches | Session ID | When it cannot decide | Measured | Start from |
 |---|---|---|---|---|---|---|---|
-| `auto` | Tool results in the request | None | Every request | Optional. Keeps the capable hold. | Efficient tier | The preset of the measured `stage_router` settings, with a shorter window. See [Auto](#auto). | The [Getting Started](../getting_started.md#server-path) route file |
+| `auto` | Tool results in the request | None | Every request | Optional. Keeps the capable hold. | Efficient tier | The preset of the measured `stage_router` settings, with a shorter window. See [Auto](#auto). | The [local evaluation](../operations/local_evaluation.md#configure-your-model-pool) route file |
 | `stage_router` | Tool results in the request | Optional judge on ambiguous turns | Every request | Optional. Keeps the capable hold. | Picker default | [Terminal-Bench 2.1 and DeepSWE results](../benchmarks.md) with the [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml) | That profile |
 | `llm_classifier`, capability | A judge's view of the task | One judge call per request, user turn, or session | Per trigger | Optional. Needed to retain a verdict. | Strong target | [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21) for an LLM judge and for Jev as a decision judge. The LLM-judge config is not published; a [smoke-test config](../../benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml) is checked in. | That config |
 | `llm_classifier`, escalation | A judge's view of the finished weak turn | One judge call per unlatched turn | Latches once. Reversible with de-escalation. | Required to latch. Without it, `confirmations = 1` escalates single turns only. | An unreadable verdict keeps the current tier. A failed judge call stops the request in the server. | [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21) with the [checked-in profile](../../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml), and a [public report](https://www.langchain.com/blog/switchyard-agent-routing-benchmark) | That profile |
@@ -58,7 +59,7 @@ quality, follow the [tuning loop](../tuning/index.md).
 | `composite` | A judge at each user turn, tool results in between | One judge call per user turn or session | Every request, with a per-user-turn default | Required, or `message_hash_fallback` | Last tier, else efficient | Not benchmarked | [Composite Routing](composite_routing.md#configuration) |
 | `plan_execute` | The first edit or write tool call | None | Once per session | Recommended. Latches the handoff. | Stays on the planner | [DeepSWE results](../benchmarks.md#deepswe) with the [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml) | That profile |
 | `advisor` | The executor's terminal turn | One advisor review per gated turn, up to `max_reviews` | Never. One executor serves. | Scopes the review budget | An unreadable verdict or a failed advisor call lets the buffered executor turn through (`fail_open`, default `true`). `fail_open = false` stops the request. | [DeepSWE results](../benchmarks.md#deepswe) with the [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) | That profile |
-| `vgr` | Evidence about a local candidate | Verifier and judge calls | Per final answer | See [the page](vgr_routing.md) | Cloud tier | Not benchmarked. Planned for 0.4.0. | [`examples/vgr-local-servers.toml`](../../examples/vgr-local-servers.toml) |
+| `vgr` | Evidence about an efficient candidate | Verifier and judge calls | Per final answer | See [the page](vgr_routing.md) | Capable tier | Not benchmarked. Planned for 0.4.0. | [`examples/vgr-local-servers.toml`](../../examples/vgr-local-servers.toml) |
 | `prefill_router` | Hidden states of the prompt | Encoder inference, no provider call | Every request | Not required | Checkpoint output | Experimental. No checkpoint is supplied. | [Schema example](../reference/toml_schema.md#prefill_router) |
 | `random` | Weights | None | Every request | Not required | Not applicable | Utility | [Random Routing](random_routing.md) |
 | `passthrough` | Nothing | None | Never | Not required | Not applicable | Utility | [Schema](../reference/toml_schema.md#passthrough) |
@@ -153,7 +154,7 @@ stage router with these settings. It does not compare strategies at runtime.
 | `picker` | `efficient_first` | The efficient tier serves a turn when the tool signals are not confident. |
 | `confidence_threshold` | `0.5` | How strongly the tool signals must agree before they pick a tier on their own. |
 | `recent_turn_window` | `3` | How many recent tool results the signals are computed over. |
-| `capable_hold_turns` | `2` | How many turns stay on the capable tier after an escalation. A clean test pass ends the hold early. |
+| `capable_hold_turns` | `2` | How many turns stay on the capable tier after an escalation, skipping signal processing and classification. |
 | Classifier | none | No LLM judge is called. |
 
 Auto accepts no tuning keys. To change a setting, write the equivalent
@@ -173,7 +174,7 @@ to one tier:
   of an agent session, carry no tool history. The signals abstain and the
   efficient tier serves the turn. This is by design. `GET /v1/stats` counts these
   turns under `algorithm_stats.stage_router.routing_decisions.fall_open`. See
-  [Verify routing is active](../getting_started.md#verify-routing-is-active).
+  [Verify routing is active](../operations/local_evaluation.md#verify-routing-is-active).
 - **Both tiers name the same target.** The server accepts a route whose
   `capable_target` and `efficient_target` are the same target. Every request then
   goes to that one model, and `GET /v1/stats` lists a single entry under `.models`.
@@ -287,7 +288,7 @@ the configured endpoint.
 ## Run a deployment
 
 After installing the Rust server, as described in
-[Getting Started](../getting_started.md#install-the-server), export the provider
+[Local Evaluation](../operations/local_evaluation.md#install-the-server), export the provider
 credential, validate the configuration, and start the binary:
 
 ```bash

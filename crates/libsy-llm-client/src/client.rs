@@ -65,6 +65,7 @@ pub struct ModelConfig {
     model_name: ModelId,
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
+    responses_reasoning: crate::ResponsesReasoningPolicy,
 }
 
 impl ModelConfig {
@@ -79,7 +80,15 @@ impl ModelConfig {
             model_name: model_name.into(),
             default_backend,
             other_backends,
+            responses_reasoning: crate::ResponsesReasoningPolicy::default(),
         }
+    }
+
+    /// Sets how Responses reasoning items are replayed to this model.
+    #[must_use]
+    pub fn with_responses_reasoning(mut self, policy: crate::ResponsesReasoningPolicy) -> Self {
+        self.responses_reasoning = policy;
+        self
     }
 }
 
@@ -343,6 +352,13 @@ impl TranslatingLlmClient {
         }
         omit_configured_body_fields(&mut body, backend.omit_body_fields());
         merge_extra_body(&mut body, backend.extra_body());
+        if matches!(backend, Backend::OpenAiResponses(_)) {
+            self.model_to_config
+                .get(model)
+                .map(|config| config.responses_reasoning)
+                .unwrap_or_default()
+                .normalize(&mut body);
+        }
         // After the merge on purpose: the effort override must win over both the caller's
         // value and any `reasoning` default a target set through `extra_body`.
         apply_reasoning_effort(&mut body, backend);
@@ -970,7 +986,14 @@ pub(crate) fn convert_reqwest_error(error: reqwest::Error) -> LlmClientError {
     // Reqwest labels truncated or otherwise unreadable response bodies as decode
     // errors, so distinguish them from serde JSON failures at the call site.
     let error = error.without_url();
-    if error.is_timeout() {
+    // reqwest reports a connect-phase timeout as both `is_connect()` and
+    // `is_timeout()`. Check connect first: no request was sent on the failed
+    // connection, so it is a transport failure like a refused connection.
+    if error.is_connect() {
+        LlmClientError::Transport {
+            source: Box::new(error),
+        }
+    } else if error.is_timeout() {
         LlmClientError::Timeout {
             source: Box::new(error),
         }
@@ -1030,25 +1053,20 @@ const CODEX_NAMESPACE_SEPARATOR: &str = "__";
 /// Rewrites a Responses body into the shape OpenAI-compatible providers accept.
 ///
 /// Codex extends Responses with namespace containers and namespaced function calls, and
-/// OpenAI-compatible providers expect a flat Responses tool namespace. The input also loses
-/// reasoning items that the provider cannot read.
+/// OpenAI-compatible providers expect a flat Responses tool namespace.
 fn sanitize_openai_responses_provider_body(body: &mut Value) {
     let Value::Object(object) = body else {
         return;
     };
-    let store_off = object.get("store") == Some(&Value::Bool(false));
-    sanitize_openai_responses_input_for_provider(object.get_mut("input"), store_off);
+    sanitize_openai_responses_input_for_provider(object.get_mut("input"));
     sanitize_openai_responses_tools_for_provider(object.get_mut("tools"));
     sanitize_openai_responses_tool_choice_for_provider(object.get_mut("tool_choice"));
 }
 
-/// Removes reasoning items that the provider cannot read and flattens namespaced function
-/// calls in the Responses `input` array.
-fn sanitize_openai_responses_input_for_provider(input: Option<&mut Value>, store_off: bool) {
+fn sanitize_openai_responses_input_for_provider(input: Option<&mut Value>) {
     let Some(Value::Array(items)) = input else {
         return;
     };
-    items.retain(|item| !is_unreadable_reasoning_item(item, store_off));
     for item in items {
         let Some(object) = item.as_object_mut() else {
             continue;
@@ -1056,28 +1074,6 @@ fn sanitize_openai_responses_input_for_provider(input: Option<&mut Value>, store
         if object.get("type").and_then(Value::as_str) == Some("function_call") {
             qualify_responses_function_name(object);
         }
-    }
-}
-
-/// Returns true for a reasoning item that an OpenAI provider would reject with 400.
-///
-/// A router can serve earlier steps of a turn from Claude and a later step from an OpenAI
-/// model, and the client replays Claude's reasoning items on every step. Two kinds fail:
-///
-/// - An item without `encrypted_content` (absent, null, or empty) when the request sets
-///   `store: false`. OpenAI treats the item's ID as a reference to stored reasoning and finds
-///   nothing. With `store` on, the ID can refer to stored reasoning, so the item is kept.
-/// - An item whose `encrypted_content` holds Anthropic thinking that Switchyard packed for a
-///   Responses client. OpenAI cannot decrypt it, whatever `store` is set to.
-fn is_unreadable_reasoning_item(item: &Value, store_off: bool) -> bool {
-    if item.get("type").and_then(Value::as_str) != Some("reasoning") {
-        return false;
-    }
-    match item.get("encrypted_content").and_then(Value::as_str) {
-        Some(encrypted) if !encrypted.is_empty() => {
-            switchyard_translation::is_anthropic_thinking_envelope(encrypted)
-        }
-        _ => store_off,
     }
 }
 
@@ -1604,6 +1600,13 @@ mod tests {
             Backend::Anthropic(config(base_url)),
             None,
         )]
+    }
+
+    fn responses_map_with_drop_policy(base_url: &str) -> Vec<ModelConfig> {
+        vec![
+            ModelConfig::new("gpt", Backend::OpenAiResponses(config(base_url)), None)
+                .with_responses_reasoning(crate::ResponsesReasoningPolicy::Drop),
+        ]
     }
 
     #[tokio::test]
@@ -2402,6 +2405,88 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn responses_reasoning_policy_preserves_replay_history()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let history = json!([
+            {"type": "message", "role": "user", "content": "continue"},
+            {"type": "reasoning", "encrypted_content": "opaque", "content": [{"type": "reasoning_text", "text": "private"}]},
+            {"type": "reasoning", "id": "rs_stored", "status": "completed", "summary": []},
+            {"type": "reasoning", "encrypted_content": null},
+            {"type": "reasoning", "encrypted_content": ""},
+            {"type": "reasoning"},
+            {"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "call_1", "output": "ok"}
+        ]);
+        for store in [Some(true), Some(false), None] {
+            for is_drop in [false, true] {
+                for has_input_override in [false, true] {
+                    let server = MockServer::start().await;
+                    Mock::given(method("POST"))
+                        .and(path("/v1/responses"))
+                        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                            "id": "resp_1", "object": "response", "model": "gpt",
+                            "status": "completed", "output": [],
+                            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
+                        })))
+                        .expect(1)
+                        .mount(&server)
+                        .await;
+                    let base_url = format!("{}/v1", server.uri());
+                    let mut models = if is_drop {
+                        responses_map_with_drop_policy(&base_url)
+                    } else {
+                        responses_map(&base_url)
+                    };
+                    if has_input_override {
+                        let Backend::OpenAiResponses(backend) = &mut models[0].default_backend
+                        else {
+                            return Err("expected Responses backend".into());
+                        };
+                        backend.omit_body_fields.insert("input".to_string());
+                        backend
+                            .extra_body
+                            .insert("input".to_string(), history.clone());
+                    }
+                    let client = TranslatingLlmClient::new(&models)?;
+                    let mut request = json!({"model": "gpt", "input": history});
+                    if let Some(store) = store {
+                        request["store"] = json!(store);
+                    }
+                    client
+                        .call_rewrite_model_raw(
+                            request,
+                            None,
+                            Some(&ModelId::from("gpt")),
+                            WireFormat::OpenAiResponses,
+                        )
+                        .await?;
+                    let requests = server.received_requests().await.ok_or("missing requests")?;
+                    let body: Value = serde_json::from_slice(&requests[0].body)?;
+                    let mut expected = vec![history[0].clone()];
+                    if !is_drop {
+                        let mut encrypted = history[1].clone();
+                        encrypted["content"] = json!([]);
+                        expected.push(encrypted);
+                        if store != Some(false) {
+                            let mut stored = history[2].clone();
+                            stored["content"] = json!([]);
+                            expected.push(stored);
+                        }
+                    }
+                    expected.extend([history[6].clone(), history[7].clone()]);
+                    assert_eq!(
+                        body["input"],
+                        json!(expected),
+                        "store={store:?}, drop={is_drop}, replace={has_input_override}"
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn nvidia_anthropic_requests_strip_strict_from_extra_body()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let server = MockServer::start().await;
@@ -2943,6 +3028,44 @@ mod tests {
         Ok(())
     }
 
+    // A connect that never completes sends nothing, like a refused connection.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn connect_timeout_is_a_transport_error()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        // Linux drops SYNs once a listener's accept queue is full, so later
+        // connects hang like an upstream behind a dropping firewall.
+        let socket = tokio::net::TcpSocket::new_v4()?;
+        socket.bind("127.0.0.1:0".parse()?)?;
+        let listener = socket.listen(0)?;
+        let addr = listener.local_addr()?;
+        let _queued: Vec<_> = (0..2)
+            .map(|_| {
+                std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(100))
+            })
+            .collect();
+
+        let mut client = TranslatingLlmClient::new(&chat_map(&format!("http://{addr}/v1")))?;
+        // Stands in for the OS connect timeout (30 s on Linux via reqwest's default
+        // TCP_USER_TIMEOUT); both surface as `is_connect() && is_timeout()`.
+        client.client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_millis(100))
+            .build()?;
+
+        let Err(error) = client.call(request_for(Some("gpt"), false)).await else {
+            panic!("expected the connect to fail");
+        };
+        let LlmClientError::Transport { source } = error else {
+            panic!("expected Transport, got {error:?}");
+        };
+        let Some(source) = source.downcast_ref::<reqwest::Error>() else {
+            panic!("expected the reqwest connect-timeout source");
+        };
+        assert!(source.is_connect());
+        assert!(source.is_timeout());
+        Ok(())
+    }
+
     #[tokio::test]
     async fn llama_cpp_context_overflow_400_is_mapped()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
@@ -3470,8 +3593,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TranslatingLlmClient::new(&responses_map(&format!("{}/v1", server.uri())))?;
-        let claude_reasoning = json!({
+        let mut claude_reasoning = json!({
             "type": "reasoning",
             "id": "rs_b99feb9a-763d-4f7f-b6b2-2c0199b47ded",
             "summary": [{"type": "summary_text", "text": "Read the files first."}],
@@ -3508,13 +3630,13 @@ mod tests {
                 .as_str()
                 .unwrap_or_default()
         ));
-        let gpt_reasoning = json!({
+        let mut gpt_reasoning = json!({
             "type": "reasoning",
             "id": "rs_gpt",
             "summary": [],
             "encrypted_content": "opaque-encrypted-reasoning"
         });
-        let empty_reasoning =
+        let mut empty_reasoning =
             json!({"type": "reasoning", "id": "rs_empty", "summary": [], "encrypted_content": ""});
         let user = json!({"type": "message", "role": "user", "content": "fix the build"});
         let call = json!({"type": "function_call", "call_id": "call_1", "name": "exec", "arguments": "{}"});
@@ -3529,16 +3651,29 @@ mod tests {
             empty_reasoning
         ]);
 
-        for store in [json!(false), json!(true)] {
-            let raw = json!({"model": "client-facing", "store": store, "input": input.clone()});
-            client
-                .call_rewrite_model_raw(
-                    raw,
-                    None,
-                    Some(&ModelId::from("gpt")),
-                    WireFormat::OpenAiResponses,
-                )
-                .await?;
+        for has_input_override in [false, true] {
+            let mut models = responses_map(&format!("{}/v1", server.uri()));
+            if has_input_override {
+                let Backend::OpenAiResponses(backend) = &mut models[0].default_backend else {
+                    return Err("expected Responses backend".into());
+                };
+                backend.omit_body_fields.insert("input".to_string());
+                backend
+                    .extra_body
+                    .insert("input".to_string(), input.clone());
+            }
+            let client = TranslatingLlmClient::new(&models)?;
+            for store in [json!(false), json!(true)] {
+                let raw = json!({"model": "client-facing", "store": store, "input": input.clone()});
+                client
+                    .call_rewrite_model_raw(
+                        raw,
+                        None,
+                        Some(&ModelId::from("gpt")),
+                        WireFormat::OpenAiResponses,
+                    )
+                    .await?;
+            }
         }
 
         let received = server
@@ -3549,21 +3684,46 @@ mod tests {
             .iter()
             .map(|request| serde_json::from_slice::<Value>(&request.body))
             .collect::<std::result::Result<_, _>>()?;
-        // With `store: false`, only GPT's own encrypted reasoning survives.
-        assert_eq!(sent[0]["input"], json!([user, call, output, gpt_reasoning]));
-        // With `store: true`, IDs can refer to stored reasoning, but OpenAI still cannot
-        // decrypt the Switchyard item.
-        assert_eq!(
-            sent[1]["input"],
-            json!([
-                user,
-                claude_reasoning,
-                call,
-                output,
-                gpt_reasoning,
-                empty_reasoning
-            ])
-        );
+        assert_eq!(sent.len(), 4);
+        for request in &sent {
+            assert!(
+                request["input"]
+                    .as_array()
+                    .ok_or("expected input array")?
+                    .iter()
+                    .all(|item| !item["encrypted_content"]
+                        .as_str()
+                        .is_some_and(switchyard_translation::is_anthropic_thinking_envelope)),
+                "provider cannot read translated Anthropic reasoning"
+            );
+        }
+        for item in [
+            &mut claude_reasoning,
+            &mut gpt_reasoning,
+            &mut empty_reasoning,
+        ] {
+            item["content"] = json!([]);
+        }
+        for requests in sent.as_chunks::<2>().0 {
+            // With `store: false`, only GPT's own encrypted reasoning survives.
+            assert_eq!(
+                requests[0]["input"],
+                json!([user, call, output, gpt_reasoning])
+            );
+            // With `store: true`, IDs can refer to stored reasoning, but OpenAI still cannot
+            // decrypt the Switchyard item.
+            assert_eq!(
+                requests[1]["input"],
+                json!([
+                    user,
+                    claude_reasoning,
+                    call,
+                    output,
+                    gpt_reasoning,
+                    empty_reasoning
+                ])
+            );
+        }
         Ok(())
     }
 

@@ -49,6 +49,7 @@ impl RoutingLog {
         })
     }
 
+    /// Writes one record for a finished call as a single JSON line.
     pub(crate) fn append(
         &mut self,
         context: RoutingLogContext,
@@ -73,6 +74,12 @@ impl RoutingLog {
             trial_id: context.trial_id.map(Cow::Owned),
             session_id: context.session_id.map(Cow::Owned),
             turn_id: context.turn_id.map(Cow::Owned),
+            agent_id: context.agent.agent_id.map(Cow::Owned),
+            parent_agent_id: context.agent.parent_agent_id.map(Cow::Owned),
+            delegated: context.agent.delegated,
+            agent_kind: context.agent.kind.map(Cow::Owned),
+            agent_role: context.agent.role.map(Cow::Owned),
+            subagent_identity_unsupported: context.agent.identity_unsupported,
             model: model.into(),
             tier: tier.unwrap_or("").into(),
             prompt_tokens: usage.prompt_tokens,
@@ -118,6 +125,37 @@ pub(crate) fn snapshot(
     Ok((snapshot.total_calls > 0).then_some(snapshot))
 }
 
+/// Which agent made a call. A child agent can share its parent's session id, so
+/// the session alone cannot tell delegated work apart from the parent's turns.
+/// Every field is copied from the request metadata, never inferred.
+#[derive(Clone, Default)]
+pub(crate) struct AgentIdentity {
+    agent_id: Option<String>,
+    parent_agent_id: Option<String>,
+    /// [`Metadata::is_subagent_work`], the signal that sends a call to the
+    /// sub-agent route, rather than the weaker `is_subagent` hint.
+    delegated: bool,
+    kind: Option<String>,
+    role: Option<String>,
+    /// The harness cannot identify its children, so a reader should not take
+    /// a missing `delegated` flag to mean that no work was delegated.
+    identity_unsupported: bool,
+}
+
+impl AgentIdentity {
+    /// Copies the agent fields from the request metadata.
+    fn from_metadata(metadata: &Metadata) -> Self {
+        Self {
+            agent_id: metadata.agent_id.clone(),
+            parent_agent_id: metadata.parent_agent_id.clone(),
+            delegated: metadata.is_subagent_work(),
+            kind: metadata.agent_kind.clone(),
+            role: metadata.agent_role.clone(),
+            identity_unsupported: metadata.subagent_identity_unsupported,
+        }
+    }
+}
+
 /// Holds request metadata until route resolution attaches the durable route identity.
 #[derive(Clone)]
 pub(crate) struct RoutingLogContext {
@@ -128,6 +166,7 @@ pub(crate) struct RoutingLogContext {
     trial_id: Option<String>,
     session_id: Option<String>,
     turn_id: Option<String>,
+    agent: AgentIdentity,
 }
 
 impl RoutingLogContext {
@@ -152,6 +191,7 @@ impl RoutingLogContext {
                     .and_then(|headers| nonempty_header(headers, LEGACY_SESSION_ID_HEADER))
                     .map(str::to_string)
             }),
+            agent: AgentIdentity::from_metadata(metadata),
         }
     }
 
@@ -184,6 +224,20 @@ struct RoutingRecord<'a> {
     session_id: Option<Cow<'a, str>>,
     #[serde(borrow)]
     turn_id: Option<Cow<'a, str>>,
+    // Most calls carry no agent identity, so these fields are written only when
+    // set. Records without them still parse through `serde(default)`.
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    agent_id: Option<Cow<'a, str>>,
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    parent_agent_id: Option<Cow<'a, str>>,
+    #[serde(skip_serializing_if = "is_false")]
+    delegated: bool,
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    agent_kind: Option<Cow<'a, str>>,
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    agent_role: Option<Cow<'a, str>>,
+    #[serde(skip_serializing_if = "is_false")]
+    subagent_identity_unsupported: bool,
     model: Cow<'a, str>,
     tier: Cow<'a, str>,
     prompt_tokens: u64,
@@ -271,6 +325,12 @@ impl SessionStatsSnapshot {
     }
 }
 
+/// Lets serde leave out a `false` flag, so it is written only when set.
+fn is_false(flag: &bool) -> bool {
+    !flag
+}
+
+/// Returns a header value only when it is present, non-empty, and valid text.
 fn nonempty_header<'a>(headers: &'a http::HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get(name)
@@ -316,6 +376,42 @@ mod tests {
                 .origin
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_delegated_call_records_its_agent_lineage() {
+        let metadata = Metadata {
+            session_id: Some("session-1".to_string()),
+            turn_id: Some("turn-1".to_string()),
+            agent_id: Some("child-7".to_string()),
+            parent_agent_id: Some("thread-1".to_string()),
+            is_subagent: true,
+            is_delegated_work: true,
+            agent_kind: Some("review".to_string()),
+            agent_role: Some("reviewer".to_string()),
+            ..Metadata::default()
+        };
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("routing.jsonl");
+        let mut log = RoutingLog::new(&path).expect("routing log");
+        log.append(
+            RoutingLogContext::from_metadata(&metadata).with_route("model-router", "passthrough"),
+            "worker-model",
+            None,
+            &Usage::default(),
+        )
+        .expect("append");
+        let line = fs::read_to_string(&path).expect("read log");
+        let record: serde_json::Value = serde_json::from_str(line.trim()).expect("json record");
+
+        assert_eq!(record["session_id"], "session-1");
+        assert_eq!(record["turn_id"], "turn-1");
+        assert_eq!(record["agent_id"], "child-7");
+        assert_eq!(record["parent_agent_id"], "thread-1");
+        assert_eq!(record["delegated"], true);
+        assert_eq!(record["agent_kind"], "review");
+        assert_eq!(record["agent_role"], "reviewer");
+        assert!(record.get("subagent_identity_unsupported").is_none());
     }
 
     /// Only the requested session is counted, absent fields fall back to zero

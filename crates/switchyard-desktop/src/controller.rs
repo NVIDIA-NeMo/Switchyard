@@ -1,0 +1,841 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+//! The terminal controller reloads settings and combines usage and server health into snapshots.
+//! It retains the log reader and health probe across refreshes.
+
+use crate::{
+    config::Config,
+    history, models, pricing, rollup, server,
+    server_config::{ALGORITHMS, Choice, ServerConfig},
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::{collections::BTreeMap, path::PathBuf};
+
+#[derive(Clone, Debug, Deserialize, strum::EnumDiscriminants)]
+#[strum_discriminants(name(ActionKind), derive(strum::EnumIter))]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Action {
+    Restart {},
+    PreviewUpdate {},
+    Update {
+        preview_token: Option<String>,
+    },
+    OpenLogs {},
+    OpenUpdateLog {},
+    OpenConfig {},
+    OpenPrices {},
+    OpenSettings {},
+    CheckConfig {},
+    ServerKeys {},
+    SaveServerKey {
+        name: String,
+        key: String,
+    },
+    ImportServerKey {
+        name: String,
+    },
+    RemoveServerKey {
+        name: String,
+    },
+    SavePreferences {
+        baseline_model: String,
+        refresh_seconds: u64,
+    },
+}
+
+/// Snapshot holds the data shown by the apps. The terminal app destructures every field,
+/// so adding a field requires an update to `draw`.
+#[derive(Clone, Default, Serialize)]
+pub struct Snapshot {
+    pub update_status: Value,
+    pub settings: Option<AppSettings>,
+    pub data_state: DataState,
+
+    pub routes: Vec<RouteInfo>,
+    pub clients: Vec<ClientInfo>,
+    pub algorithms: Vec<AlgorithmInfo>,
+    pub metrics: Metrics,
+    pub today: chrono::NaiveDate,
+    pub analytics: rollup::Usage,
+    /// The keys are `today`, `week`, and `all`. A value is null when usage could not be read.
+    pub estimates: BTreeMap<&'static str, Option<pricing::Estimate>>,
+    pub baseline_model: String,
+    pub activity: [u64; 24],
+    pub sessions: Vec<String>,
+    pub entries: Vec<history::Entry>,
+    pub skipped: usize,
+    pub limited: bool,
+    pub errors: Vec<String>,
+    pub refresh_seconds: u64,
+}
+
+/// AppSettings holds the app settings and their file path. `Controller::snapshot` destructures
+/// every `Config` field, so adding a setting requires an update here too.
+#[derive(Clone, Default, Serialize)]
+pub struct AppSettings {
+    pub path: PathBuf,
+    pub server_url: String,
+    pub routing_log: PathBuf,
+    pub config_file: PathBuf,
+    pub launchd_label: String,
+    pub refresh_seconds: u64,
+    pub baseline_model: String,
+    pub prices_file: Option<PathBuf>,
+}
+
+/// RouteInfo describes one entry under `[routes]` in the server config.
+#[derive(Clone, Default, Serialize)]
+pub struct RouteInfo {
+    /// This field names the route's table in the server config.
+    pub key: String,
+    /// This field holds the public model ID that harnesses send.
+    pub id: String,
+    pub kind: String,
+    /// Route edits send this token back. The controller rejects it after the file changes.
+    pub revision: String,
+    pub label: String,
+    /// This field lists the models that answer requests, as `client / model`. The runner
+    /// finds them, so it includes models the editor cannot change, such as sub-agent models.
+    pub models: Vec<String>,
+    /// This field lists the models the route calls only to decide, such as a judge or an advisor.
+    pub judges: Vec<String>,
+    /// This field lists the editor's current model for each role. It is empty when the apps
+    /// cannot edit the route's algorithm.
+    pub choices: Vec<Choice>,
+    /// This field lists the tier of each role in role order. It is `None` when the apps
+    /// cannot edit the route's algorithm.
+    pub tiers: Option<Vec<Option<String>>>,
+    pub editable: bool,
+    /// This field holds the marker of the generated block that contains the route. The tool
+    /// that wrote the block replaces the route the next time it runs.
+    pub generated: Option<String>,
+}
+
+/// ClientInfo describes one endpoint under `[llm_clients]` in the server config.
+#[derive(Clone, Default, Serialize)]
+pub struct ClientInfo {
+    pub name: String,
+    pub host: String,
+    /// This field lists the model IDs that targets in the server config name on this endpoint.
+    pub models: Vec<String>,
+    /// This field is true when the app cannot ask the endpoint for its model list.
+    pub unlisted: bool,
+    pub accepts_key: bool,
+    /// This field explains why the endpoint cannot list models without a saved key.
+    pub note: Option<String>,
+}
+
+/// AlgorithmInfo describes one routing algorithm that the apps can write and the roles
+/// that a new route of that algorithm needs.
+#[derive(Clone, Default, Serialize)]
+pub struct AlgorithmInfo {
+    pub kind: &'static str,
+    pub title: &'static str,
+    pub summary: &'static str,
+    pub roles: Vec<RoleInfo>,
+}
+
+#[derive(Clone, Default, Serialize)]
+pub struct RoleInfo {
+    pub label: String,
+    pub hint: &'static str,
+    pub tier: Option<String>,
+}
+
+#[derive(Clone, Default, Serialize)]
+pub struct DataState {
+    pub usage: Source,
+    pub history: Source,
+    /// This field holds the `/health` result with `state`, `reason`, `checked_at`, and `url`.
+    pub health: Value,
+}
+
+/// Source records whether the app could read one data file.
+#[derive(Clone, Default, Serialize)]
+pub struct Source {
+    pub state: Availability,
+    pub checked_at: String,
+    pub path: PathBuf,
+}
+
+/// The default is unavailable, so a data file that the app has not read shows no usage.
+#[derive(Clone, Copy, Default, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Availability {
+    Available,
+    #[default]
+    Unavailable,
+}
+
+#[derive(Clone, Default, Serialize)]
+pub struct Metrics {
+    pub server_url: String,
+    pub running: bool,
+    pub today: Counts,
+    pub week: Counts,
+}
+
+#[derive(Clone, Default, Serialize)]
+pub struct Counts {
+    pub requests: u64,
+    pub tokens: u64,
+}
+
+#[derive(Serialize)]
+pub struct Reply {
+    pub message: String,
+    pub data: Value,
+}
+impl Reply {
+    fn message(message: String) -> Self {
+        Self {
+            message,
+            data: Value::Null,
+        }
+    }
+}
+
+// Review keeps exact file bytes in the controller so later edits require a new review.
+// Only the UUID token goes to the frontend; reviewed files can contain credentials.
+struct Review {
+    token: String,
+
+    files: Vec<(PathBuf, Option<std::sync::Arc<[u8]>>)>,
+}
+impl Review {
+    fn capture(paths: Vec<PathBuf>) -> Result<Self, String> {
+        let files = paths
+            .into_iter()
+            .map(|path| {
+                let bytes = match std::fs::read(&path) {
+                    Ok(bytes) => Some(std::sync::Arc::<[u8]>::from(bytes)),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(format!("Read {}: {error}", path.display())),
+                };
+                Ok((path, bytes))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Self {
+            token: uuid::Uuid::now_v7().to_string(),
+            files,
+        })
+    }
+    fn original(&self) -> Result<&str, String> {
+        let (path, bytes) = self
+            .files
+            .first()
+            .ok_or("The app did not read a server config.")?;
+        let bytes = bytes
+            .as_deref()
+            .ok_or_else(|| format!("The server config {} does not exist.", path.display()))?;
+        std::str::from_utf8(bytes).map_err(|error| {
+            format!(
+                "The server config {} is not valid UTF-8: {error}",
+                path.display()
+            )
+        })
+    }
+}
+
+pub struct Controller {
+    health_probe: crate::health::Probe,
+    settings: PathBuf,
+    config: Config,
+    reader: rollup::Reader,
+    // The generation ties a draft to the server config file selected by the settings.
+    generation: u64,
+    route_reviews: std::collections::HashMap<String, Review>,
+    update_review: Option<(String, Value)>,
+}
+impl Controller {
+    pub fn new(config: Config, settings: PathBuf) -> Self {
+        Self {
+            config,
+            settings,
+            health_probe: crate::health::Probe::default(),
+            reader: rollup::Reader::default(),
+            generation: 0,
+            route_reviews: Default::default(),
+            update_review: None,
+        }
+    }
+    fn reload(&mut self) -> Result<(), String> {
+        let config = Config::load(&self.settings)?;
+        if config.config_file != self.config.config_file {
+            self.generation += 1;
+            self.route_reviews.clear();
+        }
+        self.config = config;
+
+        Ok(())
+    }
+    // Key actions accept only names that the server config declares.
+    fn declared_key(&self, name: &str) -> Result<(), String> {
+        if switchyard_desktop::install::credentials::variables(&self.config.config_file)?
+            .contains(name)
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "The server config does not name {name} with api_key_env. Refresh and try again."
+            ))
+        }
+    }
+    // Unchanged bytes keep the draft revision when the editor switches algorithms.
+    fn remember_route(&mut self, route: &str, mut review: Review) -> String {
+        if let Some(previous) = self.route_reviews.get(route)
+            && previous.files == review.files
+        {
+            review.token = previous.token.clone();
+        }
+        let revision = review.token.clone();
+        self.route_reviews.insert(route.to_string(), review);
+        revision
+    }
+    /// This function reads the routes and endpoints in the server config. The runner lists each
+    /// route's targets, so the Routes page shows every model the server would call. The editor
+    /// fields come from the same text and do not limit which models the page shows.
+    fn server_config(&mut self, errors: &mut Vec<String>) -> (Vec<RouteInfo>, Vec<ClientInfo>) {
+        let review = match Review::capture(vec![self.config.config_file.clone()]) {
+            Ok(review) => review,
+            Err(error) => {
+                errors.push(error);
+                return Default::default();
+            }
+        };
+        let text = match review.original() {
+            Ok(text) => text,
+            Err(error) => {
+                errors.push(error);
+                return Default::default();
+            }
+        };
+        // Parse errors can quote config lines, and those lines can hold header credentials, so
+        // the snapshot names only the action that shows the full error.
+        let Ok(config) = ServerConfig::parse(text) else {
+            errors.push(
+                "The server config contains invalid TOML. Open it in Settings to fix it.".into(),
+            );
+            return Default::default();
+        };
+        let clients = config
+            .clients()
+            .iter()
+            .map(|c| ClientInfo {
+                name: c.name.clone(),
+                host: c.host().to_string(),
+                models: config.models_on(&c.name),
+                unlisted: models::unlisted(c),
+                accepts_key: cfg!(any(target_os = "macos", windows))
+                    && !models::unlisted(c)
+                    && (c.forward_auth || c.api_key_env.is_some()),
+                note: models::missing_env(c).map(models::missing_env_note),
+            })
+            .collect();
+        let Ok(listed) = switchyard_runner::route_targets(text) else {
+            errors.push(
+                "The server cannot read the routes in the server config. \
+                 Run Check server config in Settings to see why."
+                    .into(),
+            );
+            return (Vec::new(), clients);
+        };
+        self.route_reviews
+            .retain(|key, _| listed.iter().any(|route| &route.name == key));
+        let mut routes = Vec::with_capacity(listed.len());
+        for route in listed {
+            let revision = self.remember_route(
+                &route.name,
+                Review {
+                    token: uuid::Uuid::now_v7().to_string(),
+                    files: review.files.clone(),
+                },
+            );
+            let models: Vec<String> = route.answer_targets.iter().map(target_label).collect();
+            let judges: Vec<String> = route.judge_targets.iter().map(target_label).collect();
+            let algorithm = config.algorithm(&route.name);
+            routes.push(RouteInfo {
+                label: format!(
+                    "{} · {} · {}",
+                    route.id,
+                    route.kind,
+                    [models.as_slice(), judges.as_slice()].concat().join(" → ")
+                ),
+                tiers: algorithm.map(|a| {
+                    config
+                        .roles(&route.name, a)
+                        .iter()
+                        .map(|r| r.tier.map(|t| format!("{t:?}")))
+                        .collect()
+                }),
+                editable: algorithm.is_some(),
+                generated: config
+                    .generated_by("routes", &route.name)
+                    .map(str::to_string),
+                choices: config.choices(&route.name),
+                id: route.id.to_string(),
+                kind: route.kind.to_string(),
+                key: route.name,
+                revision,
+                models,
+                judges,
+            });
+        }
+        (routes, clients)
+    }
+    pub fn snapshot(&mut self) -> Result<Snapshot, String> {
+        self.reload()?;
+        let mut errors = Vec::new();
+        // One local date keeps the daily and weekly usage totals aligned across midnight.
+        let today = chrono::Local::now().date_naive();
+        let mut usage_state = Availability::Available;
+        let usage = self
+            .reader
+            .read(&self.config.routing_log, today)
+            .unwrap_or_else(|error| {
+                usage_state = Availability::Unavailable;
+                errors.push(format!("Could not read usage: {error}"));
+                rollup::Usage::default()
+            });
+        // Invalid overrides leave baseline rates unknown and add an error to the snapshot.
+        let rates = pricing::load(self.config.prices_file.as_deref()).unwrap_or_else(|error| {
+            errors.push(format!("Could not read model prices: {error}"));
+            Default::default()
+        });
+        let estimates = [
+            ("today", &usage.today),
+            ("week", &usage.week),
+            ("all", &usage.all),
+        ]
+        .into_iter()
+        .map(|(period, totals)| {
+            let estimate = (usage_state == Availability::Available)
+                .then(|| pricing::Estimate::new(totals, &rates, &self.config.baseline_model));
+            (period, estimate)
+        })
+        .collect();
+        let checked_at = chrono::Utc::now().to_rfc3339();
+        let mut health = self.health_probe.details(&self.config.server_url);
+        health["checked_at"] = json!(checked_at);
+        health["url"] = json!(self.config.server_url);
+        let server_status = if health["state"] == "running" {
+            crate::health::ServerStatus::Running
+        } else {
+            crate::health::ServerStatus::Stopped
+        };
+        let (routes, clients) = self.server_config(&mut errors);
+        let mut history_state = Availability::Available;
+        let history = history::load(&self.config.routing_log).unwrap_or_else(|error| {
+            history_state = Availability::Unavailable;
+            errors.push(format!("Could not read recent calls: {error}"));
+            history::History::default()
+        });
+        let activity = history::hourly_calls(&history.entries, chrono::Utc::now());
+        let Config {
+            server_url,
+            routing_log,
+            config_file,
+            launchd_label,
+            refresh_seconds,
+            baseline_model,
+            prices_file,
+        } = self.config.clone();
+        let update_status = install_metadata(&self.settings)
+            .and_then(|path| switchyard_desktop::install::update_status(&path))
+            .unwrap_or_else(|error| json!({"state":"unavailable","message":error}));
+        Ok(Snapshot {
+            update_status,
+            settings: Some(AppSettings {
+                path: self.settings.clone(),
+                server_url: server_url.clone(),
+                routing_log: routing_log.clone(),
+                config_file,
+                launchd_label,
+                refresh_seconds,
+                baseline_model: baseline_model.clone(),
+                prices_file,
+            }),
+            data_state: DataState {
+                usage: Source {
+                    state: usage_state,
+                    checked_at: checked_at.clone(),
+                    path: routing_log.clone(),
+                },
+                history: Source {
+                    state: history_state,
+                    checked_at,
+                    path: routing_log.clone(),
+                },
+                health,
+            },
+
+            routes,
+            clients,
+            algorithms: ALGORITHMS
+                .iter()
+                .map(|a| AlgorithmInfo {
+                    kind: a.kind,
+                    title: a.title,
+                    summary: a.summary,
+                    roles: a.new_route_roles().iter().map(role_info).collect(),
+                })
+                .collect(),
+            metrics: Metrics {
+                server_url: server_url.clone(),
+                running: server_status == crate::health::ServerStatus::Running,
+                today: Counts {
+                    requests: usage.today.requests(),
+                    tokens: usage.today.tokens(),
+                },
+                week: Counts {
+                    requests: usage.week.requests(),
+                    tokens: usage.week.tokens(),
+                },
+            },
+            today,
+            analytics: usage,
+            estimates,
+            baseline_model,
+            activity,
+            sessions: history.sessions(),
+            entries: history.entries,
+            skipped: history.skipped,
+            limited: history.limited,
+            errors,
+            refresh_seconds: refresh_seconds.max(1),
+        })
+    }
+    /// The TUI uses these file paths to run an editor in the foreground.
+    pub fn editor_target(&mut self, action: &Action) -> Result<Option<PathBuf>, String> {
+        match action {
+            Action::OpenSettings {} => Ok(Some(self.settings.clone())),
+            Action::OpenConfig {} => {
+                self.reload()?;
+                Ok(Some(self.config.config_file.clone()))
+            }
+            // When `prices_file` is unset, this arm returns `None` and `dispatch` describes the
+            // bundled rates.
+            Action::OpenPrices {} => {
+                self.reload()?;
+                Ok(self.config.prices_file.clone())
+            }
+            Action::OpenUpdateLog {} => self.update_log().map(Some),
+            Action::OpenLogs {} => logs_dir().map(Some),
+            _ => Ok(None),
+        }
+    }
+    fn update_log(&self) -> Result<PathBuf, String> {
+        let metadata =
+            switchyard_desktop::install::Settings::load(&install_metadata(&self.settings)?)?;
+        Ok(metadata.sy_home.join("logs/update.log"))
+    }
+    pub fn dispatch(&mut self, action: Action) -> Result<Reply, String> {
+        if matches!(action, Action::OpenSettings {}) {
+            server::command("open", &[&self.settings.display().to_string()])?;
+            return Ok(Reply::message("Opened app settings.".into()));
+        }
+        self.reload()?;
+        match action {
+            Action::OpenLogs {} => {
+                server::command("open", &[&logs_dir()?.display().to_string()])?;
+                Ok(Reply::message("Opened Switchyard logs.".into()))
+            }
+            Action::Restart {} => server::restart_checked(&self.config).map(Reply::message),
+            Action::CheckConfig {} => server::check_config(&self.config)
+                .map(|()| Reply::message("Server config check passed.".into())),
+            Action::ServerKeys {} => Ok(Reply {
+                message: String::new(),
+                data: json!({"keys": server::server_keys(&self.config)?, "store": switchyard_desktop::install::credentials::STORE}),
+            }),
+            Action::SaveServerKey { name, key } => {
+                self.declared_key(&name)?;
+                server::save_server_key(&name, &key)?;
+                Ok(Reply::message(format!(
+                    "Saved the key for {name}. Restart the server to use it."
+                )))
+            }
+            Action::ImportServerKey { name } => {
+                self.declared_key(&name)?;
+                server::import_server_key(&name)?;
+                Ok(Reply::message(format!(
+                    "Saved {name} from your login shell. Restart the server to use it."
+                )))
+            }
+            Action::RemoveServerKey { name } => {
+                self.declared_key(&name)?;
+                server::remove_server_key(&name)?;
+                Ok(Reply::message(format!(
+                    "Removed the saved key for {name}. The server will not start until it has one."
+                )))
+            }
+            Action::SavePreferences {
+                baseline_model,
+                refresh_seconds,
+            } => {
+                crate::config::save_preferences(&self.settings, &baseline_model, refresh_seconds)?;
+                self.reload()?;
+                Ok(Reply::message(format!(
+                    "Changed {}.",
+                    self.settings.display()
+                )))
+            }
+            Action::OpenSettings {} => unreachable!(),
+            Action::PreviewUpdate {} => {
+                let mut data = switchyard_desktop::install::preview_update(&install_metadata(
+                    &self.settings,
+                )?)?;
+                let token = uuid::Uuid::now_v7().to_string();
+                let mut reviewed = data.clone();
+                reviewed
+                    .as_object_mut()
+                    .ok_or("Invalid update preview.")?
+                    .remove("status");
+                self.update_review = Some((token.clone(), reviewed));
+                data["preview_token"] = json!(token);
+                Ok(Reply {
+                    message: String::new(),
+                    data,
+                })
+            }
+            Action::Update { preview_token } => {
+                // Each update attempt uses up the reviewed preview, so a second Update needs a new
+                // PreviewUpdate even when the checkout has not changed.
+                let (token, reviewed) = self
+                    .update_review
+                    .take()
+                    .ok_or("Review the source update first.")?;
+                let mut current = switchyard_desktop::install::preview_update(&install_metadata(
+                    &self.settings,
+                )?)?;
+                current
+                    .as_object_mut()
+                    .ok_or("Invalid update preview.")?
+                    .remove("status");
+                if preview_token != Some(token) || current != reviewed {
+                    return Err(
+                        "The source checkout or installation changed. Review the update again."
+                            .into(),
+                    );
+                }
+                update(&self.settings).map(Reply::message)
+            }
+            Action::OpenUpdateLog {} => {
+                let log = self.update_log()?;
+                server::command("open", &[&log.display().to_string()])?;
+                Ok(Reply::message("Opened the update log.".into()))
+            }
+            Action::OpenConfig {} => {
+                server::command("open", &[&self.config.config_file.display().to_string()])?;
+                Ok(Reply::message(
+                    "Opened the server config in your default editor.".into(),
+                ))
+            }
+            Action::OpenPrices {} => {
+                let Some(path) = self.config.prices_file.as_ref() else {
+                    return Ok(Reply::message("Bundled model prices are active. To use custom rates, set pricing_file in app settings and pass the same file to the server with --pricing-file.".into()));
+                };
+                server::command("open", &[&path.display().to_string()])?;
+                Ok(Reply::message(
+                    "Opened the model prices in your default editor. Restart the server after \
+                     you save them; it reads the prices when it starts."
+                        .into(),
+                ))
+            }
+        }
+    }
+}
+fn logs_dir() -> Result<PathBuf, String> {
+    crate::config::expand_home(std::path::Path::new("~/.switchyard/logs"))
+}
+/// This function shows a target as `client / model`, or names it when no target entry has its
+/// name, which the server rejects at startup.
+fn target_label(target: &switchyard_runner::ConfiguredTarget) -> String {
+    match &target.model {
+        Some(model) => format!("{} / {}", model.client, model.id),
+        None => format!("{} (no target has this name)", target.name),
+    }
+}
+fn role_info(role: &crate::server_config::Role) -> RoleInfo {
+    RoleInfo {
+        label: role.label.clone(),
+        hint: role.hint,
+        tier: role.tier.map(|t| format!("{t:?}")),
+    }
+}
+
+fn install_metadata(settings: &std::path::Path) -> Result<PathBuf, String> {
+    let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+    let bundle = switchyard_desktop::install::bundle_metadata(&executable);
+    let metadata = if bundle.is_file() {
+        bundle
+    } else {
+        settings
+            .parent()
+            .ok_or("The settings file has no parent directory.")?
+            .join("install.toml")
+    };
+    Ok(metadata)
+}
+fn update(settings: &std::path::Path) -> Result<String, String> {
+    let metadata = install_metadata(settings)?;
+    let log = switchyard_desktop::install::start_update(&metadata)?;
+    Ok(format!(
+        "Started rebuilding and reinstalling from the saved source checkout. \
+         Progress and errors are recorded in {}. \
+         The app restarts after a successful install.",
+        log.display()
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Action, Config, Controller};
+
+    #[test]
+    fn recent_call_read_errors_name_the_source_and_keep_the_io_details() {
+        let directory = tempfile::tempdir().expect("directory");
+        let settings = directory.path().join("desktop.toml");
+        let path = directory.path().to_str().expect("UTF-8 path");
+        std::fs::write(
+            &settings,
+            format!("routing_log = {path:?}\nserver_url = 'http://127.0.0.1:9'\n"),
+        )
+        .expect("settings");
+        let config = Config::load(&settings).expect("config");
+        let expected = crate::history::load(directory.path())
+            .err()
+            .expect("directory read fails");
+        let snapshot = Controller::new(config, settings)
+            .snapshot()
+            .expect("snapshot");
+        assert!(
+            snapshot
+                .errors
+                .contains(&format!("Could not read recent calls: {expected}")),
+            "{:?}",
+            snapshot.errors
+        );
+        assert_eq!(snapshot.activity, [0; 24]);
+    }
+
+    // An update attempt uses up the reviewed preview, so the same token cannot start a second one.
+    #[test]
+    fn update_preview_tokens_work_once() {
+        let directory = tempfile::tempdir().expect("directory");
+        let settings = directory.path().join("desktop.toml");
+        std::fs::write(&settings, "server_url = 'http://127.0.0.1:9'\n").expect("settings");
+        let config = Config::load(&settings).expect("config");
+        let mut controller = Controller::new(config, settings);
+        // The temporary directory has no install.toml, so the first attempt fails after it takes
+        // the review.
+        controller.update_review = Some(("token".into(), serde_json::json!({})));
+        let update = || Action::Update {
+            preview_token: Some("token".into()),
+        };
+        let first = controller.dispatch(update()).err().expect("no install");
+        assert_ne!(first, "Review the source update first.");
+        assert_eq!(
+            controller.dispatch(update()).err().as_deref(),
+            Some("Review the source update first.")
+        );
+    }
+
+    // The editor supports only some route fields, so the page must not limit models to them:
+    // a sub-agent model, a stage router's judge, and a custom classifier's groups all show.
+    #[test]
+    fn routes_list_every_model_the_runner_calls() {
+        let directory = tempfile::tempdir().expect("directory");
+        let settings = directory.path().join("desktop.toml");
+        let server_config = directory.path().join("server.toml");
+        std::fs::write(
+            &settings,
+            format!("server_url = 'http://127.0.0.1:9'\nconfig_file = {server_config:?}\n"),
+        )
+        .expect("settings");
+        std::fs::write(
+            &server_config,
+            r#"schema_version = 1
+
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[targets.strong]
+id = "strong/model"
+llm_client = "primary"
+
+[targets.weak]
+id = "weak/model"
+llm_client = "primary"
+
+[targets.judge]
+id = "judge/model"
+llm_client = "primary"
+
+[routes.direct]
+id = "direct"
+type = "passthrough"
+target = "strong"
+
+[routes.direct.subagents]
+type = "passthrough"
+target = "weak"
+
+[routes.stage]
+id = "stage"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+
+[routes.stage.classifier]
+target = "judge"
+
+[routes.custom]
+id = "custom"
+type = "llm_classifier"
+mode = "custom"
+models = { judge = ["judge"], capable = ["strong"], efficient = ["weak"], any = ["strong", "weak"] }
+default_target = "efficient"
+prompt = "Pick a target."
+response_schema = '{"type":"object"}'
+policy = { type = "target_selector", selector = "/target" }
+"#,
+        )
+        .expect("server config");
+        let config = Config::load(&settings).expect("config");
+        let snapshot = Controller::new(config, settings)
+            .snapshot()
+            .expect("snapshot");
+        let routes: Vec<_> = snapshot
+            .routes
+            .iter()
+            .map(|route| {
+                (
+                    route.key.as_str(),
+                    route.models.clone(),
+                    route.judges.clone(),
+                )
+            })
+            .collect();
+        let both = || {
+            vec![
+                "primary / strong/model".to_string(),
+                "primary / weak/model".to_string(),
+            ]
+        };
+        let judge = || vec!["primary / judge/model".to_string()];
+        assert_eq!(
+            routes,
+            [
+                ("custom", both(), judge()),
+                ("direct", both(), Vec::new()),
+                ("stage", both(), judge()),
+            ],
+            "{:?}",
+            snapshot.errors
+        );
+    }
+}

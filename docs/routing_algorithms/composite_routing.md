@@ -17,6 +17,11 @@ during execution. Both algorithms and the
 relationship between them are fixed, and the configuration below names them
 directly rather than composing arbitrary algorithms.
 
+Under capable-first, `stage.efficient_hold_turns` defaults to `-1`: after switching
+to efficient, it stays there until session state is cleared. Efficient-first
+defaults to `0`. Set this field explicitly to override either default; `0`
+disables the hold, and a positive value holds that many subsequent requests.
+
 The classifier can use an LLM judge or a decision model. A decision
 model is configured through a decision client and target, separately from the
 capable and efficient completion targets.

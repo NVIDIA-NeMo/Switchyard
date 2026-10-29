@@ -222,9 +222,7 @@ impl FormatCodec for OpenAiResponsesCodec {
         );
         if let Some(additional) = crate::codex_custom_tools::additional_tools(&request.extensions) {
             // A Responses-lite request carried its tools inside `input`; give them back the same
-            // way, verbatim, and leave top-level `tools` absent as the client did. A request that
-            // reduced to a single user text encodes `input` as a plain string, which has no
-            // room for an item, so it is widened to the equivalent one-message array first.
+            // way, verbatim, and leave top-level `tools` absent as the client did.
             let item = json!({
                 "type": "additional_tools",
                 "role": "developer",
@@ -232,10 +230,6 @@ impl FormatCodec for OpenAiResponsesCodec {
             });
             match body.get_mut("input") {
                 Some(Value::Array(input)) => input.insert(0, item),
-                Some(input @ Value::String(_)) => {
-                    let text = input.take();
-                    *input = Value::Array(vec![item, json!({"role": "user", "content": text})]);
-                }
                 _ => body
                     .insert("input".to_string(), Value::Array(vec![item]))
                     .map_or((), |_| ()),
@@ -1278,14 +1272,8 @@ fn encode_responses_input(
     // custom outputs. A tool result is typed by the call it answers, and Responses history
     // always lists the call before its output, so recording ids as calls are encoded is enough
     // to type the outputs that follow.
-    if messages.len() == 1
-        && matches!(messages[0].role, Role::User)
-        && messages[0].content.len() == 1
-        && matches!(messages[0].content[0], ContentBlock::Text { .. })
-        && let ContentBlock::Text { text } = &messages[0].content[0]
-    {
-        return Ok(Value::String(text.clone()));
-    }
+    //
+    // A lone user text is still sent as an item list: the Codex backend rejects a string `input`.
     let mut encoded = Vec::new();
     // Some upstream translators (Kimi K3) resolve a tool output by an explicit
     // `name`, so pair every output with the name of the call it answers.
