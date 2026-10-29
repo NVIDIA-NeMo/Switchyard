@@ -427,7 +427,14 @@ impl ServerConfig {
         let removed = routes
             .remove(route)
             .ok_or("The route was already removed. Refresh and choose it again.")?;
+        let emptied = routes.is_empty();
         retain_block_markers(&mut doc, &removed);
+        // Files that use `[routes.name]` headers leave `[routes]` implicit, and an implicit table
+        // with no entries is not written. The server requires `routes`, so the last delete writes
+        // an explicit empty `[routes]` table.
+        if emptied && let Some(routes) = doc["routes"].as_table_mut() {
+            routes.set_implicit(false);
+        }
         Ok(Edited {
             text: doc.to_string(),
             notes: vec![
@@ -1338,4 +1345,33 @@ fn table_key(path: &str) -> Option<&str> {
         return quoted.split_once('"').map(|(key, _)| key);
     }
     path.split(['.', ']']).next().filter(|key| !key.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `[routes.name]` headers leave `[routes]` implicit. Deleting the last route must still
+    // write a `routes` table, or the server rejects the file with `missing field routes`.
+    #[test]
+    fn deleting_the_last_route_keeps_an_empty_routes_table() {
+        let config = ServerConfig::parse(
+            "schema_version = 1\n\
+             [llm_clients.c]\n\
+             format = 'openai_chat'\n\
+             base_url = 'https://example.test/v1'\n\
+             [targets.m]\n\
+             id = 'model'\n\
+             llm_client = 'c'\n\
+             [routes.only]\n\
+             id = 'only'\n\
+             type = 'passthrough'\n\
+             target = 'm'\n",
+        )
+        .expect("config");
+        let edited = config.remove("only").expect("remove");
+        let routes = switchyard_runner::route_targets(&edited.text)
+            .unwrap_or_else(|error| panic!("{error}\n{}", edited.text));
+        assert!(routes.is_empty(), "{}", edited.text);
+    }
 }
