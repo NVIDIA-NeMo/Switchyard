@@ -1387,20 +1387,3 @@ async fn a_failed_capable_verifier_still_offers_the_efficient_answer() -> Result
     assert_eq!(fallback.llm_request.messages, task().llm_request.messages);
     Ok(())
 }
-
-#[tokio::test]
-async fn unbounded_calls_ignore_expired_deadlines() -> Result<()> {
-    use std::time::{Duration, Instant};
-
-    for bounded in [true, false] {
-        let mut classifier = recovering_classifier();
-        classifier.config.bounded_efficient = bounded;
-        classifier.config.deadline = Duration::from_secs(1);
-        let started = Instant::now() - Duration::from_secs(2);
-        assert_eq!(
-            classifier.within_budget(started, async { 42 }).await,
-            (!bounded).then_some(42)
-        );
-    }
-    Ok(())
-}

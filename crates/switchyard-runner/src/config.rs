@@ -1342,6 +1342,12 @@ task_typing = false
         let example = include_str!("../../../examples/vgr-local-servers.toml");
         let runner = runner_from_toml(example)?;
         assert!(runner.route("switchyard/vgr").is_some());
+        assert!(runner.route("switchyard/only-efficient").is_some());
+        let parsed: DeploymentConfig = toml::from_str(example).expect("valid VGR example");
+        assert!(matches!(
+            &parsed.routes["auxiliary"].algorithm,
+            AlgorithmSpec::Passthrough { target, .. } if target == "efficient"
+        ));
         let invalid = example.replace(
             "context_discovery = \"llama_cpp\"",
             "context_discovery = \"guess\"",

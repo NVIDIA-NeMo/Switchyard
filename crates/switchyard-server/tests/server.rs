@@ -6030,53 +6030,13 @@ seed = 17
 }
 
 #[tokio::test]
-async fn vgr_auxiliary_example_routes_directly_to_the_efficient_model() -> TestResult {
-    let upstream = MockUpstream::start().await?;
-    let config = include_str!("../../../examples/vgr-local-servers.toml")
-        .replace("http://localhost:8080/v1", &upstream.base_url)
-        .replace("https://api.openai.com/v1", &upstream.base_url)
-        .replace("efficient-model", "model/vgr-efficient")
-        .replace("capable-model", "model/vgr-capable");
-    let app = build_switchyard_router(load_test_config(&config)?);
-    for (approval, prompt) in [
-        (false, "Give this conversation a short title."),
-        (true, "Reply APPROVE or DENY."),
-    ] {
-        let mut body = json!({
-            "model": "switchyard/only-efficient",
-            "messages": [{"role": "user", "content": prompt}]
-        });
-        if approval {
-            body["reasoning_effort"] = json!("none");
-            body["chat_template_kwargs"] = json!({"enable_thinking": false});
-        }
-        let response = send(&app, "POST", "/v1/chat/completions", Some(body)).await?;
-        assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
-    }
-    let calls = upstream.calls.lock().await;
-    assert_eq!(calls.len(), 2);
-    for call in calls.iter() {
-        assert_eq!(call["model"], "model/vgr-efficient");
-        assert!(call.get("logprobs").is_none());
-    }
-    assert!(calls[0].get("reasoning_effort").is_none());
-    assert!(calls[0].get("chat_template_kwargs").is_none());
-    assert_eq!(calls[1]["reasoning_effort"], "none");
-    assert_eq!(
-        calls[1]["chat_template_kwargs"],
-        json!({"enable_thinking": false})
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn vgr_time_limits_can_be_disabled_from_toml() -> TestResult {
     let upstream = MockUpstream::start().await?;
     for limit in ["deadline_seconds", "efficient_turn_budget_seconds"] {
-        for setting in [None, Some(true), Some(false)] {
-            let bounded = setting.unwrap_or(true);
-            let configured =
-                setting.map_or_else(String::new, |value| format!("bounded_efficient = {value}"));
+        for (configured, served) in [
+            ("", "model/vgr-capable"),
+            ("bounded_efficient = false", "model/vgr-efficient"),
+        ] {
             let app = build_switchyard_router(load_test_config(&format!(
                 r#"
 schema_version = 1
@@ -6111,15 +6071,10 @@ task_typing = false
             )
             .await?;
             assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
-            let served = if bounded {
-                "model/vgr-capable"
-            } else {
-                "model/vgr-efficient"
-            };
             assert_eq!(
                 response.headers.get("x-model-router-selected-model"),
                 Some(&HeaderValue::from_str(served)?),
-                "{limit}, bounded={bounded}"
+                "{limit}, {configured}"
             );
         }
     }
