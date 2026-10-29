@@ -79,7 +79,7 @@ fn save_edit(
             details: Vec::new(),
         });
     }
-
+    check_service_config(settings)?;
     let binary = server_binary()?;
     let backup = save_checked(&binary, path, text, &edited.text)?;
     let saved = format!("{summary} Changed {}.", path.display());
@@ -118,6 +118,33 @@ fn save_edit(
         warning,
         details,
     })
+}
+
+/// This function checks that the app edits the file that the installed server loads. The
+/// service always starts with `composite.toml` in its installation directory, whatever
+/// `config_file` says. Saving a different file and restarting would report success while
+/// the server kept its old routes, and `/health` would not notice.
+fn check_service_config(settings: &Config) -> Result<(), String> {
+    let Some(service) = &settings.service_config else {
+        return Err(format!(
+            "Nothing was saved. The app found no install.toml next to its settings file, so it \
+             cannot tell which server config the installed server loads. Edit {} directly, then \
+             use Restart server in Settings.",
+            settings.config_file.display()
+        ));
+    };
+    // Comparing resolved paths accepts a symlink between the two names.
+    let resolved = |path: &Path| std::fs::canonicalize(path).ok();
+    if resolved(service).is_none() || resolved(service) != resolved(&settings.config_file) {
+        return Err(format!(
+            "Nothing was saved. The installed server loads {}, but the app settings select {}. \
+             Remove config_file from the app settings, or set it to {}.",
+            service.display(),
+            settings.config_file.display(),
+            service.display()
+        ));
+    }
+    Ok(())
 }
 
 /// This function finds the installed helper, which is the only program that reads or writes
@@ -437,4 +464,82 @@ pub fn command(program: &str, args: &[&str]) -> Result<String, String> {
         ));
     }
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// This function installs into `dir`: it writes `install.toml`, the service's
+    /// `composite.toml`, and app settings with `settings` as their text. It returns the path of
+    /// the app settings.
+    fn installed(dir: &Path, settings: &str) -> PathBuf {
+        let home = dir.join("home");
+        let install = switchyard_desktop::install::Settings {
+            sy_home: dir.to_path_buf(),
+            codex_home: home.join(".codex"),
+            service_dir: home.join("services"),
+            app_dir: None,
+            source: home.join("source"),
+            cargo: home.join("cargo"),
+            home,
+            port: 4123,
+            profile: "sy".into(),
+            model: "route".into(),
+        };
+        let install = toml::to_string(&install).expect("install metadata");
+        std::fs::write(dir.join("install.toml"), install).expect("install.toml");
+        std::fs::write(dir.join("composite.toml"), "# service config\n").expect("service config");
+        let path = dir.join("desktop.toml");
+        std::fs::write(&path, settings).expect("app settings");
+        path
+    }
+
+    // The installed service always loads its own composite.toml. A route edit to any other
+    // file must stop before it writes a backup, changes the file, or restarts the server.
+    #[test]
+    fn route_saves_go_only_to_the_config_the_installed_server_loads() {
+        let dir = tempfile::tempdir().expect("directory");
+        let custom = dir.path().join("custom.toml");
+        std::fs::write(&custom, "# custom\n").expect("custom config");
+        let path = installed(dir.path(), &format!("config_file = {custom:?}\n"));
+        let settings = Config::load(&path).expect("settings");
+        let before = std::fs::read_dir(dir.path()).expect("files").count();
+        let edited = crate::server_config::Edited {
+            text: "# edited\n".into(),
+            notes: Vec::new(),
+        };
+        let error = save_edit(&settings, "# custom\n", edited, "Updated the route.")
+            .err()
+            .expect("a different file");
+        assert!(error.contains("The installed server loads"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(&custom).expect("custom"),
+            "# custom\n"
+        );
+        assert_eq!(
+            std::fs::read_dir(dir.path()).expect("files").count(),
+            before
+        );
+
+        // Without install.toml the app cannot tell which file the server loads.
+        let bare = tempfile::tempdir().expect("directory");
+        let settings = Config::load(&bare.path().join("desktop.toml")).expect("defaults");
+        assert!(
+            check_service_config(&settings)
+                .expect_err("no install metadata")
+                .contains("no install.toml")
+        );
+
+        // The default config_file and a symlink to the service's file both pass.
+        let path = installed(dir.path(), "");
+        check_service_config(&Config::load(&path).expect("settings")).expect("default file");
+        #[cfg(unix)]
+        {
+            let link = dir.path().join("link.toml");
+            std::os::unix::fs::symlink(dir.path().join("composite.toml"), &link).expect("link");
+            std::fs::write(&path, format!("config_file = {link:?}\n")).expect("app settings");
+            check_service_config(&Config::load(&path).expect("settings")).expect("symlink");
+        }
+    }
 }

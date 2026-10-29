@@ -516,6 +516,7 @@ impl Controller {
             refresh_seconds,
             baseline_model,
             prices_file,
+            service_config: _, // server::save_edit checks route edits against it
         } = self.config.clone();
         let update_status = install_metadata(&self.settings)
             .and_then(|path| switchyard_desktop::install::update_status(&path))
