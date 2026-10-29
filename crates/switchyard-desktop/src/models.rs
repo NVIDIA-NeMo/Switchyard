@@ -51,14 +51,12 @@ pub struct ModelList {
     pub fetched_at: u64,
 }
 
-/// Loaded stores the model list and fetch result for one URL.
+/// Loaded stores the model list and fetch result for one endpoint.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Loaded {
     /// This field identifies an endpoint list as `endpoint` or a Switchyard cache list as `cache`.
     /// A Codex cache list has the source `local`; `error` separately reports fetch or cache-write failures.
     pub source: &'static str,
-    /// This field names the URL that serves the list.
-    pub url: String,
     /// This field stores the newest list fetched or read from the cache file.
     pub list: Option<ModelList>,
     /// This field records a fetch or cache-write error, if either occurred.
@@ -103,22 +101,17 @@ impl ListError {
         }
     }
 
-    /// This function says what the user can do while the window has no list to show. The
-    /// window accepts a typed model ID, so most answers offer that. A missing
-    /// variable also stops Apply, so that answer offers only the key field.
-    /// Only macOS and Windows can save a key, so elsewhere the answers offer
-    /// only a typed model ID. [`missing_env_note`] already says that, so a
-    /// missing variable gets no advice there.
+    /// This function says what the user can do next on the Routes page, where `m` loads
+    /// models again and `k` opens the form that saves a model-list key. Only macOS and
+    /// Windows can save a key, so elsewhere a key error gets no advice.
+    /// [`missing_env_note`] already explains a missing variable, so that error gets no advice.
     pub fn advice(&self) -> &'static str {
         let saves_keys = cfg!(any(target_os = "macos", windows));
         match self {
-            Self::NoEnv(_) if saves_keys => "Or paste the key below to list models.",
             Self::NoEnv(_) => "",
-            _ if self.needs_key() && saves_keys => {
-                "Enter a valid API key and choose Save key and load models, or type a model ID."
-            }
-            _ if self.needs_key() => "Type a model ID instead.",
-            _ => "Click Refresh models to try again, or type a model ID.",
+            _ if self.needs_key() && saves_keys => "Press k on Routes to save a valid key.",
+            _ if self.needs_key() => "",
+            _ => "Press m on Routes to try again.",
         }
     }
 
@@ -137,13 +130,13 @@ pub fn missing_env_note(variable: &str) -> String {
     if cfg!(any(target_os = "macos", windows)) {
         format!(
             "Switchyard does not read {variable} from your shell. \
-             To load model suggestions, save a model-list key below. \
+             To load this endpoint's models, press k on Routes to save a model-list key. \
              The server's own key is under Settings → Server keys."
         )
     } else {
         format!(
             "{variable} is not set in this terminal, so this endpoint cannot list models. \
-             Type the model ID instead."
+             Set {variable} and start the app again."
         )
     }
 }
@@ -160,26 +153,33 @@ pub fn missing_env(client: &Client) -> Option<&str> {
 /// This function loads one endpoint's models and retains the cached list when refresh fails.
 /// The selected endpoint alone receives the entered key.
 pub fn load(cache: &Path, client: &Client, refresh: bool, typed_key: Option<&str>) -> Loaded {
-    let url = list_url(client);
-    let old = read_cache(cache).remove(&url);
     if unlisted(client) {
         // ChatGPT has no list to fetch, so nothing goes in the cache file.
         return Loaded {
             source: "local",
-            url,
             list: codex_models(),
             error: None,
         };
     }
+    let url = match models_url(&client.format, &client.base_url) {
+        Ok(url) => url,
+        Err(error) => {
+            return Loaded {
+                source: "cache",
+                list: None,
+                error: Some(ListError::Failed(error)),
+            };
+        }
+    };
+    let old = read_cache(cache).remove(&url);
     if old.is_some() && !refresh {
         return Loaded {
             source: "cache",
-            url,
             list: old,
             error: None,
         };
     }
-    match key(client, typed_key).and_then(|key| list(client, key.as_deref())) {
+    match key(client, typed_key).and_then(|key| list(client, &url, key.as_deref())) {
         Ok(models) => {
             let new = ModelList {
                 models,
@@ -190,24 +190,16 @@ pub fn load(cache: &Path, client: &Client, refresh: bool, typed_key: Option<&str
                 .map(ListError::NotCached);
             Loaded {
                 source: "endpoint",
-                url,
                 list: Some(new),
                 error,
             }
         }
         Err(error) => Loaded {
             source: "cache",
-            url,
             list: old,
             error: Some(error),
         },
     }
-}
-
-/// This function returns the URL that serves the client's model list. It is also the
-/// list's key in the cache file and in [`Loaded::url`].
-pub fn list_url(client: &Client) -> String {
-    models_url(&client.format, &client.base_url)
 }
 
 /// This function returns whether the client's endpoint has no model list that this app can
@@ -252,29 +244,28 @@ fn read_codex_models(path: &Path) -> Option<ModelList> {
     })
 }
 
-/// This function lists the client's model IDs, sorted. When the client needs a key and
+/// This function lists the model IDs at `url`, sorted. When the client needs a key and
 /// `key` is `None`, returns [`ListError::NoEnv`] or [`ListError::NoKey`]
 /// without sending a request.
-fn list(client: &Client, key: Option<&str>) -> Result<Vec<String>, ListError> {
+fn list(client: &Client, url: &str, key: Option<&str>) -> Result<Vec<String>, ListError> {
     match (key, &client.api_key_env) {
         (None, Some(variable)) => Err(ListError::NoEnv(variable.clone())),
         (None, None) if client.forward_auth => Err(ListError::NoKey),
-        _ => fetch(&list_url(client), &client.format, key),
+        _ => fetch(url, &client.format, key),
     }
 }
 
 /// This function returns the models endpoint for a client. It builds the URL the way the
-/// server builds its request URLs. OpenAI clients drop a trailing
-/// `/chat/completions` or `/responses`. Anthropic clients drop a trailing
-/// `/v1/messages` to `/v1`, and add `/v1` to any other path.
+/// server builds its request URLs: it parses `base_url` and changes only the path.
+/// OpenAI clients drop a trailing `/chat/completions` or `/responses`. Anthropic clients
+/// drop a trailing `/v1/messages` to `/v1`, and add `/v1` to any other path.
 /// Anthropic returns 20 models unless the URL sets `limit`, so the URL adds
-/// `limit=1000`, the most that Anthropic allows.
-fn models_url(format: &str, base_url: &str) -> String {
-    let (base, query) = match base_url.split_once('?') {
-        Some((base, query)) => (base, format!("?{query}")),
-        None => (base_url, String::new()),
-    };
-    let base = base.trim_end_matches('/');
+/// `limit=1000`, the most that Anthropic allows. The URL is also the list's key in
+/// the cache file. curl never sends a fragment, so the URL drops it.
+fn models_url(format: &str, base_url: &str) -> Result<String, String> {
+    let mut url = url::Url::parse(base_url)
+        .map_err(|error| format!("the base URL {base_url} is not valid: {error}"))?;
+    let base = url.path().trim_end_matches('/');
     let path = if format == "anthropic_messages" {
         let root = base
             .strip_suffix("/messages")
@@ -292,14 +283,12 @@ fn models_url(format: &str, base_url: &str) -> String {
             .unwrap_or(base);
         format!("{root}/models")
     };
-    let query = if format == "anthropic_messages" && query.is_empty() {
-        "?limit=1000".to_string()
-    } else if format == "anthropic_messages" {
-        format!("{query}&limit=1000")
-    } else {
-        query
-    };
-    format!("{path}{query}")
+    url.set_path(&path);
+    url.set_fragment(None);
+    if format == "anthropic_messages" {
+        url.query_pairs_mut().append_pair("limit", "1000");
+    }
+    Ok(url.into())
 }
 
 /// This function returns whether the server sends this client a key. If it does, listing
@@ -311,15 +300,19 @@ fn sends_key(client: &Client) -> bool {
 /// This function returns the key to list the client's models with, or `None` when the
 /// client needs no key or none is available.
 ///
-/// The entered key takes precedence over the environment and saved credentials.
+/// The entered key comes first, then the key saved from Routes, then the client's
+/// `api_key_env` variable. The saved key wins over the variable because the app checked
+/// it against the endpoint when the user saved it. Otherwise an expired key in the
+/// variable would hide every replacement that the user saves.
 fn key(client: &Client, typed_key: Option<&str>) -> Result<Option<String>, ListError> {
     if !sends_key(client) {
         return Ok(None);
     }
-    if let Some(key) = typed_key.map(str::to_string).or_else(|| env_key(client)) {
-        return Ok(Some(key));
+    if let Some(key) = typed_key {
+        return Ok(Some(key.to_string()));
     }
-    saved_key(&client.base_url).map_err(ListError::Keychain)
+    let saved = saved_key(&client.base_url).map_err(ListError::Keychain)?;
+    Ok(saved.or_else(|| env_key(client)))
 }
 
 fn env_key(client: &Client) -> Option<String> {
@@ -527,4 +520,39 @@ fn parse_ids(body: &str) -> Result<Vec<String>, String> {
     ids.sort();
     ids.dedup();
     Ok(ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::models_url;
+
+    // A fragment or query in the base URL must not swallow the `/models` path.
+    #[test]
+    fn models_url_changes_only_the_path() {
+        for (format, base_url, expected) in [
+            (
+                "openai_responses",
+                "https://example.test/v1/responses#production",
+                "https://example.test/v1/models",
+            ),
+            (
+                "openai_chat",
+                "https://example.test/v1/chat/completions?api-version=1",
+                "https://example.test/v1/models?api-version=1",
+            ),
+            (
+                "anthropic_messages",
+                "https://example.test/v1/messages",
+                "https://example.test/v1/models?limit=1000",
+            ),
+            (
+                "anthropic_messages",
+                "https://example.test?beta=1",
+                "https://example.test/v1/models?beta=1&limit=1000",
+            ),
+        ] {
+            assert_eq!(models_url(format, base_url).as_deref(), Ok(expected));
+        }
+        assert!(models_url("openai_chat", "example.test/v1").is_err());
+    }
 }

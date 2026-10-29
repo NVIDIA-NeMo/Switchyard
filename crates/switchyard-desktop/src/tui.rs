@@ -406,7 +406,9 @@ enum FormKind {
     /// The token comes from the update preview that the user read.
     Update(Option<String>),
     Models,
-    ModelKey,
+    /// This map holds each endpoint's base URL when the form opened. The controller refuses
+    /// the key if the chosen endpoint's URL no longer matches.
+    ModelKey(BTreeMap<String, String>),
 }
 /// Choices names the list that ↑ and ↓ cycle through in a form field.
 enum Choices {
@@ -504,7 +506,7 @@ impl Form {
     /// This function names the list that the selected field chooses from, if any.
     fn options(&self) -> Option<Choices> {
         match self.kind {
-            FormKind::Models | FormKind::ModelKey if self.index == 0 => Some(Choices::Endpoints),
+            FormKind::Models | FormKind::ModelKey(_) if self.index == 0 => Some(Choices::Endpoints),
             _ => None,
         }
     }
@@ -564,11 +566,13 @@ impl Form {
                 client: self.value(0),
                 refresh: true,
                 key: None,
+                base_url: None,
             },
-            FormKind::ModelKey => Action::Models {
+            FormKind::ModelKey(urls) => Action::Models {
                 client: self.value(0),
                 refresh: true,
                 key: Some(self.value(1)),
+                base_url: urls.get(&self.value(0)).cloned(),
             },
         }))
     }
@@ -581,7 +585,7 @@ impl Form {
             FormKind::Update(_) => "Starting the update",
 
             FormKind::Models => "Loading models",
-            FormKind::ModelKey => "Saving the key and loading models",
+            FormKind::ModelKey(_) => "Saving the key and loading models",
         }
     }
 }
@@ -1349,7 +1353,13 @@ impl App {
                         vec![("Endpoint name", client)],
                     ),
                     'k' => Form::new(
-                        FormKind::ModelKey,
+                        FormKind::ModelKey(
+                            self.data
+                                .clients
+                                .iter()
+                                .map(|c| (c.name.clone(), c.base_url.clone()))
+                                .collect(),
+                        ),
                         "Save a model-list key",
                         vec![("Endpoint name", client), ("API key", String::new())],
                     ),
@@ -2924,7 +2934,7 @@ fn form_lines(theme: Theme, form: &Form) -> Vec<Line<'static>> {
         .enumerate()
         .map(|(index, (label, value))| {
             // The key field shows one bullet per character, so the key never appears on screen.
-            let masked = matches!(form.kind, FormKind::SaveKey | FormKind::ModelKey);
+            let masked = matches!(form.kind, FormKind::SaveKey | FormKind::ModelKey(_));
             let mut value = if masked && index == 1 {
                 "•".repeat(value.chars().count())
             } else {
@@ -3090,8 +3100,8 @@ fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
             lines
         }
 
-        FormKind::Models | FormKind::ModelKey => {
-            let key = matches!(form.kind, FormKind::ModelKey);
+        FormKind::Models | FormKind::ModelKey(_) => {
+            let key = matches!(form.kind, FormKind::ModelKey(_));
             let mut lines: Vec<Line> = data
                 .clients
                 .iter()

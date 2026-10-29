@@ -21,6 +21,9 @@ pub enum Action {
         client: String,
         refresh: bool,
         key: Option<String>,
+        /// This field holds the endpoint's base URL when the user opened the key form. The
+        /// controller refuses `key` unless the endpoint still has this URL.
+        base_url: Option<String>,
     },
     Restart {},
     PreviewUpdate {},
@@ -122,6 +125,8 @@ pub struct RouteInfo {
 #[derive(Clone, Default, Serialize)]
 pub struct ClientInfo {
     pub name: String,
+    /// This field holds the URL that the app sends a model-list key to.
+    pub base_url: String,
     pub host: String,
     /// This field lists the model IDs that targets in the server config name on this endpoint.
     pub models: Vec<String>,
@@ -336,6 +341,7 @@ impl Controller {
             .iter()
             .map(|c| ClientInfo {
                 name: c.name.clone(),
+                base_url: c.base_url.clone(),
                 host: c.host().to_string(),
                 models: config.models_on(&c.name),
                 unlisted: models::unlisted(c),
@@ -557,6 +563,7 @@ impl Controller {
                 client,
                 refresh,
                 key,
+                base_url,
             } => {
                 let config = self.routes()?;
                 let client = config
@@ -567,6 +574,13 @@ impl Controller {
                 if let Some(key) = &key {
                     if key.trim().is_empty() || models::has_line_break(key) {
                         return Err("Enter a nonempty key without line breaks.".into());
+                    }
+                    if base_url.as_deref() != Some(client.base_url.as_str()) {
+                        return Err(format!(
+                            "The URL for {} changed after this form opened, so the app did \
+                             not send the key. Open the form again to check the endpoint.",
+                            client.name
+                        ));
                     }
                     if models::unlisted(&client)
                         || !(client.forward_auth || client.api_key_env.is_some())
@@ -904,5 +918,39 @@ policy = { type = "target_selector", selector = "/target" }
             "{:?}",
             snapshot.errors
         );
+    }
+
+    // The key form keeps the URL it opened with. If the server config moves the endpoint
+    // before the user submits, the controller must not send the key to the new URL.
+    #[test]
+    fn model_keys_go_only_to_the_url_the_form_opened_with() {
+        let directory = tempfile::tempdir().expect("directory");
+        let settings = directory.path().join("desktop.toml");
+        let server_config = directory.path().join("server.toml");
+        std::fs::write(
+            &settings,
+            format!("server_url = 'http://127.0.0.1:9'\nconfig_file = {server_config:?}\n"),
+        )
+        .expect("settings");
+        std::fs::write(
+            &server_config,
+            "schema_version = 1\n\n[llm_clients.primary]\nformat = \"openai_chat\"\n\
+             base_url = \"https://new.example.test/v1\"\napi_key_env = \"PRIMARY_KEY\"\n",
+        )
+        .expect("server config");
+        let config = Config::load(&settings).expect("config");
+        let mut controller = Controller::new(config, settings);
+        for base_url in [Some("https://old.example.test/v1".to_string()), None] {
+            let error = controller
+                .dispatch(Action::Models {
+                    client: "primary".into(),
+                    refresh: true,
+                    key: Some("secret".into()),
+                    base_url,
+                })
+                .err()
+                .expect("the URL changed");
+            assert!(error.starts_with("The URL for primary changed"), "{error}");
+        }
     }
 }
