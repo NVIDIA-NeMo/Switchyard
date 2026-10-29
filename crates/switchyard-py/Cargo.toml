@@ -25,5 +25,6 @@ pythonize = "0.28.0"
 serde.workspace = true
 serde_json.workspace = true
 switchyard-protocol.workspace = true
+switchyard-runner.workspace = true
 switchyard-server.workspace = true
 tokio.workspace = true
