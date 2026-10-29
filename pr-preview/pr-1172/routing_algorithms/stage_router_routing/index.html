@@ -2898,7 +2898,7 @@ These are the ones that matter when you choose a threshold:</p>
 the capable side stays below 0.46. An error in the window removes the
 clean-production bonus, so with a hard error the efficient side reaches at most
 0.24. The unit test <code>scorer_ceilings_match_the_documented_values</code> in
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/92a0e9802f883d82fd7bcf92596d45215ed9b24a/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/39d90001101df8cb0e29c960f073490dfb623c1c/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
 pins these values, so a change to the scorer fails CI until this table is
 updated.</p>
 <h3 id="reachable-scores-per-picker">Reachable scores per picker<a class="headerlink" href="#reachable-scores-per-picker" title="Permanent link">&para;</a></h3>
@@ -3225,7 +3225,8 @@ anchor per target; omit it for evenly spaced anchors.</p>
 <p>For pools larger than two targets, the fallback uses the existing custom-schema
 LLM classifier. It generates one choice per target (<code>target_0</code>, <code>target_1</code>, …),
 and includes their configured names in the judge prompt. Valid choices produce
-clear target decisions. Invalid verdicts fall through to the picker's default endpoint.
+clear anchor scores, which the shared pool resolves once at the end of classification.
+Invalid verdicts fall through to the picker's default endpoint.
 Binary solve-probability settings (<code>base_threshold</code>, <code>threshold_step</code>, <code>decision</code>)
 and custom response schemas are rejected for this fallback. It requires JSON Schema
 output and runs on every ambiguous request. Existing binary judge settings remain
