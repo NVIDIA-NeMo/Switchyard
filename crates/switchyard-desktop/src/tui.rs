@@ -817,7 +817,13 @@ impl Form {
                 key: Some(self.value(1)),
                 base_url: urls.get(&self.value(0)).cloned(),
             },
-            FormKind::SettingsFile => return Ok(Submit::SettingsFile(self.value(0))),
+            FormKind::SettingsFile => {
+                let path = self.value(0);
+                if !path.is_empty() && !std::path::Path::new(&path).is_absolute() {
+                    return Err("Enter an absolute file path, or leave the field empty.".into());
+                }
+                return Ok(Submit::SettingsFile(path));
+            }
         }))
     }
     fn label(&self) -> &'static str {

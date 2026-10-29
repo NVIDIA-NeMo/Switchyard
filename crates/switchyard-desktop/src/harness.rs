@@ -59,6 +59,7 @@ fn inspect_settings(tool: Harness, files: &[PathBuf], texts: &[String]) -> Resul
     let text = &texts[0];
     let model;
     let endpoint;
+    let default_endpoint;
     match tool {
         Harness::CodexCli | Harness::CodexApp => {
             let doc = text
@@ -78,8 +79,8 @@ fn inspect_settings(tool: Harness, files: &[PathBuf], texts: &[String]) -> Resul
                 .and_then(|v| v.get(provider))
                 .and_then(|v| v.get("base_url"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("Provider default")
-                .to_string();
+                .map(str::to_owned);
+            default_endpoint = "Provider default";
         }
         Harness::Claude => {
             let doc = object(text)?;
@@ -92,8 +93,8 @@ fn inspect_settings(tool: Harness, files: &[PathBuf], texts: &[String]) -> Resul
             endpoint = doc
                 .pointer("/env/ANTHROPIC_BASE_URL")
                 .and_then(Value::as_str)
-                .unwrap_or("Anthropic default")
-                .to_string();
+                .map(str::to_owned);
+            default_endpoint = "Anthropic default";
         }
         Harness::Pi => {
             let doc = object(&texts[1])?;
@@ -112,22 +113,25 @@ fn inspect_settings(tool: Harness, files: &[PathBuf], texts: &[String]) -> Resul
                 .and_then(|v| v.get(provider))
                 .and_then(|v| v.get("baseUrl"))
                 .and_then(Value::as_str)
-                .unwrap_or("Provider default")
-                .to_string();
+                .map(str::to_owned);
+            default_endpoint = "Provider default";
         }
     }
     // The display keeps the URL scheme, host, and port to omit credentials and queries.
-    let endpoint = url::Url::parse(&endpoint)
-        .ok()
-        .map(|u| {
-            format!(
-                "{}://{}{}",
-                u.scheme(),
-                u.host_str().unwrap_or("?"),
-                u.port().map(|p| format!(":{p}")).unwrap_or_default()
-            )
-        })
-        .unwrap_or_else(|| "Provider default".into());
+    let endpoint = match endpoint {
+        None => default_endpoint.to_owned(),
+        Some(raw) => url::Url::parse(&raw)
+            .ok()
+            .and_then(|u| {
+                let host = u.host_str()?;
+                Some(format!(
+                    "{}://{host}{}",
+                    u.scheme(),
+                    u.port().map(|p| format!(":{p}")).unwrap_or_default()
+                ))
+            })
+            .unwrap_or_else(|| "Not a valid URL".into()),
+    };
     Ok(format!(
         "Model: {model}\nEndpoint: {endpoint}\nSettings: {}",
         files
