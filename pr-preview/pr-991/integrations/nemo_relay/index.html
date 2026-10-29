@@ -6,15 +6,15 @@
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       
-        <meta name="description" content="Typed, composable LLM routing and format translation for Python">
+        <meta name="description" content="Embed libsy, Switchyard's Rust LLM routing library, in your gateway or agent harness">
       
       
       
       
-        <link rel="prev" href="../../architecture/">
+        <link rel="prev" href="../../reference/host_integration/">
       
       
-        <link rel="next" href="../pi/">
+        <link rel="next" href="../../routing_algorithms/overview/">
       
       
         
@@ -369,14 +369,147 @@
   
   
     <li class="md-nav__item">
-      <a href="../../known_issues/" class="md-nav__link">
+      <a href="../../mechanics_of_libsy/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Known Issues
+    Mechanics of Libsy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_2_3" id="__nav_2_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Switchyard Protocols
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Switchyard Protocols
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../protocols/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../protocols/llm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LLM-Related Protocols
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../protocols/decisions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Decision Model-Related Protocols
   
 
     
@@ -396,85 +529,6 @@
     </li>
   
 
-    
-      
-      
-  
-  
-  
-  
-    
-    
-    
-    
-      
-        
-        
-      
-    
-    
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
-        
-          
-          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
-            
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Concepts
-  
-
-    
-  </span>
-  
-  
-
-            <span class="md-nav__icon md-icon"></span>
-          </label>
-        
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_3">
-            <span class="md-nav__icon md-icon"></span>
-            
-  
-    Concepts
-  
-
-          </label>
-          <ul class="md-nav__list" data-md-scrollfix>
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../core_concepts/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Core Concepts
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
               
             
               
@@ -484,14 +538,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../architecture/" class="md-nav__link">
+      <a href="../../known_issues/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Architecture
+    Known Issues
   
 
     
@@ -534,17 +588,17 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
         
           
-          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
             
   
   
   <span class="md-ellipsis">
     
   
-    Integrations
+    Integrate Switchyard
   
 
     
@@ -555,12 +609,91 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_4">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
   
-    Integrations
+    Integrate Switchyard
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/host_integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Embed in Your Gateway or Harness
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3_2" id="__nav_3_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Gateways
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Gateways
   
 
           </label>
@@ -826,57 +959,9 @@
 
               
             
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../pi/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    pi
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../oh_my_pi/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Oh My Pi
-  
-
-    
-  </span>
-  
-  
-
-      </a>
+          </ul>
+        </nav>
+      
     </li>
   
 
@@ -909,17 +994,17 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
         
           
-          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="">
             
   
   
   <span class="md-ellipsis">
     
   
-    Recipes
+    Routing
   
 
     
@@ -930,12 +1015,12 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_5">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
   
-    Recipes
+    Routing
   
 
           </label>
@@ -947,66 +1032,28 @@
   
   
   
-    <li class="md-nav__item">
-      <a href="../../recipes/single_provider_coding_agents/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
     
-  
-    Single-provider coding agents
-  
-
     
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-          </ul>
-        </nav>
-      
-    </li>
-  
-
+    
     
       
-      
-  
-  
-  
-  
     
     
-    
-    
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-      
-    
-    
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
-      
-        
-        
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4_1" >
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+          <label class="md-nav__link" for="__nav_4_1" id="__nav_4_1_label" tabindex="0">
             
   
   
   <span class="md-ellipsis">
     
   
-    Routing
+    Algorithms
   
 
     
@@ -1017,12 +1064,12 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_6">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_4_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4_1">
             <span class="md-nav__icon md-icon"></span>
             
   
-    Routing
+    Algorithms
   
 
           </label>
@@ -1280,6 +1327,413 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/vgr_routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Verification-Gated Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../routing_algorithms/model_selection/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Choose Models
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluate Routing
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Evaluate Routing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tuning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compare and Tune
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local Demo
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Local Demo
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/local_evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Run the Reference Server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_6_2" id="__nav_6_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Local Agents
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_6_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Local Agents
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../recipes/single_provider_coding_agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Claude Code and Codex
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../oh_my_pi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Oh My Pi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1317,7 +1771,7 @@
   <span class="md-ellipsis">
     
   
-    Operations
+    Reference
   
 
     
@@ -1333,7 +1787,7 @@
             <span class="md-nav__icon md-icon"></span>
             
   
-    Operations
+    Reference
   
 
           </label>
@@ -1346,14 +1800,140 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operations/context_window/" class="md-nav__link">
+      <a href="../../reference/compatibility/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Context-Window Handling
+    API and Model Compatibility
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_2" id="__nav_7_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Protocols
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Protocols
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_2_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_2_1" id="__nav_7_2_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LLM
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_7_2_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_2_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    LLM
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/protocols/llm_requests/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Requests
   
 
     
@@ -1374,14 +1954,42 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operations/soak_test/" class="md-nav__link">
+      <a href="../../reference/protocols/llm_responses/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Soak Testing
+    Responses and Streams
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/protocols/translation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Translation
   
 
     
@@ -1401,9 +2009,10 @@
     </li>
   
 
-    
-      
-      
+              
+            
+              
+                
   
   
   
@@ -1413,26 +2022,23 @@
     
     
       
-        
-        
-      
     
     
-    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_2_2" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+          <label class="md-nav__link" for="__nav_7_2_2" id="__nav_7_2_2_label" tabindex="0">
             
   
   
   <span class="md-ellipsis">
     
   
-    Reference
+    Decision Models
   
 
     
@@ -1443,12 +2049,12 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
-          <label class="md-nav__title" for="__nav_8">
+        <nav class="md-nav" data-md-level="3" aria-labelledby="__nav_7_2_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_2_2">
             <span class="md-nav__icon md-icon"></span>
             
   
-    Reference
+    Decision Models
   
 
           </label>
@@ -1461,14 +2067,14 @@
   
   
     <li class="md-nav__item">
-      <a href="../../cli_reference/" class="md-nav__link">
+      <a href="../../reference/protocols/decision_questions/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Server CLI Reference
+    Questions
   
 
     
@@ -1489,6 +2095,50 @@
   
   
     <li class="md-nav__item">
+      <a href="../../reference/protocols/decision_answers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Answers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../reference/toml_schema/" class="md-nav__link">
         
   
@@ -1496,7 +2146,7 @@
   <span class="md-ellipsis">
     
   
-    TOML Schema
+    Runner Configuration (TOML)
   
 
     
@@ -1561,6 +2211,175 @@
   
 
       </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/context_window/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Context-Window Handling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_8" id="__nav_7_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Demo Server
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Demo Server
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cli_reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operations/soak_test/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Soak Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
     </li>
   
 
@@ -1805,7 +2624,7 @@
 
 
 <h1 id="use-switchyard-with-nemo-relay">Use Switchyard with NeMo Relay<a class="headerlink" href="#use-switchyard-with-nemo-relay" title="Permanent link">&para;</a></h1>
-<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/29362d17031002722db66e0a56ed9cf400bd7301/crates/switchyard-nemo-relay-plugin/README.md">Switchyard native plugin</a>
+<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d21179547095cd4c1397898ea056608b85cb55ec/crates/switchyard-nemo-relay-plugin/README.md">Switchyard native plugin</a>
 loads Switchyard into an existing
 <a href="https://docs.nvidia.com/nemo/relay/about-nemo-relay/overview">NeMo Relay runtime</a>
 deployment through Relay's
@@ -1845,8 +2664,8 @@ Switchyard does not need to run as a separate service.</p>
 See the <a href="#upstream-error-compatibility">upstream error compatibility note</a> before
 using older Relay versions.</p>
 <p>Routing does not require Relay. You can instead run the
-<a href="../../getting_started/#server-path">standalone server</a> or embed
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/29362d17031002722db66e0a56ed9cf400bd7301/crates/libsy/README.md"><code>switchyard-libsy</code></a> directly.</p>
+<a href="../../operations/local_evaluation/">standalone server</a> or embed
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d21179547095cd4c1397898ea056608b85cb55ec/crates/libsy/README.md"><code>switchyard-libsy</code></a> directly.</p>
 <h3 id="measure-the-cost-of-routing">Measure the Cost of Routing<a class="headerlink" href="#measure-the-cost-of-routing" title="Permanent link">&para;</a></h3>
 <p>A routed request can spend tokens choosing a model and generating the answer.
 Some routes call a judge or classifier first. The selected model, or a fallback,
@@ -1949,11 +2768,11 @@ organization SSO/SAML authorization where required. An HTTP 404 can indicate
 missing access. A Switchyard release does not guarantee that a matching plugin
 bundle has been published.</p>
 <p>Follow the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/29362d17031002722db66e0a56ed9cf400bd7301/crates/switchyard-nemo-relay-plugin/README.md#install-a-released-bundle">bundle installation steps</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d21179547095cd4c1397898ea056608b85cb55ec/crates/switchyard-nemo-relay-plugin/README.md#install-a-released-bundle">bundle installation steps</a>
 to download the archive and sidecars, verify the checksum, and extract the
 bundle. If a matching published bundle is unavailable or you need a custom
 build, follow
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/29362d17031002722db66e0a56ed9cf400bd7301/crates/switchyard-nemo-relay-plugin/README.md#build-from-source">Build from source</a>.
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d21179547095cd4c1397898ea056608b85cb55ec/crates/switchyard-nemo-relay-plugin/README.md#build-from-source">Build from source</a>.
 Then register the manifest, configure the deployment and trust policy, enable
 the plugin, and restart Relay. Relay documents how to
 <a href="https://docs.nvidia.com/nemo/relay/configure-plugins/discoverable-plugins#add-and-enable-a-plugin">add and enable a discoverable plugin</a>
@@ -1963,7 +2782,7 @@ and how it
 <p class="admonition-title">Relay compatibility</p>
 <p>The plugin requires <code>relay = "&gt;=0.10.0, &lt;1.0.0"</code> and native plugin API <code>1</code>.
 The packaged
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/29362d17031002722db66e0a56ed9cf400bd7301/crates/switchyard-nemo-relay-plugin/relay-plugin.toml"><code>relay-plugin.toml</code></a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d21179547095cd4c1397898ea056608b85cb55ec/crates/switchyard-nemo-relay-plugin/relay-plugin.toml"><code>relay-plugin.toml</code></a>
 is the source of truth.</p>
 </div>
 <p>Configure exactly one Switchyard deployment source: either
@@ -2008,7 +2827,7 @@ of its forwarding clients use the same scheme, host, and port, such as one LLM
 gateway; such a route serves Chat Completions and Responses callers.</p>
 <p>Support for provider-specific fields depends on the source and target formats.
 Test any fields that your application relies on before deploying a translated
-route. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/29362d17031002722db66e0a56ed9cf400bd7301/crates/switchyard-nemo-relay-plugin/README.md#request-handling">native-plugin README</a>
+route. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d21179547095cd4c1397898ea056608b85cb55ec/crates/switchyard-nemo-relay-plugin/README.md#request-handling">native-plugin README</a>
 describes the same format and credential rules.</p>
 <h3 id="header-forwarding">Header Forwarding<a class="headerlink" href="#header-forwarding" title="Permanent link">&para;</a></h3>
 <p>Caller headers are forwarded upstream except credentials and headers owned by
@@ -2086,7 +2905,7 @@ can receive these records, but each output format presents them differently.</p>
 </tr>
 <tr>
 <td>OpenTelemetry traces, including OpenInference</td>
-<td>Relay's LLM span plus eligible routing marks, depending on the projection. Marks are point-in-time records, not duration spans.</td>
+<td>Relay's outer LLM span, nested <code>libsy.client_call</code> and <code>libsy.upstream_attempt</code> duration scopes, plus eligible routing marks.</td>
 </tr>
 <tr>
 <td>OpenTelemetry metrics</td>
@@ -2098,13 +2917,48 @@ can receive these records, but each output format presents them differently.</p>
 </tr>
 </tbody>
 </table>
-<p>Switchyard creates <code>libsy.run</code>, <code>libsy.llm_call</code>, <code>libsy.client_call</code>, and
-<code>libsy.upstream_attempt</code> spans internally. Together they cover the algorithm
-run, model calls requested by the algorithm, candidate attempts including
-fallbacks, and individual HTTP attempts. They are not one connected hierarchy
-today, and the plugin does not send them to Relay. As a result, Relay traces do
-not show those internal operations as nested duration spans or give an internal
-stream its own cancellation lifecycle.</p>
+<p>The plugin captures two existing Switchyard spans. Each routing or answer LLM
+call becomes a <code>libsy.client_call</code> scope. Physical HTTP attempts and retries
+become <code>libsy.upstream_attempt</code> child scopes. Buffered calls close with the response;
+streaming calls close when the stream finishes, fails, or is dropped. The
+projection contains allowlisted, payload-free routing metadata only and does not
+copy prompts, responses, provider error bodies, or credentials into Relay.</p>
+<p><code>switchyard.call_phase</code> records when Switchyard issued a client call:
+<code>routing</code> while the algorithm was still deciding, or <code>completion</code> after a
+target was selected. A routing-phase response can later become the final
+answer, so this is intentionally different from the <code>call_role</code> on
+<code>switchyard.routing.llm_call</code> marks, which records the post-outcome
+classification as <code>routing</code> or <code>answer</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Switchyard signal</th>
+<th>Relay record</th>
+<th>Parent</th>
+<th>Lifetime</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Routing or answer model call</td>
+<td><code>libsy.client_call</code> scope</td>
+<td>Relay's managed request scope</td>
+<td>Starts with the Switchyard call and closes with the buffered response or terminal stream event.</td>
+</tr>
+<tr>
+<td>Physical provider request or retry</td>
+<td><code>libsy.upstream_attempt</code> scope</td>
+<td>Its <code>libsy.client_call</code> scope</td>
+<td>Starts before the HTTP attempt and closes on response, error, or cancellation.</td>
+</tr>
+<tr>
+<td>Routing request, decision, overhead, or failure</td>
+<td>Existing <code>switchyard.routing.*</code> mark</td>
+<td>Active Relay scope at emission</td>
+<td>Point-in-time mark using the existing outcome fields.</td>
+</tr>
+</tbody>
+</table>
 <h3 id="how-routing-appears-in-traces">How Routing Appears in Traces<a class="headerlink" href="#how-routing-appears-in-traces" title="Permanent link">&para;</a></h3>
 <p>In Relay's
 <a href="https://docs.nvidia.com/nemo/relay/configure-plugins/observability/opentelemetry#trace-projections">full and OpenInference trace projections</a>,
@@ -2119,12 +2973,16 @@ omits marks. With <code>mark_projection = "tool"</code>, the trace has this shap
 <pre class="mermaid"><code>flowchart LR
     agent["Relay agent scope"]
     llm["LLM call"]
+    call["libsy.client_call&lt;br/&gt;routing or completion"]
+    attempt["libsy.upstream_attempt&lt;br/&gt;one per HTTP attempt"]
     requested["mark:switchyard.routing.requested&lt;br/&gt;zero duration"]
     calls["mark:switchyard.routing.llm_call&lt;br/&gt;zero duration"]
     overhead["mark:switchyard.routing.overhead&lt;br/&gt;zero duration"]
     decision["mark:switchyard.routing.decision&lt;br/&gt;zero duration"]
     error["mark:switchyard.routing.error&lt;br/&gt;zero duration"]
     agent --&gt; llm
+    llm --&gt; call
+    call --&gt; attempt
     agent --&gt; requested
     agent --&gt; calls
     agent --&gt; overhead
