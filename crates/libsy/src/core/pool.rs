@@ -63,6 +63,18 @@ impl TargetPool {
         Ok(())
     }
 
+    pub(crate) fn position(&self, target: &ModelId) -> Result<f64> {
+        self.targets
+            .iter()
+            .position(|candidate| candidate == target)
+            .map(|index| self.positions[index])
+            .ok_or_else(|| {
+                invalid(format!(
+                    "classifier selected target {target} outside the score pool"
+                ))
+            })
+    }
+
     /// Distance from the nearest midpoint, normalized within its adjacent interval.
     /// Zero is ambiguous; one is an anchor. This reduces to abs(2*p - 1) for two targets.
     pub fn confidence(&self, value: f64) -> Result<f64> {

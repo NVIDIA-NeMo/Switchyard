@@ -757,6 +757,10 @@ impl StageClassifierConfig {
             || self.mode.is_some()
             || self.response_format_type != ClassifierResponseFormat::JsonSchema
         {
+            tracing::error!(
+                pool_targets = pool.targets.len(),
+                "N-target Stage requires an N-option classifier; binary judge configuration rejected"
+            );
             return Err(AlgorithmConfigError::new(
                 "N-target stage uses a categorical JSON Schema judge; binary decision settings and custom schemas are unsupported",
             ));

@@ -204,6 +204,13 @@ impl FallThrough {
                 if let Some(limit) = classifier.max_pool_targets()
                     && pool.target_count() > limit
                 {
+                    tracing::error!(
+                        algorithm = self.name,
+                        classifier_index = index,
+                        max_pool_targets = limit,
+                        pool_targets = pool.target_count(),
+                        "Classifier does not support configured target pool"
+                    );
                     return Err(LibsyError::AlgorithmError {
                         message: format!(
                             "{} classifier {index} supports at most {limit} pool targets, but {} are configured; use an N-target classifier or a compatible pool",

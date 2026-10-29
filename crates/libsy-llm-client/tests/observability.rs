@@ -1339,6 +1339,53 @@ async fn pool_logs_setup_ambiguity_and_final_selection_without_request_text()
 }
 
 #[tokio::test]
+async fn incompatible_pool_logs_error_before_any_upstream_call() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    let targets: Vec<ModelId> = ["a", "b", "c", "d"].into_iter().map(Into::into).collect();
+    let models = RuntimeModels::new([(Category::Any, targets.clone())].into())
+        .with_pool(switchyard_libsy::TargetPool::new(targets, vec![])?)?;
+    let mut config = StageRouterConfig::new(PickerMode::EfficientFirst, 0.0);
+    config.llm_fallback = Some(switchyard_libsy::LlmFallback {
+        config: TaskClassifierConfig::default(),
+    });
+    let start = store.events().len();
+    let mut steps = Arc::new(StageRouter::new(config)?).run_stream(
+        request_with_metadata("pool-rejection", "pool-rejection"),
+        Arc::new(models),
+        switchyard_libsy::State::default(),
+    );
+    let error = match steps.next().await {
+        Some(Err(error)) => error,
+        _ => panic!("incompatible pool must error before any model-call step"),
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("supports at most 2 pool targets, but 4 are configured")
+    );
+    assert!(steps.next().await.is_none());
+    let events = store.events();
+    let event = events[start..]
+        .iter()
+        .find(|event| {
+            event.level == "ERROR"
+                && event.fields.get("message").map(String::as_str)
+                    == Some("Classifier does not support configured target pool")
+        })
+        .expect("missing incompatibility log");
+    for (key, value) in [
+        ("algorithm", "stage_router"),
+        ("classifier_index", "1"),
+        ("max_pool_targets", "2"),
+        ("pool_targets", "4"),
+    ] {
+        assert_eq!(event.fields.get(key).map(String::as_str), Some(value));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
     let (_, exporter, provider, _, _) = telemetry();

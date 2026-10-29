@@ -358,7 +358,8 @@ anchor per target; omit it for evenly spaced anchors.
 For pools larger than two targets, the fallback uses the existing custom-schema
 LLM classifier. It generates one choice per target (`target_0`, `target_1`, …),
 and includes their configured names in the judge prompt. Valid choices produce
-clear target decisions. Invalid verdicts fall through to the picker's default endpoint.
+clear anchor scores, which the shared pool resolves once at the end of classification.
+Invalid verdicts fall through to the picker's default endpoint.
 Binary solve-probability settings (`base_threshold`, `threshold_step`, `decision`)
 and custom response schemas are rejected for this fallback. It requires JSON Schema
 output and runs on every ambiguous request. Existing binary judge settings remain

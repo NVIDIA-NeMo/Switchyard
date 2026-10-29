@@ -79,6 +79,30 @@ impl Classifier for SourceStamp {
         self.inner.max_pool_targets()
     }
 
+    async fn classify(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: &Driver,
+    ) -> Result<(crate::ClassifierOutput, Option<Response>)> {
+        let (decision, response) = self.score(state, request, driver).await?;
+        if self.source == DecisionSource::LlmClassifier
+            && let Some(pool) = driver.pool()
+            && pool.target_count() > 2
+            && let Some(winner) = decision.argmax(false)?
+        {
+            return Ok((
+                crate::ClassifierOutput::Position {
+                    value: pool.position(&winner.target)?,
+                    confidence: winner.confidence,
+                    ambiguous: false,
+                },
+                response,
+            ));
+        }
+        Ok((crate::ClassifierOutput::Decision(decision), response))
+    }
+
     async fn score(
         &self,
         state: &mut State,
@@ -421,6 +445,58 @@ mod tests {
             .metadata
             .and_then(|metadata| metadata.evidence)
             .and_then(|evidence| evidence.get("source")?.as_str().map(str::to_string)))
+    }
+
+    #[tokio::test]
+    async fn n_target_judge_returns_an_anchor_for_final_pool_resolution() -> Result<()> {
+        let targets = vec![
+            "weak".into(),
+            "mid-low".into(),
+            "mid-high".into(),
+            "strong".into(),
+        ];
+        let mut groups = runtime_models();
+        groups.insert(Category::Any, targets.clone());
+        let models = crate::RuntimeModels::new(groups)
+            .with_pool(crate::TargetPool::new(targets, vec![0.0, 0.2, 0.8, 1.0])?)?;
+        let (driver, _) = Driver::new("test", Arc::new(models));
+        for (target, anchor) in [
+            ("weak", 0.0),
+            ("mid-low", 0.2),
+            ("mid-high", 0.8),
+            ("strong", 1.0),
+        ] {
+            let stamp = SourceStamp {
+                inner: Arc::new(Fixed(target)),
+                source: DecisionSource::LlmClassifier,
+            };
+            let (output, _) = stamp
+                .classify(&mut State::default(), &mut Request::default(), &driver)
+                .await?;
+            assert!(
+                matches!(output, crate::ClassifierOutput::Position { value, confidence: 1.0, ambiguous: false } if value == anchor)
+            );
+            assert_eq!(output.resolve(&driver)?.unwrap().target.as_str(), target);
+        }
+        let stamp = SourceStamp {
+            inner: Arc::new(Abstains),
+            source: DecisionSource::LlmClassifier,
+        };
+        let (output, _) = stamp
+            .classify(&mut State::default(), &mut Request::default(), &driver)
+            .await?;
+        assert!(output.resolve(&driver)?.is_none());
+        let stamp = SourceStamp {
+            inner: Arc::new(Fixed("not-in-pool")),
+            source: DecisionSource::LlmClassifier,
+        };
+        assert!(
+            stamp
+                .classify(&mut State::default(), &mut Request::default(), &driver)
+                .await
+                .is_err()
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -1039,12 +1115,12 @@ mod tests {
 
     #[tokio::test]
     async fn binary_fallback_rejects_n_target_pools_before_any_call() -> Result<()> {
-        for count in [2, 3] {
+        for count in [2, 3, 4] {
             let recorder = Arc::new(Recorder::default());
             let router = Arc::new(StageRouter::new(config_with_judge(&recorder, 0.9))?);
             let mut targets = vec![ModelId::from("weak"), ModelId::from("strong")];
-            if count == 3 {
-                targets.insert(1, "middle".into());
+            for i in 2..count {
+                targets.insert(1, format!("middle-{i}").into());
             }
             let mut groups = runtime_models();
             groups.insert(Category::Any, targets.clone());
@@ -1052,7 +1128,7 @@ mod tests {
                 .with_pool(crate::TargetPool::new(targets, vec![])?)?;
             let result =
                 test_drive_with_models(router, turn_request(false), models, recorder.serve()).await;
-            if count == 3 {
+            if count > 2 {
                 assert!(
                     result
                         .err()

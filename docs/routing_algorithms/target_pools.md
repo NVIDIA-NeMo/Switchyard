@@ -43,8 +43,9 @@ warned about and discarded before continuing. Existing recovery policies still
 apply to classifier errors.
 
 Stage currently supplies the signal classifier, optional fallback judge, and
-terminal picker fallback. Its clear signal positions use the shared pool; holds,
-overrides, and categorical judge decisions use the direct-target branch. The
+terminal picker fallback. Its clear signal positions and N-option judge choices
+use the shared pool; holds, overrides, and existing binary judge decisions use
+the direct-target branch. The
 same FallThrough contract is available to other compatible Rust integrations.
 Advisor's direct-response behavior remains unchanged.
 
@@ -174,7 +175,7 @@ The first pool target must match `efficient_target`; the last must match
 | No active hold; hard recovery override | Select the capable endpoint. |
 | No override; tool signals available | Emit a position and use the configured bands to declare it clear or ambiguous. |
 | Signals are ambiguous or absent | Consult the optional fallback judge, then use the picker endpoint if it abstains. |
-| N > 2 and an LLM fallback is configured | Generate N categories using the existing custom-schema classifier; a valid verdict selects a target directly. |
+| N > 2 and an LLM fallback is configured | Generate N categories using the existing custom-schema classifier; a valid verdict emits that choice's clear anchor score for final pool resolution. |
 | Invalid judge reply | Existing warning/recovery behavior applies; a missing verdict reaches the picker fallback. |
 | An intermediate model is selected | No endpoint hold or endpoint prompt applies. A later move to an endpoint counts as a switch for its hold. |
 
@@ -202,6 +203,11 @@ conflicting judges, unsupported retention settings, invalid schemas/selectors,
 empty prompts, and zero judge token limits. The cascade checks every declared
 classifier limit against the runtime pool before any calls; it cannot discover an
 undeclared restriction inside a custom classifier.
+
+Incompatible classifier/pool combinations produce a structured error log with the
+classifier index, supported target limit, and configured pool size, then fail
+before any processor or upstream call. Invalid binary judge settings on an
+N-target Stage route are rejected when loading TOML.
 
 Info logs report pool/fallback setup, score/threshold/ambiguity, and the final
 target, classifier index, output kind, and response reuse. Debug logs show cascade
