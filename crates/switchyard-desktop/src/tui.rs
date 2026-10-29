@@ -150,7 +150,7 @@ const SESSIONS_KEYS: &[Key] = &[
     (
         "s",
         "session",
-        "Select the next recorded session. The open and remove keys use the selection.",
+        "Select the next recorded session and show its details.",
     ),
 ];
 const SETTINGS_KEYS: &[Key] = &[

@@ -1162,9 +1162,11 @@ impl Controller {
             } => {
                 let inputs =
                     json!({"tool":tool,"account":account,"route":route,"id":id,"project":project});
+                // Each attempt uses up the review, so a repeated request cannot create a second
+                // worktree and terminal from one review.
                 let plan = self
                     .launch_review
-                    .as_ref()
+                    .take()
                     .ok_or("Review the session before opening Terminal.")?;
                 plan.review.check(preview_token.as_deref(), &inputs)?;
                 let current = sessions::preview(std::path::Path::new(&project))?;
