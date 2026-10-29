@@ -11,13 +11,7 @@ use libsy::{Algorithm, RuntimeModels};
 use crate::RunnerError;
 use crate::config::DeploymentConfig;
 
-/// An algorithm and the model groups needed to drive its configured routes.
-pub struct ConfiguredAlgorithm {
-    /// The routing algorithm; reuse it to retain algorithm-owned session state.
-    pub algorithm: Arc<dyn Algorithm>,
-    /// Ordered model groups for parent and subagent calls.
-    pub models: RuntimeModels,
-}
+pub(crate) type AlgorithmAndModels = (Arc<dyn Algorithm>, RuntimeModels);
 
 /// Parsed deployment configuration for building algorithms with host-owned execution.
 pub struct AlgorithmFactory {
@@ -38,7 +32,7 @@ impl AlgorithmFactory {
     ///
     /// The host serves model calls and owns target prompts, provider settings and transport.
     /// Reuse the returned algorithms across requests to retain algorithm-owned state.
-    pub fn build(&self) -> Result<BTreeMap<String, ConfiguredAlgorithm>, RunnerError> {
+    pub fn build(&self) -> Result<BTreeMap<String, AlgorithmAndModels>, RunnerError> {
         self.config.validate()?;
         self.config
             .build_algorithms()

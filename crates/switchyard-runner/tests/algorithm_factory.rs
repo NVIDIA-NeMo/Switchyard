@@ -54,9 +54,8 @@ fn full_deployment_builds_without_provider_credentials() {
         algorithms.keys().map(String::as_str).collect::<Vec<_>>(),
         ["public/classify", "public/main"]
     );
-    let configured = &algorithms["public/classify"];
-    let models = &configured.models;
-    assert_eq!(configured.algorithm.name(), "llm_task_classifier");
+    let (algorithm, models) = &algorithms["public/classify"];
+    assert_eq!(algorithm.name(), "llm_task_classifier");
     assert_eq!(
         models.models_for(&Category::Judge),
         [ModelId::from("upstream/judge")]
@@ -89,9 +88,7 @@ async fn configured_parent_and_subagent_targets_stay_separate() {
         .expect("deployment should parse")
         .build()
         .expect("algorithms should build");
-    let configured = algorithms.remove("public/main").expect("public route id");
-    let algorithm = configured.algorithm;
-    let models = configured.models;
+    let (algorithm, models) = algorithms.remove("public/main").expect("public route id");
     assert_eq!(
         models.models_for(&Category::Any),
         [ModelId::from("upstream/fast")]
