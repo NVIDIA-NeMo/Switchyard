@@ -208,6 +208,18 @@ impl Drop for Operation {
         }
     }
 }
+/// `begin` already serializes operations, so a lock error here usually means that an earlier
+/// operation panicked and poisoned the lock. Only a restart clears that.
+fn controller_lock_error<T>(error: std::sync::TryLockError<T>) -> String {
+    match error {
+        std::sync::TryLockError::WouldBlock => {
+            "An operation is running. Try again when it finishes.".into()
+        }
+        std::sync::TryLockError::Poisoned(_) => {
+            "An earlier operation failed unexpectedly. Restart Switchyard and try again.".into()
+        }
+    }
+}
 impl Shared {
     fn begin(&self) -> Result<Operation, String> {
         self.operation
@@ -237,10 +249,7 @@ async fn snapshot(app: tauri::AppHandle, state: State<'_, Shared>) -> Result<Sna
     let shared = state.controller.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _operation = operation;
-        shared
-            .try_lock()
-            .map_err(|_| "An operation is running. Try again when it finishes.".to_string())?
-            .snapshot()
+        shared.try_lock().map_err(controller_lock_error)?.snapshot()
     })
     .await
     .map_err(|e| e.to_string())?
@@ -256,7 +265,7 @@ async fn dispatch(app: tauri::AppHandle, action: Action) -> Result<Reply, String
         let _operation = operation;
         shared
             .try_lock()
-            .map_err(|_| "An operation is running. Try again when it finishes.".to_string())?
+            .map_err(controller_lock_error)?
             .dispatch(action)
     })
     .await

@@ -158,7 +158,15 @@ pub fn needs_setup(path: &Path) -> Result<bool, String> {
 
 /// This function saves the complete form while retaining comments and unrelated settings.
 pub fn save_configuration(path: &Path, config: &Config, create_server: bool) -> Result<(), String> {
-    crate::health::validate_url(&config.server_url)?;
+    // The managed server starts on the URL's port, and a URL without one would mean port 80.
+    if crate::health::validate_url(&config.server_url)?
+        .port()
+        .is_none()
+    {
+        return Err(
+            "Include the port in the server address, for example http://127.0.0.1:4123.".into(),
+        );
+    }
     for file in [&config.config_file, &config.routing_log]
         .into_iter()
         .chain(config.prices_file.iter())
@@ -193,6 +201,8 @@ pub fn save_configuration(path: &Path, config: &Config, create_server: bool) -> 
     }
     validate_preferences(&config.baseline_model, config.refresh_seconds)?;
     let mut values = toml::Table::try_from(config).map_err(|error| error.to_string())?;
+    // The price table matches model IDs exactly, so surrounding spaces would hide the estimate.
+    values.insert("baseline_model".into(), config.baseline_model.trim().into());
     // An absent price file removes a previous override and restores bundled prices.
     if config.prices_file.is_none() {
         values.insert("pricing_file".into(), toml::Value::String(String::new()));

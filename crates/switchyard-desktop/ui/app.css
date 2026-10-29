@@ -64,7 +64,7 @@ button:hover { background: var(--hover); }
 button:disabled, input:disabled { opacity: .5; }
 button:disabled { cursor: default; }
 button:disabled:hover:not(.primary) { background: var(--control); }
-button.primary { background: var(--accent); border-color: transparent; color: #FFFFFF; }
+button.primary { background: var(--accent); border-color: transparent; color: var(--accent-text); }
 button.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 90%, transparent); }
 button.danger { color: var(--danger); border-color: var(--danger-border); }
 button.danger:hover:not(:disabled) { background: var(--danger-bg); }

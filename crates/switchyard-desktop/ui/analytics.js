@@ -57,7 +57,6 @@ function sessionRows(entries, period, today) {
   }
   return [...rows.values()];
 }
-function stableColor(id){let value=0;for(const c of id)value=(value*31+c.charCodeAt(0))>>>0;return chartColor(value%6);}
 function openUsage(group, id) {
   usageView.page=0;usageView.session='';usageView.search='';
   usageView.exact={group,id,period:analyticsView.period};usageView.period=analyticsView.period;
@@ -143,7 +142,7 @@ function renderDaily(parent) {
   if(!models.length){panel.append(node('p','No model calls recorded in the past 7 days.','empty-state'));return;}
   const shown=models.slice(0,5),ids=new Set(shown.map(model=>model.id));
   const daily=days.map(day=>new Map(modelRows(snapshot.analytics.days[day]||{routed:{},classifier:{}}).map(row=>[row.id,tokenTotal(row)])));
-  const series=shown.map((model,i)=>({name:model.id,type:'bar',stack:'models',barMaxWidth:40,itemStyle:{color:stableColor(model.id)},data:daily.map(totals=>totals.get(model.id)||0)}));
+  const series=shown.map((model,i)=>({name:model.id,type:'bar',stack:'models',barMaxWidth:40,itemStyle:{color:chartColor(i)},data:daily.map(totals=>totals.get(model.id)||0)}));
   if(models.length>5)series.push({name:'Other models',type:'bar',stack:'models',itemStyle:{color:chartColor(5)},data:daily.map(totals=>[...totals].reduce((sum,[id,count])=>sum+(ids.has(id)?0:count),0))});
   mountChart(panel,{grid:{left:12,right:20,top:20,bottom:28,containLabel:true},
     xAxis:{type:'category',data:days.map(day=>new Date(`${day}T12:00:00`).toLocaleDateString(undefined,{month:'short',day:'numeric'})),axisLabel:{color:colors.ink},axisTick:{show:false}},
