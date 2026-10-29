@@ -756,7 +756,10 @@ impl Form {
                 id,
                 revision,
             } => {
-                confirm(id, "Route name did not match. Nothing was deleted.")?;
+                confirm(
+                    id,
+                    "The public model ID did not match. Nothing was deleted.",
+                )?;
                 Action::Remove {
                     generation: *generation,
                     route: route.clone(),
@@ -1774,7 +1777,7 @@ impl App {
                     "Delete",
                     kind,
                     title,
-                    "Type the route name to delete",
+                    "Type the public model ID to delete",
                 )));
                 Ok(None)
             }

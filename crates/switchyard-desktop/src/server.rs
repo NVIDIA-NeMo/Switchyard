@@ -41,15 +41,7 @@ pub fn apply(
     choices: &[Choice],
     expected: &str,
 ) -> Result<SaveResult, String> {
-    let path = &settings.config_file;
-    // Read the file again so an edit made while the window was open is kept.
-    let text = std::fs::read_to_string(path).map_err(|error| {
-        format!(
-            "Could not read {}: {error}. Check config_file in the app settings.",
-            path.display()
-        )
-    })?;
-    check_original(&text, expected)?;
+    let text = read_reviewed(settings, expected)?;
     let config = ServerConfig::parse(&text)?;
     let edited = config.edit(route, algorithm, choices)?;
     save_edit(settings, &text, edited, "Updated the route.")
@@ -61,8 +53,7 @@ pub fn remove(
     id: &str,
     expected: &str,
 ) -> Result<SaveResult, String> {
-    let text = std::fs::read_to_string(&settings.config_file).map_err(|error| error.to_string())?;
-    check_original(&text, expected)?;
+    let text = read_reviewed(settings, expected)?;
     let config = ServerConfig::parse(&text)?;
     if !config.routes().iter().any(|r| r.key == route && r.id == id) {
         return Err("The route changed or was removed. Refresh and choose it again.".into());
@@ -76,9 +67,22 @@ pub fn save_route_change(
     expected: &str,
     edited: crate::server_config::Edited,
 ) -> Result<SaveResult, String> {
-    let text = std::fs::read_to_string(&settings.config_file).map_err(|error| error.to_string())?;
-    check_original(&text, expected)?;
+    let text = read_reviewed(settings, expected)?;
     save_edit(settings, &text, edited, "Changed the routes.")
+}
+
+/// This function reads the server config again, so an edit made while the review window was
+/// open is noticed, and checks that the file still matches the reviewed text.
+fn read_reviewed(settings: &Config, expected: &str) -> Result<String, String> {
+    let path = &settings.config_file;
+    let text = std::fs::read_to_string(path).map_err(|error| {
+        format!(
+            "Could not read {}: {error}. Check config_file in the app settings.",
+            path.display()
+        )
+    })?;
+    check_original(&text, expected)?;
+    Ok(text)
 }
 
 fn check_original(text: &str, expected: &str) -> Result<(), String> {
