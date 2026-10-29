@@ -2425,16 +2425,19 @@ entry and leave the route's <code>context_window</code> unset. Switchyard then r
 service's <code>/props</code> response and advertises a positive context capacity when
 available. Missing or invalid properties leave the capacity unknown; routing
 continues normally. Discovery does not configure the service or load a model.</p>
-<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9781bcd8c1ec206c387f008ab37b9543ec170489/examples/vgr-local-servers.toml">the local-server example</a>
+<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/95440c2abe8847f0725df04fe5504b6bc01e9f1c/examples/vgr-local-servers.toml">the local-server example</a>
 for an active llama.cpp configuration and commented Ollama/vLLM alternatives.
 For Ollama and vLLM, set <code>context_window</code> to match the running service; automatic
 discovery for those servers is not implemented.</p>
 <p>The judge reads its verdicts from the first token's logprobs, so its scored calls
 turn thinking off: they send <code>reasoning_effort = "none"</code> and
 <code>chat_template_kwargs = {"enable_thinking": false}</code> on <code>openai_chat</code> targets.
-Candidates and the judge's deliberation keep the target's own setting. A backend
-that rejects <code>chat_template_kwargs</code> can drop it with the target's
-<code>omit_body_fields</code>.</p>
+Candidates and the judge's deliberation keep the target's own setting. If a Chat
+backend explicitly rejects this template switch with HTTP 400 or 422, the SDK
+retries once without it, within the same deadline. Other request fields and the
+configured transient retry budget are preserved. The target's <code>omit_body_fields</code>
+can omit the switch from the first call. Custom hosts must handle provider
+compatibility themselves.</p>
 <p>The server caches the model catalog, including unavailable discovery results,
 for one minute. Discovery probes run concurrently with a two-second total budget
 per refresh. Completed discoveries are retained when that budget expires.</p>
