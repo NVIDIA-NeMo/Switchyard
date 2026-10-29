@@ -313,7 +313,9 @@ impl Controller {
     }
     fn check_generation(&self, generation: u64) -> Result<(), String> {
         if generation != self.generation {
-            return Err("The route changed or was removed. Refresh and choose it again.".into());
+            return Err("The app settings now select a different server config. \
+                        Refresh and choose the route again."
+                .into());
         }
         Ok(())
     }
