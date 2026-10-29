@@ -991,7 +991,17 @@ impl App {
                     "Type UPDATE to start",
                 )));
             }
-            (Some(ActionKind::PreviewRoute), Ok(reply)) if popup_matches => {
+            (Some(ActionKind::PreviewRoute), Ok(reply)) => {
+                if !popup_matches {
+                    self.report(
+                        "The route preview finished while another window was open. \
+                         Press e on Routes to preview it again."
+                            .into(),
+                        Tone::Done,
+                        false,
+                    );
+                    return None;
+                }
                 let notes: Vec<&str> = reply.data["notes"]
                     .as_array()
                     .map(|items| items.iter().filter_map(Value::as_str).collect())
@@ -3748,6 +3758,40 @@ mod tests {
                 Some(_) => unreachable!(),
             }
         }
+    }
+
+    // A route preview that finishes after the user opens help must keep help open and still
+    // tell the user that the preview finished.
+    #[test]
+    fn late_route_previews_keep_the_new_popup_and_report_in_the_status_bar() {
+        let mut app = App::new(Theme::new(false));
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let request = Request::run(
+            Action::PreviewRoute {
+                generation: 0,
+                route: "direct".into(),
+                algorithm: "passthrough".into(),
+                choices: Vec::new(),
+                revision: None,
+            },
+            "Previewing the route",
+        );
+        let (jobs, _inbox) = mpsc::channel();
+        let (done, results) = mpsc::channel();
+        app.start(&jobs, request).expect("start preview");
+        app.key(key(KeyCode::Char('?')));
+        done.send(Done::Finished {
+            reply: Some(Ok(super::Reply {
+                message: String::new(),
+                data: json!({"file": "server.toml", "notes": ["note"]}),
+            })),
+            snapshot: Ok(Box::new(Snapshot::default())),
+        })
+        .expect("preview result");
+        app.poll_results(&results, &jobs).expect("result");
+        assert!(matches!(app.popup, Some(Popup::Help { .. })));
+        let toast = app.toast.as_ref().expect("status message");
+        assert!(toast.text.contains("Press e on Routes"), "{}", toast.text);
     }
 
     // A snapshot failure must preserve a replacement draft and leave a dismissed popup closed.
