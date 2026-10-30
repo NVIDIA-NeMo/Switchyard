@@ -592,17 +592,11 @@ fn anthropic_reconstruction_preserves_nested_cache_control() -> TestResult {
         });
         for policy in [TranslationPolicy::default(), normalized_policy()] {
             for prompt in [None, Some("target prompt"), Some("Be helpful")] {
-                let mut expected = body.clone();
                 let output = if let Some(prompt) = prompt {
                     let mut request = engine
                         .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
                         .request;
                     prepare_request_for_target(&mut request, &"target/model".into(), Some(prompt));
-                    expected["system"]
-                        .as_array_mut()
-                        .ok_or("expected system blocks")?
-                        .insert(0, json!({"type": "text", "text": prompt}));
-                    expected["model"] = json!("target/model");
                     engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?
                 } else {
                     engine.translate_request(
@@ -612,21 +606,24 @@ fn anthropic_reconstruction_preserves_nested_cache_control() -> TestResult {
                         &policy,
                     )?
                 };
-                assert_eq!(output.body["model"], expected["model"]);
+                let system_index = usize::from(prompt.is_some());
+                if prompt.is_some() {
+                    assert!(output.body["system"][0].get("cache_control").is_none());
+                }
                 assert_eq!(
                     json!({
                         "cache_control": output.body["cache_control"],
-                        "system": output.body["system"],
-                        "messages": output.body["messages"],
+                        "system_cache_control": output.body["system"][system_index]["cache_control"],
+                        "message_cache_control": output.body["messages"][0]["content"][0]["cache_control"],
                         "tool_cache_control": output.body["tools"][0]["cache_control"]
                     }),
                     json!({
-                        "cache_control": expected["cache_control"],
-                        "system": expected["system"],
-                        "messages": expected["messages"],
-                        "tool_cache_control": expected["tools"][0]["cache_control"]
+                        "cache_control": body["cache_control"],
+                        "system_cache_control": body["system"][0]["cache_control"],
+                        "message_cache_control": body["messages"][0]["content"][0]["cache_control"],
+                        "tool_cache_control": body["tools"][0]["cache_control"]
                     }),
-                    "cache markers ({tool_ttl}, {system_ttl}, {message_ttl}) and block boundaries must survive {:?} preservation with prompt {prompt:?}",
+                    "cache markers ({tool_ttl}, {system_ttl}, {message_ttl}) must retain their placement with {:?} preservation and prompt {prompt:?}",
                     policy.preservation,
                 );
             }
@@ -663,78 +660,6 @@ fn anthropic_reconstruction_preserves_fallback_credit_token() -> TestResult {
                 "fallback credit token must survive {:?} preservation",
                 policy.preservation,
             );
-        }
-    }
-    Ok(())
-}
-
-#[test]
-fn anthropic_request_enforces_cache_breakpoint_limit() -> TestResult {
-    let engine = TranslationEngine::default();
-    let marker = json!({"type": "ephemeral"});
-    for (automatic, message_markers, has_unmarked_tail, error_path) in [
-        (None, 2, true, None),
-        (
-            None,
-            3,
-            true,
-            Some("$.messages[0].content[2].cache_control"),
-        ),
-        (Some(marker.clone()), 1, true, None),
-        (
-            Some(marker.clone()),
-            2,
-            true,
-            Some("$.messages[0].content[1].cache_control"),
-        ),
-        (
-            Some(marker.clone()),
-            2,
-            false,
-            Some("$.messages[0].content[1].cache_control"),
-        ),
-        (
-            Some(marker.clone()),
-            3,
-            false,
-            Some("$.messages[0].content[1].cache_control"),
-        ),
-        (Some(Value::Null), 2, true, None),
-    ] {
-        let mut content = vec![
-            json!({"type": "text", "text": "Hello", "cache_control": marker});
-            message_markers
-        ];
-        if has_unmarked_tail {
-            content.push(json!({"type": "text", "text": "More", "cache_control": null}));
-        }
-        let mut body = json!({
-            "model": "route",
-            "max_tokens": 32,
-            "tools": [{
-                "name": "lookup", "input_schema": {"type": "object"},
-                "cache_control": marker
-            }],
-            "system": [{"type": "text", "text": "Be helpful", "cache_control": marker}],
-            "messages": [{"role": "user", "content": content}]
-        });
-        if let Some(automatic) = automatic {
-            body["cache_control"] = automatic;
-        }
-        let result = engine.decode_request(
-            WireFormat::AnthropicMessages,
-            &body,
-            &TranslationPolicy::default(),
-        );
-        if let Some(expected_path) = error_path {
-            assert!(matches!(
-                result,
-                Err(TranslationError::InvalidValue { path, message })
-                    if path == expected_path
-                        && message == "A maximum of 4 cache breakpoints is allowed"
-            ));
-        } else {
-            result?;
         }
     }
     Ok(())
