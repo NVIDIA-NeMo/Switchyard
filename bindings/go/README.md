@@ -15,11 +15,14 @@ library for the same platform as your Go application, then build the WASM guest:
 
 ```sh
 cargo build -p switchyard-ffi --release --locked
-scripts/build-go-wasm.sh
+rustup target add wasm32-wasip1
+cargo build -p switchyard-ffi --target wasm32-wasip1 --release --locked --lib
+mkdir -p bindings/go/internal/wasm
+cp target/wasm32-wasip1/release/switchyard_ffi.wasm bindings/go/internal/wasm/switchyard.wasm
 ```
 
-The script installs the Rust toolchain's `wasm32-wasip1` target. The generated
-binary is not checked in. Rebuild it after changing Rust code.
+These commands use the repository's pinned Rust toolchain. The generated binary
+is not checked in. Rebuild it after changing Rust code.
 
 From your application's Go module, point Go at that checkout. Replace the path
 below with its absolute location:
