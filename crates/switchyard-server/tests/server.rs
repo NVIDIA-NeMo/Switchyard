@@ -6028,3 +6028,55 @@ seed = 17
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn vgr_time_limits_can_be_disabled_from_toml() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    for limit in ["deadline_seconds", "efficient_turn_budget_seconds"] {
+        for (configured, served) in [
+            ("", "model/vgr-capable"),
+            ("bounded_efficient = false", "model/vgr-efficient"),
+        ] {
+            let app = build_switchyard_router(load_test_config(&format!(
+                r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{}"
+[targets]
+efficient = {{ id = "model/vgr-efficient", llm_client = "primary" }}
+capable = {{ id = "model/vgr-capable", llm_client = "primary" }}
+judge = {{ id = "model/vgr-judge", llm_client = "primary" }}
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+efficient_target = "efficient"
+capable_target = "capable"
+judge_target = "judge"
+mode = "evaluate"
+task_typing = false
+{configured}
+{limit} = 0.000000001
+"#,
+                upstream.base_url
+            ))?);
+            let response = send(
+                &app,
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({
+                    "model": "switchyard/vgr",
+                    "messages": [{"role": "user", "content": "answer the question"}]
+                })),
+            )
+            .await?;
+            assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+            assert_eq!(
+                response.headers.get("x-model-router-selected-model"),
+                Some(&HeaderValue::from_str(served)?),
+                "{limit}, {configured}"
+            );
+        }
+    }
+    Ok(())
+}

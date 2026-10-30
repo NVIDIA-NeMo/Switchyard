@@ -269,6 +269,14 @@ fn build_multi_format_client(
   transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
   transport failures are retried; streaming body failures are not replayed after
   the response has been returned.
+- If an OpenAI Chat backend explicitly rejects `chat_template_kwargs =
+  {"enable_thinking": false}` with HTTP 400 or 422, the client retries once without
+  that field. This compatibility retry is separate from `max_retries` and shares
+  the original timeout. `omit_body_fields` can remove it from the first attempt.
+- Codex endpoints whose URL path ends in `/backend-api/codex/responses` receive
+  string `input` as a message-item list, including preserved requests. Other
+  fields, array input, non-Codex endpoints, and the translation codec's exact
+  preservation remain unchanged.
 - `ModelConfig::with_responses_reasoning` controls Responses reasoning replay.
   Every Responses model defaults to `PreserveEncrypted`: plaintext is removed,
   encrypted provider state is retained. Stored reasoning IDs are retained unless

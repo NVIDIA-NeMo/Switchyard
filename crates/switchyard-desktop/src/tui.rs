@@ -1,17 +1,21 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! The terminal app shows recorded usage, recent calls, and server status.
+//! The terminal app shows usage, recent calls, routes, and harness settings from controller
+//! snapshots, and it runs server, route, harness, and account actions.
 //!
 //! One worker thread owns the controller and refreshes its snapshots while the UI thread
 //! draws and reads input.
 
 use crate::controller::{
-    Action, ActionKind, AppSettings, Availability, Controller, Reply, RouteInfo, Snapshot,
+    AccountInfo, Action, ActionKind, AppSettings, Availability, Controller, Dependent, Reply,
+    RouteInfo, Snapshot, ToolInfo,
 };
+use crate::harness::Harness;
 use crate::history::Entry;
 use crate::pricing::Estimate;
 use crate::rollup::{CLASSIFIER_TIER, ModelTokens, Totals, Usage};
+use crate::server_config::Choice;
 use crate::summary::{money, tokens};
 use chrono::{DateTime, Utc};
 use ratatui::{
@@ -49,7 +53,7 @@ const SPINNER: [char; 8] = ['⣷', '⣯', '⣟', '⡿', '⢿', '⣻', '⣽', '�
 type Key = (&'static str, &'static str, &'static str);
 const GLOBAL_KEYS: &[Key] = &[
     (
-        "1-5",
+        "1-6",
         "page",
         "Switch pages. Tab, Shift-Tab, ← and → also switch pages.",
     ),
@@ -105,6 +109,27 @@ const ROUTES_KEYS: &[Key] = &[
     ),
     ("esc", "clear", "Clear the filter."),
 ];
+const HARNESSES_KEYS: &[Key] = &[
+    (
+        "↑↓",
+        "route",
+        "Choose the route to install. j, k, PgUp, PgDn, g, and G also move it. The Routes page \
+         selects the same route, and its filter limits the choices.",
+    ),
+    ("t", "harness", "Select the next harness."),
+    (
+        "a",
+        "account",
+        "Select the next saved account, then the harness's own settings again. Install, \
+         restore, and the account keys use the selection.",
+    ),
+    (
+        "x",
+        "custom file",
+        "Install to or restore a custom settings file instead. Leave it empty to use the \
+         detected settings again.",
+    ),
+];
 const SETTINGS_KEYS: &[Key] = &[
     ("↑↓", "select", "Select an action. j, g, and G also move."),
     (
@@ -123,6 +148,13 @@ const FORM_KEYS: &[Key] = &[
     ("tab", "next field", ""),
     ("esc", "cancel", ""),
 ];
+/// The status bar shows these keys while the selected form field has a list of choices.
+const CHOICE_KEYS: &[Key] = &[
+    ("⏎", "submit", ""),
+    ("↑↓", "choose", ""),
+    ("tab", "next field", ""),
+    ("esc", "cancel", ""),
+];
 const REVIEW_KEYS: &[Key] = &[
     ("⏎", "confirm", ""),
     ("↑↓", "scroll", ""),
@@ -138,6 +170,120 @@ const CONFIRM_KEYS: &[Key] = &[("y", "confirm", ""), ("n", "cancel", "")];
 /// and `every_controller_action_has_a_key` fails until a row's flow includes it.
 type ActionRow = (Tab, char, &'static str, &'static str, &'static [ActionKind]);
 const ACTIONS: &[ActionRow] = &[
+    (
+        Tab::Routes,
+        'e',
+        "edit",
+        "Changes the selected route's algorithm and models. Enter reviews the change, and \
+         typing SAVE saves it and restarts the server.",
+        &[
+            ActionKind::Editor,
+            ActionKind::PreviewRoute,
+            ActionKind::Apply,
+        ],
+    ),
+    (
+        Tab::Routes,
+        'a',
+        "create",
+        "Creates a route from a public model ID, an algorithm, and its models. Type SAVE after \
+         the review.",
+        &[ActionKind::PreviewRouteChange, ActionKind::RouteChange],
+    ),
+    (
+        Tab::Routes,
+        'n',
+        "rename",
+        "Changes the selected route's public model ID. Harnesses that send the old ID must \
+         change too. Type SAVE after the review.",
+        &[ActionKind::PreviewRouteChange, ActionKind::RouteChange],
+    ),
+    (
+        Tab::Routes,
+        'c',
+        "duplicate",
+        "Copies the selected route under a new public model ID. The copy shares its targets. \
+         Type SAVE after the review.",
+        &[ActionKind::PreviewRouteChange, ActionKind::RouteChange],
+    ),
+    (
+        Tab::Routes,
+        'd',
+        "delete",
+        "Deletes the selected route after you type its public model ID. Its targets and \
+         endpoints stay, and the server config is backed up.",
+        &[ActionKind::Remove],
+    ),
+    (
+        Tab::Routes,
+        'm',
+        "models",
+        "Loads the model IDs that an endpoint offers.",
+        &[ActionKind::Models],
+    ),
+    (
+        Tab::Routes,
+        'k',
+        "model key",
+        "Saves an API key that lets the app load an endpoint's model IDs, then loads them.",
+        &[ActionKind::Models],
+    ),
+    (
+        Tab::Harnesses,
+        'p',
+        "preview",
+        "Shows the settings diff that installing the selected route would make. Nothing is \
+         saved.",
+        &[ActionKind::PreviewInstall],
+    ),
+    (
+        Tab::Harnesses,
+        'i',
+        "install",
+        "Shows the settings diff, then saves it after you type INSTALL. A backup keeps the \
+         original settings.",
+        &[ActionKind::PreviewInstall, ActionKind::Install],
+    ),
+    (
+        Tab::Harnesses,
+        'u',
+        "restore",
+        "Shows which files return to their original versions, then restores them after you \
+         type RESTORE.",
+        &[ActionKind::PreviewRestore, ActionKind::Restore],
+    ),
+    (
+        Tab::Harnesses,
+        'n',
+        "add account",
+        "Creates a saved account and opens the harness's login in a new terminal window.",
+        &[ActionKind::AddAccount],
+    ),
+    (
+        Tab::Harnesses,
+        'l',
+        "login",
+        "Opens the selected account's login again in a new terminal window.",
+        &[ActionKind::LoginAccount],
+    ),
+    (
+        Tab::Harnesses,
+        'o',
+        "open account",
+        "Opens the selected account folder in $VISUAL or $EDITOR.",
+        &[ActionKind::OpenAccount],
+    ),
+    (
+        Tab::Harnesses,
+        'd',
+        "archive",
+        "Moves the selected account out of the list after you type its name. Its login files \
+         are kept.",
+        &[
+            ActionKind::PreviewAccountArchive,
+            ActionKind::ArchiveAccount,
+        ],
+    ),
     (
         Tab::Settings,
         'o',
@@ -258,6 +404,14 @@ const ROUTE_COLUMNS: [(Column, bool); 3] = [
     (("ALGORITHM", Constraint::Length(24), false), false),
     (("MODELS", Constraint::Fill(2), false), true),
 ];
+/// The harnesses table drops the columns marked `true` below 80 columns; the details still
+/// show the current settings.
+const HARNESS_COLUMNS: [(Column, bool); 4] = [
+    (("HARNESS", Constraint::Fill(2), false), false),
+    (("STATE", Constraint::Length(13), false), false),
+    (("CURRENT SETTINGS", Constraint::Fill(3), false), true),
+    (("ACCOUNTS", Constraint::Length(8), true), false),
+];
 
 /// Theme maps each kind of text to one style. NO_COLOR keeps the text modifiers.
 #[derive(Clone, Copy)]
@@ -311,13 +465,15 @@ enum Tab {
     Calls,
     Models,
     Routes,
+    Harnesses,
     Settings,
 }
-const TABS: [Tab; 5] = [
+const TABS: [Tab; 6] = [
     Tab::Overview,
     Tab::Calls,
     Tab::Models,
     Tab::Routes,
+    Tab::Harnesses,
     Tab::Settings,
 ];
 impl Tab {
@@ -327,6 +483,7 @@ impl Tab {
             Tab::Calls => "Calls",
             Tab::Models => "Models",
             Tab::Routes => "Routes",
+            Tab::Harnesses => "Harnesses",
             Tab::Settings => "Settings",
         }
     }
@@ -384,10 +541,64 @@ enum FormKind {
     RemoveKey,
     /// The token comes from the update preview that the user read.
     Update(Option<String>),
+    /// The route is the snapshot's copy from when the user opened the editor. The models form
+    /// keeps its revision and choices, so a server config that changed since then fails the
+    /// review instead of mixing old choices into the new file.
+    Algorithm {
+        generation: u64,
+        route: Box<RouteInfo>,
+    },
+    RouteModels {
+        generation: u64,
+        route: String,
+        algorithm: String,
+        revision: Option<String>,
+    },
+    /// The fields hold a new route's public model ID, config name, and algorithm.
+    NewRoute {
+        generation: u64,
+    },
+    NewRouteModels {
+        generation: u64,
+        name: String,
+        id: String,
+        algorithm: String,
+    },
+    /// The operation is `rename` or `duplicate`, and `route` is the selected route's config name.
+    RouteIdentity {
+        generation: u64,
+        operation: &'static str,
+        route: String,
+    },
+    /// The fields hold the word that the user must type and the reviewed action, which the
+    /// form submits unchanged.
+    Confirm(Cow<'static, str>, Box<Action>),
+    Remove {
+        generation: u64,
+        route: String,
+        id: String,
+        revision: String,
+    },
+    Models,
+    /// This map holds each endpoint's base URL when the form opened. The controller refuses
+    /// the key if the chosen endpoint's URL no longer matches.
+    ModelKey(BTreeMap<String, String>),
+    /// The harness is the one selected when the form opened.
+    Account(Harness),
+    SettingsFile,
 }
-/// Submit is what a form sends: a controller action.
+/// Choices names the list that ↑ and ↓ cycle through in a form field.
+enum Choices {
+    Algorithms,
+    Endpoints,
+}
+/// Submit is what a form sends: a controller action, the next form of a flow that needs more
+/// input before the controller can review it, or a custom settings file, which changes only
+/// where the Harnesses page installs.
 enum Submit {
     Run(Action),
+    Next(Form),
+    SettingsFile(String),
 }
 /// Form holds the text fields for an action that needs input.
 struct Form {
@@ -474,8 +685,50 @@ impl Form {
     fn value(&self, index: usize) -> String {
         self.fields[index].1.trim().to_string()
     }
-    /// This function builds what the form submits.
-    fn action(&self) -> Result<Submit, String> {
+    /// This function reads the choices from fields that alternate endpoint and model.
+    fn choices(&self) -> Vec<Choice> {
+        self.fields
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| Choice {
+                client: pair[0].1.trim().into(),
+                model: pair[1].1.trim().into(),
+            })
+            .collect()
+    }
+    /// This function names the list that the selected field chooses from, if any.
+    fn options(&self) -> Option<Choices> {
+        match self.kind {
+            FormKind::Algorithm { .. } => Some(Choices::Algorithms),
+            FormKind::NewRoute { .. } if self.index == 2 => Some(Choices::Algorithms),
+            FormKind::RouteModels { .. } | FormKind::NewRouteModels { .. }
+                if self.index.is_multiple_of(2) =>
+            {
+                Some(Choices::Endpoints)
+            }
+            FormKind::Models | FormKind::ModelKey(_) if self.index == 0 => Some(Choices::Endpoints),
+            _ => None,
+        }
+    }
+    /// This function replaces the selected field with the next or previous name in `names`.
+    fn choose<'a>(&mut self, mut names: impl Iterator<Item = &'a str> + Clone, forward: bool) {
+        let count = names.clone().count();
+        if count == 0 {
+            return;
+        }
+        let field = &mut self.fields[self.index].1;
+        let next = match names.clone().position(|name| name == field.trim()) {
+            Some(index) if forward => (index + 1) % count,
+            Some(index) => (index + count - 1) % count,
+            None => 0,
+        };
+        *field = names.nth(next).unwrap_or_default().to_string();
+        self.cursor = field.chars().count();
+    }
+    /// This function builds what the form submits. The snapshot supplies the roles and
+    /// endpoints that a new route's models form starts with.
+    fn action(&self, data: &Snapshot) -> Result<Submit, String> {
         let confirm = |word: &str, error: &str| {
             if self.value(0) == word {
                 Ok(())
@@ -511,6 +764,129 @@ impl Form {
                     preview_token: preview_token.clone(),
                 }
             }
+            FormKind::Algorithm { generation, route } => Action::Editor {
+                generation: *generation,
+                route: route.key.clone(),
+                algorithm: self.value(0),
+            },
+            FormKind::RouteModels {
+                generation,
+                route,
+                algorithm,
+                revision,
+            } => Action::PreviewRoute {
+                generation: *generation,
+                route: route.clone(),
+                algorithm: algorithm.clone(),
+                choices: self.choices(),
+                revision: revision.clone(),
+            },
+            FormKind::NewRoute { generation } => {
+                let id = self.value(0);
+                let algorithm = self.value(2);
+                let roles = &data
+                    .algorithms
+                    .iter()
+                    .find(|known| known.kind == algorithm)
+                    .ok_or("Unknown routing algorithm. Press ↑ or ↓ to choose one.")?
+                    .roles;
+                let choice = Choice {
+                    client: data
+                        .clients
+                        .first()
+                        .map(|client| client.name.clone())
+                        .unwrap_or_default(),
+                    model: String::new(),
+                };
+                let fields = role_fields(roles.iter().map(|role| (&*role.label, choice.clone())));
+                let title = format!("Models for the new route {id}");
+                let kind = FormKind::NewRouteModels {
+                    generation: *generation,
+                    name: config_name(&id, &self.value(1)),
+                    id,
+                    algorithm,
+                };
+                return Ok(Submit::Next(Form::new(kind, title, fields)));
+            }
+            FormKind::NewRouteModels {
+                generation,
+                name,
+                id,
+                algorithm,
+            } => Action::PreviewRouteChange {
+                generation: *generation,
+                operation: "create".into(),
+                route: String::new(),
+                name: name.clone(),
+                id: id.clone(),
+                algorithm: Some(algorithm.clone()),
+                choices: self.choices(),
+            },
+            FormKind::RouteIdentity {
+                generation,
+                operation,
+                route,
+            } => {
+                let id = self.value(0);
+                // A rename keeps the config name, so its form has no config name field.
+                let name = match self.fields.get(1) {
+                    Some((_, typed)) => config_name(&id, typed.trim()),
+                    None => String::new(),
+                };
+                Action::PreviewRouteChange {
+                    generation: *generation,
+                    operation: operation.to_string(),
+                    route: route.clone(),
+                    name,
+                    id,
+                    algorithm: None,
+                    choices: Vec::new(),
+                }
+            }
+            FormKind::Confirm(word, action) => {
+                confirm(word, &format!("Type {word} to apply the reviewed changes."))?;
+                (**action).clone()
+            }
+            FormKind::Remove {
+                generation,
+                route,
+                id,
+                revision,
+            } => {
+                confirm(
+                    id,
+                    "The public model ID did not match. Nothing was deleted.",
+                )?;
+                Action::Remove {
+                    generation: *generation,
+                    route: route.clone(),
+                    id: id.clone(),
+                    revision: Some(revision.clone()),
+                }
+            }
+            FormKind::Models => Action::Models {
+                client: self.value(0),
+                refresh: true,
+                key: None,
+                base_url: None,
+            },
+            FormKind::ModelKey(urls) => Action::Models {
+                client: self.value(0),
+                refresh: true,
+                key: Some(self.value(1)),
+                base_url: urls.get(&self.value(0)).cloned(),
+            },
+            FormKind::Account(tool) => Action::AddAccount {
+                tool: *tool,
+                name: self.value(0),
+            },
+            FormKind::SettingsFile => {
+                let path = self.value(0);
+                if !path.is_empty() && !std::path::Path::new(&path).is_absolute() {
+                    return Err("Enter an absolute file path, or leave the field empty.".into());
+                }
+                return Ok(Submit::SettingsFile(path));
+            }
         }))
     }
     fn label(&self) -> &'static str {
@@ -520,8 +896,159 @@ impl Form {
             FormKind::ImportKey => "Importing the server key",
             FormKind::RemoveKey => "Removing the server key",
             FormKind::Update(_) => "Starting the update",
+            FormKind::Algorithm { .. } => "Opening the route editor",
+            FormKind::RouteModels { .. } => "Reviewing the route",
+            FormKind::NewRoute { .. }
+            | FormKind::NewRouteModels { .. }
+            | FormKind::RouteIdentity { .. } => "Reviewing the route change",
+            // The reviewed action names what typing the confirmation word saves.
+            FormKind::Confirm(_, action) => match **action {
+                Action::Install { .. } => "Installing the harness settings",
+                Action::Restore { .. } => "Restoring the harness settings",
+                Action::ArchiveAccount { .. } => "Archiving the account",
+                _ => "Saving the route",
+            },
+            FormKind::Remove { .. } => "Deleting the route",
+            FormKind::Models => "Loading models",
+            FormKind::ModelKey(_) => "Saving the key and loading models",
+            FormKind::Account(_) => "Adding the account",
+            FormKind::SettingsFile => "Choosing the settings file",
         }
     }
+}
+
+/// This function returns an endpoint field and a model field for each role and its choice.
+fn role_fields<'a>(roles: impl Iterator<Item = (&'a str, Choice)>) -> Vec<(String, String)> {
+    roles
+        .flat_map(|(label, choice)| {
+            let model = if label == "Model" {
+                label.to_string()
+            } else {
+                format!("{label} model")
+            };
+            [
+                (format!("{label} endpoint"), choice.client),
+                (model, choice.model),
+            ]
+        })
+        .collect()
+}
+
+/// This function returns the typed config name, or one made from the public model ID the same
+/// way the desktop app fills a blank config name.
+fn config_name(id: &str, typed: &str) -> String {
+    if !typed.is_empty() {
+        return typed.to_string();
+    }
+    id.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-")
+        .trim_matches('-')
+        .chars()
+        .take(64)
+        .collect()
+}
+
+/// This function opens the models form after the controller returns the roles of `algorithm`.
+fn route_models_form(
+    generation: u64,
+    route: &RouteInfo,
+    algorithm: String,
+    editor: &Value,
+) -> Result<Form, String> {
+    let roles = editor["roles"].as_array().ok_or("No roles returned.")?;
+    let fields = role_fields(roles.iter().enumerate().map(|(index, role)| {
+        // A role keeps its model by tier when the new algorithm changes the role order.
+        let matching = route.tiers.as_ref().and_then(|tiers| {
+            let tier = role["tier"].as_str()?;
+            tiers.iter().position(|t| t.as_deref() == Some(tier))
+        });
+        let choice = matching
+            .and_then(|index| route.choices.get(index))
+            .or_else(|| (algorithm == route.kind).then(|| route.choices.get(index))?)
+            .or_else(|| route.choices.first())
+            .cloned()
+            .unwrap_or_default();
+        (role["label"].as_str().unwrap_or_default(), choice)
+    }));
+    let kind = FormKind::RouteModels {
+        generation,
+        route: route.key.clone(),
+        algorithm,
+        revision: Some(route.revision.clone()),
+    };
+    Ok(Form::new(kind, format!("Models for {}", route.id), fields))
+}
+
+/// This function returns the action that a preview's review window submits after the user
+/// types the confirmation word: the previewed inputs, plus the preview's token for every flow
+/// except a route edit, which sends its revision instead.
+fn reviewed(previewed: Action, preview: &Value) -> Option<Action> {
+    let preview_token = preview["preview_token"].as_str().map(str::to_owned);
+    Some(match previewed {
+        Action::PreviewRoute {
+            generation,
+            route,
+            algorithm,
+            choices,
+            revision,
+        } => Action::Apply {
+            generation,
+            route,
+            algorithm,
+            choices,
+            revision,
+        },
+        Action::PreviewRouteChange {
+            generation,
+            operation,
+            route,
+            name,
+            id,
+            algorithm,
+            choices,
+        } => Action::RouteChange {
+            generation,
+            operation,
+            route,
+            name,
+            id,
+            algorithm,
+            choices,
+            preview_token,
+        },
+        Action::PreviewInstall {
+            tool,
+            account,
+            route,
+            id,
+            settings_file,
+        } => Action::Install {
+            tool,
+            account,
+            route,
+            id,
+            settings_file,
+            preview_token,
+        },
+        Action::PreviewRestore {
+            tool,
+            account,
+            settings_file,
+        } => Action::Restore {
+            tool,
+            account,
+            settings_file,
+            preview_token,
+        },
+        Action::PreviewAccountArchive { tool, name } => Action::ArchiveAccount {
+            tool,
+            name,
+            preview_token,
+        },
+        _ => return None,
+    })
 }
 
 enum Popup {
@@ -600,6 +1127,9 @@ struct Request {
     job: Job,
     label: &'static str,
     automatic: bool,
+    /// This field holds the `ACTIONS` key that started the job. Keys that share a first action
+    /// continue differently when the reply arrives, such as `p` and `i` on the Harnesses page.
+    key: Option<char>,
 }
 impl Request {
     fn run(action: Action, label: &'static str) -> Self {
@@ -607,6 +1137,7 @@ impl Request {
             job: Job::Run(action),
             label,
             automatic: false,
+            key: None,
         }
     }
     fn refresh(automatic: bool) -> Self {
@@ -614,6 +1145,7 @@ impl Request {
             job: Job::Refresh,
             label: "Refreshing",
             automatic,
+            key: None,
         }
     }
 }
@@ -624,6 +1156,7 @@ struct Busy {
     action: Option<Action>,
     /// This field records the popup generation when the action starts.
     popup_generation: u64,
+    key: Option<char>,
     started: Instant,
     /// Automatic refreshes report errors in the status bar, and automatic key checks update
     /// Settings without opening a popup.
@@ -654,6 +1187,18 @@ impl Tone {
     }
 }
 
+/// Destination is where the Harnesses page installs and restores settings.
+enum Destination {
+    /// The harness's own settings files.
+    Harness,
+    /// A saved account, by name. The name stays after a refresh stops listing the account, so
+    /// its actions still send it and the controller rejects them instead of changing other
+    /// settings.
+    Account(String),
+    /// A custom settings file path.
+    File(String),
+}
+
 struct App {
     theme: Theme,
     data: Snapshot,
@@ -672,6 +1217,13 @@ struct App {
     route_visible: Vec<usize>,
     route_selected: usize,
     route_offset: usize,
+    /// This field indexes `data.tools`, which lists every harness in a fixed order.
+    harness: usize,
+    destination: Destination,
+    /// This field holds the last install preview, the action that produced it, and the route
+    /// revision it was built from. The Harnesses page shows it only while that action matches
+    /// the selection and the route is unchanged.
+    install_preview: Option<(Action, String, Value)>,
     /// This field holds the last `ServerKeys` reply. It is `None` until the user checks the keys,
     /// and a failed check clears it so the page never shows outdated key states.
     server_keys: Option<Value>,
@@ -705,6 +1257,9 @@ impl App {
             route_visible: Vec::new(),
             route_selected: 0,
             route_offset: 0,
+            harness: 0,
+            destination: Destination::Harness,
+            install_preview: None,
             server_keys: None,
             popup: None,
             popup_generation: 0,
@@ -785,6 +1340,82 @@ impl App {
             }
             None => Err("Choose a route first.".into()),
         }
+    }
+
+    fn harness(&self) -> Result<&ToolInfo, String> {
+        self.data
+            .tools
+            .get(self.harness)
+            .ok_or_else(|| "No harness is listed. Fix the app settings, then press r.".into())
+    }
+
+    /// This function returns the selected account's name, or `None` when the harness's own
+    /// settings or a custom settings file is the destination.
+    fn account(&self) -> Option<String> {
+        match &self.destination {
+            Destination::Account(name) => Some(name.clone()),
+            Destination::Harness | Destination::File(_) => None,
+        }
+    }
+
+    fn custom_file(&self) -> Option<String> {
+        match &self.destination {
+            Destination::File(path) => Some(path.clone()),
+            Destination::Harness | Destination::Account(_) => None,
+        }
+    }
+
+    /// Account actions change one saved account, so this function rejects other destinations.
+    fn selected_account(&self) -> Result<(Harness, String), String> {
+        let name = self
+            .account()
+            .ok_or("Press a to select a saved account first.")?;
+        Ok((self.harness()?.tool, name))
+    }
+
+    /// This function builds the install preview of the selected route for the selected
+    /// harness and destination.
+    fn install_action(&self) -> Result<Action, String> {
+        let tool = self.harness()?.tool;
+        let route = self.selected_route()?;
+        Ok(Action::PreviewInstall {
+            tool,
+            account: self.account(),
+            route: route.key.clone(),
+            id: route.id.clone(),
+            settings_file: self.custom_file(),
+        })
+    }
+
+    /// This function returns the last install preview while it still describes the selection.
+    fn install_preview(&self) -> Option<&Value> {
+        let (
+            Action::PreviewInstall {
+                tool,
+                account,
+                route,
+                id,
+                settings_file,
+            },
+            revision,
+            preview,
+        ) = self.install_preview.as_ref()?
+        else {
+            return None;
+        };
+        let selected = self.selected_route().ok()?;
+        let destination = match (&self.destination, account, settings_file) {
+            (Destination::Harness, None, None) => true,
+            (Destination::Account(name), Some(previewed), None) => name == previewed,
+            (Destination::File(path), None, Some(previewed)) => path == previewed,
+            _ => false,
+        };
+        let current = destination
+            && self.harness().is_ok_and(|harness| harness.tool == *tool)
+            && selected.key == *route
+            && selected.id == *id
+            && selected.revision == *revision;
+        current.then_some(preview)
     }
 
     // Every replacement or dismissal changes the generation, even when the same form reopens.
@@ -884,7 +1515,18 @@ impl App {
                 }
             }
         }
+        let (action, key) = busy
+            .map(|busy| (busy.action, busy.key))
+            .unwrap_or((None, None));
         let reply = reply?;
+        match (&action, reply.is_ok()) {
+            // Saved settings no longer match an earlier diff, and a failed preview has none.
+            (Some(Action::Install { .. } | Action::Restore { .. }), true)
+            | (Some(Action::PreviewInstall { .. }), false) => self.install_preview = None,
+            // The archived account leaves the list, so the harness's own settings are next.
+            (Some(Action::ArchiveAccount { .. }), true) => self.destination = Destination::Harness,
+            _ => {}
+        }
         match (kind, reply) {
             (Some(ActionKind::ServerKeys), Err(error)) => {
                 self.server_keys = None;
@@ -916,6 +1558,135 @@ impl App {
                     "Update from source?",
                     "Type UPDATE to start",
                 )));
+            }
+            // The p key shows the diff on the page. The i key also opens the review, unless the
+            // settings already match the route.
+            (Some(ActionKind::PreviewInstall), Ok(reply)) => {
+                let previewed = action?;
+                let changed = reply.data["changes"]
+                    .as_array()
+                    .is_some_and(|changes| !changes.is_empty());
+                if !changed {
+                    self.report(
+                        "The settings already match this route.".into(),
+                        Tone::Done,
+                        popup_matches,
+                    );
+                } else if popup_matches
+                    && key == Some('i')
+                    && let Some(install @ Action::Install { tool, .. }) =
+                        reviewed(previewed.clone(), &reply.data)
+                {
+                    let known = self.data.tools.iter().find(|known| known.tool == tool);
+                    let label = known.map_or("the harness", |known| known.label);
+                    let title = format!("Apply routing to {label}?");
+                    self.set_popup(Some(Popup::review(
+                        install_lines(self.theme, &reply.data),
+                        "Install",
+                        FormKind::Confirm("INSTALL".into(), Box::new(install)),
+                        title,
+                        "Type INSTALL to save the settings",
+                    )));
+                } else {
+                    let text = "Press i to apply this diff.";
+                    self.report(text.into(), Tone::Done, popup_matches);
+                }
+                // The revision comes from the last snapshot. An older snapshot only hides the
+                // preview early; edits made outside the app are caught by the install recheck.
+                let revision = self
+                    .data
+                    .routes
+                    .iter()
+                    .find(|route| matches!(&previewed, Action::PreviewInstall { route: key, .. } if *key == route.key))
+                    .map(|route| route.revision.clone())?;
+                self.install_preview = Some((previewed, revision, reply.data));
+            }
+            (Some(ActionKind::PreviewRestore), Ok(reply)) if popup_matches => {
+                if let Some(restore) = action.and_then(|action| reviewed(action, &reply.data)) {
+                    self.set_popup(Some(Popup::review(
+                        restore_lines(self.theme, &reply.data),
+                        "Restore",
+                        FormKind::Confirm("RESTORE".into(), Box::new(restore)),
+                        "Restore harness settings?",
+                        "Type RESTORE to replace the files",
+                    )));
+                }
+            }
+            (Some(ActionKind::PreviewAccountArchive), Ok(reply)) if popup_matches => {
+                if let Some(archive) = action.and_then(|action| reviewed(action, &reply.data))
+                    && let Action::ArchiveAccount { name, .. } = &archive
+                {
+                    let name = name.clone();
+                    self.set_popup(Some(Popup::review(
+                        archive_lines(self.theme, &reply.data),
+                        "Archive",
+                        FormKind::Confirm(name.clone().into(), Box::new(archive)),
+                        format!("Archive the account {name}?"),
+                        "Type the account name to archive",
+                    )));
+                }
+            }
+            // The reply lists the roles of the chosen algorithm. The models form replaces the
+            // algorithm form only while that form is still open for the same route.
+            (Some(ActionKind::Editor), Ok(reply)) if popup_matches => {
+                if let Some(Action::Editor {
+                    route: key,
+                    algorithm,
+                    ..
+                }) = action
+                    && let Some(Popup::Form(form)) = &self.popup
+                    && let FormKind::Algorithm { generation, route } = &form.kind
+                    && route.key == key
+                {
+                    match route_models_form(*generation, route, algorithm, &reply.data) {
+                        Ok(next) => self.set_popup(Some(Popup::Form(next))),
+                        Err(error) => self.notify(error, Tone::Error),
+                    }
+                }
+            }
+            (Some(ActionKind::PreviewRoute), Ok(_)) if !popup_matches => {
+                self.report(
+                    "The route preview finished while another window was open. \
+                     Press e on Routes to edit the route again."
+                        .into(),
+                    Tone::Done,
+                    false,
+                );
+            }
+            // The review window replaces the form that asked for the preview, so a form that
+            // the user closed meanwhile stays closed.
+            (Some(ActionKind::PreviewRoute | ActionKind::PreviewRouteChange), Ok(reply))
+                if popup_matches =>
+            {
+                if matches!(self.popup, Some(Popup::Form(_)))
+                    && let Some(reviewed) = action.and_then(|action| reviewed(action, &reply.data))
+                {
+                    self.set_popup(Some(Popup::review(
+                        change_lines(self.theme, &reply.data),
+                        "Save",
+                        FormKind::Confirm("SAVE".into(), Box::new(reviewed)),
+                        "Review route changes",
+                        "Type SAVE to apply",
+                    )));
+                }
+            }
+            (Some(ActionKind::Models), Ok(reply)) if popup_matches => {
+                let models: Vec<&str> = reply.data["models"]
+                    .as_array()
+                    .map(|items| items.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                let list = if models.is_empty() {
+                    "No model IDs found.".to_string()
+                } else {
+                    models.join("\n")
+                };
+                let client = reply.data["client"].as_str().unwrap_or_default();
+                self.set_popup(Some(Popup::Message {
+                    title: "Models",
+                    text: format!("{}\n\nModel IDs on {client}:\n{list}", reply.message),
+                    tone: Tone::of(&reply),
+                    scroll: 0,
+                }));
             }
             (Some(ActionKind::ServerKeys), Ok(reply)) => {
                 let text = key_lines(self.theme, Some(&reply.data))
@@ -1041,6 +1812,7 @@ impl App {
         self.busy = Some(Busy {
             label: request.label,
             action,
+            key: request.key,
             started: Instant::now(),
             automatic: request.automatic,
             popup_generation: self.popup_generation,
@@ -1052,7 +1824,7 @@ impl App {
         match (&self.popup, self.filtering, self.tab) {
             (Some(Popup::Restart), _, _) => CONFIRM_KEYS,
             (Some(Popup::Review { .. }), _, _) => REVIEW_KEYS,
-
+            (Some(Popup::Form(form)), _, _) if form.options().is_some() => CHOICE_KEYS,
             (Some(Popup::Form(_)), _, _) => FORM_KEYS,
             (Some(_), _, _) => POPUP_KEYS,
             (None, true, _) => FILTER_KEYS,
@@ -1060,6 +1832,7 @@ impl App {
             (None, false, Tab::Calls) => CALLS_KEYS,
             (None, false, Tab::Models) => MODELS_KEYS,
             (None, false, Tab::Routes) => ROUTES_KEYS,
+            (None, false, Tab::Harnesses) => HARNESSES_KEYS,
             (None, false, Tab::Settings) => SETTINGS_KEYS,
         }
     }
@@ -1109,7 +1882,7 @@ impl App {
         match key.code {
             KeyCode::Char('q') => self.quit = true,
             KeyCode::Char('?') => self.set_popup(Some(Popup::Help { scroll: 0 })),
-            KeyCode::Char(digit @ '1'..='5') => {
+            KeyCode::Char(digit @ '1'..='6') => {
                 self.tab = TABS[digit as usize - '1' as usize];
             }
             KeyCode::Tab | KeyCode::Right => self.tab = TABS[(self.tab.index() + 1) % TABS.len()],
@@ -1129,7 +1902,7 @@ impl App {
                         self.route_filter.clear();
                         self.refilter();
                     }
-                    Tab::Overview | Tab::Models | Tab::Settings => {}
+                    Tab::Overview | Tab::Models | Tab::Harnesses | Tab::Settings => {}
                 }
             }
             code => {
@@ -1153,6 +1926,7 @@ impl App {
                         _ => {}
                     },
                     Tab::Routes => self.routes_key(code),
+                    Tab::Harnesses => self.harnesses_key(code),
                     Tab::Settings => return self.settings_key(code),
                 }
             }
@@ -1201,6 +1975,44 @@ impl App {
         }
     }
 
+    /// The arrows choose the route, which is the longer list; `t` cycles through the few
+    /// harnesses. A new harness starts at its own settings, because accounts belong to one
+    /// harness.
+    fn harnesses_key(&mut self, code: KeyCode) {
+        let last = self.route_visible.len().saturating_sub(1);
+        if let Some(selected) = step(code, self.route_selected, last) {
+            self.route_selected = selected;
+            return;
+        }
+        match code {
+            KeyCode::Char('t') => {
+                self.harness = (self.harness + 1) % self.data.tools.len().max(1);
+                self.destination = Destination::Harness;
+            }
+            // The cycle runs through the harness's own settings and then each saved account.
+            KeyCode::Char('a') => {
+                let names = self.harness().map_or(&[][..], |tool| &tool.accounts);
+                let current = match &self.destination {
+                    Destination::Account(name) => names.iter().position(|known| known == name),
+                    Destination::Harness | Destination::File(_) => None,
+                };
+                let next = names.get(current.map_or(0, |index| index + 1)).cloned();
+                self.destination = next.map_or(Destination::Harness, Destination::Account);
+            }
+            KeyCode::Char('x') => {
+                self.set_popup(Some(Popup::Form(Form::new(
+                    FormKind::SettingsFile,
+                    "Custom settings file · leave empty to use the detected settings",
+                    vec![(
+                        "Absolute file path (Pi: models.json)",
+                        self.custom_file().unwrap_or_default(),
+                    )],
+                ))));
+            }
+            _ => {}
+        }
+    }
+
     fn filter_key(&mut self, key: KeyEvent) {
         let control = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
@@ -1239,11 +2051,19 @@ impl App {
         None
     }
 
+    /// This function runs a row's flow and records its key on the request, so the reply can
+    /// continue that key's flow.
     fn run_row(&mut self, kind: ActionKind, key: char) -> Option<Request> {
-        self.start_action(kind, key).unwrap_or_else(|error| {
-            self.notify(error, Tone::Error);
-            None
-        })
+        match self.start_action(kind, key) {
+            Ok(request) => request.map(|request| Request {
+                key: Some(key),
+                ..request
+            }),
+            Err(error) => {
+                self.notify(error, Tone::Error);
+                None
+            }
+        }
     }
 
     fn open(&mut self, form: Form) -> Result<Option<Request>, String> {
@@ -1255,10 +2075,162 @@ impl App {
     /// adding a controller action breaks the build until the terminal app can run it. Only the
     /// arms of actions that several keys start read `key`, and they return an error for a key
     /// that they do not know, so a new row must also be added to its arm.
-    fn start_action(&mut self, kind: ActionKind, _key: char) -> Result<Option<Request>, String> {
+    fn start_action(&mut self, kind: ActionKind, key: char) -> Result<Option<Request>, String> {
         let request = |action, label| Ok(Some(Request::run(action, label)));
-
+        let generation = self.data.generation;
         match kind {
+            // The algorithm form submits Editor, the models form submits PreviewRoute, and the
+            // review window submits Apply.
+            ActionKind::Editor | ActionKind::PreviewRoute | ActionKind::Apply => {
+                let route = Box::new(self.selected_route()?.clone());
+                let title = format!("Routing algorithm for {}", route.id);
+                let fields = vec![("Algorithm", route.kind.clone())];
+                self.open(Form::new(
+                    FormKind::Algorithm { generation, route },
+                    title,
+                    fields,
+                ))
+            }
+            // The route form submits PreviewRouteChange, and the review window submits
+            // RouteChange. A new route also needs a models form before the review.
+            ActionKind::PreviewRouteChange | ActionKind::RouteChange => {
+                const CONFIG_NAME: &str = "Config name (blank uses the public model ID)";
+                let form = match key {
+                    'a' => {
+                        let algorithm = self.data.algorithms.first().map(|a| a.kind);
+                        Form::new(
+                            FormKind::NewRoute { generation },
+                            "Create a route",
+                            vec![
+                                ("Public model ID", String::new()),
+                                (CONFIG_NAME, String::new()),
+                                ("Algorithm", algorithm.unwrap_or_default().to_string()),
+                            ],
+                        )
+                    }
+                    'n' => {
+                        let route = self.selected_route()?;
+                        Form::new(
+                            FormKind::RouteIdentity {
+                                generation,
+                                operation: "rename",
+                                route: route.key.clone(),
+                            },
+                            format!("Rename {}", route.id),
+                            vec![("Public model ID", route.id.clone())],
+                        )
+                    }
+                    'c' => {
+                        let route = self.selected_route()?;
+                        Form::new(
+                            FormKind::RouteIdentity {
+                                generation,
+                                operation: "duplicate",
+                                route: route.key.clone(),
+                            },
+                            format!("Duplicate {}", route.id),
+                            vec![
+                                ("Public model ID", String::new()),
+                                (CONFIG_NAME, String::new()),
+                            ],
+                        )
+                    }
+                    _ => return Err(format!("The {key} key does not start a route change.")),
+                };
+                self.open(form)
+            }
+            ActionKind::Remove => {
+                let route = self.selected_route()?;
+                let lines = remove_lines(self.theme, route, self.data.settings.as_ref());
+                let title = format!("Delete route {}?", route.id);
+                let kind = FormKind::Remove {
+                    generation,
+                    route: route.key.clone(),
+                    id: route.id.clone(),
+                    revision: route.revision.clone(),
+                };
+                self.set_popup(Some(Popup::review(
+                    lines,
+                    "Delete",
+                    kind,
+                    title,
+                    "Type the public model ID to delete",
+                )));
+                Ok(None)
+            }
+            ActionKind::Models => {
+                let client = self.data.clients.first();
+                let client = client.map(|c| c.name.clone()).unwrap_or_default();
+                let form = match key {
+                    'm' => Form::new(
+                        FormKind::Models,
+                        "Load an endpoint's models",
+                        vec![("Endpoint name", client)],
+                    ),
+                    'k' => Form::new(
+                        FormKind::ModelKey(
+                            self.data
+                                .clients
+                                .iter()
+                                .map(|c| (c.name.clone(), c.base_url.clone()))
+                                .collect(),
+                        ),
+                        "Save a model-list key",
+                        vec![("Endpoint name", client), ("API key", String::new())],
+                    ),
+                    _ => return Err(format!("The {key} key does not load models.")),
+                };
+                self.open(form)
+            }
+            // Both keys preview the install. App::finish shows the diff for p and opens the
+            // review, which submits Install, for i.
+            ActionKind::PreviewInstall | ActionKind::Install => {
+                let label = match key {
+                    'p' => "Previewing the settings",
+                    'i' => "Reviewing the settings",
+                    _ => return Err(format!("The {key} key does not preview harness settings.")),
+                };
+                request(self.install_action()?, label)
+            }
+            // The review window lists the files that return to their backups and submits
+            // Restore.
+            ActionKind::PreviewRestore | ActionKind::Restore => {
+                let tool = self.harness()?.tool;
+                let restore = Action::PreviewRestore {
+                    tool,
+                    account: self.account(),
+                    settings_file: self.custom_file(),
+                };
+                request(restore, "Reading the original settings")
+            }
+            ActionKind::AddAccount => {
+                let harness = self.harness()?;
+                let title = format!("Sign in to another {} account", harness.label);
+                let kind = FormKind::Account(harness.tool);
+                self.open(Form::new(
+                    kind,
+                    title,
+                    vec![("Account name", String::new())],
+                ))
+            }
+            ActionKind::LoginAccount => {
+                let (tool, name) = self.selected_account()?;
+                request(Action::LoginAccount { tool, name }, "Opening the login")
+            }
+            // Controller::editor_target returns the account folder, so it opens in the editor.
+            ActionKind::OpenAccount => {
+                let (tool, name) = self.selected_account()?;
+                request(
+                    Action::OpenAccount { tool, name },
+                    "Opening the account folder",
+                )
+            }
+            // The review window names the account folder and submits ArchiveAccount.
+            ActionKind::PreviewAccountArchive | ActionKind::ArchiveAccount => {
+                let (tool, name) = self.selected_account()?;
+                let archive = Action::PreviewAccountArchive { tool, name };
+                request(archive, "Reviewing the account archive")
+            }
             ActionKind::OpenConfig => request(Action::OpenConfig {}, "Opening the server config"),
             ActionKind::CheckConfig => {
                 request(Action::CheckConfig {}, "Checking the server config")
@@ -1333,17 +2305,41 @@ impl App {
             Popup::Form(form) | Popup::Review { confirm: form, .. } => {
                 match key.code {
                     KeyCode::Esc => self.set_popup(None),
-                    KeyCode::Enter => match form.action() {
+                    KeyCode::Enter => match form.action(&self.data) {
                         Ok(Submit::Run(action)) => return Some(Request::run(action, form.label())),
+                        Ok(Submit::Next(next)) => self.set_popup(Some(Popup::Form(next))),
+                        Ok(Submit::SettingsFile(path)) => {
+                            self.set_popup(None);
+                            self.destination = if path.is_empty() {
+                                Destination::Harness
+                            } else {
+                                Destination::File(path)
+                            };
+                            let text = "Press p to preview or i to install.";
+                            self.notify(text.into(), Tone::Done);
+                        }
                         Err(error) => form.error = error,
                     },
-                    // Only the review window scrolls; text fields ignore these keys.
+                    // A field with choices cycles through them. Otherwise only the review
+                    // window scrolls; text fields ignore these keys.
                     KeyCode::Up | KeyCode::Down | KeyCode::PageUp | KeyCode::PageDown => {
-                        if let Some(scroll) = popup.scroll_mut()
-                            && let Some(next) =
-                                step(key.code, usize::from(*scroll), usize::from(u16::MAX))
-                        {
-                            *scroll = next as u16;
+                        let forward = key.code == KeyCode::Down;
+                        match (form.options(), key.code) {
+                            (Some(Choices::Algorithms), KeyCode::Up | KeyCode::Down) => {
+                                form.choose(self.data.algorithms.iter().map(|a| a.kind), forward);
+                            }
+                            (Some(Choices::Endpoints), KeyCode::Up | KeyCode::Down) => {
+                                let names = self.data.clients.iter().map(|c| c.name.as_str());
+                                form.choose(names, forward);
+                            }
+                            _ => {
+                                if let Some(scroll) = popup.scroll_mut()
+                                    && let Some(next) =
+                                        step(key.code, usize::from(*scroll), usize::from(u16::MAX))
+                                {
+                                    *scroll = next as u16;
+                                }
+                            }
                         }
                     }
                     _ => form.edit(key),
@@ -1559,6 +2555,8 @@ fn block(theme: Theme, title: &str) -> Block<'static> {
 fn draw(frame: &mut Frame, app: &mut App) {
     // This exhaustive destructuring requires an update when Snapshot gains a field.
     let Snapshot {
+        tools: _,           // draw_harnesses and harness_lines show these tools.
+        generation: _,      // Each route form returns this value with its action.
         clients: _,         // draw_endpoints and the endpoint forms show these clients.
         algorithms: _,      // draw_routes and the algorithm fields show these algorithms.
         routes: _,          // draw_routes and the route details show these routes.
@@ -1596,6 +2594,7 @@ fn draw(frame: &mut Frame, app: &mut App) {
         Tab::Calls => draw_calls(frame, app, body),
         Tab::Models => draw_models(frame, app, body),
         Tab::Routes => draw_routes(frame, app, body),
+        Tab::Harnesses => draw_harnesses(frame, app, body),
         Tab::Settings => draw_settings(frame, app, body),
     }
     draw_status(frame, app, status);
@@ -1629,14 +2628,27 @@ fn draw_too_small(frame: &mut Frame, theme: Theme, area: Rect) {
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let theme = app.theme;
-    let titles = TABS.map(|tab| {
-        Line::from(vec![
-            Span::styled(format!("{} ", tab.index() + 1), theme.key),
-            Span::raw(tab.name()),
-        ])
-    });
+    // Each title is the tab's digit and at most `letters` letters of its name.
+    let titles = |letters: usize| {
+        TABS.map(|tab| {
+            let name = tab.name().get(..letters).unwrap_or(tab.name());
+            Line::from(vec![
+                Span::styled((tab.index() + 1).to_string(), theme.key),
+                Span::raw(if name.is_empty() { "" } else { " " }),
+                Span::raw(name),
+            ])
+        })
+    };
     // Tabs pads each title by one space on both sides and puts a divider between titles.
-    let tabs_width: usize = titles.iter().map(|title| title.width() + 3).sum();
+    let width = |titles: &[Line]| titles.iter().map(|title| title.width() + 3).sum::<usize>();
+    // Narrow terminals shorten the names to three letters, then show the digits alone, so no
+    // tab is cut off.
+    let titles = [usize::MAX, 3]
+        .into_iter()
+        .map(titles)
+        .find(|titles| width(titles) <= usize::from(area.width))
+        .unwrap_or_else(|| titles(0));
+    let tabs_width = width(&titles);
     let running = app.data.metrics.running;
     let mut status = server_state(theme, running).to_vec();
     let updated = match app.refreshed {
@@ -2414,7 +3426,7 @@ fn draw_route_table(frame: &mut Frame, app: &mut App, area: Rect) {
         .title(Line::from(title));
     if visible == 0 {
         let text = if app.data.routes.is_empty() {
-            "No routes in the server config."
+            "No routes in the server config. Press a to create one."
         } else {
             "No routes match the filter. Press Esc to clear it."
         };
@@ -2476,41 +3488,45 @@ fn draw_route_table(frame: &mut Frame, app: &mut App, area: Rect) {
 /// short terminal still shows them, then the notes that limit editing it here.
 fn route_lines(theme: Theme, data: &Snapshot, route: &RouteInfo) -> Vec<Line<'static>> {
     const WIDTH: usize = 11;
+    // This destructuring has no `..`, so adding a route field breaks the build until the
+    // terminal app shows it. Each comment names the place that shows the field.
+    let RouteInfo {
+        key,
+        id: _, // draw_routes titles these details with it
+        kind,
+        revision: _, // the edit and delete flows send it back
+        label: _,    // harness_lines names the route with it, and the filter reads it
+        choices: _,  // the edit flow starts from these choices
+        models,
+        judges,
+        tiers: _, // route_models_form keeps each role's model by tier
+        editable,
+        generated,
+        compatibility: _, // harness_lines explains it for the selected harness
+        dependents: _,    // remove_lines lists them in the delete review
+    } = route;
     let field = |name: &str, value: String| labeled(theme, name, WIDTH, value);
-    let algorithm = data
-        .algorithms
-        .iter()
-        .find(|known| known.kind == route.kind);
+    let algorithm = data.algorithms.iter().find(|known| known.kind == *kind);
     let mut lines = vec![
-        field("Config", format!("[routes.{}]", route.key)),
+        field("Config", format!("[routes.{key}]")),
         field(
             "Algorithm",
             algorithm.map_or_else(
-                || route.kind.clone(),
+                || kind.clone(),
                 |known| format!("{} ({})", known.title, known.kind),
             ),
         ),
     ];
-    lines.extend(
-        route
-            .models
-            .iter()
-            .map(|model| field("Model", model.clone())),
-    );
-    lines.extend(
-        route
-            .judges
-            .iter()
-            .map(|judge| field("Judge", judge.clone())),
-    );
-    if !route.editable {
+    lines.extend(models.iter().map(|model| field("Model", model.clone())));
+    lines.extend(judges.iter().map(|judge| field("Judge", judge.clone())));
+    if !editable {
         lines.push(Line::default());
         lines.push(Line::styled(
             "This routing method has no editor here. Edit its fields in the server config.",
             theme.warn,
         ));
     }
-    if let Some(generated) = &route.generated {
+    if let Some(generated) = generated {
         lines.push(Line::default());
         lines.push(Line::styled(
             format!("Generated by {generated}. That tool can replace edits made here."),
@@ -2579,6 +3595,217 @@ fn draw_endpoints(frame: &mut Frame, app: &App, notes: Vec<Line<'static>>, area:
     ];
     frame.render_widget(table(theme, &columns, rows), table_area);
     frame.render_widget(Paragraph::new(notes).wrap(Wrap { trim: false }), notes_area);
+}
+
+fn draw_harnesses(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme;
+    // The borders and the header row take three rows.
+    let rows = app.data.tools.len().max(1) as u16 + 3;
+    let [list, rest] = Layout::vertical([
+        Constraint::Length(rows.min(area.height / 2)),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    draw_harness_table(frame, app, list);
+    let Ok(harness) = app.harness() else {
+        return;
+    };
+    let detail = Paragraph::new(harness_lines(app, harness))
+        .wrap(Wrap { trim: false })
+        .block(block(theme, harness.label).padding(Padding::horizontal(1)));
+    let Some(preview) = app.install_preview() else {
+        frame.render_widget(detail, rest);
+        return;
+    };
+    let diff = Paragraph::new(install_lines(theme, preview))
+        .wrap(Wrap { trim: false })
+        .block(block(theme, "Settings diff").padding(Padding::horizontal(1)));
+    // Wide terminals put the diff beside the details; others put it below them.
+    let [details_area, diff_area] = if rest.width >= SIDE_DETAIL_WIDTH {
+        Layout::horizontal([Constraint::Fill(1); 2]).areas(rest)
+    } else {
+        Layout::vertical([Constraint::Fill(1); 2]).areas(rest)
+    };
+    frame.render_widget(detail, details_area);
+    frame.render_widget(diff, diff_area);
+}
+
+fn draw_harness_table(frame: &mut Frame, app: &App, area: Rect) {
+    let theme = app.theme;
+    let tools = &app.data.tools;
+    let outer = block(theme, &format!("Harnesses [{}]", tools.len()));
+    if tools.is_empty() {
+        let text = "No harness is listed. Fix the app settings, then press r.";
+        frame.render_widget(
+            Paragraph::new(Line::styled(text, theme.muted))
+                .centered()
+                .block(outer),
+            area,
+        );
+        return;
+    }
+    let wide = area.width >= 80;
+    let shown = |column: &(Column, bool)| wide || !column.1;
+    let rows: Vec<Row> = tools
+        .iter()
+        .map(|tool| {
+            let state = if tool.available {
+                Span::styled("Detected", theme.ok)
+            } else {
+                Span::styled("Not detected", theme.warn)
+            };
+            // The first two lines name the model and the endpoint, or hold the read error.
+            let settings: Vec<&str> = tool.status.lines().take(2).collect();
+            let cells = [
+                Cell::from(tool.label),
+                Cell::from(state),
+                Cell::from(settings.join(" · ")),
+                right(count(tool.accounts.len() as u64)),
+            ];
+            Row::new(
+                cells
+                    .into_iter()
+                    .zip(&HARNESS_COLUMNS)
+                    .filter(|(_, column)| shown(column))
+                    .map(|(cell, _)| cell),
+            )
+        })
+        .collect();
+    let columns: Vec<Column> = HARNESS_COLUMNS
+        .iter()
+        .filter(|column| shown(column))
+        .map(|column| column.0)
+        .collect();
+    let mut state = TableState::default().with_selected(Some(app.harness));
+    frame.render_stateful_widget(
+        table(theme, &columns, rows)
+            .row_highlight_style(theme.selected)
+            .highlight_symbol("› ")
+            .block(outer),
+        area,
+        &mut state,
+    );
+}
+
+/// This function shows the route to install and whether the harness can use it, then where
+/// the settings go and what they hold now, then the saved accounts.
+fn harness_lines(app: &App, harness: &ToolInfo) -> Vec<Line<'static>> {
+    const WIDTH: usize = 12;
+    let theme = app.theme;
+    let field = |name: &str, value: String| labeled(theme, name, WIDTH, value);
+    let heading = |text: &'static str| Line::styled(text, theme.muted.bold());
+    // This destructuring has no `..`, so adding a harness field breaks the build until this
+    // page shows it.
+    let ToolInfo {
+        tool,
+        label: _, // draw_harnesses titles these details with it
+        available,
+        files,
+        status,
+        accounts: _, // the a key cycles through them, and account_details has the same names
+        account_details,
+        discovery_error,
+    } = harness;
+    let mut lines = Vec::new();
+    match app.selected_route() {
+        Ok(route) => {
+            lines.push(field("Route", route.label.clone()));
+            match route.compatibility.get(tool) {
+                Some(Some(reason)) => lines.push(Line::styled(reason.clone(), theme.warn)),
+                Some(None) => lines.push(Line::styled("This harness can use the route.", theme.ok)),
+                None => {}
+            }
+        }
+        Err(error) => lines.push(Line::from(vec![
+            Span::styled(format!("{:<WIDTH$}", "Route"), theme.muted),
+            Span::styled(error, theme.warn),
+        ])),
+    }
+    if !available {
+        lines.push(Line::styled(
+            "Not detected. You can prepare settings and install the harness later.",
+            theme.warn,
+        ));
+    }
+    // The current settings summary of the destination, or why there is none, and its style.
+    let (current, style) = match &app.destination {
+        Destination::Harness => {
+            let files: Vec<String> = files.iter().map(|f| f.display().to_string()).collect();
+            lines.push(field("Install to", "The harness's own settings".into()));
+            lines.push(field("Files", files.join(", ")));
+            (status.clone(), Style::new())
+        }
+        Destination::Account(name) => {
+            match account_details.iter().find(|account| account.name == *name) {
+                Some(account) => {
+                    lines.push(field("Install to", format!("Account {name}")));
+                    lines.push(field("Folder", account.path.display().to_string()));
+                    (account.status.clone(), Style::new())
+                }
+                None => (
+                    format!(
+                        "Account {name} is no longer listed. Press a to choose another \
+                         destination."
+                    ),
+                    theme.warn,
+                ),
+            }
+        }
+        Destination::File(path) => {
+            lines.push(field("Install to", "Custom file".into()));
+            lines.push(field("File", path.clone()));
+            ("Press p to read it.".into(), theme.muted)
+        }
+    };
+    lines.extend([Line::default(), heading("CURRENT SETTINGS")]);
+    // A summary spans several lines, and Paragraph does not start a new line at '\n'.
+    lines.extend(
+        current
+            .lines()
+            .map(|line| Line::styled(line.to_string(), style)),
+    );
+    lines.extend([
+        Line::default(),
+        heading("SAVED ACCOUNTS · a folder does not confirm a completed login"),
+    ]);
+    if let Some(error) = discovery_error {
+        lines.push(Line::styled(error.clone(), theme.error));
+    }
+    for account in account_details {
+        // This destructuring has no `..`, so adding an account field breaks the build until
+        // this page shows it.
+        let AccountInfo {
+            name,
+            path,
+            login_status,
+            status: _, // CURRENT SETTINGS shows it for the selected account
+        } = account;
+        let selected = matches!(&app.destination, Destination::Account(chosen) if chosen == name);
+        lines.push(Line::from(vec![
+            Span::styled(if selected { "› " } else { "  " }, theme.key),
+            Span::raw(name.clone()),
+            Span::styled(
+                format!(" · login status {login_status} · {}", path.display()),
+                theme.muted,
+            ),
+        ]));
+    }
+    if account_details.is_empty() {
+        lines.push(Line::styled(
+            "None. Press n to sign in to another account.",
+            theme.muted,
+        ));
+    }
+    lines.extend([
+        Line::default(),
+        Line::styled(
+            "Login opens in a new terminal window, and account folders open in $VISUAL or \
+             $EDITOR. Native account limits still apply. Switchyard does not rotate login \
+             tokens.",
+            theme.muted,
+        ),
+    ]);
+    lines
 }
 
 /// This function lists the server key variables from the last `ServerKeys` reply.
@@ -2816,7 +4043,7 @@ fn form_lines(theme: Theme, form: &Form) -> Vec<Line<'static>> {
         .enumerate()
         .map(|(index, (label, value))| {
             // The key field shows one bullet per character, so the key never appears on screen.
-            let masked = matches!(form.kind, FormKind::SaveKey);
+            let masked = matches!(form.kind, FormKind::SaveKey | FormKind::ModelKey(_));
             let mut value = if masked && index == 1 {
                 "•".repeat(value.chars().count())
             } else {
@@ -2973,6 +4200,36 @@ fn draw_popup(frame: &mut Frame, app: &mut App, area: Rect) {
 /// that ↑ and ↓ cycle through.
 fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
     let theme = app.theme;
+    let data = &app.data;
+    let algorithms = |selected: &str| {
+        let names: Vec<String> = data
+            .algorithms
+            .iter()
+            .map(|known| format!("{} ({})", known.title, known.kind))
+            .collect();
+        let mut lines = vec![Line::styled(
+            format!("Algorithms: {}", names.join(" · ")),
+            theme.muted,
+        )];
+        if let Some(known) = data.algorithms.iter().find(|a| a.kind == selected.trim()) {
+            lines.push(Line::from(known.summary));
+        }
+        lines.push(Line::default());
+        lines
+    };
+    let identity = |config_name: bool| {
+        let mut lines = vec![Line::from(
+            "Harnesses send the public model ID as the model. Each route needs its own ID.",
+        )];
+        if config_name {
+            lines.push(Line::from(
+                "The config name is the route's table name in the server config, as in \
+                 [routes.team-router]. It uses 1–64 letters, digits, hyphens, or underscores.",
+            ));
+        }
+        lines.push(Line::default());
+        lines
+    };
     match &form.kind {
         FormKind::SaveKey | FormKind::ImportKey | FormKind::RemoveKey => {
             let mut lines = vec![Line::styled("Server keys", theme.muted)];
@@ -2980,9 +4237,214 @@ fn form_notes(app: &App, form: &Form) -> Vec<Line<'static>> {
             lines.push(Line::default());
             lines
         }
-
-        FormKind::Preferences | FormKind::Update(_) => Vec::new(),
+        FormKind::Algorithm { .. } => algorithms(&form.fields[0].1),
+        FormKind::NewRoute { .. } => {
+            let mut lines = identity(true);
+            lines.extend(algorithms(&form.fields[2].1));
+            lines
+        }
+        FormKind::RouteIdentity { operation, .. } => identity(*operation != "rename"),
+        FormKind::RouteModels { .. } | FormKind::NewRouteModels { .. } => {
+            let names: Vec<&str> = data.clients.iter().map(|c| c.name.as_str()).collect();
+            vec![
+                Line::styled(format!("Endpoints: {}", names.join(", ")), theme.muted),
+                Line::from("Use the endpoint name and a model ID. Unlisted model IDs are allowed."),
+                Line::default(),
+            ]
+        }
+        FormKind::Models | FormKind::ModelKey(_) => {
+            let key = matches!(form.kind, FormKind::ModelKey(_));
+            let mut lines: Vec<Line> = data
+                .clients
+                .iter()
+                .map(|client| {
+                    let mut spans = vec![
+                        Span::raw(client.name.clone()),
+                        Span::styled(format!(" · {}", client.host), theme.muted),
+                    ];
+                    if key && client.accepts_key {
+                        spans.push(Span::styled(" · accepts a model-list key", theme.ok));
+                    } else if key {
+                        spans.push(Span::styled(" · no model-list key", theme.warn));
+                    }
+                    Line::from(spans)
+                })
+                .collect();
+            lines.push(Line::default());
+            lines
+        }
+        FormKind::SettingsFile => vec![
+            Line::from(
+                "The harness must load a custom file itself. Pi reads settings.json from the \
+                 folder of models.json.",
+            ),
+            Line::default(),
+        ],
+        FormKind::Account(_) => vec![
+            Line::from(
+                "Use 1–64 ASCII letters, digits, hyphens, or underscores. Login opens in a new \
+                 terminal window; finish it there. API routes use credentials configured on \
+                 the server. The Codex app manages its own account.",
+            ),
+            Line::default(),
+        ],
+        FormKind::Preferences
+        | FormKind::Update(_)
+        | FormKind::Confirm(..)
+        | FormKind::Remove { .. } => Vec::new(),
     }
+}
+
+/// This function shows the file and notes of a route preview before the user types SAVE.
+fn change_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
+    let file = preview["file"].as_str().unwrap_or_default().to_string();
+    let mut lines = vec![labeled(theme, "Changed file", 13, file)];
+    let notes = preview["notes"].as_array().map(Vec::as_slice);
+    for note in notes.unwrap_or_default().iter().filter_map(Value::as_str) {
+        lines.push(Line::default());
+        lines.push(Line::from(note.to_string()));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(
+        "Switchyard validates the config, saves a backup, and restarts the server.",
+    ));
+    lines
+}
+
+/// This function explains what deleting a route keeps and who must change.
+fn remove_lines(
+    theme: Theme,
+    route: &RouteInfo,
+    settings: Option<&AppSettings>,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(format!(
+        "This removes the public model ID from the server. Targets and harness settings are \
+         kept. Any harness using {} must choose another route.",
+        route.id
+    ))];
+    if !route.dependents.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            format!(
+                "These harness settings use {} and must choose another route:",
+                route.id
+            ),
+            theme.warn,
+        ));
+        for dependent in &route.dependents {
+            // This destructuring has no `..`, so adding a field breaks the build until this
+            // review shows it.
+            let Dependent {
+                tool: _, // the label names the harness
+                label,
+                account,
+                files,
+            } = dependent;
+            let account = account.as_ref().map(|name| format!(" ({name})"));
+            let files: Vec<String> = files.iter().map(|f| f.display().to_string()).collect();
+            lines.push(Line::from(format!(
+                "{label}{}: {}",
+                account.unwrap_or_default(),
+                files.join(", ")
+            )));
+        }
+    }
+    if let Some(generated) = &route.generated {
+        lines.push(Line::default());
+        lines.push(Line::styled(
+            format!("Generated by {generated}. That tool can add the route back."),
+            theme.warn,
+        ));
+    }
+    if let Some(settings) = settings {
+        lines.push(Line::default());
+        lines.push(labeled(
+            theme,
+            "Changed file",
+            13,
+            settings.config_file.display().to_string(),
+        ));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(
+        "Switchyard validates the config, saves a backup, and restarts the server.",
+    ));
+    lines
+}
+
+/// This function returns a text field of a controller reply, or nothing when it is missing.
+fn text(value: &Value, key: &str) -> String {
+    value[key].as_str().unwrap_or_default().to_string()
+}
+
+/// This function lists each setting that a harness preview changes: the file and setting, the
+/// current value, and the value afterward.
+fn diff_lines(theme: Theme, preview: &Value, after: &str) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled(
+        format!("SETTINGS DIFF · − current / + {after}"),
+        theme.muted.bold(),
+    )];
+    for change in preview["changes"].as_array().into_iter().flatten() {
+        lines.extend([
+            Line::default(),
+            Line::styled(
+                format!("{} · {}", text(change, "file"), text(change, "key")),
+                theme.muted,
+            ),
+            Line::styled(format!("− {}", text(change, "before")), theme.error),
+            Line::styled(format!("+ {}", text(change, "after")), theme.ok),
+        ]);
+    }
+    lines
+}
+
+/// This function shows an install preview: the settings afterward, each changed setting, what
+/// happens to each file, and how the harness signs in.
+fn install_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::styled("AFTER APPLYING ROUTING", theme.muted.bold())];
+    let proposed = text(preview, "proposed");
+    lines.extend(proposed.lines().map(|line| Line::from(line.to_string())));
+    lines.push(Line::default());
+    lines.extend(diff_lines(theme, preview, "proposed"));
+    lines.push(Line::default());
+    for file in preview["file_actions"].as_array().into_iter().flatten() {
+        let (action, file) = (text(file, "action"), text(file, "file"));
+        lines.push(Line::from(format!("Will {action}: {file}")));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(text(preview, "authentication")));
+    lines
+}
+
+/// This function shows a restore preview: what restoring does to each file, the backup it
+/// uses, and the settings that change.
+fn restore_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(text(preview, "warning"))];
+    for file in preview["files"].as_array().into_iter().flatten() {
+        lines.extend([
+            Line::default(),
+            Line::from(format!("{}: {}", text(file, "action"), text(file, "file"))),
+            Line::styled(
+                format!("Original backup: {}", text(file, "backup")),
+                theme.muted,
+            ),
+        ]);
+    }
+    // The controller leaves the diff out when a file cannot be compared.
+    if preview["changes"].is_array() {
+        lines.push(Line::default());
+        lines.extend(diff_lines(theme, preview, "restored"));
+    }
+    lines
+}
+
+fn archive_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
+    vec![
+        Line::from(text(preview, "notice")),
+        Line::default(),
+        labeled(theme, "Account", 11, text(preview, "name")),
+        labeled(theme, "Directory", 11, text(preview, "path")),
+    ]
 }
 
 fn update_lines(theme: Theme, preview: &Value) -> Vec<Line<'static>> {
@@ -3036,6 +4498,7 @@ fn help_lines(theme: Theme, width: usize) -> Vec<Line<'static>> {
         ("While filtering calls or routes", FILTER_KEYS, None),
         ("Models", MODELS_KEYS, Some(Tab::Models)),
         ("Routes", ROUTES_KEYS, Some(Tab::Routes)),
+        ("Harnesses", HARNESSES_KEYS, Some(Tab::Harnesses)),
         ("Settings", SETTINGS_KEYS, Some(Tab::Settings)),
     ] {
         if !lines.is_empty() {
@@ -3243,19 +4706,37 @@ pub fn run(mut controller: Controller) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ACTIONS, Action, ActionKind, App, Availability, BTreeMap, Done, Estimate, KeyCode,
-        KeyEvent, KeyModifiers, ModelTokens, Popup, Request, Snapshot, TABS, Tab, Theme, Tone,
-        Totals, Usage, draw, mpsc,
-    };
+    use super::*;
+    use crate::config::Config;
     use crate::history::Entry;
     use ratatui::{Terminal, backend::TestBackend};
     use serde_json::json;
     use strum::IntoEnumIterator;
 
+    fn press(app: &mut App, code: KeyCode) -> Option<Request> {
+        app.key(KeyEvent::from(code))
+    }
+
+    /// This function runs one request the way the worker thread does.
+    fn work(app: &mut App, controller: &mut Controller, request: Option<Request>) {
+        let (jobs, inbox) = mpsc::channel();
+        app.start(&jobs, request.expect("a request"))
+            .expect("start");
+        let Ok(Job::Run(action)) = inbox.try_recv() else {
+            panic!("the request runs no action");
+        };
+        let reply = controller.dispatch(action);
+        let next = app.finish(Some(reply), controller.snapshot().map(Box::new));
+        assert!(next.is_none());
+    }
+
     fn screen(app: &mut App, tab: Tab) -> String {
+        screen_sized(app, tab, 140, 40)
+    }
+
+    fn screen_sized(app: &mut App, tab: Tab, width: u16, height: u16) -> String {
         app.tab = tab;
-        let mut terminal = Terminal::new(TestBackend::new(140, 40)).expect("terminal");
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("terminal");
         terminal.draw(|frame| draw(frame, app)).expect("draw");
         let buffer = terminal.backend().buffer();
         buffer
@@ -3575,6 +5056,40 @@ mod tests {
         }
     }
 
+    // A route preview that finishes after the user opens help must keep help open and still
+    // tell the user that the preview finished.
+    #[test]
+    fn late_route_previews_keep_the_new_popup_and_report_in_the_status_bar() {
+        let mut app = App::new(Theme::new(false));
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let request = Request::run(
+            Action::PreviewRoute {
+                generation: 0,
+                route: "direct".into(),
+                algorithm: "passthrough".into(),
+                choices: Vec::new(),
+                revision: None,
+            },
+            "Previewing the route",
+        );
+        let (jobs, _inbox) = mpsc::channel();
+        let (done, results) = mpsc::channel();
+        app.start(&jobs, request).expect("start preview");
+        app.key(key(KeyCode::Char('?')));
+        done.send(Done::Finished {
+            reply: Some(Ok(super::Reply {
+                message: String::new(),
+                data: json!({"file": "server.toml", "notes": ["note"]}),
+            })),
+            snapshot: Ok(Box::new(Snapshot::default())),
+        })
+        .expect("preview result");
+        app.poll_results(&results, &jobs).expect("result");
+        assert!(matches!(app.popup, Some(Popup::Help { .. })));
+        let toast = app.toast.as_ref().expect("status message");
+        assert!(toast.text.contains("Press e on Routes"), "{}", toast.text);
+    }
+
     // A snapshot failure must preserve a replacement draft and leave a dismissed popup closed.
     #[test]
     fn snapshot_and_action_errors_preserve_dismissed_and_replacement_forms() {
@@ -3873,6 +5388,7 @@ mod tests {
                 Tab::Calls => &['/', 's'],
                 Tab::Models => &['p', '[', ']'],
                 Tab::Routes => &['/'],
+                Tab::Harnesses => &['t', 'a', 'x'],
                 Tab::Overview | Tab::Settings => &[],
             }
         };
@@ -3892,5 +5408,56 @@ mod tests {
             .filter(|kind| !ACTIONS.iter().any(|&(.., flow)| flow.contains(kind)))
             .collect();
         assert!(missing.is_empty(), "No key runs {missing:?}");
+    }
+
+    #[test]
+    // The models form must keep the revision from when the editor opened, so a server config
+    // that changed since then fails the review and keeps the draft instead of saving old
+    // choices into the new file.
+    fn externally_changed_routes_cannot_bless_snapshot_choices() {
+        let dir = tempfile::tempdir().expect("fixture");
+        let settings = dir.path().join("desktop.toml");
+        let routes = dir.path().join("server.toml");
+        let original = "schema_version = 1\n\
+                        [llm_clients.c]\n\
+                        base_url='http://localhost:1'\n\
+                        format='openai_responses'\n\
+                        [targets.m]\n\
+                        id='original'\n\
+                        llm_client='c'\n\
+                        [routes.r]\n\
+                        id='public'\n\
+                        type='passthrough'\n\
+                        target='m'\n";
+        std::fs::write(&routes, original).expect("routes");
+        std::fs::write(
+            &settings,
+            format!(
+                "config_file={routes:?}\nrouting_log={:?}\nserver_url='http://127.0.0.1:0'",
+                dir.path().join("log")
+            ),
+        )
+        .expect("settings");
+        let mut controller = Controller::new(Config::load(&settings).expect("config"), settings);
+        let mut app = App::new(Theme::new(false));
+        app.finish(None, Ok(Box::new(controller.snapshot().expect("snapshot"))));
+        app.tab = Tab::Routes;
+        assert!(press(&mut app, KeyCode::Char('e')).is_none());
+        let external = original.replace("id='original'", "id='external'");
+        std::fs::write(&routes, &external).expect("external edit");
+        let editor = press(&mut app, KeyCode::Enter);
+        work(&mut app, &mut controller, editor);
+        let preview = press(&mut app, KeyCode::Enter);
+        work(&mut app, &mut controller, preview);
+        let Some(Popup::Form(draft)) = &app.popup else {
+            panic!("the draft closed");
+        };
+        assert!(matches!(draft.kind, FormKind::RouteModels { .. }));
+        assert!(draft.error.contains("Review"), "{}", draft.error);
+        assert_eq!(
+            std::fs::read_to_string(&routes).expect("preserved"),
+            external
+        );
+        assert_eq!(std::fs::read_dir(dir.path()).expect("files").count(), 2);
     }
 }

@@ -540,6 +540,9 @@ pub struct VgrRouteConfig {
     pub active_approval: Option<String>,
     #[serde(default = "default_vgr_deadline")]
     pub deadline_seconds: f64,
+    /// Enforces VGR decision and efficient turn budgets. Defaults to true.
+    #[serde(default = "default_true")]
+    pub bounded_efficient: bool,
     #[serde(default = "default_true")]
     pub task_typing: bool,
     #[serde(default = "default_vgr_breaker_threshold")]
@@ -1844,6 +1847,7 @@ fn build_vgr(
         },
     };
     runtime.deadline = vgr_duration(route_name, "deadline_seconds", config.deadline_seconds)?;
+    runtime.bounded_efficient = config.bounded_efficient;
     runtime.task_typing = config.task_typing;
     runtime.confirmed_recovery_min_clean_tail = config.confirmed_recovery_min_clean_tail;
     runtime.agentic_handoff = config.agentic_handoff;

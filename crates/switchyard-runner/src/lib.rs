@@ -7,6 +7,8 @@
 
 mod algorithm;
 #[cfg(not(target_os = "wasi"))]
+mod algorithm_factory;
+#[cfg(not(target_os = "wasi"))]
 mod config;
 #[cfg(not(target_os = "wasi"))]
 mod failure;
@@ -24,6 +26,8 @@ pub use algorithm::{
     ClassifierPolicyConfig, DecisionJudgeRouteConfig, LlmClassifierRouteConfig,
     StageClassifierConfig, SubagentRouteConfig, VgrModeConfig, VgrRouteConfig,
 };
+#[cfg(not(target_os = "wasi"))]
+pub use algorithm_factory::AlgorithmFactory;
 #[cfg(not(target_os = "wasi"))]
 pub use failure::{RouteErrorKind, RouteErrorPhase, RouteErrorSummary, stream_error_summary};
 // Re-exported because `Route::new` takes it, so a host wiring routes does not need a libsy dep.
