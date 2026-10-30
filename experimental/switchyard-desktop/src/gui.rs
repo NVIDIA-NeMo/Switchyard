@@ -432,7 +432,8 @@ fn tray_size(app: tauri::AppHandle, height: f64) -> Result<(), String> {
     #[cfg(windows)]
     if let Some(window) = app.get_webview_window("tray") {
         let anchor = {
-            let mut placement = app.state::<TrayPopup>().lock();
+            let popup = app.state::<TrayPopup>();
+            let mut placement = popup.lock();
             placement.height = height;
             placement.anchor
         };
@@ -589,7 +590,8 @@ fn toggle_tray(
                 && position.y < f64::from(origin.y) + f64::from(size.height)
         }) {
             let height = {
-                let mut placement = app.state::<TrayPopup>().lock();
+                let popup = app.state::<TrayPopup>();
+                let mut placement = popup.lock();
                 placement.anchor = Some(rect);
                 placement.height
             };
@@ -714,6 +716,19 @@ pub fn run(controller: Controller, settings: PathBuf) -> Result<(), String> {
                 .menu(&tray_menu(app.handle(), &["Reading usage…".into()])?)
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray, event| {
+                    // A right-click opens the tray menu. The popup's focus-loss handler ignores
+                    // presses on the tray icon, so this branch hides the popup before the menu
+                    // opens.
+                    #[cfg(windows)]
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Right,
+                        button_state: MouseButtonState::Down,
+                        ..
+                    } = event
+                        && let Err(error) = dismiss_tray(tray.app_handle().clone())
+                    {
+                        eprintln!("switchyard-desktop: could not hide the usage preview: {error}");
+                    }
                     if let TrayIconEvent::Click {
                         position,
                         rect,

@@ -41,8 +41,10 @@ configuration reference.
 The desktop app, terminal app, and their installer live in
 `experimental/switchyard-desktop`. They are outside Switchyard release QA and
 have no support or compatibility guarantee. The installer also sets up the
-server as a user service, saved server keys, and the Linux Codex service. See
-the [desktop installation guide](experimental/switchyard-desktop/INSTALLATION.md).
+server as a user service and the Linux Codex service. It does not save API keys:
+the installed server starts only after you save them in the app's
+**Settings → Server keys**. See the
+[desktop installation guide](experimental/switchyard-desktop/INSTALLATION.md).
 
 ## Rust Libraries
 

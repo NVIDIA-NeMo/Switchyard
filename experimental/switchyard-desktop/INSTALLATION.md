@@ -11,6 +11,13 @@ From this directory in a source checkout, run `cargo desktop --help` for the com
 `cargo desktop install --dry-run` to preview installation. Run
 `cargo desktop install` to build and install the app and server.
 
+If you installed the app before it moved to `experimental/switchyard-desktop`,
+run `cargo desktop install` from this directory once after you update the
+checkout. Until then, **Settings → Update from source** fails: the installed
+updater still builds the app from the root `Cargo.toml`, which no longer
+includes it. The failed build stops before it changes installed files or
+services. Later updates from Settings work again.
+
 The app opens setup on its first launch before creating app and server config files.
 Existing app settings or a default server config skip setup, including after
 reinstall. Settings lets you change the selected files or remove app preferences.

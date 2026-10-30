@@ -305,7 +305,8 @@ rule to `~/.codex/rules/default.rules`. See Codex's
 [Agent approvals & security](https://learn.chatgpt.com/docs/agent-approvals-security)
 page.
 
-The experimental desktop installer, `cargo desktop install`, does not overwrite an existing
+The experimental desktop installer, `cargo desktop install`, which you run from
+`experimental/switchyard-desktop`, does not overwrite an existing
 `~/.switchyard/composite.toml`.
 If you installed Switchyard before this route was added, add the
 `[targets.reviewer]` and `[routes.codex_auto_review]` blocks to that file by
