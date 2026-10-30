@@ -46,7 +46,7 @@ impl FormatCodec for AnthropicMessagesCodec {
 
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = crate::util::object(body, "$")?;
-        validate_anthropic_cache_control(body)?;
+        validate_cache_control(body)?;
         if body
             .get("fallback_credit_token")
             .is_some_and(|value| !value.is_null())
@@ -1547,8 +1547,14 @@ fn anthropic_stop_details(reason: StopReason, source: Option<&Value>) -> Value {
     }
 }
 
-fn validate_anthropic_cache_control(body: &Map<String, Value>) -> Result<()> {
-    let mut order = CacheOrder::default();
+fn validate_cache_control(body: &Map<String, Value>) -> Result<()> {
+    let mut order = CacheOrder {
+        num_cache_controls: usize::from(
+            body.get("cache_control")
+                .is_some_and(|value| !value.is_null()),
+        ),
+        ..CacheOrder::default()
+    };
     for (index, tool) in body
         .get("tools")
         .and_then(Value::as_array)
@@ -1609,6 +1615,7 @@ fn validate_anthropic_cache_control(body: &Map<String, Value>) -> Result<()> {
 
 #[derive(Default)]
 struct CacheOrder {
+    num_cache_controls: usize,
     has_short_ttl: bool,
     has_cacheable_block: bool,
     last_block_ttl: Option<u16>,
@@ -1620,6 +1627,13 @@ impl CacheOrder {
             block.get("cache_control").filter(|value| !value.is_null())
         {
             let path = path();
+            self.num_cache_controls += 1;
+            if self.num_cache_controls > 4 {
+                return Err(TranslationError::InvalidValue {
+                    path,
+                    message: "A maximum of 4 cache breakpoints is allowed".into(),
+                });
+            }
             let ttl = cache_ttl(cache_control, &path)?;
             self.check_ttl(ttl, &path)?;
             Some(ttl)
