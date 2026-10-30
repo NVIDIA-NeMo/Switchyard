@@ -152,9 +152,7 @@ impl CompositeRouter {
         Ok(Self { route })
     }
 
-    /// Builds two independent stage profiles over the same runtime tier pair.
-    /// The judge selects a profile before its signals and prompts run.
-    /// Capable-first defaults to pinning efficient after a switch.
+    /// Builds two independent stage profiles selected by the judge.
     pub fn new_with_profiles(
         judge: CompositeJudgeConfig,
         mut profile_0: StageRouterConfig,

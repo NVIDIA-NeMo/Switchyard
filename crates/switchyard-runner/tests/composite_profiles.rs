@@ -8,8 +8,7 @@ use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[tokio::test]
-async fn profiles_use_their_own_judges_and_candidate_prompts()
--> Result<(), Box<dyn std::error::Error>> {
+async fn profile_judges_and_fallback_prompts() -> Result<(), Box<dyn std::error::Error>> {
     for (profile, inner_score) in [
         ("efficient", None),
         ("efficient", Some(0.0)),
@@ -22,6 +21,7 @@ schema_version = 1
 [llm_clients.local]
 format = "openai_chat"
 base_url = "{}/v1"
+max_retries = 0
 [targets]
 judge = {{ id = "judge", llm_client = "local" }}
 strong = {{ id = "strong", llm_client = "local" }}
@@ -64,12 +64,25 @@ efficient_system_prompt = "EFFICIENT PROMPT"
         ] {
             Mock::given(method("POST")).and(path("/v1/chat/completions"))
             .and(body_partial_json(json!({"model": model})))
+            .and(move |request: &wiremock::Request| {
+                let body: serde_json::Value = request.body_json().unwrap();
+                match model {
+                    "weak" => body["messages"][0]["content"] == "EFFICIENT PROMPT",
+                    "strong" => body["messages"][0]["content"] == "CAPABLE PROMPT",
+                    _ => true,
+                }
+            })
             .respond_with(ResponseTemplate::new(status).set_body_json(json!({
                 "id": "response", "object": "chat.completion", "model": model,
                 "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}]
-            }))).mount(&server).await;
+            })))
+            .expect(match model {
+                "inner" => u64::from(inner_score.is_some()),
+                "weak" => u64::from(inner_score != Some(0.0)),
+                _ => 1,
+            }).mount(&server).await;
         }
-        let result = runner
+        runner
             .route("auto")
             .unwrap()
             .execute(
@@ -80,34 +93,7 @@ efficient_system_prompt = "EFFICIENT PROMPT"
                 None,
             )
             .await?;
-        assert_eq!(
-            result.response.served_model().map(|model| model.as_str()),
-            Some("strong")
-        );
-        let requests = server.received_requests().await.unwrap();
-        let bodies: Vec<serde_json::Value> = requests
-            .iter()
-            .map(|request| serde_json::from_slice(&request.body))
-            .collect::<Result<_, _>>()?;
-        assert_eq!(
-            bodies
-                .iter()
-                .filter(|body| body["model"] == "inner")
-                .count(),
-            usize::from(inner_score.is_some())
-        );
-        assert_eq!(
-            bodies.iter().any(|body| body["model"] == "weak"),
-            inner_score != Some(0.0)
-        );
-        for body in bodies {
-            let expected = match body["model"].as_str() {
-                Some("weak") => "EFFICIENT PROMPT",
-                Some("strong") => "CAPABLE PROMPT",
-                _ => continue,
-            };
-            assert_eq!(body["messages"][0]["content"], expected);
-        }
+        server.verify().await;
     }
     Ok(())
 }

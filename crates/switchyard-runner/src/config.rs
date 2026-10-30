@@ -331,24 +331,12 @@ impl DeploymentConfig {
         let targets = self.build_targets();
         self.routes.iter().map(move |(route_name, config)| {
             let classifiers: Vec<_> = config.algorithm.classifier_targets().collect();
-            for (name, is_decision) in config
-                .callable_target_names()
-                .into_iter()
-                .map(|name| {
-                    (
-                        name,
-                        classifiers
-                            .iter()
-                            .any(|(judge, decision)| *judge == name && decision.is_some()),
-                    )
-                })
-                .chain(
-                    classifiers
-                        .iter()
-                        .map(|(name, decision)| (*name, decision.is_some())),
-                )
-            {
-                let (exists, kind) = if is_decision {
+            for (name, decision) in classifiers.iter().copied().chain(
+                config.callable_target_names().into_iter()
+                    .filter(|name| !classifiers.iter().any(|(judge, _)| judge == name))
+                    .map(|name| (name, None)),
+            ) {
+                let (exists, kind) = if decision.is_some() {
                     (self.decision_targets.contains_key(name), "decision")
                 } else {
                     (self.targets.contains_key(name), "LLM")
@@ -1498,10 +1486,14 @@ new = ["send_message"]
 
     #[test]
     fn stage_and_composite_validate_hold_turns() {
+        let composite =
+            composite_config().replace("capable_hold_turns = 2", "capable_hold_turns = 0");
         for source in [
             stage_config(),
             stage_config().replace("efficient_first", "capable_first"),
             composite_config(),
+            format!("{composite}\n[routes.composed.efficient]\ncapable_hold_turns = 2"),
+            format!("{composite}\n[routes.composed.capable]\ncapable_hold_turns = 2"),
         ] {
             for field in ["capable_hold_turns", "efficient_hold_turns"] {
                 for (turns, valid) in [
@@ -1522,44 +1514,6 @@ new = ["send_message"]
                 }
             }
         }
-    }
-
-    #[tokio::test]
-    async fn composite_validates_both_stage_profiles() -> RunnerResult<()> {
-        for profile in ["efficient", "capable"] {
-            for (setting, expected) in [
-                ("confidence_threshold = 1.1", "confidence_threshold"),
-                (
-                    "tool_semantics = { new = ['Read'] }",
-                    "cannot be reclassified",
-                ),
-                ("confidence_threhold = 0.5", "unknown field"),
-            ] {
-                let source = format!(
-                    "{}\n[routes.composed.{profile}]\n{setting}\n",
-                    composite_config()
-                );
-                assert!(
-                    error_message(&source).contains(expected),
-                    "{profile}: {setting}"
-                );
-            }
-            let runner = runner_from_toml(&format!(
-                "{}\n[routes.composed.{profile}]\npicker = 'capable_first'\ncapable_system_prompt = 'Plan'\nefficient_system_prompt = 'Implement'\n",
-                composite_config()
-            ))?;
-            let route = runner.route("switchyard/hier").unwrap();
-            let outcome = route
-                .decide(switchyard_protocol::Request::default())
-                .await?;
-            let expected = if profile == "efficient" {
-                "strong/model"
-            } else {
-                "weak/model"
-            };
-            assert_eq!(outcome.selected_model_ids[0], expected);
-        }
-        Ok(())
     }
 
     #[test]

@@ -818,7 +818,6 @@ impl StageClassifierConfig {
 }
 
 impl AlgorithmSpec {
-    #[cfg(not(target_os = "wasi"))]
     pub(crate) fn classifier_targets(
         &self,
     ) -> impl Iterator<Item = (&str, Option<&DecisionJudgeRouteConfig>)> {
@@ -970,24 +969,8 @@ impl AlgorithmSpec {
                     names.push(config.classifier_target.as_str());
                 }
             }
-            Self::StageRouter {
-                classifier: Some(classifier),
-                ..
-            } => names.push(&classifier.target),
-            Self::Composite {
-                classifier,
-                efficient,
-                capable,
-                ..
-            } => {
-                names.push(&classifier.target);
-                names.extend(
-                    [efficient, capable]
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|profile| profile.classifier.as_ref())
-                        .map(|classifier| classifier.target.as_str()),
-                );
+            Self::StageRouter { .. } | Self::Composite { .. } => {
+                names.extend(self.classifier_targets().map(|(target, _)| target));
             }
             Self::Advisor { advisor_target, .. } => names.push(advisor_target),
             Self::Vgr { config } => {
