@@ -89,7 +89,7 @@ pub(crate) fn initiated_by_user(request: &Request) -> Option<bool> {
 
 /// Whether `request` opens a user turn: the `x-initiator` header says so, or else
 /// its newest message is the user's.
-fn starts_user_turn(request: &Request) -> bool {
+pub(crate) fn starts_user_turn(request: &Request) -> bool {
     initiated_by_user(request).unwrap_or_else(|| has_new_user_turn(&request.llm_request.messages))
 }
 

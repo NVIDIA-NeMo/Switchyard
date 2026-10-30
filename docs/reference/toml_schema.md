@@ -294,6 +294,8 @@ recognized edit or write tool call. See [Plan/Execute Routing](../routing_algori
 |---|:---:|---|---|
 | `capable_target` | Yes | - | Target used for read-only inspection and planning. |
 | `efficient_target` | Yes | - | Target used after the first edit or write. |
+| `execution_trigger` | No | `edit` | Use `edit` for mutation detection or `judge` for a judged handoff. |
+| `judge` | For `judge` | unset | Same fields as a Stage classifier. Supports LLM and decision models. Defaults to 10 recent messages. |
 | `tool_semantics.mutate` | No | `[]` | Additional tool names that trigger handoff. See the [example](../routing_algorithms/plan_execute_routing.md#optional-settings). |
 | `planning_prompt` | No | packaged prompt | Replaces the planning instruction. |
 | `handoff_prompt` | No | unset | Adds an instruction to the handoff request. |
@@ -355,7 +357,7 @@ Capability mode classifies before serving. See
 | `unmatched_steps` | No | `1` | Threshold steps applied to an unmatched verdict (no capability rule applies). `0`, `1`, or `2`; `2` treats it like an unsupported verdict. |
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | No | `false` | Retains the target against a hash of the first user message when a request carries no session ID. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
-| `recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+| `recent_turn_window` | No | unset | LLM judges default to the opening task and latest user follow-up. Decision judges default to the opening task plus 10 recent messages. An explicit value sets the trailing message window. |
 | `prompt` | No | packaged prompt | Replaces the capability prompt. The packaged schema is sent separately as structured-output configuration. |
 
 Escalation mode serves the weak target first and judges the completed turn. See
@@ -462,7 +464,7 @@ so it is consulted on every ambiguous turn and never retains a verdict.
 | `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. It cannot be combined with `base_threshold`, `threshold_step`, `prompt`, `response_format_type`, or `max_output_tokens`; the load error is `decision cannot use LLM judge settings`. See [Decision model classifier](../routing_algorithms/composite_routing.md#decision-model-classifier). |
 | `classifier.classify_trigger` | No | `every_request` | Only the default is accepted here. The stage fallback judge runs on every ambiguous turn and retains no verdict, so `user_turn` and `new_session` are rejected at load. Use a [composite](#composite) route to judge once per user turn. |
 | `classifier.message_hash_fallback` | No | `false` | Rejected at load on a `stage_router` route. The fallback judge retains nothing to key on. |
-| `classifier.recent_turn_window` | No | unset | When unset, the judge sees the opening task and the latest user follow-up. When set, it also sees that many trailing messages. This counts messages, while the route's `recent_turn_window` counts tool results, so the two values are different units. |
+| `classifier.recent_turn_window` | No | unset | LLM judges default to task messages. Decision judges default to 10 recent messages plus the opening task. An explicit value counts trailing messages, while the route window counts tool results. |
 | `classifier.prompt` | No | packaged prompt | Replaces the capability judge prompt. The verdict schema is unchanged. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the LLM judge. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Not with `classifier.decision`. |
 | `classifier.max_output_tokens` | No | `4096` | Maximum completion tokens for the LLM judge verdict. Must be at least `1`. Not with `classifier.decision`. |
@@ -529,7 +531,7 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. It cannot be combined with the LLM judge keys (`base_threshold`, `threshold_step`, `prompt`, `response_format_type`, `max_output_tokens`). |
 | `classifier.fail_open` | No | `true` | On judge failure, retain the last classified tier or default to efficient. Set `false` to return the error. |
 | `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier. |
-| `classifier.recent_turn_window` | No | unset | When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns. |
+| `classifier.recent_turn_window` | No | unset | LLM judges default to task messages. Decision judges default to 10 recent messages plus the opening task. An explicit value sets the trailing message window. |
 | `classifier.prompt` | No | packaged prompt | Replaces the classifier judge prompt. The verdict schema is unchanged. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the judge. Use `json_object` when the provider does not support JSON Schema. Switchyard adds the schema to the prompt and validates the verdict locally. |
 | `classifier.max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |

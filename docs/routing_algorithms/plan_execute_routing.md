@@ -2,7 +2,7 @@
 
 Plan/execute routing uses a capable model to inspect and plan a coding task,
 then switches to an efficient model after the first recognized edit or write
-tool call. It does not make a classifier call.
+tool call by default. Set `execution_trigger = "judge"` to use an LLM or decision judge instead.
 
 ```toml
 schema_version = 1
@@ -31,6 +31,12 @@ Read-only inspection stays on the capable target with a planning instruction.
 The first edit or write routes the full trajectory to the efficient target and
 latches that choice by session ID. A failed edit still triggers the handoff.
 Without a session ID, the first mutation must remain in the request history.
+
+Set `execution_trigger = "judge"` and `judge = { target = "handoff_judge", base_threshold = 0.7 }` on the route to use an LLM judge.
+
+This uses the same settings as a [Stage classifier](stage_router_routing.md). For a decision model, use a `decision_targets` target and replace `base_threshold` with `judge.decision` settings (`cutoff`, `candidates`, and `evidence`). The default prompt follows [AgentBaton's handoff criteria](https://arxiv.org/html/2610.35959#S3.SS3) and asks whether the efficient model can finish from the current task state. Both judge types see the opening task plus 10 recent messages by default, configurable with `judge.recent_turn_window`.
+
+Each user turn starts on capable. Tool continuations consult the judge until it selects efficient, then hold efficient until the next user turn. Unavailable verdicts keep capable by default. Send a stable session ID to retain the handoff.
 
 ## Session capacity
 

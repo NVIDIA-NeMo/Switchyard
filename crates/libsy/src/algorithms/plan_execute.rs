@@ -9,10 +9,14 @@ use std::sync::Arc;
 use parking_lot::Mutex;
 use switchyard_protocol::{Category, ContentBlock, Request};
 
+use super::util::affinity::starts_user_turn;
 use super::util::prompts::{append_note, drop_exact_replay, prepend_system_prompt};
 use super::util::tool_signals::{ToolSemantics, ToolSignals};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
-use crate::{LibsyError, Result, RoutingOutcome};
+use crate::{
+    CapabilityJudgeConfig, Classifier, LibsyError, LlmClassifierConfig, LlmTaskClassifier, Result,
+    RoutingOutcome, State, TaskClassifierConfig,
+};
 
 /// Default instruction added while the capable model is planning.
 pub const DEFAULT_PLANNING_PROMPT: &str =
@@ -23,9 +27,11 @@ const MAX_EXECUTING_SESSIONS: usize = 4_096;
 /// Configuration for [`PlanExecute`].
 #[derive(Clone, Debug)]
 pub struct PlanExecuteConfig {
+    /// LLM or decision judge used by the judge trigger.
+    pub judge: Option<TaskClassifierConfig>,
     /// Additional tool names whose mutations trigger handoff.
     pub tool_semantics: ToolSemantics,
-    /// System instruction added until the first edit or write tool call.
+    /// System instruction added until handoff.
     pub planning_prompt: String,
     /// Optional instruction appended to the handoff request.
     pub handoff_prompt: Option<String>,
@@ -36,6 +42,7 @@ pub struct PlanExecuteConfig {
 impl Default for PlanExecuteConfig {
     fn default() -> Self {
         Self {
+            judge: None,
             tool_semantics: ToolSemantics::default(),
             planning_prompt: DEFAULT_PLANNING_PROMPT.trim().to_string(),
             handoff_prompt: None,
@@ -52,9 +59,10 @@ enum Phase {
 }
 
 /// Routes planning turns to the runtime capable model, then latches execution
-/// to the runtime efficient model after the first recorded mutation.
+/// to the runtime efficient model after an edit or judge approval.
 pub struct PlanExecute {
     config: PlanExecuteConfig,
+    judge: Option<LlmTaskClassifier>,
     executing_sessions: Mutex<HashSet<RoutingIdentity>>,
 }
 
@@ -62,7 +70,7 @@ impl PlanExecute {
     /// Creates a plan/execute router.
     ///
     /// Returns an error when a prompt is blank or tool semantics are invalid.
-    pub fn new(config: PlanExecuteConfig) -> Result<Self> {
+    pub fn new(mut config: PlanExecuteConfig) -> Result<Self> {
         if config.planning_prompt.trim().is_empty() {
             return Err(LibsyError::AlgorithmError {
                 message: "planning_prompt must not be empty".to_string(),
@@ -78,22 +86,37 @@ impl PlanExecute {
             });
         }
         config.tool_semantics.validate()?;
+        let judge = if let Some(mut judge) = config.judge.take() {
+            judge.recent_turn_window.get_or_insert(10);
+            let prompt = include_str!("../prompts/plan-execute/handoff-decision.md");
+            match &mut judge.judge {
+                CapabilityJudgeConfig::Llm(judge) if judge.contract.prompt().is_none() => {
+                    judge.contract = judge.contract.clone().with_prompt(format!(
+                        "{}\n{prompt}",
+                        include_str!("../prompts/capability-classifier/prompt.md")
+                    ));
+                }
+                CapabilityJudgeConfig::Decision(judge) if judge.instructions.is_none() => {
+                    judge.instructions = Some(serde_json::json!(prompt));
+                }
+                _ => {}
+            }
+            Some(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
+                config: judge,
+            })?)
+        } else {
+            None
+        };
         Ok(Self {
             config,
+            judge,
             executing_sessions: Mutex::new(HashSet::new()),
         })
     }
 
-    fn phase(&self, request: &Request) -> Result<Phase> {
-        let signals =
-            ToolSignals::from_request_with_semantics(request, None, &self.config.tool_semantics);
-        let mutation_seen = signals.edit_count > 0 || signals.write_count > 0;
+    fn phase(&self, request: &Request, handoff: bool) -> Result<Phase> {
         let Some(identity) = RoutingIdentity::from_request(request) else {
-            return Ok(if mutation_seen {
-                Phase::Handoff
-            } else {
-                Phase::Plan
-            });
+            return Ok(if handoff { Phase::Handoff } else { Phase::Plan });
         };
         let is_session_final = request
             .metadata
@@ -102,9 +125,12 @@ impl PlanExecute {
             == Some(true);
 
         let mut sessions = self.executing_sessions.lock();
+        if self.judge.is_some() && starts_user_turn(request) {
+            sessions.remove(&identity);
+        }
         let phase = if sessions.contains(&identity) {
             Phase::Execute
-        } else if mutation_seen {
+        } else if handoff {
             if !is_session_final {
                 if sessions.len() >= MAX_EXECUTING_SESSIONS {
                     return Err(LibsyError::AlgorithmError {
@@ -176,7 +202,32 @@ impl Algorithm for PlanExecute {
         driver: Driver,
         mut request: Request,
     ) -> Result<RoutingOutcome> {
-        match self.phase(&request)? {
+        let mut phase = self.phase(&request, false)?;
+        if phase == Phase::Plan {
+            let handoff = if let Some(judge) = &self.judge {
+                if starts_user_turn(&request) {
+                    false
+                } else {
+                    judge
+                        .score(&mut State::default(), &mut request, &driver)
+                        .await?
+                        .0
+                        .argmax(false)?
+                        .is_some_and(|score| score.category == Some(Category::Efficient))
+                }
+            } else {
+                let signals = ToolSignals::from_request_with_semantics(
+                    &request,
+                    None,
+                    &self.config.tool_semantics,
+                );
+                signals.edit_count > 0 || signals.write_count > 0
+            };
+            if handoff {
+                phase = self.phase(&request, true)?;
+            }
+        }
+        match phase {
             Phase::Plan => {
                 prepend_system_prompt(&mut request, &self.config.planning_prompt);
                 tracing::debug!(phase = "plan", "plan-execute selected capable tier");
@@ -261,6 +312,7 @@ mod tests {
         RuntimeModels::new(HashMap::from([
             (Category::Capable, vec![ModelId::from(CAPABLE)]),
             (Category::Efficient, vec![ModelId::from(EFFICIENT)]),
+            (Category::Judge, vec![ModelId::from("judge")]),
         ]))
     }
 
@@ -285,6 +337,34 @@ mod tests {
             .take()
             .expect("answer request should be captured");
         (selected, request)
+    }
+
+    #[tokio::test]
+    async fn judge_handoff_ignores_edits_and_resets_on_user_turns() -> Result<()> {
+        let router = algorithm(PlanExecuteConfig {
+            judge: Some(serde_json::from_value(json!({"base_threshold": 0.5})).unwrap()),
+            ..PlanExecuteConfig::default()
+        });
+        let user = Message::text(Role::User, "Fix the parser");
+        for (turn, probability, expected) in [
+            (user.clone(), 0.9, CAPABLE),
+            (tool_call("apply_patch", json!({})), 0.1, CAPABLE),
+            (tool_call("read_file", json!({})), 0.9, EFFICIENT),
+            (tool_call("read_file", json!({})), 0.1, EFFICIENT),
+            (user.clone(), 0.9, CAPABLE),
+        ] {
+            let request = request(vec![user.clone(), turn], Some("judged"));
+            let verdict = json!({"crux":"remaining work", "primary_rule":"SUP-1",
+                "capability_boundary":"supported", "p_solve":probability})
+            .to_string();
+            let (selected, _) =
+                test_drive_with_models(router.clone(), request, models(), move |_, _| {
+                    std::future::ready(Ok(reply(verdict.clone())))
+                })
+                .await?;
+            assert_eq!(selected, expected);
+        }
+        Ok(())
     }
 
     #[tokio::test]

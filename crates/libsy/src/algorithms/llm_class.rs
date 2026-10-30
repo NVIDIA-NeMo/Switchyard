@@ -1397,7 +1397,7 @@ mod tests {
                     config: TaskClassifierConfig {
                         judge: CapabilityJudgeConfig::Decision(config),
                         fail_open,
-                        recent_turn_window: Some(3),
+                        recent_turn_window: None,
                         classify_trigger: ClassifyTrigger::NewSession,
                         ..TaskClassifierConfig::default()
                     },

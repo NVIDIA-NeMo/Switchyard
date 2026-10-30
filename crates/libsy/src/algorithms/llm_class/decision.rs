@@ -75,9 +75,10 @@ pub(super) struct DecisionClassifier {
 impl DecisionClassifier {
     pub(super) fn new(
         mut config: DecisionJudgeConfig,
-        input: TaskInput,
+        mut input: TaskInput,
         fail_open: bool,
     ) -> Result<Self> {
+        input.recent_turn_window.get_or_insert(10);
         let instructions = match config.instructions.take() {
             Some(instructions) => instructions,
             None => serde_json::from_str(include_str!(
