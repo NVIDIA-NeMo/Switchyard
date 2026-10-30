@@ -358,6 +358,9 @@ func (backend *wasmBackend) route(ctx context.Context, input Input, call HostCal
 			if err := json.Unmarshal(stepData, &outcome); err != nil {
 				return Outcome{}, err
 			}
+			if err := ctx.Err(); err != nil {
+				return Outcome{}, err
+			}
 			return outcome, nil
 		case "call_model", "call_decision":
 			if call == nil {

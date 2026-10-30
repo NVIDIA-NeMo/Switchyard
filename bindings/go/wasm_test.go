@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tetratelabs/wazero/api"
 )
 
 // Missing startup exports must return errors instead of panicking.
@@ -36,6 +38,48 @@ func TestWasmMissingStartupExport(t *testing.T) {
 				t.Fatalf("missing %s returned %v", name, err)
 			}
 		})
+	}
+}
+
+type cancelAfterNextModule struct {
+	api.Module
+	cancel context.CancelFunc
+}
+
+func (module cancelAfterNextModule) ExportedFunction(name string) api.Function {
+	function := module.Module.ExportedFunction(name)
+	if name == "sy_run_next" {
+		return cancelAfterCallFunction{Function: function, cancel: module.cancel}
+	}
+	return function
+}
+
+type cancelAfterCallFunction struct {
+	api.Function
+	cancel context.CancelFunc
+}
+
+func (function cancelAfterCallFunction) Call(ctx context.Context, args ...uint64) ([]uint64, error) {
+	values, err := function.Function.Call(ctx, args...)
+	if err == nil {
+		function.cancel()
+	}
+	return values, err
+}
+
+// Cancellation after the final guest call must take precedence over its outcome.
+func TestWasmCancellationBeforeOutcome(t *testing.T) {
+	backend, err := newWasmBackendWithPoolSize(testConfig(`{"type":"stage_router","picker":"efficient_first",`+stage+`}`), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	guest := backend.slots[0].gen.guest
+	guest.module = cancelAfterNextModule{Module: guest.module, cancel: cancel}
+	if _, err := backend.route(ctx, input(), nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled route returned %v", err)
 	}
 }
 
