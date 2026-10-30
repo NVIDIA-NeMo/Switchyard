@@ -431,15 +431,20 @@ func (slot *wasmSlot) startRun(ctx context.Context, input []byte) (*wasmRun, err
 	if slot.owner.closed.Load() {
 		return nil, errors.New("Switchyard router is closed")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if slot.err != nil {
-		return nil, slot.err
+		replacement, err := slot.owner.newGeneration(context.Background(), slot.config)
+		if err != nil {
+			slot.err = fmt.Errorf("replace trapped Switchyard wasm instance: %w", err)
+			return nil, slot.err
+		}
+		slot.gen, slot.err = replacement, nil
 	}
 	gen := slot.gen
 	if gen == nil || gen.poisoned {
 		return nil, errors.New("Switchyard wasm instance is unavailable")
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
 	}
 	// Guest calls never see the caller's context: wazero closes the whole shared module
 	// when a call's context ends. The route loop checks ctx between steps instead.

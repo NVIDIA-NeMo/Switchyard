@@ -159,6 +159,52 @@ func TestWasmTrapIsolatesAndReplacesInstance(t *testing.T) {
 	}
 }
 
+// A failed replacement must not prevent a later request from recovering the slot.
+func TestWasmFailedReplacementIsRetried(t *testing.T) {
+	backend, err := newWasmBackendWithPoolSize(testConfig(`{"type":"stage_router","picker":"efficient_first",`+stage+`}`), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer backend.close()
+	request := input()
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	slot := backend.slots[0]
+	old, err := slot.startRun(ctx, data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.close()
+	slot.mu.Lock()
+	config := slot.config
+	slot.config = []byte(`{`)
+	slot.poisonLocked(old.gen, errors.New("test trap"))
+	failed := slot.err != nil
+	slot.config = config
+	slot.mu.Unlock()
+	if !failed {
+		t.Fatal("replacement with invalid config succeeded")
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := slot.startRun(cancelled, data); !errors.Is(err, context.Canceled) || slot.gen != old.gen || slot.err == nil {
+		t.Fatalf("cancelled request attempted replacement: %v", err)
+	}
+	outcome, err := backend.route(ctx, request, nil)
+	if err != nil || len(outcome.SelectedModelIDs) == 0 || outcome.SelectedModelIDs[0] != "weak-model" {
+		t.Fatalf("recovered route returned outcome=%+v err=%v", outcome, err)
+	}
+	if slot.err != nil || slot.gen == old.gen {
+		t.Fatal("recovery did not replace the failed generation and clear its error")
+	}
+	if _, err := old.next(ctx); err == nil {
+		t.Fatal("recovery revived a failed run")
+	}
+}
+
 func TestWasmClosedInstanceIsReplaced(t *testing.T) {
 	config := testConfig(`{"type":"stage_router","picker":"efficient_first",` + stage + `}`)
 	backend, err := newWasmBackendWithPoolSize(config, 2)
