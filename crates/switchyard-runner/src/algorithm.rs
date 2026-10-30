@@ -672,6 +672,7 @@ pub struct StageSettingsConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StageProfileConfig {
+    pub classifier: Option<StageClassifierConfig>,
     pub picker: Option<PickerMode>,
     #[serde(flatten)]
     pub settings: StageSettingsConfig,
@@ -761,6 +762,19 @@ impl StageClassifierConfig {
         }
     }
 
+    fn stage_fallback(
+        &self,
+        route_name: &str,
+        capable: &str,
+        efficient: &str,
+        targets: &BTreeMap<String, ModelId>,
+    ) -> AlgorithmResult<LlmFallback> {
+        Ok(LlmFallback {
+            target: Some(resolve_target_model_id(route_name, &self.target, targets)?),
+            config: self.task_classifier_config(route_name, capable, efficient, targets)?,
+        })
+    }
+
     fn custom_classifier_config(
         &self,
         route_name: &str,
@@ -802,22 +816,42 @@ impl StageClassifierConfig {
 
 impl AlgorithmSpec {
     #[cfg(not(target_os = "wasi"))]
-    pub(crate) fn decision_judge(&self) -> Option<(&str, &DecisionJudgeRouteConfig)> {
-        match self {
-            Self::LlmClassifier { config, .. } => config
-                .decision
-                .as_ref()
-                .map(|decision| (config.classifier_target.as_str(), decision)),
-            Self::Composite { classifier, .. }
-            | Self::StageRouter {
-                classifier: Some(classifier),
+    pub(crate) fn classifier_targets(
+        &self,
+    ) -> impl Iterator<Item = (&str, Option<&DecisionJudgeRouteConfig>)> {
+        let (primary, profiles) = match self {
+            Self::LlmClassifier { config, .. }
+                if !matches!(config.classifier_mode(), ClassifierMode::Custom) =>
+            {
+                (
+                    Some((config.classifier_target.as_str(), config.decision.as_ref())),
+                    [None, None],
+                )
+            }
+            Self::Composite {
+                classifier,
+                efficient,
+                capable,
                 ..
-            } => classifier
-                .decision
-                .as_ref()
-                .map(|decision| (classifier.target.as_str(), decision)),
-            _ => None,
-        }
+            } => (
+                Some((classifier.target.as_str(), classifier.decision.as_ref())),
+                [efficient.as_deref(), capable.as_deref()],
+            ),
+            Self::StageRouter { classifier, .. } => (
+                classifier
+                    .as_ref()
+                    .map(|c| (c.target.as_str(), c.decision.as_ref())),
+                [None, None],
+            ),
+            _ => (None, [None, None]),
+        };
+        primary.into_iter().chain(
+            profiles
+                .into_iter()
+                .flatten()
+                .filter_map(|profile| profile.classifier.as_ref())
+                .map(|c| (c.target.as_str(), c.decision.as_ref())),
+        )
     }
 
     /// Completion targets in algorithm order; judge-only targets are excluded.
@@ -937,8 +971,20 @@ impl AlgorithmSpec {
                 classifier: Some(classifier),
                 ..
             } => names.push(&classifier.target),
-            Self::Composite { classifier, .. } => {
+            Self::Composite {
+                classifier,
+                efficient,
+                capable,
+                ..
+            } => {
                 names.push(&classifier.target);
+                names.extend(
+                    [efficient, capable]
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|profile| profile.classifier.as_ref())
+                        .map(|classifier| classifier.target.as_str()),
+                );
             }
             Self::Advisor { advisor_target, .. } => names.push(advisor_target),
             Self::Vgr { config } => {
@@ -1021,10 +1067,14 @@ impl AlgorithmSpec {
                     vec![capable_target.clone(), efficient_target.clone()],
                 ),
             ]),
-            Self::Composite {
-                classifier, stage, ..
-            } => category_models([
-                (Category::Judge, vec![classifier.target.clone()]),
+            Self::Composite { stage, .. } => category_models([
+                (
+                    Category::Judge,
+                    self.judge_target_names()
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                ),
                 (Category::Capable, vec![stage.capable_target.clone()]),
                 (Category::Efficient, vec![stage.efficient_target.clone()]),
                 (
@@ -1694,14 +1744,7 @@ fn build_algorithm(
             config.llm_fallback = classifier
                 .as_ref()
                 .map(|classifier| {
-                    classifier
-                        .task_classifier_config(
-                            route_name,
-                            capable_target,
-                            efficient_target,
-                            targets,
-                        )
-                        .map(|config| LlmFallback { config })
+                    classifier.stage_fallback(route_name, capable_target, efficient_target, targets)
                 })
                 .transpose()?;
             let algorithm = StageRouter::new(config).map_err(|error| {
@@ -1748,21 +1791,41 @@ fn build_algorithm(
             let shared = &stage.settings;
             let algorithm = if efficient.is_some() || capable.is_some() {
                 let defaults = StageProfileConfig::default();
-                let efficient = efficient.as_deref().unwrap_or(&defaults);
-                let capable = capable.as_deref().unwrap_or(&defaults);
-                CompositeRouter::new_with_profiles(
-                    judge,
-                    efficient.settings.stage_config(
-                        shared,
-                        efficient.picker.unwrap_or(PickerMode::EfficientFirst),
+                let profiles = [
+                    (
+                        efficient,
+                        PickerMode::EfficientFirst,
                         shared.confidence_threshold.unwrap_or(0.5),
                     ),
-                    capable.settings.stage_config(
-                        shared,
-                        capable.picker.unwrap_or(PickerMode::CapableFirst),
+                    (
+                        capable,
+                        PickerMode::CapableFirst,
                         stage.capable_first_threshold,
                     ),
-                )
+                ]
+                .map(|(profile, picker, threshold)| -> AlgorithmResult<_> {
+                    let profile = profile.as_deref().unwrap_or(&defaults);
+                    let mut config = profile.settings.stage_config(
+                        shared,
+                        profile.picker.unwrap_or(picker),
+                        threshold,
+                    );
+                    config.llm_fallback = profile
+                        .classifier
+                        .as_ref()
+                        .map(|classifier| {
+                            classifier.stage_fallback(
+                                route_name,
+                                &stage.capable_target,
+                                &stage.efficient_target,
+                                targets,
+                            )
+                        })
+                        .transpose()?;
+                    Ok(config)
+                });
+                let [profile_0, profile_1] = profiles;
+                CompositeRouter::new_with_profiles(judge, profile_0?, profile_1?)
             } else {
                 let mut config = shared.stage_config(shared, PickerMode::EfficientFirst, 0.5);
                 config.capable_first_threshold = stage.capable_first_threshold;

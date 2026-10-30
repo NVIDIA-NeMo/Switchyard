@@ -133,16 +133,18 @@ impl FallThrough {
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
         let session_state = self.session_state(&request);
-        let (score, served) = match session_state {
+        let (score, served, prompts) = match session_state {
             Some(state) => {
                 let mut state = state.lock().await;
-                self.route(&mut state, &driver, &mut request).await?
+                let (score, served) = self.route(&mut state, &driver, &mut request).await?;
+                (score, served, std::mem::take(&mut state.target_prompts))
             }
             None => {
                 let mut state = driver.take_state();
-                let routed = self.route(&mut state, &driver, &mut request).await?;
+                let (score, served) = self.route(&mut state, &driver, &mut request).await?;
+                let prompts = std::mem::take(&mut state.target_prompts);
                 driver.set_state(state);
-                routed
+                (score, served, prompts)
             }
         };
 
@@ -168,7 +170,21 @@ impl FallThrough {
                         fallback_models.push(candidate.clone());
                     }
                 }
-                Ok(RoutingOutcome::route_to(target, fallback_models, request))
+                let mut outcome = RoutingOutcome::route_to(target, fallback_models, request);
+                if !prompts.is_empty() {
+                    for target in outcome.selected_model_ids.iter().skip(1) {
+                        let mut request = outcome.request.clone();
+                        request.llm_request.model = Some(target.to_string());
+                        if let Some(prompt) = prompts.get(target) {
+                            super::util::prompts::prepend_system_prompt(&mut request, prompt);
+                        }
+                        outcome.candidate_requests.insert(target.clone(), request);
+                    }
+                    if let Some(prompt) = prompts.get(&outcome.selected_model_ids[0]) {
+                        super::util::prompts::prepend_system_prompt(&mut outcome.request, prompt);
+                    }
+                }
+                Ok(outcome)
             }
         }
     }

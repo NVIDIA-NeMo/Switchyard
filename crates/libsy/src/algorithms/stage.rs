@@ -20,7 +20,6 @@ use async_trait::async_trait;
 use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 use super::util::affinity::ClassifyTrigger;
-use super::util::prompts::prepend_system_prompt;
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, Tier, fall_open_tier,
     record_routing_decision,
@@ -43,18 +42,26 @@ struct TierPromptProcessor {
 
 #[async_trait]
 impl Processor for TierPromptProcessor {
-    async fn process(&self, _state: &mut State, event: Event<'_>) -> Result<()> {
+    async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
         if let Event::Decision {
-            request, category, ..
+            driver,
+            category,
+            selected_model_id,
+            ..
         } = event
         {
-            let prompt = match category {
-                Some(Category::Capable) => self.capable.as_deref(),
-                Some(Category::Efficient) => self.efficient.as_deref(),
-                _ => None,
-            };
-            if let Some(prompt) = prompt {
-                prepend_system_prompt(request, prompt);
+            state.target_prompts.clear();
+            for (tier, prompt) in [
+                (Category::Capable, &self.capable),
+                (Category::Efficient, &self.efficient),
+            ] {
+                if let Some(prompt) = prompt {
+                    for target in driver.models_for(&tier) {
+                        if target != selected_model_id || category.as_ref() == Some(&tier) {
+                            state.target_prompts.insert(target.clone(), prompt.clone());
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -68,6 +75,7 @@ impl Processor for TierPromptProcessor {
 struct SourceStamp {
     inner: Arc<dyn Classifier>,
     source: DecisionSource,
+    judge: Option<switchyard_protocol::ModelId>,
 }
 
 #[async_trait]
@@ -78,6 +86,11 @@ impl Classifier for SourceStamp {
         request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
+        let scoped = self
+            .judge
+            .as_ref()
+            .map(|judge| driver.for_judge(judge.clone()));
+        let driver = scoped.as_ref().unwrap_or(driver);
         let (classification, served) = self.inner.score(state, request, driver).await?;
         // An abstaining classifier passes the turn on, so it is not its to claim.
         if let Some(winner) = classification.argmax(false)? {
@@ -122,6 +135,8 @@ impl Classifier for FallOpen {
 
 /// The capability judge a stage router falls through to.
 pub struct LlmFallback {
+    /// Overrides the runtime judge for this stage configuration.
+    pub target: Option<switchyard_protocol::ModelId>,
     /// Judge configuration. Its `recent_turn_window` counts trailing messages, while
     /// this router's `recent_window` counts tool results.
     /// Note: `classify_trigger` and `message_hash_fallback` have no effect here. The judge
@@ -198,17 +213,6 @@ impl StageRouter {
     /// fallback judge configured to retain verdicts: it runs on every ambiguous
     /// turn, so `classify_trigger` and `message_hash_fallback` would do nothing.
     pub fn new(config: StageRouterConfig) -> Result<Self> {
-        if let Some(fallback) = &config.llm_fallback
-            && (fallback.config.classify_trigger != ClassifyTrigger::EveryRequest
-                || fallback.config.message_hash_fallback)
-        {
-            return Err(LibsyError::AlgorithmError {
-                message: "classify_trigger and message_hash_fallback have no effect on the \
-                          stage fallback judge, which runs on every ambiguous turn; remove \
-                          them, or use a composite route to judge once per user turn"
-                    .to_string(),
-            });
-        }
         Ok(Self {
             route: build_stage_route(config)?,
         })
@@ -233,6 +237,17 @@ impl Algorithm for StageRouter {
 /// Wires the cascade the wrapper drives. Exposed so a composition above can
 /// stack a prelude onto it.
 pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough> {
+    if let Some(fallback) = &config.llm_fallback
+        && (fallback.config.classify_trigger != ClassifyTrigger::EveryRequest
+            || fallback.config.message_hash_fallback)
+    {
+        return Err(LibsyError::AlgorithmError {
+            message: "classify_trigger and message_hash_fallback have no effect on the \
+                          stage fallback judge, which runs on every ambiguous turn. Remove \
+                          them, or use a composite route to judge once per user turn"
+                .to_string(),
+        });
+    }
     for (name, threshold) in [
         ("confidence_threshold", config.confidence_threshold),
         ("capable_first_threshold", config.capable_first_threshold),
@@ -285,12 +300,14 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
                 config: fallback.config,
             })?),
             source: DecisionSource::LlmClassifier,
+            judge: fallback.target,
         }));
     }
     // Nothing behind this, so no turn is left unrouted.
     router = router.with_classifier(Arc::new(SourceStamp {
         inner: Arc::new(fall_open),
         source: DecisionSource::FallOpen,
+        judge: None,
     }));
     if config.capable_system_prompt.is_some() || config.efficient_system_prompt.is_some() {
         router = router.with_processor(Arc::new(TierPromptProcessor {
@@ -357,6 +374,7 @@ mod tests {
         let stamp = SourceStamp {
             inner,
             source: DecisionSource::LlmClassifier,
+            judge: None,
         };
         let (driver, mut rx) = Driver::new("test", Arc::new(crate::RuntimeModels::default()));
         stamp
@@ -429,6 +447,7 @@ mod tests {
     fn rejects_an_out_of_range_judge_threshold() {
         let mut config = config();
         config.llm_fallback = Some(LlmFallback {
+            target: None,
             config: TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
                     base_threshold: -0.1,
@@ -452,6 +471,7 @@ mod tests {
         ] {
             let mut config = config();
             config.llm_fallback = Some(LlmFallback {
+                target: None,
                 config: TaskClassifierConfig {
                     classify_trigger: trigger,
                     message_hash_fallback,
@@ -699,6 +719,7 @@ mod tests {
         *recorder.judge_p_solve.lock() = p_solve;
         let mut c = config();
         c.llm_fallback = Some(LlmFallback {
+            target: None,
             config: TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
                     base_threshold: 0.5,

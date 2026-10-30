@@ -262,6 +262,8 @@ pub struct RoutingOutcome {
     /// rewrote `request` for the selected model only.
     /// Content-policy denials do not advance to these fallback candidates.
     pub fallback_request: Option<Request>,
+    /// Candidate-specific requests, including model-specific instructions.
+    pub candidate_requests: HashMap<ModelId, Request>,
     /// A response produced while routing, or `None` when the client must make the answer call.
     pub response: Option<Response>,
     /// Outcome identity and optional algorithm evidence.
@@ -296,6 +298,7 @@ impl RoutingOutcome {
             selected_model_ids,
             request,
             fallback_request: None,
+            candidate_requests: HashMap::new(),
             response: None,
             metadata: None,
             state: State::default(),
@@ -310,6 +313,7 @@ impl RoutingOutcome {
             selected_model_ids: vec![selected_model_id],
             request,
             fallback_request: None,
+            candidate_requests: HashMap::new(),
             response: Some(response),
             metadata: None,
             state: State::default(),
@@ -336,6 +340,7 @@ pub struct Driver {
 
     /// Which of those groups this driver reads.
     scope: Scope,
+    judge: Option<ModelId>,
 }
 
 impl Driver {
@@ -358,6 +363,7 @@ impl Driver {
                 state: Arc::new(Mutex::new(State::default())),
                 models,
                 scope: Scope::Parent,
+                judge: None,
             },
             step_rx,
         )
@@ -489,9 +495,21 @@ impl Driver {
 
     /// The available models for this category, typically ordered best-first.
     pub fn models_for(&self, category: &Category) -> &[ModelId] {
+        if *category == Category::Judge
+            && let Some(judge) = &self.judge
+        {
+            return std::slice::from_ref(judge);
+        }
         match self.scope {
             Scope::Parent => self.models.models_for(category),
             Scope::Subagent => self.models.subagent_models_for(category),
+        }
+    }
+
+    pub(crate) fn for_judge(&self, judge: ModelId) -> Self {
+        Self {
+            judge: Some(judge),
+            ..self.clone()
         }
     }
 

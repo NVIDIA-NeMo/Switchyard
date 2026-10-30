@@ -94,6 +94,7 @@ async def run_algorithm(
                 await call.respond(serve(call))
             case Step.Done(outcome):
                 assert isinstance(outcome.metadata, OutcomeMetadata)
+                assert isinstance(outcome.candidate_requests, dict)
                 assert UUID(outcome.metadata.outcome_id).version == 7
                 if outcome.response is not None:
                     match outcome.response:
@@ -103,7 +104,10 @@ async def run_algorithm(
                             raise AssertionError("test helper expected an aggregate response")
                 candidates = outcome.selected_model_ids
                 for index, target in enumerate(candidates):
-                    candidate_request = {**outcome.request, "model": target}
+                    candidate_request = {
+                        **outcome.candidate_requests.get(target, outcome.request),
+                        "model": target,
+                    }
                     client = (clients or {})[target]
                     try:
                         response = await client.call(candidate_request)

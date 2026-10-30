@@ -3,7 +3,7 @@
 
 //! Built-in state shared by processors and classifiers across a session.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -29,6 +29,9 @@ pub struct State {
     /// so routers must treat absence as "no signal yet".
     #[serde(skip)]
     pub tool_signals: Option<ToolSignals>,
+    /// Per-model prompts for this routing outcome, cleared after routing.
+    #[serde(skip)]
+    pub target_prompts: HashMap<switchyard_protocol::ModelId, String>,
     /// Algorithm-specific state keyed by stable internal names.
     #[serde(flatten)]
     pub extra: BTreeMap<String, StateValue>,

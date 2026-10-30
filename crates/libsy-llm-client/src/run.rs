@@ -112,6 +112,7 @@ pub async fn run(
             &algorithm_name,
             &outcome.request,
             outcome.fallback_request.as_ref(),
+            &outcome.candidate_requests,
             &outcome.selected_model_ids,
             &observe,
         )
@@ -251,14 +252,17 @@ async fn call_first_available<'a>(
     algorithm: &str,
     request: &'a Request,
     fallback_request: Option<&'a Request>,
+    candidate_requests: &'a HashMap<ModelId, Request>,
     models: &[ModelId],
     observe: &(dyn Fn(ModelCallObservation) + Send + Sync),
 ) -> Result<(&'a Request, Response)> {
     for (index, target) in models.iter().enumerate() {
-        let request = match fallback_request {
-            Some(fallback) if index > 0 => fallback,
-            _ => request,
-        };
+        let request = candidate_requests
+            .get(target)
+            .unwrap_or(match fallback_request {
+                Some(fallback) if index > 0 => fallback,
+                _ => request,
+            });
         let prepared = clients.prepare_completion_request(request.clone(), target);
         match call_one(
             clients,

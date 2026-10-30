@@ -403,6 +403,7 @@ struct PyLlmFallback {
 impl PyLlmFallback {
     fn clone_core(&self, py: Python<'_>) -> PyResult<LlmFallback> {
         Ok(LlmFallback {
+            target: None,
             config: self.config.bind(py).try_borrow()?.clone_core(),
         })
     }
@@ -755,6 +756,8 @@ struct PyRoutingOutcome {
     selected_model_ids: Vec<String>,
     request: Py<PyAny>,
     fallback_request: Option<Py<PyAny>>,
+    #[pyo3(get)]
+    candidate_requests: Py<PyAny>,
     response: Option<Py<PyAny>>,
     #[pyo3(get)]
     metadata: Option<Py<PyOutcomeMetadata>>,
@@ -949,6 +952,7 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                 selected_model_ids,
                 request,
                 fallback_request,
+                candidate_requests,
                 response,
                 metadata,
                 state: _,
@@ -966,6 +970,13 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                                 .map(ToString::to_string)
                                 .collect(),
                             request: to_python(py, &request.llm_request)?,
+                            candidate_requests: to_python(
+                                py,
+                                &candidate_requests
+                                    .into_iter()
+                                    .map(|(id, request)| (id.to_string(), request.llm_request))
+                                    .collect::<std::collections::HashMap<_, _>>(),
+                            )?,
                             fallback_request: fallback_request
                                 .map(|request| to_python(py, &request.llm_request))
                                 .transpose()?,

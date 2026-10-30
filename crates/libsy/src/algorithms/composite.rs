@@ -157,19 +157,17 @@ impl CompositeRouter {
     /// Capable-first defaults to pinning efficient after a switch.
     pub fn new_with_profiles(
         judge: CompositeJudgeConfig,
-        mut efficient: StageRouterConfig,
-        mut capable: StageRouterConfig,
+        mut profile_0: StageRouterConfig,
+        mut profile_1: StageRouterConfig,
     ) -> Result<Self> {
-        for profile in [&mut efficient, &mut capable] {
+        for profile in [&mut profile_0, &mut profile_1] {
             if profile.mode == PickerMode::CapableFirst {
                 profile.efficient_hold_turns.get_or_insert(-1);
             }
         }
         let setter = Self::tier_setter(judge, Tier::Efficient)?;
-        let profiles = StageProfiles {
-            efficient: build_stage_route(efficient)?,
-            capable: build_stage_route(capable)?,
-        };
+        let profiles =
+            StageProfiles([build_stage_route(profile_0)?, build_stage_route(profile_1)?]);
         let route = FallThrough::new_with_state()
             .with_name(COMPOSITE)
             .with_processor(Arc::new(setter))
@@ -216,10 +214,7 @@ impl CompositeRouter {
     }
 }
 
-struct StageProfiles {
-    efficient: FallThrough,
-    capable: FallThrough,
-}
+struct StageProfiles([FallThrough; 2]);
 
 #[async_trait]
 impl Classifier for StageProfiles {
@@ -230,8 +225,8 @@ impl Classifier for StageProfiles {
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
         let (profile, prefix) = match fall_open_tier(state) {
-            Some(Tier::Capable) => (&self.capable, "composite.capable."),
-            _ => (&self.efficient, "composite.efficient."),
+            Some(Tier::Capable) => (&self.0[1], "composite.profile_1."),
+            _ => (&self.0[0], "composite.profile_0."),
         };
         // Each profile retains its own holds, including in caller-carried state.
         let mut profile_state = State {
@@ -254,6 +249,7 @@ impl Classifier for StageProfiles {
                 .map(|(key, value)| (format!("{prefix}{key}"), value)),
         );
         state.tool_signals = profile_state.tool_signals;
+        state.target_prompts = profile_state.target_prompts;
         let (score, response) = result?;
         Ok((Classification::Scores(vec![score]), response))
     }

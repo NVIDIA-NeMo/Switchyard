@@ -88,7 +88,10 @@ Both profiles use the [stage tuning and prompt settings](stage_router_routing.md
 The judge's verdict selects `efficient` or `capable`. Their pickers default to
 efficient-first and capable-first respectively. Override `picker` to use either
 mode in either profile, including capable-first in both.
-Targets stay in `stage` and the classifier stays in `classifier`.
+Targets stay in `stage` and the profile selector stays in `classifier`.
+Each profile can also define its own `classifier` table, using the standalone
+stage classifier settings and target. It runs only when stage signals abstain.
+On model fallback, each candidate receives the active profile's prompt for its tier.
 Omitted settings inherit from `stage`, including the corresponding threshold.
 A supplied `tool_semantics` or `handoff_notes` table replaces the shared table.
 

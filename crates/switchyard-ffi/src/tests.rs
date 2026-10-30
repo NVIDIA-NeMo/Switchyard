@@ -250,6 +250,9 @@ fn completed_runs_preserve_fallback_requests() {
                 ..Default::default()
             },
         );
+        outcome
+            .candidate_requests
+            .insert("efficient".into(), outcome.request.clone());
         outcome.fallback_request = fallback.map(|llm_request| Request {
             llm_request,
             ..Default::default()
@@ -265,6 +268,7 @@ fn completed_runs_preserve_fallback_requests() {
             "rewritten"
         );
         assert_eq!(done.get("fallback_request"), Some(&expected));
+        assert_eq!(done["candidate_requests"]["efficient"], done["request"]);
     }
 }
 

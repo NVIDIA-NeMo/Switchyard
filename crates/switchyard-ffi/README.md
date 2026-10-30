@@ -29,14 +29,15 @@ Each accepted read delivers one step or an error through its callback:
 
 - `call_model`: `{type, id, models, request}`
 - `call_decision`: `{type, id, model, request}`
-- `done`: `{type, selected_model_ids, request, fallback_request, response, metadata}`
+- `done`: `{type, selected_model_ids, request, fallback_request, candidate_requests, response, metadata}`
 
 A callback error or `done` ends the run. Outcomes retain ordered targets, the
 prepared request, an optional buffered answer, and optional routing evidence.
 The host executes the answer call when `response` is null.
 Streamed routing answers are collected into a buffered response before `done`.
 Cancellation interrupts collection; stream errors end the run with a callback error.
-When `fallback_request` is non-null, use it for candidates after the first.
+Use `candidate_requests[model_id]` when present. Otherwise, use `fallback_request`
+for candidates after the first when it is non-null.
 Content-policy denials must not advance to those fallback candidates.
 
 Wire formats are `openai_chat`, `openai_responses`, and `anthropic_messages`.

@@ -353,9 +353,25 @@ impl DeploymentConfig {
         let mut routes = Vec::with_capacity(self.routes.len());
         let mut model_properties_probes = BTreeMap::new();
         for (route_name, config) in &self.routes {
-            let decision_judge = config.algorithm.decision_judge();
-            for name in config.callable_target_names() {
-                let (exists, kind) = if decision_judge.is_some_and(|(judge, _)| judge == name) {
+            let classifiers: Vec<_> = config.algorithm.classifier_targets().collect();
+            for (name, is_decision) in config
+                .callable_target_names()
+                .into_iter()
+                .map(|name| {
+                    (
+                        name,
+                        classifiers
+                            .iter()
+                            .any(|(judge, decision)| *judge == name && decision.is_some()),
+                    )
+                })
+                .chain(
+                    classifiers
+                        .iter()
+                        .map(|(name, decision)| (*name, decision.is_some())),
+                )
+            {
+                let (exists, kind) = if is_decision {
                     (self.decision_targets.contains_key(name), "decision")
                 } else {
                     (self.targets.contains_key(name), "LLM")
@@ -367,9 +383,10 @@ impl DeploymentConfig {
                 }
             }
             for name in config.routing_target_names().into_iter().chain(
-                decision_judge
+                classifiers
                     .into_iter()
-                    .flat_map(|(_, judge)| judge.candidates.values().map(String::as_str)),
+                    .filter_map(|(_, decision)| decision)
+                    .flat_map(|judge| judge.candidates.values().map(String::as_str)),
             ) {
                 if !self.targets.contains_key(name) {
                     return Err(RunnerError::configuration(format!(
@@ -595,8 +612,8 @@ impl DeploymentConfig {
         for name in route.callable_target_names() {
             if route
                 .algorithm
-                .decision_judge()
-                .is_some_and(|(judge, _)| judge == name)
+                .classifier_targets()
+                .any(|(judge, decision)| judge == name && decision.is_some())
             {
                 let target = &self.decision_targets[name];
                 decisions_by_model.insert(
@@ -1540,7 +1557,7 @@ evidence = { description = "candidate comparison" }
         ] {
             let deployment: DeploymentConfig = toml::from_str(&source).unwrap();
             let spec = &deployment.routes["composed"].algorithm;
-            assert_eq!(spec.decision_judge().unwrap().0, "tier_judge");
+            assert_eq!(spec.classifier_targets().next().unwrap().0, "tier_judge");
             assert_eq!(
                 spec.build_with_runtime_models("composed", &deployment.build_targets())
                     .is_ok(),
