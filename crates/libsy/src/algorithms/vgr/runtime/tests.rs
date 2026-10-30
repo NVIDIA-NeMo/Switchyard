@@ -304,6 +304,7 @@ async fn an_unavailable_efficient_tier_escalates_and_other_failures_surface() ->
                     "efficient" => Err(LlmClientError::UpstreamHttp {
                         status: http::StatusCode::from_u16(status).unwrap_or_default(),
                         body: String::new(),
+                        headers: Box::default(),
                     }),
                     _ => Ok(reply("capable answer")),
                 }
@@ -1367,6 +1368,7 @@ async fn a_failed_capable_verifier_still_offers_the_efficient_answer() -> Result
                             LlmClientError::UpstreamHttp {
                                 status: http::StatusCode::BAD_GATEWAY,
                                 body: String::new(),
+                                headers: Box::default(),
                             },
                         )),
                     };
