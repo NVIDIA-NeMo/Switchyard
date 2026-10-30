@@ -2392,10 +2392,6 @@ mod tests {
                     .collect(),
             );
             let signal = ToolSignals::from_request(&request, Some(3));
-            assert!(!request.llm_request.messages.iter().any(is_user_turn));
-            let current = ToolSignalProcessor::default().for_user_turn(&request);
-            assert_eq!(current.tool_result_count, 2);
-            assert_eq!(current.severity, severity);
             assert_eq!(signal.severity, severity, "{raw}");
             assert_eq!(signal.repeated_failure, is_error, "{raw}");
             assert_eq!(signal.tool_result_count, 2);

@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use serde::Deserialize;
-use switchyard_protocol::{Category, ContentBlock, Message, ModelId, Request, Role, WireFormat};
+use switchyard_protocol::{Category, ContentBlock, Message, ModelId, Request, Role};
 
 use crate::core::algorithm::{Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier, Score};
@@ -48,28 +48,14 @@ pub enum ClassifyTrigger {
     NewSession,
 }
 
-/// Anthropic and Responses can carry tool activity as user-role messages.
+/// Anthropic carries tool results as a `Role::User` message, so role alone cannot tell a
+/// human turn from a tool continuation.
 pub(crate) fn is_user_turn(message: &Message) -> bool {
     message.role == Role::User
-        && !message.content.iter().all(|block| match block {
-            ContentBlock::ToolResult(_) => true,
-            ContentBlock::Unknown { provider, raw }
-                if provider.as_str() == WireFormat::OpenAiResponses.as_str() =>
-            {
-                matches!(
-                    raw["type"].as_str(),
-                    Some(
-                        "shell_call"
-                            | "shell_call_output"
-                            | "apply_patch_call"
-                            | "apply_patch_call_output"
-                            | "computer_call"
-                            | "computer_call_output"
-                    )
-                )
-            }
-            _ => false,
-        })
+        && !message
+            .content
+            .iter()
+            .all(|block| matches!(block, ContentBlock::ToolResult(_)))
 }
 
 pub(crate) fn has_new_user_turn(messages: &[Message]) -> bool {
