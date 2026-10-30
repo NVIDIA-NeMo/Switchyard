@@ -1335,3 +1335,495 @@ fn responses_custom_tool_call_output_round_trips_with_request_extensions() -> Te
     assert_eq!(call["function"]["arguments"], "{\"input\":\"ls -la\"}");
     Ok(())
 }
+
+mod anthropic_mcp_content {
+    use serde_json::{Value, json};
+    use switchyard_translation::{
+        ContentBlock, LossyConversionPolicy, McpContent, PreservationPolicy, TargetCapabilities,
+        TranslationEngine, TranslationError, TranslationPolicy, WireFormat,
+    };
+
+    type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    const ANTHROPIC: WireFormat = WireFormat::AnthropicMessages;
+
+    fn content() -> Value {
+        json!([
+            {"type": "text", "text": "Checking."},
+            {"type": "tool_use", "id": "local_1", "name": "local", "input": {}},
+            {"type": "mcp_tool_use", "id": "sy64_Y2FsbA", "server_name": "inventory",
+             "name": "lookup", "input": {"sku": "widget"}},
+            {"type": "mcp_tool_result", "tool_use_id": "sy64_Y2FsbA", "is_error": false,
+             "content": [
+                {"type": "text", "text": "12 widgets"},
+                {"type": "image", "source": {"type": "url", "url": "https://example.test/widget.png"}},
+                {"type": "document", "source": {"type": "url", "url": "https://example.test/widget.pdf"}},
+                {"type": "provider_detail", "value": "retained"}
+             ]},
+            {"type": "text", "text": "Done."}
+        ])
+    }
+
+    fn request_body(content: &Value) -> Value {
+        json!({"model": "claude-test", "max_tokens": 128,
+            "messages": [{"role": "assistant", "content": content}]})
+    }
+
+    fn response_body(content: &Value) -> Value {
+        json!({"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-test",
+            "content": content, "stop_reason": "end_turn", "usage": {"input_tokens": 2, "output_tokens": 3}})
+    }
+
+    #[test]
+    fn anthropic_mcp_replay_reconstruction_and_edits() -> TestResult {
+        let engine = TranslationEngine::default();
+        for preservation in [PreservationPolicy::InMemory, PreservationPolicy::Disabled] {
+            let policy = TranslationPolicy {
+                preservation,
+                lossy_conversion_policy: LossyConversionPolicy::Reject,
+                ..Default::default()
+            };
+            for (is_error, omit_content) in [
+                (None, false),
+                (Some(false), false),
+                (Some(true), false),
+                (Some(true), true),
+            ] {
+                eprintln!(
+                    "round-trip: {preservation:?}, is_error={is_error:?}, omitted={omit_content}"
+                );
+                let mut blocks = content();
+                blocks[3]
+                    .as_object_mut()
+                    .ok_or("result object")?
+                    .remove("is_error");
+                if let Some(is_error) = is_error {
+                    blocks[3]["is_error"] = json!(is_error);
+                }
+                if omit_content {
+                    blocks[3]
+                        .as_object_mut()
+                        .ok_or("result object")?
+                        .remove("content");
+                }
+                let request_body = request_body(&blocks);
+                let response_body = response_body(&blocks);
+                let mut request = engine
+                    .decode_request(ANTHROPIC, &request_body, &policy)?
+                    .request;
+                let mut response = engine
+                    .decode_response(ANTHROPIC, &response_body, &policy)?
+                    .response;
+                assert_eq!(request.messages[0].content, response.outputs[0].content);
+                assert!(
+                    matches!(&request.messages[0].content[2], ContentBlock::Mcp(McpContent::Call { server_name, call })
+                    if server_name == "inventory" && call.id == "sy64_Y2FsbA" && call.arguments == json!({"sku": "widget"}))
+                );
+                assert!(
+                    matches!(&request.messages[0].content[3], ContentBlock::Mcp(McpContent::Result(result))
+                    if result.tool_call_id == "sy64_Y2FsbA" && result.is_error == is_error
+                        && result.content.len() == if omit_content { 0 } else { 4 })
+                );
+                let encoded_request = engine.encode_request(ANTHROPIC, &request, &policy)?;
+                let encoded_response = engine.encode_response(ANTHROPIC, &response, &policy)?;
+                assert!(encoded_request.diagnostics.is_empty());
+                assert!(encoded_response.diagnostics.is_empty());
+                if omit_content && preservation == PreservationPolicy::Disabled {
+                    blocks[3]["content"] = json!([]);
+                }
+                assert_eq!(encoded_request.body["messages"][0]["content"], blocks);
+                assert_eq!(encoded_response.body["content"], blocks);
+                if preservation == PreservationPolicy::InMemory {
+                    assert_eq!(encoded_request.body, request_body);
+                    assert_eq!(encoded_response.body, response_body);
+                }
+                for content in [
+                    &mut request.messages[0].content,
+                    &mut response.outputs[0].content,
+                ] {
+                    let ContentBlock::Mcp(McpContent::Call { call, .. }) = &mut content[2] else {
+                        return Err("expected MCP call".into());
+                    };
+                    call.arguments = json!({"sku": "updated"});
+                    let ContentBlock::Mcp(McpContent::Result(result)) = &mut content[3] else {
+                        return Err("expected MCP result".into());
+                    };
+                    result.content = vec![ContentBlock::Text {
+                        text: "updated".into(),
+                    }];
+                }
+                request.preservation.requests.clear();
+                response.preservation.responses.clear();
+                let request = engine.encode_request(ANTHROPIC, &request, &policy)?.body;
+                let response = engine.encode_response(ANTHROPIC, &response, &policy)?.body;
+                assert_eq!(request["messages"][0]["content"], response["content"]);
+                assert_eq!(response["content"][2]["input"], json!({"sku": "updated"}));
+                assert_eq!(
+                    response["content"][3]["content"],
+                    json!([{"type": "text", "text": "updated"}])
+                );
+            }
+        }
+        // String and empty results reconstruct as content arrays.
+        for (value, expected) in [
+            (json!("done"), json!([{"type": "text", "text": "done"}])),
+            (json!([]), json!([])),
+        ] {
+            let blocks =
+                json!([{"type": "mcp_tool_result", "tool_use_id": "call_1", "content": value}]);
+            let policy = TranslationPolicy {
+                preservation: PreservationPolicy::Disabled,
+                ..Default::default()
+            };
+            let decoded = engine
+                .decode_response(ANTHROPIC, &response_body(&blocks), &policy)?
+                .response;
+            let encoded = engine.encode_response(ANTHROPIC, &decoded, &policy)?.body;
+            assert_eq!(encoded["content"][0]["content"], expected, "input: {value}");
+            let again = engine
+                .decode_response(ANTHROPIC, &encoded, &policy)?
+                .response;
+            assert_eq!(decoded.outputs, again.outputs, "input: {value}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn anthropic_mcp_preserves_nested_wire_activity() -> TestResult {
+        let engine = TranslationEngine::default();
+        let nested = json!([
+            {"type": "tool_use", "id": "local_1", "name": "local", "input": {}},
+            {"type": "tool_result", "tool_use_id": "local_1", "content": "done"},
+            content()[2],
+            content()[3],
+            {"type": "mcp_tool_listing", "tools": []},
+            {"type": "server_tool_use", "id": "server_1", "name": "lookup", "input": {}},
+            {"type": "custom_tool_result", "tool_use_id": "server_1", "content": "done"}
+        ]);
+        let blocks = json!([{
+            "type": "mcp_tool_result", "tool_use_id": "outer_1", "content": nested
+        }]);
+        let policy = TranslationPolicy {
+            preservation: PreservationPolicy::Disabled,
+            lossy_conversion_policy: LossyConversionPolicy::Reject,
+            ..Default::default()
+        };
+        let request = engine
+            .decode_request(ANTHROPIC, &request_body(&blocks), &policy)?
+            .request;
+        let response = engine
+            .decode_response(ANTHROPIC, &response_body(&blocks), &policy)?
+            .response;
+        assert_eq!(request.messages[0].content, response.outputs[0].content);
+        let ContentBlock::Mcp(McpContent::Result(result)) = &request.messages[0].content[0] else {
+            return Err("expected MCP result".into());
+        };
+        let nested = nested.as_array().ok_or("nested array")?;
+        assert_eq!(result.content.len(), nested.len());
+        for (block, expected) in result.content.iter().zip(nested) {
+            assert!(
+                matches!(block, ContentBlock::Unknown { provider, raw }
+                if provider.as_str() == ANTHROPIC.as_str() && raw == expected),
+                "nested block: {expected}"
+            );
+        }
+        let encoded_request = engine.encode_request(ANTHROPIC, &request, &policy)?;
+        let encoded_response = engine.encode_response(ANTHROPIC, &response, &policy)?;
+        assert_eq!(encoded_request.body["messages"][0]["content"], blocks);
+        assert_eq!(encoded_response.body["content"], blocks);
+        assert!(encoded_request.diagnostics.is_empty());
+        assert!(encoded_response.diagnostics.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn anthropic_mcp_validation_and_result_encoding() -> TestResult {
+        let engine = TranslationEngine::default();
+        let policy = TranslationPolicy::default();
+        for (index, field, invalid) in [
+            (2, "id", None),
+            (2, "id", Some(Value::Null)),
+            (2, "id", Some(json!(5))),
+            (2, "id", Some(json!(""))),
+            (2, "name", None),
+            (2, "name", Some(Value::Null)),
+            (2, "name", Some(json!(5))),
+            (2, "name", Some(json!(""))),
+            (2, "server_name", None),
+            (2, "server_name", Some(Value::Null)),
+            (2, "server_name", Some(json!(5))),
+            (2, "server_name", Some(json!(""))),
+            (3, "tool_use_id", None),
+            (3, "tool_use_id", Some(Value::Null)),
+            (3, "tool_use_id", Some(json!(5))),
+            (3, "tool_use_id", Some(json!(""))),
+            (2, "input", Some(json!("{}"))),
+            (2, "input", Some(Value::Null)),
+            (3, "is_error", Some(json!("false"))),
+        ] {
+            let mut block = content()[index].clone();
+            let path = format!("{}.{}", block["type"].as_str().ok_or("block type")?, field);
+            block.as_object_mut().ok_or("block object")?.remove(field);
+            if let Some(value) = &invalid {
+                block[field] = value.clone();
+            }
+            let blocks = json!([block]);
+            for (direction, error) in [
+                (
+                    "request",
+                    engine
+                        .decode_request(ANTHROPIC, &request_body(&blocks), &policy)
+                        .err(),
+                ),
+                (
+                    "response",
+                    engine
+                        .decode_response(ANTHROPIC, &response_body(&blocks), &policy)
+                        .err(),
+                ),
+            ] {
+                assert!(
+                    matches!(&error, Some(TranslationError::InvalidValue { path: actual, .. }) if actual == &path),
+                    "{direction}: {path}={invalid:?}, got {error:?}"
+                );
+            }
+        }
+        let mut request = engine
+            .decode_request(ANTHROPIC, &request_body(&content()), &policy)?
+            .request;
+        let mut response = engine
+            .decode_response(ANTHROPIC, &response_body(&content()), &policy)?
+            .response;
+        let mut invalid_call = request.messages[0].content[2].clone();
+        let ContentBlock::Mcp(McpContent::Call { call, .. }) = &mut invalid_call else {
+            return Err("expected MCP call".into());
+        };
+        call.id.clear();
+        let normalized = TranslationPolicy {
+            preservation: PreservationPolicy::Disabled,
+            ..Default::default()
+        };
+        let mut invalid_request = request.clone();
+        invalid_request.messages[0].content = vec![invalid_call.clone()];
+        let mut invalid_response = response.clone();
+        invalid_response.outputs[0].content = vec![invalid_call];
+        assert!(
+            matches!(engine.encode_request(ANTHROPIC, &invalid_request, &normalized),
+            Err(TranslationError::InvalidValue { path, .. }) if path == "mcp_tool_use.id")
+        );
+        assert!(
+            matches!(engine.encode_response(ANTHROPIC, &invalid_response, &normalized),
+            Err(TranslationError::InvalidValue { path, .. }) if path == "mcp_tool_use.id")
+        );
+        let ContentBlock::Mcp(McpContent::Result(result)) = &request.messages[0].content[3] else {
+            return Err("expected MCP result".into());
+        };
+        let kept = json!({"type": "text", "text": "kept"});
+        for (kind, nested, expected) in [
+            (
+                "function call",
+                request.messages[0].content[1].clone(),
+                Some(json!([kept])),
+            ),
+            ("MCP call", request.messages[0].content[2].clone(), None),
+            ("MCP result", request.messages[0].content[3].clone(), None),
+            (
+                "function result",
+                ContentBlock::ToolResult(result.clone()),
+                Some(json!([kept])),
+            ),
+            (
+                "foreign content",
+                ContentBlock::Unknown {
+                    provider: WireFormat::OpenAiResponses.into(),
+                    raw: json!({"extra": true}),
+                },
+                Some(json!([kept, {"type": "text", "text": "{\"extra\":true}"}])),
+            ),
+            (
+                "refusal",
+                ContentBlock::Refusal {
+                    text: "unavailable".into(),
+                },
+                Some(json!([kept, {"type": "text", "text": "unavailable"}])),
+            ),
+        ] {
+            for blocks in [
+                &mut request.messages[0].content,
+                &mut response.outputs[0].content,
+            ] {
+                let ContentBlock::Mcp(McpContent::Result(result)) = &mut blocks[3] else {
+                    return Err("expected MCP result".into());
+                };
+                result.content = vec![
+                    ContentBlock::Text {
+                        text: "kept".into(),
+                    },
+                    nested.clone(),
+                ];
+            }
+            for lossy_conversion_policy in [
+                LossyConversionPolicy::Reject,
+                LossyConversionPolicy::AllowWithDiagnostics,
+            ] {
+                let policy = TranslationPolicy {
+                    preservation: PreservationPolicy::Disabled,
+                    lossy_conversion_policy,
+                    ..Default::default()
+                };
+                for (direction, encoded) in [
+                    (
+                        "request",
+                        engine
+                            .encode_request(ANTHROPIC, &request, &policy)
+                            .map(|encoded| {
+                                (
+                                    encoded.body["messages"][0]["content"][3]["content"].clone(),
+                                    encoded.diagnostics,
+                                )
+                            }),
+                    ),
+                    (
+                        "response",
+                        engine
+                            .encode_response(ANTHROPIC, &response, &policy)
+                            .map(|encoded| {
+                                (
+                                    encoded.body["content"][3]["content"].clone(),
+                                    encoded.diagnostics,
+                                )
+                            }),
+                    ),
+                ] {
+                    let case = format!("{direction}: nested {kind}, {lossy_conversion_policy:?}");
+                    if let Some(expected) = &expected {
+                        let (content, diagnostics) =
+                            encoded.map_err(|error| format!("{case}: {error}"))?;
+                        assert_eq!(&content, expected, "{case}");
+                        assert!(diagnostics.is_empty(), "{case}");
+                    } else {
+                        assert!(
+                            matches!(encoded, Err(TranslationError::LossyConversion(_))),
+                            "{case}"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn unsupported_targets_reject_mcp_before_replay() -> TestResult {
+        use LossyConversionPolicy::{AllowWithDiagnostics, Reject};
+        use PreservationPolicy::{Disabled, InMemory};
+
+        let engine = TranslationEngine::default();
+        let policy = TranslationPolicy::default();
+        let mut request = engine
+            .decode_request(ANTHROPIC, &request_body(&content()), &policy)?
+            .request;
+        let mut response = engine
+            .decode_response(ANTHROPIC, &response_body(&content()), &policy)?
+            .response;
+        for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+            request
+                .preservation
+                .requests
+                .insert(target.into(), json!({"cached": true}));
+            response
+                .preservation
+                .responses
+                .insert(target.into(), json!({"cached": true}));
+            for (preservation, lossy_conversion_policy) in [
+                (InMemory, Reject),
+                (InMemory, AllowWithDiagnostics),
+                (Disabled, Reject),
+                (Disabled, AllowWithDiagnostics),
+            ] {
+                let policy = TranslationPolicy {
+                    preservation,
+                    lossy_conversion_policy,
+                    ..Default::default()
+                };
+                assert!(
+                    matches!(
+                        engine.encode_request(target, &request, &policy),
+                        Err(TranslationError::LossyConversion(_))
+                    ),
+                    "request: {target:?}, {preservation:?}, {lossy_conversion_policy:?}"
+                );
+                assert!(
+                    matches!(
+                        engine.encode_response(target, &response, &policy),
+                        Err(TranslationError::LossyConversion(_))
+                    ),
+                    "response: {target:?}, {preservation:?}, {lossy_conversion_policy:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn anthropic_replay_bypasses_capability_checks() -> TestResult {
+        let engine = TranslationEngine::default();
+        let body = request_body(&content());
+        let policy = TranslationPolicy {
+            preservation: PreservationPolicy::InMemory,
+            target_capabilities: TargetCapabilities {
+                supports_tools: Some(false),
+                supports_images: Some(false),
+                supports_files: Some(false),
+                ..Default::default()
+            },
+            lossy_conversion_policy: LossyConversionPolicy::Reject,
+            ..Default::default()
+        };
+        let request = engine.decode_request(ANTHROPIC, &body, &policy)?.request;
+        let encoded = engine.encode_request(ANTHROPIC, &request, &policy)?;
+        assert_eq!(encoded.body, body);
+        assert!(encoded.diagnostics.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn anthropic_reconstruction_enforces_capabilities() -> TestResult {
+        let engine = TranslationEngine::default();
+        let policy = TranslationPolicy::default();
+        let mut request = engine
+            .decode_request(ANTHROPIC, &request_body(&content()), &policy)?
+            .request;
+        // MCP history alone requires tools; nested result images and documents require media support.
+        request.messages[0].content.remove(1);
+        for target_capabilities in [
+            TargetCapabilities {
+                supports_tools: Some(false),
+                ..Default::default()
+            },
+            TargetCapabilities {
+                supports_images: Some(false),
+                ..Default::default()
+            },
+            TargetCapabilities {
+                supports_files: Some(false),
+                ..Default::default()
+            },
+        ] {
+            eprintln!("reconstruction: {target_capabilities:?}");
+            let mut policy = TranslationPolicy {
+                preservation: PreservationPolicy::Disabled,
+                target_capabilities,
+                lossy_conversion_policy: LossyConversionPolicy::Reject,
+                ..Default::default()
+            };
+            assert!(matches!(
+                engine.encode_request(ANTHROPIC, &request, &policy),
+                Err(TranslationError::LossyConversion(_))
+            ));
+            policy.lossy_conversion_policy = LossyConversionPolicy::AllowWithDiagnostics;
+            let encoded = engine.encode_request(ANTHROPIC, &request, &policy)?;
+            assert_eq!(encoded.diagnostics.len(), 1);
+        }
+        Ok(())
+    }
+}

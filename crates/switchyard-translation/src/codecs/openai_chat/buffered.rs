@@ -191,6 +191,13 @@ impl FormatCodec for OpenAiChatCodec {
         request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
+        crate::codecs::common::reject_mcp_content(
+            request
+                .instructions
+                .iter()
+                .flat_map(|instruction| &instruction.content)
+                .chain(request.messages.iter().flat_map(|message| &message.content)),
+        )?;
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::OpenAiChat, policy)
         {
@@ -383,6 +390,9 @@ impl FormatCodec for OpenAiChatCodec {
         response: &AggLlmResponse,
         _policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
+        crate::codecs::common::reject_mcp_content(
+            response.outputs.iter().flat_map(|output| &output.content),
+        )?;
         super::super::responses::validate_response_output(response, WireFormat::OpenAiChat)?;
         if let Some(body) =
             exact_preserved_response(&response.preservation, WireFormat::OpenAiChat, _policy)

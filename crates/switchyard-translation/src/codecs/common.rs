@@ -11,6 +11,24 @@ use crate::llm::{ContentBlock, LlmRequest, Tool, ToolChoice};
 // Internal provenance survives mutations that invalidate exact request replay.
 pub(crate) const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
 
+// Unsupported encoders must check before replay or text-only output assembly.
+pub(crate) fn reject_mcp_content<'a>(
+    content: impl IntoIterator<Item = &'a ContentBlock>,
+) -> Result<()> {
+    for block in content {
+        match block {
+            ContentBlock::Mcp(_) => {
+                return Err(TranslationError::LossyConversion(
+                    "MCP history encoding is not implemented for this target".into(),
+                ));
+            }
+            ContentBlock::ToolResult(result) => reject_mcp_content(&result.content)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// Returns true when the request was decoded from an Anthropic Messages body.
 pub(crate) fn is_anthropic_request(request: &LlmRequest) -> bool {
     request.extensions.fields.get(ANTHROPIC_REQUEST_KEY) == Some(&Value::Bool(true))

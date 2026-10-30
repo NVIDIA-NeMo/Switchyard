@@ -537,6 +537,7 @@ impl TranslatingLlmClient {
         model: &ModelId,
         streaming: bool,
     ) -> std::result::Result<EncodedResponse, AttemptFailure> {
+        let mcp_patterns = mcp_token_patterns(body);
         let client = if backend.is_forwarding_auth() {
             &self.forward_auth_client
         } else {
@@ -563,17 +564,18 @@ impl TranslatingLlmClient {
         if status.is_success() {
             if streaming {
                 let upstream_headers = response.headers().clone();
-                let chunks = match prepare_response_stream(response, backend, model).await {
-                    Ok(chunks) => chunks,
-                    Err(error) => {
-                        metrics::record_upstream_attempt(None);
-                        return Err(AttemptFailure {
-                            error,
-                            status: Some(status),
-                            retry_after: None,
-                        });
-                    }
-                };
+                let chunks =
+                    match prepare_response_stream(response, backend, model, mcp_patterns).await {
+                        Ok(chunks) => chunks,
+                        Err(error) => {
+                            metrics::record_upstream_attempt(None);
+                            return Err(AttemptFailure {
+                                error,
+                                status: Some(status),
+                                retry_after: None,
+                            });
+                        }
+                    };
                 metrics::record_upstream_attempt(Some(status.as_u16()));
                 return Ok(EncodedResponse::Streaming {
                     status: status.as_u16(),
@@ -594,10 +596,28 @@ impl TranslatingLlmClient {
                 }
             };
             metrics::record_upstream_attempt(Some(status.as_u16()));
+            let mut body = body.to_vec();
+            // Providers can return an error envelope under HTTP 200. Successful model
+            // output stays unchanged, including tool results and signed content.
+            if may_contain_mcp_tokens(&body, &mcp_patterns)
+                && may_be_error_envelope(&body)
+                && let Ok(mut value) = serde_json::from_slice::<Value>(&body)
+            {
+                if value.get("type").and_then(Value::as_str) == Some("error") {
+                    redact_mcp_json(&mut value, &mcp_patterns);
+                    body = value.to_string().into_bytes();
+                } else if value.get("status").and_then(Value::as_str) == Some("failed")
+                    && let Some(error) = value.get_mut("error")
+                {
+                    redact_mcp_json(error, &mcp_patterns);
+                    body = value.to_string().into_bytes();
+                }
+            }
             return Ok(EncodedResponse::Buffered {
                 status: status.as_u16(),
-                body: body.to_vec(),
+                body,
                 upstream_headers,
+                mcp_patterns,
             });
         }
 
@@ -613,7 +633,8 @@ impl TranslatingLlmClient {
                 });
             }
         };
-        let body = redact_forwarded_headers(body, metadata, backend.is_forwarding_auth());
+        let body =
+            redact_error_credentials(body, metadata, backend.is_forwarding_auth(), &mcp_patterns);
         metrics::record_upstream_attempt(Some(status.as_u16()));
         let error =
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
@@ -693,23 +714,25 @@ impl TranslatingLlmClient {
             EncodedResponse::Buffered {
                 body,
                 upstream_headers,
+                mcp_patterns,
                 ..
             } => {
                 let body = serde_json::from_slice::<Value>(&body).map_err(|error| {
                     LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
                 })?;
                 // Map a provider's failed generation to 502, even under HTTP 200.
-                // Redact forwarded credentials before returning the provider error.
+                // Redact request credentials before returning the provider error.
                 let mut agg =
                     observed_translation::decode_response(&body, wire_format).map_err(|error| {
                         match error {
                             TranslationError::UpstreamFailure { error } => {
                                 LlmClientError::UpstreamHttp {
                                     status: StatusCode::BAD_GATEWAY,
-                                    body: redact_forwarded_headers(
+                                    body: redact_error_credentials(
                                         json!({ "error": error }).to_string(),
                                         metadata.as_ref(),
                                         backend.is_forwarding_auth(),
+                                        &mcp_patterns,
                                     ),
                                 }
                             }
@@ -840,6 +863,7 @@ enum EncodedResponse {
         status: u16,
         body: Vec<u8>,
         upstream_headers: HeaderMap,
+        mcp_patterns: Vec<String>,
     },
     Streaming {
         status: u16,
@@ -917,13 +941,15 @@ async fn prepare_response_stream(
     response: reqwest::Response,
     backend: &Backend,
     model: &ModelId,
+    mcp_patterns: Vec<String>,
 ) -> Result<LlmResponseStream> {
     let bytes = response.bytes_stream().map(|chunk| {
         chunk
             .map(|bytes| bytes.to_vec())
             .map_err(convert_reqwest_error)
     });
-    let mut chunks = decode_stream(bytes, backend.wire_format())?;
+    let mut chunks = decode_stream(bytes, backend.wire_format())?
+        .map(move |item| item.map(|event| redact_mcp_event(event, &mcp_patterns)));
     match chunks.next().await {
         None => Ok(stream::empty().boxed()),
         // Nothing has reached the caller, so transport failures can still be retried.
@@ -940,6 +966,158 @@ async fn prepare_response_stream(
             }
             Ok(stream::once(ready(first)).chain(chunks).boxed())
         }
+    }
+}
+
+fn mcp_token_patterns(body: &Value) -> Vec<String> {
+    let servers = body
+        .get("mcp_servers")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten();
+    let tools = body
+        .get("tools")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .chain(
+            body.get("input")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|item| item["type"] == "additional_tools")
+                .filter_map(|item| item["tools"].as_array())
+                .flatten(),
+        )
+        .filter(|tool| tool["type"] == "mcp");
+    // Mask whole queries before credentials that may also occur within them.
+    let queries = servers
+        .clone()
+        .filter_map(|server| server.get("url").and_then(Value::as_str))
+        .chain(
+            tools
+                .clone()
+                .filter_map(|tool| tool.get("server_url").and_then(Value::as_str)),
+        )
+        .filter_map(|url| {
+            url.split('#')
+                .next()?
+                .split_once('?')
+                .map(|(_, query)| query)
+        });
+    queries
+        .chain(
+            servers.filter_map(|server| server.get("authorization_token").and_then(Value::as_str)),
+        )
+        .chain(tools.flat_map(|tool| {
+            tool.get("authorization")
+                .and_then(Value::as_str)
+                .into_iter()
+                .chain(
+                    // Any MCP header value may contain credentials.
+                    tool.get("headers")
+                        .and_then(Value::as_object)
+                        .into_iter()
+                        .flat_map(|headers| headers.values())
+                        .filter_map(Value::as_str),
+                )
+        }))
+        // Providers may echo only the credential from an Authorization header.
+        .flat_map(|token| {
+            let credential = token
+                .to_ascii_lowercase()
+                .find("bearer")
+                .map(|start| token[start + "bearer".len()..].trim());
+            [Some(token), credential].into_iter().flatten()
+        })
+        .filter(|token| !token.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn may_be_error_envelope(body: &[u8]) -> bool {
+    // Ignore content during this pass so successful bodies need no JSON tree.
+    // Parse keys normally to recognize escaped keys and ignore nested error fields.
+    #[derive(serde::Deserialize)]
+    struct Envelope {
+        #[serde(default, rename = "type")]
+        kind: Value,
+        #[serde(default)]
+        status: Value,
+    }
+    // Duplicate fields are accepted by Value but rejected by the derived struct.
+    // Let the full parser decide in that case so the precheck cannot hide errors.
+    serde_json::from_slice::<Envelope>(body)
+        .map(|envelope| envelope.kind == "error" || envelope.status == "failed")
+        .unwrap_or(true)
+}
+
+fn may_contain_mcp_tokens(body: &[u8], patterns: &[String]) -> bool {
+    patterns.iter().any(|pattern| {
+        body.windows(pattern.len())
+            .any(|bytes| bytes == pattern.as_bytes())
+    })
+}
+
+fn redact_mcp_tokens<'a>(text: &'a str, patterns: &[String]) -> Cow<'a, str> {
+    let mut text = Cow::Borrowed(text);
+    for pattern in patterns {
+        if text.contains(pattern.as_str()) {
+            text = Cow::Owned(text.replace(pattern, "[REDACTED]"));
+        }
+    }
+    text
+}
+
+fn redact_mcp_json(value: &mut Value, patterns: &[String]) {
+    match value {
+        Value::String(text) => {
+            if let Cow::Owned(redacted) = redact_mcp_tokens(text, patterns) {
+                *text = redacted;
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                redact_mcp_json(value, patterns);
+            }
+        }
+        Value::Object(object) => {
+            for value in object.values_mut() {
+                redact_mcp_json(value, patterns);
+            }
+        }
+        _ => {}
+    }
+}
+
+// Scrub error diagnostics and their preserved frames; successful stream events stay intact.
+fn redact_mcp_event(event: LlmResponseStreamEvent, patterns: &[String]) -> LlmResponseStreamEvent {
+    if patterns.is_empty()
+        || !event.normalized().iter().any(|chunk| {
+            matches!(
+                chunk,
+                LlmResponseChunk::StreamError { .. } | LlmResponseChunk::DecodeError { .. }
+            )
+        })
+    {
+        return event;
+    }
+    let (preserved, mut normalized) = event.into_parts();
+    for chunk in &mut normalized {
+        if let LlmResponseChunk::StreamError { message } | LlmResponseChunk::DecodeError { message } =
+            chunk
+            && let Cow::Owned(redacted) = redact_mcp_tokens(message, patterns)
+        {
+            *message = redacted;
+        }
+    }
+    match preserved {
+        Some(preserved) => {
+            let (source, mut raw) = preserved.into_parts();
+            redact_mcp_json(&mut raw, patterns);
+            LlmResponseStreamEvent::preserved(source, raw, normalized)
+        }
+        None => LlmResponseStreamEvent::new(normalized),
     }
 }
 
@@ -1485,6 +1663,19 @@ fn is_non_forwardable_header(name: &str, headers: &HeaderMap) -> bool {
                 .split(|byte| *byte == b',')
                 .any(|option| option.trim_ascii().eq_ignore_ascii_case(name.as_bytes()))
         })
+}
+
+fn redact_error_credentials(
+    body: String,
+    metadata: Option<&Metadata>,
+    is_forwarding_auth: bool,
+    mcp_patterns: &[String],
+) -> String {
+    let body = redact_forwarded_headers(body, metadata, is_forwarding_auth);
+    if !may_contain_mcp_tokens(body.as_bytes(), mcp_patterns) {
+        return body;
+    }
+    redact_mcp_tokens(&body, mcp_patterns).into_owned()
 }
 
 // Unknown application headers can carry credentials when auth forwarding is enabled.
@@ -4049,5 +4240,255 @@ mod tests {
             )
             .await?;
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn anthropic_mcp_success_preserves_buffered_response_bytes()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let response_body = r#"{ "type": "message", "z": 1e2, "a": 2, "content": [{"type": "mcp_tool_result", "tool_use_id": "mcptoolu_1", "content": [{"type": "text", "text": "synthetic-mcp-token"}]}] }"#;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_raw(response_body, "application/json"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let backend = Backend::Anthropic(config(&server.uri()));
+        let model = ModelId::from("claude");
+        let client =
+            TranslatingLlmClient::new(&[ModelConfig::new(model.clone(), backend.clone(), None)])?;
+        let response = client
+            .send_once(
+                &backend.url(),
+                &backend,
+                &json!({"mcp_servers": [{"authorization_token": "synthetic-mcp-token"}]}),
+                None,
+                &model,
+                false,
+            )
+            .await
+            .map_err(|failure| failure.error)?;
+        let EncodedResponse::Buffered { body, .. } = response else {
+            return Err("expected a buffered response".into());
+        };
+        assert_eq!(body, response_body.as_bytes());
+        server.verify().await;
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_url_queries_are_redacted_from_errors() {
+        let url = "https://example.invalid/mcp?api_key=secret&version=1#fragment";
+        let tools = json!([{"type": "mcp", "server_url": url, "authorization": "secret"}]);
+        for body in [
+            json!({"mcp_servers": [{"url": url}]}),
+            json!({"mcp_servers": [{"url": url, "authorization_token": "secret"}]}),
+            json!({"tools": tools}),
+            json!({"input": [{"type": "additional_tools", "tools": tools}]}),
+        ] {
+            let patterns = mcp_token_patterns(&body);
+            let mut error = json!({"error": {"message": format!("Rejected {url}")}});
+            redact_mcp_json(&mut error, &patterns);
+            assert_eq!(
+                error["error"]["message"],
+                "Rejected https://example.invalid/mcp?[REDACTED]#fragment"
+            );
+        }
+        let url = "https://example.invalid/mcp#fragment?version=1";
+        let patterns = mcp_token_patterns(&json!({"tools": [{
+            "type": "mcp", "server_url": url
+        }]}));
+        assert!(patterns.is_empty(), "a fragment is not a query");
+    }
+
+    #[test]
+    fn responses_mcp_credentials_are_redacted_from_errors() {
+        let body = json!({"tools": [
+            {"type": "mcp", "server_label": "remote", "server_url": "https://example.invalid/mcp",
+                "authorization": "synthetic-oauth-secret"},
+            {"type": "mcp", "server_label": "private", "tunnel_id": "tunnel_test",
+                "headers": {"X-Api-Key": "synthetic-header-secret", "Authorization": "Bearer synthetic-bearer-secret"}},
+            {"type": "mcp", "server_label": "spaced", "server_url": "https://example.invalid/mcp",
+                "headers": {"Authorization": "  bearer  ABCXYZ  "}}
+        ]});
+        for body in [
+            body.clone(),
+            json!({"input": [{"type": "additional_tools", "tools": body["tools"]}]}),
+        ] {
+            let patterns = mcp_token_patterns(&body);
+            let mut error = json!({"error": {
+                "message": body.to_string(), "detail": "synthetic-bearer-secret ABCXYZ"
+            }});
+            redact_mcp_json(&mut error, &patterns);
+            let error = error.to_string();
+            for secret in [
+                "synthetic-oauth-secret",
+                "synthetic-header-secret",
+                "synthetic-bearer-secret",
+                "ABCXYZ",
+            ] {
+                assert!(!error.contains(secret));
+            }
+            assert!(error.contains("remote"));
+        }
+    }
+
+    #[tokio::test]
+    async fn responses_failed_http_200_redacts_mcp_error_only()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        let response_body = json!({
+            "status": "failed",
+            "error": {"code": "mcp_error", "message": "Rejected synthetic-mcp-token"},
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "synthetic-mcp-token"}]}]
+        });
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&response_body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let backend = Backend::OpenAiResponses(config(&server.uri()));
+        let model = ModelId::from("gpt");
+        let client =
+            TranslatingLlmClient::new(&[ModelConfig::new(model.clone(), backend.clone(), None)])?;
+        let response = client
+            .send_once(
+                &backend.url(),
+                &backend,
+                &json!({"tools": [{"type": "mcp", "authorization": "synthetic-mcp-token"}]}),
+                None,
+                &model,
+                false,
+            )
+            .await
+            .map_err(|failure| failure.error)?;
+        let EncodedResponse::Buffered { body, .. } = response else {
+            return Err("expected a buffered response".into());
+        };
+        let body: Value = serde_json::from_slice(&body)?;
+        assert_eq!(body["error"]["message"], "Rejected [REDACTED]");
+        assert_eq!(body["error"]["code"], "mcp_error");
+        assert_eq!(body["output"], response_body["output"]);
+        server.verify().await;
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_error_envelope_detection_uses_top_level_fields() {
+        for body in [
+            r#"{"type":"error","error":{"message":"failed"}}"#,
+            r#"{"status":"failed","error":{}}"#,
+            r#"{"\u0074ype":"\u0065rror"}"#,
+            r#"{"type":"message","type":"error"}"#,
+        ] {
+            assert!(may_be_error_envelope(body.as_bytes()));
+        }
+        for body in [
+            r#"{"type":"message","content":[{"type":"error","status":"failed","text":"C:\\tmp"}]}"#,
+            r#"{"status":"completed","output":[]}"#,
+        ] {
+            assert!(!may_be_error_envelope(body.as_bytes()));
+        }
+    }
+
+    #[tokio::test]
+    async fn translated_errors_redact_mcp_credentials()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status": "failed", "error": null, "output": []
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        // Match text generated by translation, which is absent from the upstream body.
+        for forward_auth in [false, true] {
+            let mut config = config(&server.uri());
+            config.forward_auth = forward_auth;
+            config.extra_body.insert(
+                "tools".to_string(),
+                json!([{
+                    "type": "mcp", "server_label": "remote",
+                    "server_url": "https://example.invalid/mcp", "authorization": "error details"
+                }]),
+            );
+            let client = TranslatingLlmClient::new(&[ModelConfig::new(
+                "gpt",
+                Backend::OpenAiResponses(config),
+                None,
+            )])?;
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                "x-api-key",
+                http::HeaderValue::from_static("provider reported"),
+            );
+            let Err(LlmClientError::UpstreamHttp { status, body }) = client
+                .call_rewrite_model_raw(
+                    json!({"model": "gpt", "input": "hello"}),
+                    Some(headers),
+                    None,
+                    WireFormat::OpenAiResponses,
+                )
+                .await
+            else {
+                panic!("expected a translated upstream error");
+            };
+            assert_eq!(status, StatusCode::BAD_GATEWAY);
+            assert!(!body.contains("error details"), "MCP credential leaked");
+            assert_eq!(body.contains("provider reported"), !forward_auth);
+        }
+        server.verify().await;
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_redaction_matches_literal_tokens() {
+        for token in ["x", "synthetic-mcp-token"] {
+            let patterns = mcp_token_patterns(&json!({"mcp_servers": [{
+                "authorization_token": token
+            }]}));
+            assert!(!may_contain_mcp_tokens(b"ordinary error detail", &patterns));
+            let echo = json!({"authorization_token": token}).to_string();
+            let mut value = json!({"type": "error", "error": {"message": echo}});
+            assert!(may_contain_mcp_tokens(
+                value.to_string().as_bytes(),
+                &patterns
+            ));
+            redact_mcp_json(&mut value, &patterns);
+            assert!(!value.to_string().contains(token));
+            assert!(
+                value["error"]["message"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("[REDACTED]"))
+            );
+        }
+        let token = "synthetic-mcp-token";
+        let patterns = mcp_token_patterns(&json!({"mcp_servers": [{
+            "authorization_token": token
+        }]}));
+        for text in ["ordinary error detail", r"C:\tmp", r"failed parsing \u0061"] {
+            assert_eq!(redact_mcp_tokens(text, &patterns), text);
+        }
+    }
+
+    #[test]
+    fn mcp_redaction_preserves_successful_stream_events() {
+        let raw = json!({"type": "content_block_delta", "index": 0,
+            "delta": {"type": "text_delta", "text": "synthetic-mcp-token"}});
+        let event = LlmResponseStreamEvent::preserved(
+            WireFormat::AnthropicMessages,
+            raw.clone(),
+            vec![LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "synthetic-mcp-token".to_string(),
+            }],
+        );
+        let patterns = mcp_token_patterns(&json!({"mcp_servers": [{
+            "authorization_token": "synthetic-mcp-token"
+        }]}));
+        let event = redact_mcp_event(event, &patterns);
+        assert_eq!(event.preservation().expect("preserved event").raw(), &raw);
     }
 }

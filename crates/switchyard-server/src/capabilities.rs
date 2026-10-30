@@ -4,7 +4,7 @@
 //! Reject inputs that the selected route explicitly disables.
 
 use serde_json::Value;
-use switchyard_protocol::{ContentBlock, LlmRequest};
+use switchyard_protocol::{ContentBlock, LlmRequest, McpContent};
 use switchyard_runner::ModelCapabilities;
 
 /// Return the first explicitly disabled capability used by decoded or preserved input.
@@ -119,12 +119,14 @@ fn unsupported_content(
 ) -> Option<&'static str> {
     content.iter().find_map(|block| match block {
         ContentBlock::Image { .. } if capabilities.vision == Some(false) => Some("vision"),
-        ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_)
+        ContentBlock::ToolCall(_) | ContentBlock::ToolResult(_) | ContentBlock::Mcp(_)
             if capabilities.tool_calling == Some(false) =>
         {
             Some("tool_calling")
         }
-        ContentBlock::ToolResult(result) => unsupported_content(capabilities, &result.content),
+        ContentBlock::ToolResult(result) | ContentBlock::Mcp(McpContent::Result(result)) => {
+            unsupported_content(capabilities, &result.content)
+        }
         _ => None,
     })
 }
@@ -270,6 +272,48 @@ mod tests {
             },
             "vision",
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn mcp_history_requires_tools_and_nested_images_require_vision() -> TestResult {
+        let body = json!({"messages": [{"role": "assistant", "content": [
+            {"type": "mcp_tool_use", "id": "call_1", "name": "lookup", "server_name": "inventory", "input": {}},
+            {"type": "mcp_tool_result", "tool_use_id": "call_1", "content": [
+                {"type": "text", "text": "Found it."},
+                {"type": "image", "source": {"type": "url", "url": "https://example.test/image.png"}}
+            ]}
+        ]}]});
+        let mut request = decode_request(AnthropicMessages, &body)?;
+        // Check the decoded IR without the raw-body fallback.
+        let check = |request: &LlmRequest, tool_calling, vision| {
+            unsupported_capability(
+                ModelCapabilities {
+                    tool_calling,
+                    vision,
+                    ..Default::default()
+                },
+                request,
+                &json!({}),
+            )
+        };
+        for (tool_calling, vision, expected) in [
+            (Some(false), None, Some("tool_calling")),
+            (Some(true), Some(false), Some("vision")),
+            (Some(true), Some(true), None),
+        ] {
+            assert_eq!(
+                check(&request, tool_calling, vision),
+                expected,
+                "tool_calling={tool_calling:?}, vision={vision:?}"
+            );
+        }
+        request.messages[0].content.remove(0);
+        assert_eq!(
+            check(&request, Some(false), None),
+            Some("tool_calling"),
+            "MCP results alone require tool calling"
+        );
         Ok(())
     }
 }
