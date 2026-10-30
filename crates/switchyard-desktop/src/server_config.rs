@@ -120,7 +120,7 @@ pub const ALGORITHMS: &[Algorithm] = &[
             (&["mode"], Setting::Text("capability")),
             (&["base_threshold"], Setting::Number(0.5)),
         ],
-        subagents: false,
+        subagents: true,
     },
     Algorithm {
         kind: "composite",
