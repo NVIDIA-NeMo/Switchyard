@@ -2439,8 +2439,8 @@ during execution. Both algorithms and the
 relationship between them are fixed, and the configuration below names them
 directly rather than composing arbitrary algorithms.</p>
 <p>Under capable-first, <code>stage.efficient_hold_turns</code> defaults to <code>-1</code>: after switching
-to efficient, it stays there until session state is cleared. Efficient-first
-defaults to <code>0</code>. Set this field explicitly to override either default; <code>0</code>
+to efficient, it stays there until the next user-turn reset or session reset. Efficient-first
+defaults to <code>0</code>. Set this field explicitly to override either default. <code>0</code>
 disables the hold, and a positive value holds that many subsequent requests.</p>
 <p>The classifier can use an LLM judge or a decision model. A decision
 model is configured through a decision client and target, separately from the
@@ -2504,9 +2504,9 @@ stage classifier settings and target. It runs only when stage signals abstain.
 On model fallback, each candidate receives the active profile's prompt for its tier.
 Omitted settings inherit from <code>stage</code>, including the corresponding threshold.
 A supplied <code>tool_semantics</code> or <code>handoff_notes</code> table replaces the shared table.</p>
-<p>Either table enables two profiles with separate hold state. Switching back
-resumes that profile's holds. Inactive profiles do not consume hold turns.
-With neither table, existing behavior is preserved.</p>
+<p>With <code>user_turn</code>, each new user message resets holds and tool signals and starts
+on the selected profile's initial tier. Its classifier runs only on tool continuations.
+Signals use only the current user turn. <code>new_session</code> retains session-wide state.</p>
 <h2 id="custom-llm-classifier">Custom LLM classifier<a class="headerlink" href="#custom-llm-classifier" title="Permanent link">&para;</a></h2>
 <p>To select a tier directly with your own prompt, keep the stage block and use:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[routes.switchyard.classifier]</span>
