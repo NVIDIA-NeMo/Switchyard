@@ -1,0 +1,154 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+//! The frozen commit rules: pure, and indeterminate evidence never commits.
+//!
+//! A signal is `None` when its verifier was never consulted and `Some(Unknown)`
+//! when it was consulted and gave no usable verdict.
+
+use super::{Branch, Capabilities};
+
+/// Version of these rules and dials, carried on every decision record.
+pub(super) const POLICY_VERSION: &str = "1.2";
+
+const READOUT: f64 = 0.9;
+const DELIBERATION: f64 = 0.5;
+/// Readout at which clean coding commits without the capable tier's affirmation.
+const CODING_CONFIDENT: f64 = 0.6;
+/// Readout required to serve a typed answer without capable-tier verification.
+const ANSWER_CONFIDENT: f64 = READOUT;
+/// Most tool results a run may contain and still recover without the capable tier.
+const SHORT_RUN_MAX_TOOL_RESULTS: i32 = 100;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Route {
+    Efficient,
+    Capable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Tri {
+    Yes,
+    No,
+    Unknown,
+}
+
+/// Evidence gathered for one decision.
+#[derive(Default)]
+pub(super) struct Signals {
+    /// Efficient logprob score that the attempt is correct.
+    pub(super) readout: Option<f64>,
+    /// Efficient logprob score that the attempt is correct, read after a deliberation.
+    pub(super) deliberation: Option<f64>,
+    /// Capable-tier evidence verdict.
+    pub(super) capable_judge: Option<Tri>,
+    /// Capable-tier answer verdict after `capable_judge` affirms.
+    pub(super) evidence_confirm: Option<Tri>,
+    /// Capable-tier verdicts on the answer branch.
+    pub(super) answer_verifier: Option<Tri>,
+    pub(super) evidence_verifier: Option<Tri>,
+}
+
+/// How an agentic run's tool record lets it spend verification rungs.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AgenticRun {
+    /// Earlier tool errors veto the commit; no rung can change it.
+    Vetoed,
+    Clean,
+    /// A bounded run that failed and ended clean: efficient rungs only.
+    ShortRecovered,
+    /// A long run with a clean tail: efficient rungs, then the capable-tier judge.
+    ConfirmedRecovery,
+}
+
+pub(super) fn agentic_run(
+    caps: &Capabilities,
+    confirmed_min_clean_tail: Option<i32>,
+) -> AgenticRun {
+    let Some(tools) = caps.tools else {
+        return AgenticRun::Vetoed;
+    };
+    if tools.errors == 0 {
+        AgenticRun::Clean
+    } else if tools.results <= SHORT_RUN_MAX_TOOL_RESULTS && tools.clean_tail > 0 {
+        AgenticRun::ShortRecovered
+    } else if confirmed_min_clean_tail.is_some_and(|min| tools.clean_tail >= min) {
+        AgenticRun::ConfirmedRecovery
+    } else {
+        AgenticRun::Vetoed
+    }
+}
+
+/// The readout bar that licenses a commit on each branch.
+fn dial(branch: Branch) -> Option<f64> {
+    match branch {
+        Branch::Answer => Some(ANSWER_CONFIDENT),
+        Branch::DefaultVerified => Some(0.7),
+        Branch::Chat => Some(0.3),
+        Branch::Agentic | Branch::Coding => Some(0.2),
+        Branch::Unknown => None,
+    }
+}
+
+fn clears(score: Option<f64>, bar: f64) -> bool {
+    score.is_some_and(|score| score >= bar)
+}
+
+fn affirms(verdict: Option<Tri>) -> bool {
+    verdict == Some(Tri::Yes)
+}
+
+/// The efficient rungs affirm: the readout at the branch dial, or deliberation.
+pub(super) fn efficient_verified(branch: Branch, signals: &Signals) -> bool {
+    let bar = dial(branch).map_or(READOUT, |dial| dial.min(READOUT));
+    clears(signals.readout, bar) || clears(signals.deliberation, DELIBERATION)
+}
+
+/// Commits the efficient attempt or escalates.
+///
+/// Coding has no sandboxed checker here, so below a confident readout it commits
+/// only on the capable tier's affirmation.
+pub(super) fn decide(
+    caps: &Capabilities,
+    signals: &Signals,
+    confirmed_min_clean_tail: Option<i32>,
+) -> Route {
+    let branch = caps.branch;
+    let clean = caps.tools.is_none_or(|tools| tools.errors == 0);
+    let commit = match branch {
+        Branch::Unknown => false,
+        Branch::Coding => {
+            (clean && clears(signals.readout, CODING_CONFIDENT))
+                || (efficient_verified(branch, signals) && affirms(signals.capable_judge))
+        }
+        Branch::Answer => {
+            affirms(signals.answer_verifier)
+                || affirms(signals.evidence_verifier)
+                || clears(signals.readout, ANSWER_CONFIDENT)
+        }
+        Branch::Chat => {
+            clean
+                && (clears(signals.deliberation, DELIBERATION)
+                    || clears(signals.readout, 0.3)
+                    || (affirms(signals.capable_judge) && affirms(signals.evidence_confirm)))
+        }
+        Branch::Agentic => {
+            efficient_verified(branch, signals)
+                && match agentic_run(caps, confirmed_min_clean_tail) {
+                    AgenticRun::Clean | AgenticRun::ShortRecovered => true,
+                    AgenticRun::ConfirmedRecovery => affirms(signals.capable_judge),
+                    AgenticRun::Vetoed => false,
+                }
+        }
+        Branch::DefaultVerified => {
+            clean
+                && (efficient_verified(branch, signals)
+                    || (affirms(signals.capable_judge) && affirms(signals.evidence_confirm)))
+        }
+    };
+    if commit {
+        Route::Efficient
+    } else {
+        Route::Capable
+    }
+}

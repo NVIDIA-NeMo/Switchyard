@@ -61,20 +61,17 @@ stamp every request of one evaluation with it, sub-agents included, so the
 budget means "reviews for this task" even behind a gateway shared by many
 tasks — then the session id resolved from harness headers (such as
 `x-switchyard-session-id`), and one scope per server when neither is present.
-For hosts that return client errors to the core algorithm, a failed consult refunds
-the review budget and counts toward a separate cap of 3. The Rust runner stops on
-HTTP client errors before returning them to the algorithm, so failed HTTP calls
-do not refund this budget. An unparseable verdict still refunds the budget and
-passes the turn through as APPROVE.
+A failed consult refunds the review budget and counts toward a separate cap of 3.
+An unparseable verdict also refunds the budget and passes the turn through as
+APPROVE.
 
 Long sessions are truncated middle-out before the consult: the transcript keeps
 the task statement at the start and the most recent work at the end, marked
 `...<middle of the conversation truncated>...`, capped at
-`transcript_max_chars`. `fail_open` controls failures returned to the core
-algorithm by its host. The Rust runner stops the request after an HTTP client's
-configured retries fail or its deadline expires, even with `fail_open = true`.
-HTTP client errors also stop the request when `timeout_ms` is unset. A timeout
-before the answer starts returns `504`.
+`transcript_max_chars`. `fail_open` (default `true`) lets the buffered executor
+turn through when the advisor call fails after its client's retries or deadline,
+and `/v1/stats` counts the failure under `advisor_gate.consult_failures`. With
+`fail_open = false` the request stops with a server error instead.
 
 Gate behavior is observable at `/v1/stats` under `advisor_gate`: verdicts by
 trigger, consult failures by reason, and REDO-discarded turns with their token

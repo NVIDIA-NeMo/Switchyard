@@ -25,6 +25,11 @@ Integrations:
 - Be humble. Do not inflate claims.
 - Do not say what you would do unless asked.
 
+## Official documentation
+
+- Publish documentation about using, integrating, configuring, and understanding Switchyard's product and software.
+- Keep repository CI, documentation publishing, release procedures, and maintainer or agent workflows in contributor documentation or excluded internal docs, not in the official product documentation.
+
 ## Engineering guidance
 
 - Prefer the smallest direct solution.

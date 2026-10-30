@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Strategic merge patch for Dynamo's existing switchyard-preproc Deployment.
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+    rollingUpdate: null
+  template:
+    spec:
+      containers:
+      - name: preproc
+        env:
+        - name: ROUTES_CONFIG
+          value: /etc/switchyard/routes.toml
+        - name: METRICS_CONFIG
+          value: /etc/switchyard/metrics.toml
+      volumes:
+      - name: routing-config
+        configMap:
+          name: switchyard-task-config

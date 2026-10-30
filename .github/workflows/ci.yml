@@ -108,8 +108,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        id: python
+        with:
+          python-version: "3.12"
       - name: Install Rust components
         run: rustup component add rustfmt clippy
+      - name: Select Python for PyO3
+        run: echo "PYO3_PYTHON=${{ steps.python.outputs.python-path }}" >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-bin: false
@@ -124,6 +130,12 @@ jobs:
         run: cargo test --workspace --locked
       - name: cargo test (prefill-router)
         run: cargo test -p switchyard-runner --features prefill-router --locked
+
+  go:
+    name: Go bindings
+    needs: changes
+    if: needs.changes.outputs.full_ci == 'true'
+    uses: ./.github/workflows/go-bindings.yml
 
   node:
     name: TypeScript bindings and Pi example
@@ -278,7 +290,7 @@ jobs:
   ci-success:
     name: CI Success
     if: always()
-    needs: [changes, lint, spdx-headers, rust, node, typecheck, test, litellm, slim-install-smoke]
+    needs: [changes, lint, spdx-headers, rust, go, node, typecheck, test, litellm, slim-install-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs succeeded

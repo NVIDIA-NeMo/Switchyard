@@ -26,7 +26,7 @@ use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
     MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
-    SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    SamplingParams, StopReason, Tool, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -114,7 +114,10 @@ impl FormatCodec for OpenAiResponsesCodec {
         let mut tool_namespaces = Map::new();
         let mut custom_tools = Map::new();
         request.tools =
-            decode_responses_tools(body.get("tools"), &mut tool_namespaces, &mut custom_tools);
+            decode_responses_tools(body.get("tools"), &mut tool_namespaces, &mut custom_tools)
+                .into_iter()
+                .map(Tool::from)
+                .collect();
         // Responses-lite clients (Codex with a GPT-5 model) carry the tool definitions inside
         // `input` as an `additional_tools` developer item instead of top-level `tools`. Those
         // definitions are the request's tools; the item itself is kept verbatim so the request
@@ -126,11 +129,15 @@ impl FormatCodec for OpenAiResponsesCodec {
                     && item.get("type").and_then(Value::as_str) == Some("additional_tools")
                     && let Some(tools) = item.get("tools").and_then(Value::as_array)
                 {
-                    request.tools.extend(decode_responses_tools(
-                        Some(&Value::Array(tools.clone())),
-                        &mut tool_namespaces,
-                        &mut custom_tools,
-                    ));
+                    request.tools.extend(
+                        decode_responses_tools(
+                            Some(&Value::Array(tools.clone())),
+                            &mut tool_namespaces,
+                            &mut custom_tools,
+                        )
+                        .into_iter()
+                        .map(Tool::from),
+                    );
                     additional_tools.extend(tools.iter().cloned());
                 }
             }
@@ -215,9 +222,7 @@ impl FormatCodec for OpenAiResponsesCodec {
         );
         if let Some(additional) = crate::codex_custom_tools::additional_tools(&request.extensions) {
             // A Responses-lite request carried its tools inside `input`; give them back the same
-            // way, verbatim, and leave top-level `tools` absent as the client did. A request that
-            // reduced to a single user text encodes `input` as a plain string, which has no
-            // room for an item, so it is widened to the equivalent one-message array first.
+            // way, verbatim, and leave top-level `tools` absent as the client did.
             let item = json!({
                 "type": "additional_tools",
                 "role": "developer",
@@ -225,10 +230,6 @@ impl FormatCodec for OpenAiResponsesCodec {
             });
             match body.get_mut("input") {
                 Some(Value::Array(input)) => input.insert(0, item),
-                Some(input @ Value::String(_)) => {
-                    let text = input.take();
-                    *input = Value::Array(vec![item, json!({"role": "user", "content": text})]);
-                }
                 _ => body
                     .insert("input".to_string(), Value::Array(vec![item]))
                     .map_or((), |_| ()),
@@ -240,7 +241,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                     &request.tools,
                     crate::codex_namespaces::tool_namespaces(&request.extensions),
                     crate::codex_custom_tools::custom_tools(&request.extensions),
-                ),
+                )?,
             );
         }
         if let Some(choice) = &request.tool_choice
@@ -1271,14 +1272,8 @@ fn encode_responses_input(
     // custom outputs. A tool result is typed by the call it answers, and Responses history
     // always lists the call before its output, so recording ids as calls are encoded is enough
     // to type the outputs that follow.
-    if messages.len() == 1
-        && matches!(messages[0].role, Role::User)
-        && messages[0].content.len() == 1
-        && matches!(messages[0].content[0], ContentBlock::Text { .. })
-        && let ContentBlock::Text { text } = &messages[0].content[0]
-    {
-        return Ok(Value::String(text.clone()));
-    }
+    //
+    // A lone user text is still sent as an item list: the Codex backend rejects a string `input`.
     let mut encoded = Vec::new();
     // Some upstream translators (Kimi K3) resolve a tool output by an explicit
     // `name`, so pair every output with the name of the call it answers.
@@ -1631,6 +1626,11 @@ fn encode_responses_content(
                     blocks.push(json!({"type": "input_text", "text": file_source_text(source)}));
                 }
             },
+            ContentBlock::Mcp(_) => {
+                return Err(TranslationError::LossyConversion(
+                    "MCP history encoding is not implemented".into(),
+                ));
+            }
             ContentBlock::Unknown { raw, .. } => {
                 push_lossy(
                     diagnostics,
@@ -1694,13 +1694,18 @@ fn responses_file_part(source: &FileSource) -> Option<Value> {
 // A Responses client understands Codex containers, so a tool whose name this
 // request qualified is regrouped under the container it came from.
 fn encode_responses_tools(
-    tools: &[ToolDefinition],
+    tools: &[Tool],
     namespaces: Option<&Map<String, Value>>,
     custom_tools: Option<&Map<String, Value>>,
-) -> Value {
+) -> Result<Value> {
     let mut out: Vec<Value> = Vec::new();
     let mut containers: Vec<(String, Vec<Value>)> = Vec::new();
     for tool in tools {
+        let tool = tool.function().ok_or_else(|| {
+            TranslationError::LossyConversion(
+                "MCP and provider tool encoding is not implemented".into(),
+            )
+        })?;
         // A freeform tool goes back out exactly as the client defined it.
         if let Some(custom) = custom_tools.and_then(|custom| custom.get(&tool.name)) {
             out.push(custom.clone());
@@ -1745,7 +1750,7 @@ fn encode_responses_tools(
             "tools": children,
         }));
     }
-    Value::Array(out)
+    Ok(Value::Array(out))
 }
 
 // Encodes normalized tool choice into Responses JSON.
@@ -2083,8 +2088,13 @@ fn decode_responses_usage(value: Option<&Value>) -> Usage {
         .or_else(|| value.get("completion_tokens"))
         .and_then(Value::as_u64);
     Usage {
+        provider_cost: crate::codecs::common::provider_cost(value),
         input_tokens,
-        cache: Usage::cache_details(cached_input_tokens, cache_creation_input_tokens),
+        cache: crate::codecs::common::cache_usage_details(
+            value,
+            cached_input_tokens,
+            cache_creation_input_tokens,
+        ),
         output_tokens,
         total_tokens: value
             .get("total_tokens")
@@ -2107,7 +2117,7 @@ fn decode_responses_usage(value: Option<&Value>) -> Usage {
 }
 
 // Encodes normalized usage into Responses usage JSON.
-fn encode_responses_usage(usage: &Usage) -> Value {
+pub(super) fn encode_responses_usage(usage: &Usage) -> Value {
     let input_tokens = usage.input_tokens.unwrap_or(0)
         + usage.cached_input_tokens().unwrap_or(0)
         + usage.cache_creation_input_tokens().unwrap_or(0);
@@ -2115,19 +2125,22 @@ fn encode_responses_usage(usage: &Usage) -> Value {
     // upstream that reports no cache or reasoning breakdown means zero, not "unknown"; omitting
     // them instead yields a payload that fails to deserialize into the OpenAI SDK's
     // ResponseUsage, which types both as non-optional.
-    json!({
-        "input_tokens": input_tokens,
-        "output_tokens": usage.output_tokens.unwrap_or(0),
-        "total_tokens": usage
-            .total_tokens
-            .or_else(|| Some(input_tokens + usage.output_tokens.unwrap_or(0)))
-            .unwrap_or(0),
-        "input_tokens_details": {
-            "cached_tokens": usage.cached_input_tokens().unwrap_or(0),
-            "cache_write_tokens": usage.cache_creation_input_tokens().unwrap_or(0),
-        },
-        "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens.unwrap_or(0)},
-    })
+    crate::codecs::common::encode_usage_metadata(
+        json!({
+            "input_tokens": input_tokens,
+            "output_tokens": usage.output_tokens.unwrap_or(0),
+            "total_tokens": usage
+                .total_tokens
+                .or_else(|| Some(input_tokens + usage.output_tokens.unwrap_or(0)))
+                .unwrap_or(0),
+            "input_tokens_details": {
+                "cached_tokens": usage.cached_input_tokens().unwrap_or(0),
+                "cache_write_tokens": usage.cache_creation_input_tokens().unwrap_or(0),
+            },
+            "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens.unwrap_or(0)},
+        }),
+        usage,
+    )
 }
 
 /// Re-emits captured request extensions that the Responses format accepts.

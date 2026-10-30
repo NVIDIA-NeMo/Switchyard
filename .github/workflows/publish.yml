@@ -32,8 +32,8 @@ permissions:
 
 jobs:
   # OSS-style split:
-  # - Root vMAJOR.MINOR.PATCH tags run validation, build the complete matrix, publish to
-  #   PyPI, and create a GitHub Release.
+  # - Root vMAJOR.MINOR.PATCH and vMAJOR.MINOR.PATCHaN tags run validation, build the
+  #   complete matrix, publish to PyPI, and create a GitHub Release.
   # - Manual dev builds create artifacts only. They are useful for branch validation but never
   #   publish to PyPI.
   #
@@ -43,9 +43,12 @@ jobs:
     name: Validate release ref
     if: ${{ (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    outputs:
+      is_alpha: ${{ steps.release.outputs.is_alpha }}
     steps:
       - uses: actions/checkout@v4
       - name: Check release tag
+        id: release
         if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
         run: |
           python - <<'PY'
@@ -54,8 +57,10 @@ jobs:
           import tomllib
 
           tag = os.environ["GITHUB_REF_NAME"]
-          if not re.fullmatch(r"v\d+\.\d+\.\d+", tag):
-              raise SystemExit(f"release tags must look like vMAJOR.MINOR.PATCH, got {tag!r}")
+          match = re.fullmatch(r"v\d+\.\d+\.\d+(?P<alpha>a(?:0|[1-9]\d*))?", tag)
+          if match is None:
+              raise SystemExit(f"release tags must look like v1.2.3 or v1.2.3a1, got {tag!r}")
+          is_alpha = match.group("alpha") is not None
 
           with open("pyproject.toml", "rb") as file:
               pyproject = tomllib.load(file)
@@ -64,7 +69,7 @@ jobs:
 
           package_version = pyproject["project"]["version"]
           workspace_version = cargo["workspace"]["package"]["version"]
-          if workspace_version != package_version:
+          if not is_alpha and workspace_version != package_version:
               raise SystemExit(
                   "Python package version "
                   f"{package_version!r} does not match Rust workspace version "
@@ -76,7 +81,9 @@ jobs:
               raise SystemExit(
                   f"release tag {tag!r} does not match pyproject version {package_version!r}"
               )
-          print(f"release tag {tag} matches Python and Rust version {package_version}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as file:
+              file.write(f"is_alpha={str(is_alpha).lower()}\n")
+          print(f"release tag {tag} matches Python version {package_version}")
           PY
 
   python-release-checks:
@@ -438,8 +445,13 @@ jobs:
 
   publish:
     name: Publish distributions
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-    needs: [source-dist, wheels, publish-rust-crates]
+    if: >-
+      ${{ !cancelled() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') &&
+          needs.validate-release-ref.result == 'success' &&
+          needs.source-dist.result == 'success' && needs.wheels.result == 'success' &&
+          ((needs.validate-release-ref.outputs.is_alpha == 'true' && needs.publish-rust-crates.result == 'skipped') ||
+           (needs.validate-release-ref.outputs.is_alpha == 'false' && needs.publish-rust-crates.result == 'success')) }}
+    needs: [validate-release-ref, source-dist, wheels, publish-rust-crates]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
@@ -464,11 +476,13 @@ jobs:
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ needs.validate-release-ref.outputs.is_alpha == 'true' }}
 
   publish-rust-crates:
     name: Publish Rust crates
-    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
-    needs: [source-dist, wheels]
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.validate-release-ref.outputs.is_alpha == 'false' }}
+    needs: [validate-release-ref, source-dist, wheels]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

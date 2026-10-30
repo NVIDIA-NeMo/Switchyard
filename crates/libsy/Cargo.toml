@@ -34,11 +34,16 @@ regex.workspace = true
 shlex = "2"
 switchyard-protocol.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
 tokio-stream = "0.1"
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
 uuid.workspace = true
+
+[target.'cfg(not(target_os = "wasi"))'.dependencies]
+tokio.workspace = true
+
+[target.'cfg(target_os = "wasi")'.dependencies]
+tokio = { version = "1", features = ["rt", "sync", "macros", "time"] }
 
 [dev-dependencies]
 # SDK + in-memory exporter to assert what the observability layer records.

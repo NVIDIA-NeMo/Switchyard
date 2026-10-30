@@ -7,6 +7,9 @@ it with `type = "llm_classifier"` and `mode = "capability"`.
 The same classifier also supports [escalation](escalation_router_routing.md)
 and [custom routing](#custom-multi-target-routing) across two or more targets.
 
+For a task-level decision-model example with structured instructions, see the
+[Jev routing profile](../../benchmark/routing-profiles/tb21-jev-opus-glm.toml).
+
 ## Configure a classifier route
 
 This example uses the packaged classifier prompt as intended: it estimates
@@ -310,7 +313,7 @@ state and to keep dynamic routing across turns.
 
 ## Run the route
 
-After [installing the Rust server](../getting_started.md#install-the-server), export
+After [installing the Rust server](../operations/local_evaluation.md#install-the-server), export
 the provider credential, validate the configuration, and start the release
 binary:
 

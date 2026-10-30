@@ -124,10 +124,52 @@ served model. The legacy `proxy_x_session_id` remains a fallback when no normali
 present. The endpoint returns `404` when the session has no records and is not registered when
 routing logging is disabled.
 
+The routing log saves each call's reported charge in USD. When the upstream reports no
+charge, the server estimates it using [bundled rates](../switchyard-costs/prices.toml).
+A reported charge, including zero, takes precedence over the bundled rates.
+Bundled rates stay fixed until you install a version with updated rates.
+The table includes text-token rates for OpenAI, Claude, Gemini, and DeepSeek models, plus
+OpenRouter rates for other popular models. Model IDs match exactly, including provider
+prefixes; an unlisted ID has no estimated cost. Direct-provider and OpenRouter rates use
+separate IDs, such as `gemini-3.8-flash` and `google/gemini-3.8-flash`.
+Estimates exclude long-context and service-tier adjustments, OpenAI's 12-hour cache-write
+pricing, tool fees, and time-based cache storage. Each model has one rate at all times of
+day. Billed charges can differ when a gateway selects another provider or a promotion
+ends. The table lists the Gemini promotion end dates.
+Use `--pricing-file prices.toml` to replace the entire bundled table with your own rates.
+Use a `.toml` file with quoted served model IDs and rates in USD per million tokens:
+
+```toml
+["upstream/model"]
+input = 1
+output = 5
+cache_read = 0.1
+cache_write = 2
+```
+
+The `.toml` extension check ignores case. Other filenames are read as JSON, so existing
+JSON overrides still work. TOML and JSON also accept groups of exact IDs that share
+one set of rates, as shown in the [pi guide](../../docs/integrations/pi.md#estimate-the-cost).
+The bundled table uses this grouped format and can be supplied to `--pricing-file`.
+
+Session stats include cost totals. Missing usage or rates leave cost unknown; `known_usd`
+keeps the priced subtotal and `total_usd` is null when any cost is unknown. Rates load once
+at startup, and saved costs do not change when prices change. An unreadable or invalid
+`--pricing-file` stops startup; the server does not use bundled rates instead.
+
+The [pi guide](../../docs/integrations/pi.md#estimate-the-cost) explains how to supply
+rates for your own models.
+
 Clients can send `x-switchyard-origin: codex-cli` (or another client label) to include an
 `origin` field in each routing record. Missing, empty, or non-text header values produce
 `"origin": null`. The value is supplied by the caller; it is not inferred from `User-Agent`.
 Older records without `origin` remain readable by the session stats endpoint.
+
+A child agent can share its parent's session ID. To tell their calls apart, records also include
+the agent identity from the request metadata: `agent_id`, `parent_agent_id`, `agent_kind`,
+`agent_role`, and `delegated` (`true` when the request carries delegated sub-agent work). When the client
+cannot identify its child agents, the record has `"subagent_identity_unsupported": true`. Each of
+these fields is left out when it is not set, so records without agent identity are unchanged.
 
 An `llm_classifier` route sends each task to `classifier_target` for a capability verdict, then
 routes to `weak_target` or `strong_target`. Beyond the three targets it accepts these keys; only

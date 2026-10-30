@@ -742,6 +742,7 @@ async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard
         let mut steps = router.clone().run_stream(
             request.clone(),
             classifier_models("warning/judge", "warning/efficient", "warning/capable"),
+            switchyard_libsy::State::default(),
         );
         let _ = steps.next().await;
     }
@@ -995,6 +996,7 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
             total_tokens: Some(25),
             reasoning_tokens: Some(2),
             cache: Usage::cache_details(Some(3), Some(4)),
+            provider_cost: None,
         },
     }) as Arc<dyn RoutedLlmClient>;
     let mut request = request_with_metadata("obs-session-1", "obs-corr-1");
@@ -1387,6 +1389,35 @@ async fn observed_run_reports_one_successful_routed_call() -> switchyard_libsy::
     Ok(())
 }
 
+#[tokio::test]
+async fn answered_routing_call_keeps_its_execution_phase() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const ALGO: &str = "answered-routing-call";
+    const MODEL: &str = "answer-from-routing";
+
+    switchyard_llm_client::run(
+        Arc::new(RoutingCallAlgo {
+            name: ALGO.to_string(),
+            target: MODEL.into(),
+        }),
+        ClientRouter::single(Arc::new(UsageClient {
+            usage: Usage::default(),
+        })),
+        request_with_metadata("answered-routing-session", "answered-routing-correlation"),
+        Arc::new(RuntimeModels::default()),
+        None,
+    )
+    .await?;
+
+    let span = find_span(&store.spans(), "libsy.client_call", "selected_model", MODEL);
+    assert_eq!(
+        span.fields.get("switchyard.call_phase").map(String::as_str),
+        Some("routing")
+    );
+    Ok(())
+}
+
 /// A streamed response keeps the client span available until terminal usage arrives.
 struct StreamingUsageClient;
 
@@ -1423,6 +1454,17 @@ impl RoutedLlmClient for TimeoutClient {
     async fn call(&self, _request: Request) -> Result<Response, LlmClientError> {
         Err(LlmClientError::Timeout {
             source: Box::new(TestError("upstream timed out")),
+        })
+    }
+}
+
+struct HostErrorClient;
+
+#[async_trait]
+impl RoutedLlmClient for HostErrorClient {
+    async fn call(&self, _request: Request) -> Result<Response, LlmClientError> {
+        Err(LlmClientError::Host {
+            source: Box::new(TestError(LEAKED_CONTENT)),
         })
     }
 }
@@ -1554,6 +1596,28 @@ async fn typed_client_failure_records_semantic_error_type() {
     );
 }
 
+// Host error text must not appear in the client span.
+#[tokio::test]
+async fn host_error_source_is_redacted_from_the_client_call_span() {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const MODEL: &str = "obs-host-error-model";
+    let _ = run(
+        algo("obs-host-error-algo", MODEL),
+        Arc::new(HostErrorClient),
+        request_with_metadata("obs-host-error-session", "obs-host-error-corr"),
+    )
+    .await;
+
+    let spans = store.spans();
+    let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
+    assert_eq!(
+        client_span.fields.get("error.type").map(String::as_str),
+        Some("host")
+    );
+    assert!(!format!("{client_span:?}").contains(LEAKED_CONTENT));
+}
+
 /// Verifies that the client span retains the HTTP status without the upstream body.
 #[tokio::test]
 async fn upstream_body_is_redacted_from_the_client_call_span() -> switchyard_libsy::Result<()> {
@@ -1642,6 +1706,7 @@ async fn decision_calls_record_each_terminal_path_once() -> switchyard_libsy::Re
         let mut stream = Box::pin(Arc::new(DecisionAlgo(algorithm.clone())).run_stream(
             request_with_metadata("decision-session", "decision-correlation"),
             Arc::new(RuntimeModels::default()),
+            switchyard_libsy::State::default(),
         ));
         let Some(Ok(Step::CallDecision(call))) = stream.next().await else {
             return Err(test_error("expected a decision call"));
@@ -1757,6 +1822,7 @@ async fn failed_call_records_metrics_without_error_details() -> switchyard_libsy
     let stream = algorithm.run_stream(
         request_with_metadata("obs-session-2", "obs-corr-2"),
         Arc::new(RuntimeModels::default()),
+        switchyard_libsy::State::default(),
     );
     tokio::pin!(stream);
 
@@ -1839,7 +1905,7 @@ async fn failed_call_records_metrics_without_error_details() -> switchyard_libsy
 #[tokio::test]
 async fn classifier_metrics_count_routing_and_answer_calls_once() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
-    let (_store, exporter, provider, _, _) = telemetry();
+    let (store, exporter, provider, _, _) = telemetry();
     let before = flushed_metrics(exporter, provider);
     let total_requests_before =
         u64_gauge_value(&before, "switchyard.total_requests").unwrap_or_default();
@@ -1853,6 +1919,13 @@ async fn classifier_metrics_count_routing_and_answer_calls_once() -> switchyard_
         run_classifier("classifier", "weak", "strong", client, classifier_request()).await?;
 
     assert_eq!(selected_model, "weak");
+
+    let spans = store.spans();
+    let span = find_span(&spans, "libsy.client_call", "selected_model", "weak");
+    assert_eq!(
+        span.fields.get("switchyard.call_phase").map(String::as_str),
+        Some("completion")
+    );
 
     let snapshots = flushed_metrics(exporter, provider);
     assert_eq!(
@@ -2117,6 +2190,7 @@ async fn in_flight_gauge_reads_a_run_parked_on_an_unanswered_routing_call()
     let stream = algorithm.run_stream(
         request_with_metadata("obs-session-if", "obs-corr-if"),
         Arc::new(RuntimeModels::default()),
+        switchyard_libsy::State::default(),
     );
     tokio::pin!(stream);
     let attributes = [("algorithm", ALGO)];
@@ -2177,6 +2251,7 @@ async fn in_flight_gauge_clears_when_a_run_is_abandoned() -> switchyard_libsy::R
         let stream = algorithm.run_stream(
             request_with_metadata("obs-session-ab", "obs-corr-ab"),
             Arc::new(RuntimeModels::default()),
+            switchyard_libsy::State::default(),
         );
         tokio::pin!(stream);
         let Some(Ok(Step::CallModel(_call))) = stream.next().await else {
