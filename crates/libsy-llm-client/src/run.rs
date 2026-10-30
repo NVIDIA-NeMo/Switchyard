@@ -419,6 +419,7 @@ impl CallPhase {
         gen_ai.usage.output_tokens = tracing::field::Empty,
         gen_ai.usage.cache_read.input_tokens = tracing::field::Empty,
         gen_ai.usage.cache_creation.input_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_creation_1h.input_tokens = tracing::field::Empty,
         gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
         outcome = tracing::field::Empty,
         otel.status_code = tracing::field::Empty,

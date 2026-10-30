@@ -989,16 +989,20 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
     let total_errors_before =
         u64_gauge_value(&before, "switchyard.total_errors").unwrap_or_default();
 
-    let client = Arc::new(UsageClient {
-        usage: Usage {
-            input_tokens: Some(11),
-            output_tokens: Some(7),
-            total_tokens: Some(25),
-            reasoning_tokens: Some(2),
-            cache: Usage::cache_details(Some(3), Some(4)),
-            provider_cost: None,
-        },
-    }) as Arc<dyn RoutedLlmClient>;
+    let mut usage = Usage {
+        input_tokens: Some(11),
+        output_tokens: Some(7),
+        total_tokens: Some(25),
+        reasoning_tokens: Some(2),
+        cache: Usage::cache_details(Some(3), Some(4)),
+        provider_cost: None,
+    };
+    usage
+        .cache
+        .as_mut()
+        .expect("cache details")
+        .cache_creation_1h_input_tokens = Some(2);
+    let client = Arc::new(UsageClient { usage }) as Arc<dyn RoutedLlmClient>;
     let mut request = request_with_metadata("obs-session-1", "obs-corr-1");
     request.llm_request.sampling.temperature = Some(0.25);
     request.llm_request.sampling.top_p = Some(0.9);
@@ -1206,6 +1210,7 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
         ("gen_ai.usage.output_tokens", "7"),
         ("gen_ai.usage.cache_read.input_tokens", "3"),
         ("gen_ai.usage.cache_creation.input_tokens", "4"),
+        ("gen_ai.usage.cache_creation_1h.input_tokens", "2"),
         ("gen_ai.usage.reasoning.output_tokens", "2"),
     ] {
         assert_eq!(
