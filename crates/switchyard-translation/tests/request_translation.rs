@@ -564,6 +564,75 @@ fn anthropic_thinking_to_responses_uses_normalized_effort() -> TestResult {
 }
 
 #[test]
+fn anthropic_reconstruction_preserves_nested_cache_control() -> TestResult {
+    let engine = TranslationEngine::default();
+    // Cache TTL order follows tools, system, then messages.
+    for (tool_ttl, system_ttl, message_ttl) in [
+        ("1h", "1h", "1h"),
+        ("1h", "1h", "5m"),
+        ("1h", "5m", "5m"),
+        ("5m", "5m", "5m"),
+    ] {
+        let body = json!({
+            "model": "route",
+            "max_tokens": 32,
+            "cache_control": {"type": "ephemeral", "ttl": message_ttl},
+            "system": [{
+                "type": "text", "text": "Be helpful",
+                "cache_control": {"type": "ephemeral", "ttl": system_ttl}
+            }],
+            "messages": [{"role": "user", "content": [{
+                "type": "text", "text": "Hello",
+                "cache_control": {"type": "ephemeral", "ttl": message_ttl}
+            }]}],
+            "tools": [{
+                "name": "lookup", "input_schema": {"type": "object"},
+                "cache_control": {"type": "ephemeral", "ttl": tool_ttl}
+            }]
+        });
+        for policy in [TranslationPolicy::default(), normalized_policy()] {
+            for prompt in [None, Some("target prompt"), Some("Be helpful")] {
+                let output = if let Some(prompt) = prompt {
+                    let mut request = engine
+                        .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
+                        .request;
+                    prepare_request_for_target(&mut request, &"target/model".into(), Some(prompt));
+                    engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?
+                } else {
+                    engine.translate_request(
+                        WireFormat::AnthropicMessages,
+                        WireFormat::AnthropicMessages,
+                        &body,
+                        &policy,
+                    )?
+                };
+                let system_index = usize::from(prompt.is_some());
+                if prompt.is_some() {
+                    assert!(output.body["system"][0].get("cache_control").is_none());
+                }
+                assert_eq!(
+                    json!({
+                        "cache_control": output.body["cache_control"],
+                        "system_cache_control": output.body["system"][system_index]["cache_control"],
+                        "message_cache_control": output.body["messages"][0]["content"][0]["cache_control"],
+                        "tool_cache_control": output.body["tools"][0]["cache_control"]
+                    }),
+                    json!({
+                        "cache_control": body["cache_control"],
+                        "system_cache_control": body["system"][0]["cache_control"],
+                        "message_cache_control": body["messages"][0]["content"][0]["cache_control"],
+                        "tool_cache_control": body["tools"][0]["cache_control"]
+                    }),
+                    "cache markers ({tool_ttl}, {system_ttl}, {message_ttl}) must retain their placement with {:?} preservation and prompt {prompt:?}",
+                    policy.preservation,
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn anthropic_reconstruction_preserves_fallback_credit_token() -> TestResult {
     let engine = TranslationEngine::default();
     for token in [
@@ -594,6 +663,37 @@ fn anthropic_reconstruction_preserves_fallback_credit_token() -> TestResult {
         }
     }
     Ok(())
+}
+
+#[test]
+fn anthropic_reconstruction_rejects_longer_cache_ttl_after_shorter_ttl() {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "route",
+        "max_tokens": 32,
+        "system": [{
+            "type": "text", "text": "Be helpful",
+            "cache_control": {"type": "ephemeral", "ttl": "1h"}
+        }],
+        "messages": [{"role": "user", "content": "Hello"}],
+        "tools": [{
+            "name": "lookup", "input_schema": {"type": "object"},
+            "cache_control": {"type": "ephemeral", "ttl": "5m"}
+        }]
+    });
+    let error = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::AnthropicMessages,
+            &body,
+            &TranslationPolicy::default(),
+        )
+        .expect_err("a 1h system cache marker cannot follow a 5m tool cache marker");
+    assert!(matches!(
+        error,
+        TranslationError::InvalidValue { path, .. }
+            if path == "$.system[0].cache_control.ttl"
+    ));
 }
 
 #[test]
