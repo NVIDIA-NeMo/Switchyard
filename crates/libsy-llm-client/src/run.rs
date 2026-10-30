@@ -2975,6 +2975,7 @@ mod tests {
         Ok(())
     }
 
+    /// A role-only prelude leaves fallback available for a retryable provider error.
     #[tokio::test]
     async fn pre_answer_retryable_stream_errors_fall_back_to_the_next_candidate() -> Result<()> {
         for weak_sse in [
@@ -2996,6 +2997,7 @@ mod tests {
         Ok(())
     }
 
+    /// Once answer content arrives, later errors must not replay the request on another model.
     #[tokio::test]
     async fn stream_fallback_stops_at_answer_content_and_non_retryable_errors() -> Result<()> {
         for weak_sse in [
