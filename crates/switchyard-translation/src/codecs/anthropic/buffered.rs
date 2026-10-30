@@ -257,7 +257,6 @@ impl FormatCodec for AnthropicMessagesCodec {
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::AnthropicMessages, policy)
         {
-            validate_anthropic_cache_control(crate::util::object(&body, "$")?)?;
             return Ok(EncodedRequest {
                 body,
                 diagnostics: Vec::new(),
@@ -473,7 +472,6 @@ impl FormatCodec for AnthropicMessagesCodec {
             )?;
         }
 
-        validate_anthropic_cache_control(&body)?;
         let body = embed_preservation(Value::Object(body), &request.preservation, policy);
         Ok(EncodedRequest { body, diagnostics })
     }
