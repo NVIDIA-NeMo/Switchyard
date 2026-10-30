@@ -2552,11 +2552,22 @@ and replace its LLM classifier settings with:</p>
 <p>Both candidates must be completion targets. The judge must be a decision target.
 See the <a href="../../reference/toml_schema/#decision_clientsname">decision client reference</a>
 for OpenAI Decisions configuration.</p>
-<p>The classifier selects capable when <code>probabilities.advantage</code> exceeds <code>cutoff</code>.
+<p>By default, the classifier selects capable when <code>probabilities.advantage</code> exceeds <code>cutoff</code>.
 Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
 <code>base_threshold</code>, <code>threshold_step</code> and <code>prompt</code> when using a decision model.
 On judge failure, the default is to retain the last classified tier or use
 efficient for a new session. Set <code>classifier.fail_open = false</code> to return the error.</p>
+<p>To ask a custom two-choice question, set <code>instructions</code> and <code>criteria</code> in the
+decision block. Criteria keys must exactly match the two candidate labels.
+The probability for the label mapped to the capable target must exceed <code>cutoff</code>
+to select that tier. This also works in standalone and Stage decision judges.</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[routes.switchyard.classifier.decision]</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">cutoff</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.92</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">candidates</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">capable_first</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">efficient_first</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">instructions</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Choose the Stage profile best suited to the task.&quot;</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">criteria</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">capable_first</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;Start capable&quot;</span><span class="p">,</span><span class="w"> </span><span class="n">efficient_first</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="s2">&quot;Start efficient&quot;</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">evidence</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{}</span>
+</span></code></pre></div>
 <h2 id="sessions">Sessions<a class="headerlink" href="#sessions" title="Permanent link">&para;</a></h2>
 <p>The tier is retained per session, so send <code>x-switchyard-session-id</code> and each
 conversation keeps its own. A client that sends no session ID can set
