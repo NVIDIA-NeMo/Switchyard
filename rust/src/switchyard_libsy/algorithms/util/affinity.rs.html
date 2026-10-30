@@ -89,7 +89,7 @@
 <a href=#89 id=89 data-nosnippet>89</a>
 <a href=#90 id=90 data-nosnippet>90</a><span class="doccomment">/// Whether `request` opens a user turn: the `x-initiator` header says so, or else
 <a href=#91 id=91 data-nosnippet>91</a>/// its newest message is the user's.
-<a href=#92 id=92 data-nosnippet>92</a></span><span class="kw">fn </span>starts_user_turn(request: <span class="kw-2">&amp;</span>Request) -&gt; bool {
+<a href=#92 id=92 data-nosnippet>92</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>starts_user_turn(request: <span class="kw-2">&amp;</span>Request) -&gt; bool {
 <a href=#93 id=93 data-nosnippet>93</a>    initiated_by_user(request).unwrap_or_else(|| has_new_user_turn(<span class="kw-2">&amp;</span>request.llm_request.messages))
 <a href=#94 id=94 data-nosnippet>94</a>}
 <a href=#95 id=95 data-nosnippet>95</a>

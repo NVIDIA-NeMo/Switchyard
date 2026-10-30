@@ -3084,7 +3084,7 @@ counts. Plain <code>decide</code> and <code>execute</code> retain task routing. 
 </span></code></pre></div>
 <p>All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/cfe43a4860dbcc427797de925eb7328b9123a04a/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ae8cf7ed50f695ba3560ff0849506ad39cf40771/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
 for collection and capacity safeguards.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
@@ -3180,6 +3180,18 @@ recognized edit or write tool call. See <a href="../../routing_algorithms/plan_e
 <td style="text-align: center;">Yes</td>
 <td>-</td>
 <td>Target used after the first edit or write.</td>
+</tr>
+<tr>
+<td><code>execution_trigger</code></td>
+<td style="text-align: center;">No</td>
+<td><code>edit</code></td>
+<td>Use <code>edit</code> for mutation detection or <code>judge</code> for a judged handoff.</td>
+</tr>
+<tr>
+<td><code>judge</code></td>
+<td style="text-align: center;">For <code>judge</code></td>
+<td>unset</td>
+<td>Same fields as a Stage classifier. Supports LLM and decision models. Defaults to 10 recent messages.</td>
 </tr>
 <tr>
 <td><code>tool_semantics.mutate</code></td>
@@ -3376,7 +3388,7 @@ dependencies available in the active virtual environment.</p>
 <td><code>recent_turn_window</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
-<td>When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns.</td>
+<td>LLM judges default to the opening task and latest user follow-up. Decision judges default to the opening task plus 10 recent messages. An explicit value sets the trailing message window.</td>
 </tr>
 <tr>
 <td><code>prompt</code></td>
@@ -3777,7 +3789,7 @@ so it is consulted on every ambiguous turn and never retains a verdict.</p>
 <td><code>classifier.recent_turn_window</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
-<td>When unset, the judge sees the opening task and the latest user follow-up. When set, it also sees that many trailing messages. This counts messages, while the route's <code>recent_turn_window</code> counts tool results, so the two values are different units.</td>
+<td>LLM judges default to task messages. Decision judges default to 10 recent messages plus the opening task. An explicit value counts trailing messages, while the route window counts tool results.</td>
 </tr>
 <tr>
 <td><code>classifier.prompt</code></td>
@@ -3915,7 +3927,7 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 <td><code>classifier.recent_turn_window</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
-<td>When unset, the judge sees the opening task and latest user follow-up, when present. When set, it also sees trailing turns.</td>
+<td>LLM judges default to task messages. Decision judges default to 10 recent messages plus the opening task. An explicit value sets the trailing message window.</td>
 </tr>
 <tr>
 <td><code>classifier.prompt</code></td>
