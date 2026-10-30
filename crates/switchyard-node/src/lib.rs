@@ -66,6 +66,7 @@ struct DecisionOptions {
     candidates: BTreeMap<String, Candidate>,
     evidence: Value,
     instructions: Option<Value>,
+    criteria: Option<BTreeMap<String, Value>>,
 }
 
 #[derive(Deserialize)]
@@ -127,6 +128,7 @@ impl NativeComposite {
                     candidates,
                     evidence: decision.evidence,
                     instructions: decision.instructions,
+                    criteria: decision.criteria,
                 }),
                 classify_trigger: classifier.classify_trigger,
                 fail_open: classifier.fail_open,

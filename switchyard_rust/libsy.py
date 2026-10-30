@@ -215,8 +215,9 @@ if TYPE_CHECKING:
             candidates: Mapping[str, str],
             evidence: object,
             instructions: object | None = None,
+            criteria: Mapping[str, object] | None = None,
         ) -> TaskClassifierConfig:
-            """Use relative advantage with the default routing and fallback settings."""
+            """Apply a cutoff to relative advantage or a custom candidate choice score."""
             ...
 
         def __init__(

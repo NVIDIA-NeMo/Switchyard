@@ -1447,6 +1447,7 @@ mod tests {
                 LlmClassifierConfig::Capability {
                     config: TaskClassifierConfig {
                         judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
+                            criteria: None,
                             cutoff: 0.4,
                             instructions: None,
                             candidates: BTreeMap::from([

@@ -1332,6 +1332,7 @@ mod tests {
         let settings = DecisionJudgeConfig {
             cutoff: 0.4,
             instructions: None,
+            criteria: None,
             candidates: BTreeMap::from([
                 ("a".into(), "capable".into()),
                 ("b".into(), "efficient".into()),
@@ -1560,6 +1561,17 @@ mod tests {
             .candidates
             .insert("duplicate-a".into(), "capable".into());
         assert!(duplicate.validate().is_err());
+        let mut custom = settings.clone();
+        custom.candidates.remove("c");
+        custom.criteria = Some(BTreeMap::from([
+            ("a".into(), json!("Start capable")),
+            ("b".into(), json!("Start efficient")),
+        ]));
+        assert!(custom.validate().is_err());
+        custom.instructions = Some(json!("Choose a profile."));
+        assert!(custom.validate().is_ok());
+        custom.candidates.remove("b");
+        assert!(custom.validate().is_err());
         Ok(())
     }
 

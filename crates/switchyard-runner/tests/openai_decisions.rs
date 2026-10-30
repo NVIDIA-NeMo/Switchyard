@@ -39,10 +39,11 @@ strong_target = "strong"
 weak_target = "weak"
 fail_open = false
 [routes.classifier.decision]
-cutoff = 0.7
-candidates = {{ a = "strong", b = "weak" }}
-instructions = {{ task = "Choose advantage only when a succeeds and b fails." }}
-evidence = {{ description = "Compare a and b" }}
+cutoff = 0.92
+candidates = {{ capable_first = "strong", efficient_first = "weak" }}
+criteria = {{ capable_first = "Start capable", efficient_first = "Start efficient" }}
+instructions = {{ task = "Choose a Stage profile." }}
+evidence = {{ description = "Compare the two profiles" }}
 "#
     );
     // This unique variable is only read while constructing this client.
@@ -56,17 +57,18 @@ evidence = {{ description = "Compare a and b" }}
     let runner = runner?;
     let question = json!({
         "name": "route", "type": "choice",
-        "instructions": json!({"task": "Choose advantage only when a succeeds and b fails."}).to_string(),
-        "choices": [{"value": "advantage"}, {"value": "no_advantage"}]
+        "instructions": json!({"task": "Choose a Stage profile."}).to_string(),
+        "choices": [{"value": "capable_first", "description": "Start capable"},
+            {"value": "efficient_first", "description": "Start efficient"}]
     });
     Mock::given(method("POST")).and(path("/v1/decisions"))
         .and(header("authorization", "Bearer test-key"))
         .and(body_partial_json(json!({"model": "gpt-6-luna", "questions": [question]})))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "model": "gpt-6-luna", "answers": [{
-                "type": "choice", "name": "route", "choice": "advantage", "confidence": 0.9,
-                "probabilities": [{"value": "advantage", "probability": 0.6},
-                    {"value": "no_advantage", "probability": 0.4}]
+                "type": "choice", "name": "route", "choice": "capable_first", "confidence": 0.99,
+                "probabilities": [{"value": "capable_first", "probability": 0.91},
+                    {"value": "efficient_first", "probability": 0.09}]
             }],
             "usage": {"input_tokens": 42, "input_tokens_details": {"cached_tokens": 10, "cache_write_tokens": 2},
                 "output_tokens": 3, "output_tokens_details": {"reasoning_tokens": 1}, "total_tokens": 45}
@@ -116,7 +118,7 @@ evidence = {{ description = "Compare a and b" }}
     let context: Value = serde_json::from_str(decision["input"].as_str().unwrap())?;
     assert_eq!(
         context["evidence"],
-        json!({"description": "Compare a and b"})
+        json!({"description": "Compare the two profiles"})
     );
     assert_eq!(context["session"], "session-1");
     server.verify().await;
