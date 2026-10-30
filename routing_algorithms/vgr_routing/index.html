@@ -2469,7 +2469,7 @@ entry and leave the route's <code>context_window</code> unset. Switchyard then r
 service's <code>/props</code> response and advertises a positive context capacity when
 available. Missing or invalid properties leave the capacity unknown; routing
 continues normally. Discovery does not configure the service or load a model.</p>
-<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7fb42b793938eddde452980acc2d236c433a8491/examples/vgr-local-servers.toml">the local-server example</a>
+<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/cfe43a4860dbcc427797de925eb7328b9123a04a/examples/vgr-local-servers.toml">the local-server example</a>
 for an active llama.cpp configuration and commented Ollama/vLLM alternatives.
 For Ollama and vLLM, set <code>context_window</code> to match the running service; automatic
 discovery for those servers is not implemented.</p>
@@ -2528,7 +2528,7 @@ Client and upstream HTTP timeouts still apply. Configure those timeouts in the
 harness and Switchyard client for long-running decisions. Configured durations
 must remain positive even when these VGR limits are disabled.</p>
 <h2 id="hermes-auxiliary-routing">Hermes auxiliary routing<a class="headerlink" href="#hermes-auxiliary-routing" title="Permanent link">&para;</a></h2>
-<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/7fb42b793938eddde452980acc2d236c433a8491/examples/vgr-local-servers.toml">local-server example</a> exposes
+<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/cfe43a4860dbcc427797de925eb7328b9123a04a/examples/vgr-local-servers.toml">local-server example</a> exposes
 <code>switchyard/only-efficient</code> through the existing passthrough router. Hermes can
 use it for titles and approval checks, independently of the conversation's VGR
 route. Configure Hermes against the same Switchyard server:</p>
