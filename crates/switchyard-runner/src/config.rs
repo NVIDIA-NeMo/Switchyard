@@ -18,10 +18,11 @@ use switchyard_llm_client::{
 };
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
+use crate::algorithm_factory::AlgorithmAndModels;
 use crate::runner::ModelPropertiesProbe;
 use crate::{
-    AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
-    Runner, RunnerError,
+    AlgorithmFactory, AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget,
+    ModelCapabilities, Route, Runner, RunnerError,
 };
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
@@ -131,10 +132,7 @@ pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
 }
 
 pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
-    let config: DeploymentConfig = toml::from_str(source).map_err(|error| {
-        RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
-    })?;
-    config.build()
+    AlgorithmFactory::from_toml(source)?.config.build()
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,8 +151,8 @@ pub(crate) struct DeploymentConfig {
 }
 
 #[derive(Debug)]
-struct RouteConfig {
-    id: ModelId,
+pub(crate) struct RouteConfig {
+    pub(crate) id: ModelId,
     context_window: Option<u32>,
     tool_calling: Option<bool>,
     reasoning: Option<bool>,
@@ -280,7 +278,8 @@ impl DeploymentConfig {
         })
     }
 
-    fn build(self) -> RunnerResult<Runner> {
+    /// Checks route identity and target references without constructing clients.
+    pub(crate) fn validate(&self) -> RunnerResult<()> {
         self.check_schema_version()?;
 
         let mut route_names_by_id = HashMap::new();
@@ -297,42 +296,16 @@ impl DeploymentConfig {
             }
         }
 
-        // The LLM client keeps one backend per model id, so two targets naming the same model on
-        // the same client share it. That is harmless when their request settings agree (an alias
-        // for a different system prompt, say) and silently wrong when they do not: the second
-        // target's reasoning_effort or extra_body would never reach the wire.
-        let mut seen_client_model_ids: HashMap<(&str, &str), (&String, &TargetConfig)> =
-            HashMap::new();
-        for (target_name, target) in &self.targets {
-            validate_value("target name", target_name)?;
-            validate_value(&format!("target {target_name} id"), &target.id)?;
-            match seen_client_model_ids.entry((target.llm_client.as_str(), target.id.as_str())) {
-                std::collections::hash_map::Entry::Vacant(slot) => {
-                    slot.insert((target_name, target));
-                }
-                std::collections::hash_map::Entry::Occupied(slot) => {
-                    let (first_name, first) = slot.get();
-                    if first.reasoning_effort != target.reasoning_effort
-                        || first.extra_body != target.extra_body
-                        || first.omit_body_fields != target.omit_body_fields
-                    {
-                        return Err(RunnerError::configuration(format!(
-                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort, extra_body, or omit_body_fields; one target per model id is kept, so give each its own model id or llm client",
-                            target.id, target.llm_client
-                        )));
-                    }
-                    tracing::warn!(
-                        "target {target_name} reuses model id {} on llm client {}; only one target per id is kept and the other is dropped. Give each target a unique model id, or point both routes at one target.",
-                        target.id,
-                        target.llm_client
-                    );
-                }
+        for (name, target) in &self.targets {
+            validate_value("target name", name)?;
+            validate_value(&format!("target {name} id"), &target.id)?;
+            if !self.llm_clients.contains_key(&target.llm_client) {
+                return Err(RunnerError::configuration(format!(
+                    "target {name} references unknown llm client {}",
+                    target.llm_client
+                )));
             }
         }
-
-        let mut provider_api_keys = Vec::new();
-        let clients = self.build_clients(&mut provider_api_keys)?;
-        let decision_clients = self.build_decision_clients(&mut provider_api_keys)?;
         for (name, target) in &self.decision_targets {
             validate_value("decision target name", name)?;
             validate_value(&format!("decision target {name} id"), &target.id)?;
@@ -341,18 +314,22 @@ impl DeploymentConfig {
                     "target {name} is defined as both an LLM and decision target"
                 )));
             }
-            if !decision_clients.contains_key(&target.decision_client) {
+            if !self.decision_clients.contains_key(&target.decision_client) {
                 return Err(RunnerError::configuration(format!(
                     "decision target {name} references unknown decision client {}",
                     target.decision_client
                 )));
             }
         }
+        Ok(())
+    }
+
+    /// Resolves each route once; native and host-owned execution share this path.
+    pub(crate) fn build_algorithms(
+        &self,
+    ) -> impl Iterator<Item = RunnerResult<(&str, &RouteConfig, AlgorithmAndModels)>> {
         let targets = self.build_targets();
-        let fallback_base_url = self.fallback_base_url()?;
-        let mut routes = Vec::with_capacity(self.routes.len());
-        let mut model_properties_probes = BTreeMap::new();
-        for (route_name, config) in &self.routes {
+        self.routes.iter().map(move |(route_name, config)| {
             let classifiers: Vec<_> = config.algorithm.classifier_targets().collect();
             for (name, is_decision) in config
                 .callable_target_names()
@@ -394,8 +371,7 @@ impl DeploymentConfig {
                     )));
                 }
             }
-            let capabilities = config.capabilities();
-            if capabilities.context_window == Some(0) {
+            if config.context_window == Some(0) {
                 return Err(RunnerError::configuration(format!(
                     "route {route_name} context_window must be greater than zero"
                 )));
@@ -417,6 +393,53 @@ impl DeploymentConfig {
                     RunnerError::configuration_source(format!("route {route_name}: {error}"), error)
                 })?;
             }
+            Ok((route_name.as_str(), config, (algorithm, models)))
+        })
+    }
+
+    fn build(self) -> RunnerResult<Runner> {
+        self.validate()?;
+
+        // The LLM client keeps one backend per model id, so two targets naming the same model on
+        // the same client share it. That is harmless when their request settings agree (an alias
+        // for a different system prompt, say) and silently wrong when they do not: the second
+        // target's reasoning_effort or extra_body would never reach the wire.
+        let mut seen_client_model_ids: HashMap<(&str, &str), (&String, &TargetConfig)> =
+            HashMap::new();
+        for (target_name, target) in &self.targets {
+            match seen_client_model_ids.entry((target.llm_client.as_str(), target.id.as_str())) {
+                std::collections::hash_map::Entry::Vacant(slot) => {
+                    slot.insert((target_name, target));
+                }
+                std::collections::hash_map::Entry::Occupied(slot) => {
+                    let (first_name, first) = slot.get();
+                    if first.reasoning_effort != target.reasoning_effort
+                        || first.extra_body != target.extra_body
+                        || first.omit_body_fields != target.omit_body_fields
+                    {
+                        return Err(RunnerError::configuration(format!(
+                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort, extra_body, or omit_body_fields; one target per model id is kept, so give each its own model id or llm client",
+                            target.id, target.llm_client
+                        )));
+                    }
+                    tracing::warn!(
+                        "target {target_name} reuses model id {} on llm client {}; only one target per id is kept and the other is dropped. Give each target a unique model id, or point both routes at one target.",
+                        target.id,
+                        target.llm_client
+                    );
+                }
+            }
+        }
+
+        let mut provider_api_keys = Vec::new();
+        let clients = self.build_clients(&mut provider_api_keys)?;
+        let decision_clients = self.build_decision_clients(&mut provider_api_keys)?;
+        let fallback_base_url = self.fallback_base_url()?;
+        let mut routes = Vec::with_capacity(self.routes.len());
+        let mut model_properties_probes = BTreeMap::new();
+        for entry in self.build_algorithms() {
+            let (route_name, config, (algorithm, models)) = entry?;
+            let capabilities = config.capabilities();
             if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
                 && let Some(probe) =
                     self.build_model_properties_probe(&vgr.efficient_target, &clients)
@@ -1359,6 +1382,12 @@ task_typing = false
         let example = include_str!("../../../examples/vgr-local-servers.toml");
         let runner = runner_from_toml(example)?;
         assert!(runner.route("switchyard/vgr").is_some());
+        assert!(runner.route("switchyard/only-efficient").is_some());
+        let parsed: DeploymentConfig = toml::from_str(example).expect("valid VGR example");
+        assert!(matches!(
+            &parsed.routes["auxiliary"].algorithm,
+            AlgorithmSpec::Passthrough { target, .. } if target == "efficient"
+        ));
         let invalid = example.replace(
             "context_discovery = \"llama_cpp\"",
             "context_discovery = \"guess\"",

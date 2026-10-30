@@ -36,8 +36,14 @@ pub struct Config {
     pub server_url: String,
     /// This field names the JSONL file where the server appends routing records.
     pub routing_log: PathBuf,
-    /// This field names the server TOML file opened by "Open server config".
+    /// This field names the server TOML file opened by "Open server config". Route edits save
+    /// only when it is the file that the installed server loads.
     pub config_file: PathBuf,
+    /// This field names the server config that the installed service starts with: the
+    /// `composite.toml` in the directory from `install.toml`. It is `None` when no
+    /// `install.toml` sits next to the settings file. The settings file never sets it.
+    #[serde(skip)]
+    pub service_config: Option<PathBuf>,
     /// This field names the LaunchAgent used to restart the server.
     pub launchd_label: String,
     /// This field sets the usage refresh interval in seconds.
@@ -59,6 +65,7 @@ impl Config {
             refresh_seconds: 30,
             baseline_model: "gpt-6-sol".into(),
             prices_file: None,
+            service_config: None,
         }
     }
 
@@ -72,7 +79,10 @@ impl Config {
         let metadata = directory.join("install.toml");
         if metadata.try_exists().map_err(|e| e.to_string())? {
             let settings = Settings::load(&metadata)?;
-            Ok(Self::for_directory(&settings.sy_home, settings.port))
+            Ok(Self {
+                service_config: Some(settings.sy_home.join(SERVER_CONFIG)),
+                ..Self::for_directory(&settings.sy_home, settings.port)
+            })
         } else {
             Ok(Self::for_directory(directory, DEFAULT_PORT))
         }
@@ -83,6 +93,7 @@ impl Config {
     /// An omitted pricing_file selects bundled rates.
     pub fn load(path: &Path) -> Result<Self, String> {
         let defaults = Self::defaults_for(path)?;
+        let service_config = defaults.service_config.clone();
         let mut values = toml::Table::try_from(defaults).map_err(|e| e.to_string())?;
         match std::fs::read_to_string(path) {
             Ok(text) => {
@@ -105,6 +116,7 @@ impl Config {
         config.routing_log = expand_home(&config.routing_log)?;
         config.config_file = expand_home(&config.config_file)?;
         config.prices_file = config.prices_file.as_deref().map(expand_home).transpose()?;
+        config.service_config = service_config;
         Ok(config)
     }
 

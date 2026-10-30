@@ -30,6 +30,29 @@ pub extern "C" fn sy_abi_version() -> u32 {
     1
 }
 
+/// WASI reactor initialization hook; Rust initializes static data during instantiation.
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub extern "C" fn _initialize() {}
+
+/// Allocates guest memory for a host-provided buffer.
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub extern "C" fn sy_alloc(len: usize) -> *mut u8 {
+    Box::into_raw(vec![0_u8; len].into_boxed_slice()).cast()
+}
+
+/// Releases a buffer returned by `sy_alloc`.
+/// # Safety
+/// `ptr` and `len` must identify an allocation returned by `sy_alloc`.
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_free(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() {
+        drop(unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) });
+    }
+}
+
 #[derive(Deserialize)]
 struct RouterConfig {
     algorithm: AlgorithmSpec,
@@ -437,12 +460,74 @@ pub unsafe extern "C" fn sy_router_new(
         *out = std::ptr::null_mut();
         let config: RouterConfig = unsafe { parse_json_input(config_json) }?;
         let algorithm = config.algorithm.build("embedded", &config.targets)?;
-        let runtime = Runtime::new()?;
+        let runtime = new_runtime()?;
         *out = Box::into_raw(Box::new(SyRouter {
             engine: Arc::new(Engine { algorithm, runtime }),
         }));
         Ok(())
     })
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn new_runtime() -> std::io::Result<Runtime> {
+    Runtime::new()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn new_runtime() -> std::io::Result<Runtime> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .on_thread_park(idle::on_park)
+        .build()
+}
+
+/// Detects when a wasm read cannot make immediate progress.
+/// Parking a thread is impossible on wasip1, so the read returns instead of parking.
+#[cfg(target_arch = "wasm32")]
+mod idle {
+    use std::future::Future;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::task::{Poll, Waker};
+
+    static WATCHING: AtomicBool = AtomicBool::new(false);
+    static IDLE: AtomicBool = AtomicBool::new(false);
+    static WAKER: Mutex<Option<Waker>> = Mutex::new(None);
+
+    // Tokio calls this when no task is ready; waking the read makes it return.
+    pub(super) fn on_park() {
+        if WATCHING.load(Ordering::Relaxed) {
+            IDLE.store(true, Ordering::Relaxed);
+            if let Some(waker) = WAKER.lock().ok().and_then(|mut waker| waker.take()) {
+                waker.wake();
+            }
+        }
+    }
+
+    /// Resolves to `None` when the runtime would park before `read` finishes.
+    pub(super) async fn until_idle<T>(read: impl Future<Output = T>) -> Option<T> {
+        let mut read = std::pin::pin!(read);
+        IDLE.store(false, Ordering::Relaxed);
+        WATCHING.store(true, Ordering::Relaxed);
+        let output = std::future::poll_fn(|cx| {
+            if let Poll::Ready(output) = read.as_mut().poll(cx) {
+                return Poll::Ready(Some(output));
+            }
+            if IDLE.swap(false, Ordering::Relaxed) {
+                return Poll::Ready(None);
+            }
+            if let Ok(mut waker) = WAKER.lock() {
+                *waker = Some(cx.waker().clone());
+            }
+            Poll::Pending
+        })
+        .await;
+        WATCHING.store(false, Ordering::Relaxed);
+        if let Ok(mut waker) = WAKER.lock() {
+            waker.take();
+        }
+        output
+    }
 }
 
 /// Starts a run with host-approved model groups.
@@ -494,6 +579,7 @@ pub unsafe extern "C" fn sy_run_new(
 /// Callbacks may overlap or run before this call returns. Free their strings with `sy_string_free`.
 /// Callbacks must return promptly without unwinding, calling `sy_run_respond`, or freeing handles.
 #[unsafe(no_mangle)]
+#[cfg(not(target_arch = "wasm32"))]
 pub unsafe extern "C" fn sy_run_next_async(
     run: *const SyRun,
     callback: Option<unsafe extern "C" fn(usize, *mut c_char, *mut c_char)>,
@@ -515,6 +601,31 @@ pub unsafe extern "C" fn sy_run_next_async(
         );
         Ok(())
     })
+}
+
+/// Advances a run to its next step or returns NULL output when the runtime goes idle.
+/// Retry idle reads to advance timers and work waiting on other runs.
+/// Dropping an idle read preserves the stream and assigns no call ID.
+/// # Safety
+/// `run` must be live and `out_json` writable. Free output with `sy_string_free`.
+#[cfg(target_arch = "wasm32")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_run_next(run: *const SyRun, out_json: *mut *mut c_char) -> *mut c_char {
+    let result = catch_unwind(AssertUnwindSafe(|| -> Result<()> {
+        let run = unsafe { run.as_ref() }.ok_or("missing run")?;
+        let out = unsafe { out_json.as_mut() }.ok_or("missing step output")?;
+        *out = std::ptr::null_mut();
+        let read = run.state.begin_read()?;
+        if let Some(output) = run.engine.runtime.block_on(idle::until_idle(read.next())) {
+            *out = output?.into_raw();
+        }
+        Ok(())
+    }));
+    match result {
+        Ok(Ok(())) => std::ptr::null_mut(),
+        Ok(Err(error)) => error_string(error.to_string()),
+        Err(_) => error_string("Switchyard binding panicked".to_string()),
+    }
 }
 
 /// Delivers a buffered host reply to its pending call.

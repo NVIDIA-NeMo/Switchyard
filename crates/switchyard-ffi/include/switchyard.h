@@ -14,17 +14,27 @@ typedef struct SyRouter SyRouter;
 typedef struct SyRun SyRun;
 typedef void (*SyNextCallback)(uintptr_t user_data, char *error, char *step_json);
 
+#if defined(__wasm32__)
+uint8_t *sy_alloc(uint32_t len);
+void sy_free(uint8_t *ptr, uint32_t len);
+// Writes the next step to *out_json, or NULL when the runtime is idle.
+// Retry idle reads to advance timers and work waiting on other runs.
+char *sy_run_next(const SyRun *run, char **out_json);
+#endif
+
 // Fallible calls return NULL on success or an owned error string.
 // JSON inputs are borrowed for the call and must be NUL-terminated.
 // Free all output strings, including callback strings, with sy_string_free.
 char *sy_router_new(const char *config_json, SyRouter **out);
 char *sy_run_new(const SyRouter *router, const char *input_json, SyRun **out);
 
+#if !defined(__wasm32__)
 // One pending read per run; other runs execute independently. Replies and cancellation may overlap.
 // NULL accepts one read (one callback, even if cancelled); errors reject it (no callback).
 // Callbacks may overlap or run before return. Keep callback state alive until they return.
 // Callbacks must return promptly, not unwind, and not call sy_run_respond or free handles.
 char *sy_run_next_async(const SyRun *run, SyNextCallback callback, uintptr_t user_data);
+#endif
 char *sy_run_respond(const SyRun *run, uint64_t call_id, const char *reply_json);
 
 char *sy_decode_request(const char *input_json, char **out_json);

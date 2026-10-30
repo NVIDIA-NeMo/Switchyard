@@ -25,7 +25,8 @@ use tracing::Instrument;
 /// [`switchyard_protocol::LlmResponse`] carries either a live
 /// [`switchyard_protocol::LlmResponseStream`] or the terminal aggregate.
 use switchyard_protocol::{
-    Category, DecisionRequest, DecisionResponse, ModelId, Request, Response,
+    AggLlmResponse, Category, ContentBlock, DecisionRequest, DecisionResponse, ModelId, Request,
+    Response, StopReason,
 };
 
 use crate::{DriverError, LibsyError, Result, State, observability};
@@ -318,6 +319,32 @@ impl RoutingOutcome {
             metadata: None,
             state: State::default(),
         }
+    }
+}
+
+/// What the host saw of the answer it served for a routed request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AnswerSummary {
+    /// The answer ended its turn with visible text and requested no tool call.
+    pub final_reply: bool,
+}
+
+impl AnswerSummary {
+    /// Summarizes a completed answer.
+    pub fn of(response: &AggLlmResponse) -> Self {
+        let final_reply = response.outputs.iter().all(|output| {
+            matches!(output.stop_reason, None | Some(StopReason::EndTurn))
+                && !output
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolCall(_)))
+        }) && response.outputs.iter().any(|output| {
+            output.role == switchyard_protocol::Role::Assistant
+                && output.content.iter().any(
+                    |block| matches!(block, ContentBlock::Text { text } if !text.trim().is_empty()),
+                )
+        });
+        Self { final_reply }
     }
 }
 
@@ -758,6 +785,17 @@ pub trait Algorithm: Send + Sync + 'static {
     /// [`run_stream`](Self::run_stream) runs this method and exposes its work to the host.
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome>;
 
+    /// Whether the host should summarize served answers for [`Self::observe_answer`].
+    fn tracks_answers(&self) -> bool {
+        false
+    }
+
+    /// Records the answer the host served for a request in `session_id`.
+    ///
+    /// The host reports a streamed answer before forwarding its final chunk, so the
+    /// session's next request is routed with this answer already recorded.
+    async fn observe_answer(&self, _session_id: &str, _answer: AnswerSummary) {}
+
     /// Expose work requests and the final outcome so the host can control execution.
     ///
     /// Each call waits for its host reply. A run ends with one terminal item — [`Step::Done`] on
@@ -815,6 +853,27 @@ mod tests {
     use switchyard_protocol::{
         LlmResponse, LlmResponseChunk, completion_text, text_request, text_response,
     };
+
+    #[test]
+    fn a_final_answer_has_text_and_no_unfinished_or_tool_output() {
+        let mut answer = text_response(None, "done");
+        assert!(AnswerSummary::of(&answer).final_reply);
+        answer.outputs[0].stop_reason = Some(StopReason::MaxTokens);
+        assert!(!AnswerSummary::of(&answer).final_reply);
+        answer.outputs[0].stop_reason = Some(StopReason::EndTurn);
+        let mut tool = answer.outputs[0].clone();
+        tool.content = vec![ContentBlock::ToolCall(switchyard_protocol::ToolCall {
+            id: "call".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({}),
+        })];
+        answer.outputs.push(tool);
+        assert!(!AnswerSummary::of(&answer).final_reply);
+        answer.outputs.pop();
+        answer.outputs[0].content = vec![ContentBlock::Text { text: "  ".into() }];
+        assert!(!AnswerSummary::of(&answer).final_reply);
+        assert!(!AnswerSummary::of(&AggLlmResponse::default()).final_reply);
+    }
 
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]
