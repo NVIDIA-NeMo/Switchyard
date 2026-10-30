@@ -71,6 +71,7 @@ impl RoutedDecisionClient for OpenAiDecisionClient {
             return Err(LlmClientError::UpstreamHttp {
                 status,
                 body: String::from_utf8_lossy(&body).replace(&self.api_key, "[REDACTED]"),
+                headers: Box::default(),
             });
         }
         let response: WireResponse =

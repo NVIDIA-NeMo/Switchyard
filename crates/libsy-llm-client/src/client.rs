@@ -1107,7 +1107,7 @@ fn normalize_codex_string_input(url: &str, body: &mut Value) {
 }
 
 fn rejects_template_options(error: &LlmClientError) -> bool {
-    let LlmClientError::UpstreamHttp { status, body } = error else {
+    let LlmClientError::UpstreamHttp { status, body, .. } = error else {
         return false;
     };
     if !matches!(
