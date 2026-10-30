@@ -1056,10 +1056,13 @@ fn extract_tool_signals_with_window_and_semantics(
     current_user_turn: bool,
 ) -> ToolSignals {
     // Read the decoded conversation, including preserved built-in tool outputs.
-    let mut messages = request.llm_request.messages.as_slice();
-    if current_user_turn {
-        messages = &messages[messages.iter().rposition(is_user_turn).unwrap_or(0)..];
-    }
+    let messages = &request.llm_request.messages;
+    let boundary = if current_user_turn {
+        messages.iter().rposition(is_user_turn)
+    } else {
+        None
+    };
+    let start = boundary.map_or(0, |index| index + 1);
     let namespaces = tool_namespaces(&request.llm_request.extensions);
     let mut tool_texts: Vec<(String, bool)> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
@@ -1069,12 +1072,14 @@ fn extract_tool_signals_with_window_and_semantics(
     let mut tool_result_count = 0usize;
     let mut assistant_turn_count = 0usize;
 
-    for message in messages {
-        if message.role == Role::Assistant {
+    for (index, message) in messages.iter().enumerate() {
+        if index >= start && message.role == Role::Assistant {
             assistant_turn_count += 1;
         }
         for block in &message.content {
             match block {
+                // Only context-compaction markers carry across user turns.
+                _ if index < start && !matches!(block, ContentBlock::Text { .. }) => continue,
                 ContentBlock::ToolCall(call) => {
                     // Responses namespaced tools arrive as `<namespace>__<tool>`.
                     let bare_name = namespaces
@@ -1260,7 +1265,7 @@ fn extract_tool_signals_with_window_and_semantics(
     let mut signal = build_signal(
         tool_texts,
         tool_calls,
-        messages.len() as u32,
+        (messages.len() - boundary.unwrap_or(0)) as u32,
         recent_window,
         semantics,
     );
@@ -1806,11 +1811,13 @@ mod tests {
 
     #[test]
     fn user_turn_signals_exclude_old_errors_and_keep_user_role_tool_results() {
-        let user = Message::text(Role::User, "next");
+        let mut user = Message::text(Role::User, "next");
+        user.content.extend(tr("out of memory").content);
         let request = with_messages(vec![tr("out of memory"), user, tr("ok")]);
         let signals = ToolSignalProcessor::default().for_user_turn(&request);
         assert_eq!(signals.tool_result_count, 1);
         assert_eq!(signals.severity, 0.0);
+        assert_eq!(signals.turn_depth, 2);
     }
 
     #[test]
@@ -2385,6 +2392,10 @@ mod tests {
                     .collect(),
             );
             let signal = ToolSignals::from_request(&request, Some(3));
+            assert!(!request.llm_request.messages.iter().any(is_user_turn));
+            let current = ToolSignalProcessor::default().for_user_turn(&request);
+            assert_eq!(current.tool_result_count, 2);
+            assert_eq!(current.severity, severity);
             assert_eq!(signal.severity, severity, "{raw}");
             assert_eq!(signal.repeated_failure, is_error, "{raw}");
             assert_eq!(signal.tool_result_count, 2);
@@ -2572,9 +2583,15 @@ mod tests {
                 Role::User,
                 "This session is being continued from a previous conversation that ran out of context.",
             ),
+            Message::text(Role::User, "Continue with the next task"),
             bash("ls"),
         ]);
         assert!(ToolSignals::from_request(&request, None).compacted);
+        assert!(
+            ToolSignalProcessor::default()
+                .for_user_turn(&request)
+                .compacted
+        );
     }
 
     #[test]
