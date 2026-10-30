@@ -2928,10 +2928,9 @@ mod tests {
             .map_err(|source| LibsyError::client_call("strong", source))?;
         assert_eq!(completion_text(&aggregate), "ok");
 
-        // Only a classified overflow re-routes; any other in-band error event still
-        // streams through to the consumer without trying another candidate.
+        // A non-retryable in-band error still reaches the caller.
         let (_server, calls, result) = run_streaming_candidates(
-            "data: {\"error\":{\"code\":500,\"message\":\"engine exploded\",\"object\":\"error\"},\"model\":\"weak\"}\n\ndata: [DONE]\n\n",
+            "data: {\"error\":{\"code\":401,\"message\":\"invalid key\",\"object\":\"error\"},\"model\":\"weak\"}\n\ndata: [DONE]\n\n",
         )
         .await;
         let (_, response) = result?;
@@ -2941,7 +2940,7 @@ mod tests {
             .into_agg()
             .await
             .expect_err("the in-band error should surface to the consumer");
-        assert!(error.to_string().contains("engine exploded"));
+        assert!(error.to_string().contains("invalid key"));
 
         // Once content has streamed, a retry would repeat delivered output, so a later
         // overflow event keeps today's semantics and surfaces during aggregation.
@@ -2973,6 +2972,80 @@ mod tests {
             .await
             .map_err(|source| LibsyError::client_call("weak", source))?;
         assert_eq!(completion_text(&aggregate), "");
+        Ok(())
+    }
+
+    /// A role-only prelude leaves fallback available for a retryable provider error.
+    #[tokio::test]
+    async fn pre_answer_retryable_stream_errors_fall_back_to_the_next_candidate() -> Result<()> {
+        for weak_sse in [
+            "data: {\"error\":{\"code\":503,\"message\":\"provider overloaded\"}}\n\n",
+            "data: {\"error\":{\"code\":429,\"message\":\"rate limited\"}}\n\n",
+            "data: {\"id\":\"turn\",\"model\":\"weak\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\ndata: {\"error\":{\"code\":503,\"message\":\"provider overloaded\"}}\n\n",
+        ] {
+            let (_server, calls, result) = run_streaming_candidates(weak_sse).await;
+            let (_, response) = result?;
+            assert_eq!(&*calls.lock(), &["weak", "strong"]);
+            assert_eq!(response.served_model().map(ModelId::as_str), Some("strong"));
+            let aggregate = response
+                .llm_response
+                .into_agg()
+                .await
+                .map_err(|source| LibsyError::client_call("strong", source))?;
+            assert_eq!(completion_text(&aggregate), "ok");
+        }
+        Ok(())
+    }
+
+    /// Once answer content arrives, later errors must not replay the request on another model.
+    #[tokio::test]
+    async fn stream_fallback_stops_at_answer_content_and_non_retryable_errors() -> Result<()> {
+        for weak_sse in [
+            "data: {\"error\":{\"code\":400,\"message\":\"invalid request\"}}\n\n",
+            "data: {\"error\":{\"code\":\"busy\",\"message\":\"not an HTTP status\"}}\n\n",
+            "data: {\"id\":\"turn\",\"model\":\"weak\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"partial\"},\"finish_reason\":null}]}\n\ndata: {\"error\":{\"code\":503,\"message\":\"provider overloaded\"}}\n\n",
+        ] {
+            let (_server, calls, result) = run_streaming_candidates(weak_sse).await;
+            let (_, response) = result?;
+            assert_eq!(&*calls.lock(), &["weak"]);
+            response
+                .llm_response
+                .into_agg()
+                .await
+                .expect_err("the stream error should reach the caller");
+        }
+
+        let (_server, calls, result) = run_streaming_candidates(STRONG_SSE).await;
+        let (_, response) = result?;
+        assert_eq!(&*calls.lock(), &["weak"]);
+        let aggregate = response
+            .llm_response
+            .into_agg()
+            .await
+            .map_err(|source| LibsyError::client_call("weak", source))?;
+        assert_eq!(completion_text(&aggregate), "ok");
+
+        let (_server, calls, result) = run_streaming_candidates(
+            "data: {\"id\":\"turn\",\"model\":\"weak\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}\n\ndata: {\"id\":\"turn\",\"model\":\"weak\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+        )
+        .await;
+        let (_, response) = result?;
+        assert_eq!(&*calls.lock(), &["weak"]);
+        let LlmResponse::Stream(stream) = response.llm_response else {
+            panic!("expected a stream");
+        };
+        let events = stream.collect::<Vec<_>>().await;
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events[0].as_ref().expect("role event").normalized(),
+            [LlmResponseChunk::MessageStart { .. }]
+        ));
+        assert!(events[1]
+            .as_ref()
+            .expect("answer event")
+            .normalized()
+            .iter()
+            .any(|chunk| matches!(chunk, LlmResponseChunk::TextDelta { text, .. } if text == "ok")));
         Ok(())
     }
 }
