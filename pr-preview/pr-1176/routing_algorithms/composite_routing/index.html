@@ -2498,7 +2498,10 @@ on a standalone stage route.</p>
 The judge's verdict selects <code>efficient</code> or <code>capable</code>. Their pickers default to
 efficient-first and capable-first respectively. Override <code>picker</code> to use either
 mode in either profile, including capable-first in both.
-Targets stay in <code>stage</code> and the classifier stays in <code>classifier</code>.
+Targets stay in <code>stage</code> and the profile selector stays in <code>classifier</code>.
+Each profile can also define its own <code>classifier</code> table, using the standalone
+stage classifier settings and target. It runs only when stage signals abstain.
+On model fallback, each candidate receives the active profile's prompt for its tier.
 Omitted settings inherit from <code>stage</code>, including the corresponding threshold.
 A supplied <code>tool_semantics</code> or <code>handoff_notes</code> table replaces the shared table.</p>
 <p>Either table enables two profiles with separate hold state. Switching back
