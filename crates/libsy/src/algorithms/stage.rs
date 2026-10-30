@@ -19,7 +19,7 @@ use async_trait::async_trait;
 
 use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
-use super::util::affinity::ClassifyTrigger;
+use super::util::affinity::{ClassifyTrigger, has_new_user_turn};
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, Tier, fall_open_tier,
     record_routing_decision,
@@ -76,6 +76,7 @@ struct SourceStamp {
     inner: Arc<dyn Classifier>,
     source: DecisionSource,
     judge: Option<switchyard_protocol::ModelId>,
+    skip_user_turn: bool,
 }
 
 #[async_trait]
@@ -86,6 +87,9 @@ impl Classifier for SourceStamp {
         request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
+        if self.skip_user_turn && has_new_user_turn(&request.llm_request.messages) {
+            return Ok((Classification::Ambiguous(Vec::new()), None));
+        }
         let scoped = self
             .judge
             .as_ref()
@@ -214,7 +218,7 @@ impl StageRouter {
     /// turn, so `classify_trigger` and `message_hash_fallback` would do nothing.
     pub fn new(config: StageRouterConfig) -> Result<Self> {
         Ok(Self {
-            route: build_stage_route(config)?,
+            route: build_stage_route(config, false)?,
         })
     }
 }
@@ -236,7 +240,10 @@ impl Algorithm for StageRouter {
 
 /// Wires the cascade the wrapper drives. Exposed so a composition above can
 /// stack a prelude onto it.
-pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough> {
+pub(crate) fn build_stage_route(
+    config: StageRouterConfig,
+    reset_on_user_turn: bool,
+) -> Result<FallThrough> {
     if let Some(fallback) = &config.llm_fallback
         && (fallback.config.classify_trigger != ClassifyTrigger::EveryRequest
             || fallback.config.message_hash_fallback)
@@ -279,6 +286,7 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
     let mut classifier = StageClassifier::new(config.mode, config.confidence_threshold)
         .with_capable_first_threshold(config.capable_first_threshold)
         .with_capable_hold_turns(config.capable_hold_turns);
+    classifier.reset_on_user_turn = reset_on_user_turn;
     if let Some(turns) = config.efficient_hold_turns {
         classifier = classifier.with_efficient_hold_turns(turns);
     }
@@ -301,6 +309,7 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
             })?),
             source: DecisionSource::LlmClassifier,
             judge: fallback.target,
+            skip_user_turn: reset_on_user_turn,
         }));
     }
     // Nothing behind this, so no turn is left unrouted.
@@ -308,6 +317,7 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
         inner: Arc::new(fall_open),
         source: DecisionSource::FallOpen,
         judge: None,
+        skip_user_turn: false,
     }));
     if config.capable_system_prompt.is_some() || config.efficient_system_prompt.is_some() {
         router = router.with_processor(Arc::new(TierPromptProcessor {
@@ -375,6 +385,7 @@ mod tests {
             inner,
             source: DecisionSource::LlmClassifier,
             judge: None,
+            skip_user_turn: false,
         };
         let (driver, mut rx) = Driver::new("test", Arc::new(crate::RuntimeModels::default()));
         stamp
@@ -760,8 +771,9 @@ mod tests {
         let recorder = Arc::new(Recorder::default());
         // The picker would fall open to "strong"; the override says "weak".
         let config = StageRouterConfig::new(PickerMode::CapableFirst, 0.5);
-        let route: Arc<dyn Algorithm> =
-            Arc::new(build_stage_route(config)?.with_processor(Arc::new(TierDecider::default())));
+        let route: Arc<dyn Algorithm> = Arc::new(
+            build_stage_route(config, false)?.with_processor(Arc::new(TierDecider::default())),
+        );
 
         let models = runtime_models();
         for is_turn_failed in [false, false, true, false] {

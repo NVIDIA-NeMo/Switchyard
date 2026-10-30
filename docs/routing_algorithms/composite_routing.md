@@ -18,8 +18,8 @@ relationship between them are fixed, and the configuration below names them
 directly rather than composing arbitrary algorithms.
 
 Under capable-first, `stage.efficient_hold_turns` defaults to `-1`: after switching
-to efficient, it stays there until session state is cleared. Efficient-first
-defaults to `0`. Set this field explicitly to override either default; `0`
+to efficient, it stays there until the next user-turn reset or session reset. Efficient-first
+defaults to `0`. Set this field explicitly to override either default. `0`
 disables the hold, and a positive value holds that many subsequent requests.
 
 The classifier can use an LLM judge or a decision model. A decision
@@ -95,9 +95,9 @@ On model fallback, each candidate receives the active profile's prompt for its t
 Omitted settings inherit from `stage`, including the corresponding threshold.
 A supplied `tool_semantics` or `handoff_notes` table replaces the shared table.
 
-Either table enables two profiles with separate hold state. Switching back
-resumes that profile's holds. Inactive profiles do not consume hold turns.
-With neither table, existing behavior is preserved.
+With `user_turn`, each new user message resets holds and tool signals and starts
+on the selected profile's initial tier. Its classifier runs only on tool continuations.
+Signals use only the current user turn. `new_session` retains session-wide state.
 
 ## Custom LLM classifier
 

@@ -23,6 +23,7 @@ use serde_json::Value;
 use switchyard_protocol::codex_namespaces::{split_qualified_name, tool_namespaces};
 use switchyard_protocol::{ContentBlock, Request, Role, WireFormat};
 
+use super::affinity::is_user_turn;
 use crate::{LibsyError, Result};
 
 use crate::core::processor::{Event, Processor};
@@ -421,6 +422,7 @@ impl ToolSignals {
             request,
             window_size.unwrap_or(DEFAULT_RECENT_WINDOW),
             semantics,
+            false,
         )
     }
 }
@@ -470,6 +472,17 @@ impl Default for ToolSignalProcessor {
             recent_window: DEFAULT_RECENT_WINDOW,
             tool_semantics: ToolSemantics::default(),
         }
+    }
+}
+
+impl ToolSignalProcessor {
+    pub(crate) fn for_user_turn(&self, request: &Request) -> ToolSignals {
+        extract_tool_signals_with_window_and_semantics(
+            request,
+            self.recent_window,
+            &self.tool_semantics,
+            true,
+        )
     }
 }
 
@@ -1032,6 +1045,7 @@ fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> 
         request,
         recent_window,
         &ToolSemantics::default(),
+        false,
     )
 }
 
@@ -1039,9 +1053,13 @@ fn extract_tool_signals_with_window_and_semantics(
     request: &Request,
     recent_window: usize,
     semantics: &ToolSemantics,
+    current_user_turn: bool,
 ) -> ToolSignals {
     // Read the decoded conversation, including preserved built-in tool outputs.
-    let messages = &request.llm_request.messages;
+    let mut messages = request.llm_request.messages.as_slice();
+    if current_user_turn {
+        messages = &messages[messages.iter().rposition(is_user_turn).unwrap_or(0)..];
+    }
     let namespaces = tool_namespaces(&request.llm_request.extensions);
     let mut tool_texts: Vec<(String, bool)> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
@@ -1784,6 +1802,15 @@ mod tests {
                 is_error: None,
             })],
         }
+    }
+
+    #[test]
+    fn user_turn_signals_exclude_old_errors_and_keep_user_role_tool_results() {
+        let user = Message::text(Role::User, "next");
+        let request = with_messages(vec![tr("out of memory"), user, tr("ok")]);
+        let signals = ToolSignalProcessor::default().for_user_turn(&request);
+        assert_eq!(signals.tool_result_count, 1);
+        assert_eq!(signals.severity, 0.0);
     }
 
     #[test]

@@ -33,7 +33,7 @@ type = "composite"
 [routes.auto.classifier]
 target = "judge"
 base_threshold = 0.5
-classify_trigger = "user_turn"
+classify_trigger = "new_session"
 [routes.auto.stage]
 capable_target = "strong"
 efficient_target = "weak"

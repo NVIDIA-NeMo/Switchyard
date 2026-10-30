@@ -146,7 +146,7 @@ impl CompositeRouter {
     /// of the fall-open tier and so answers most of the turns this one set a tier for.
     pub fn new(config: CompositeRouterConfig) -> Result<Self> {
         let setter = Self::tier_setter(config.judge, config.stage.mode.default_tier())?;
-        let route = build_stage_route(config.stage)?
+        let route = build_stage_route(config.stage, setter.trigger == ClassifyTrigger::UserTurn)?
             .with_name(COMPOSITE)
             .with_processor(Arc::new(setter));
         Ok(Self { route })
@@ -164,8 +164,11 @@ impl CompositeRouter {
             }
         }
         let setter = Self::tier_setter(judge, Tier::Efficient)?;
-        let profiles =
-            StageProfiles([build_stage_route(profile_0)?, build_stage_route(profile_1)?]);
+        let reset_on_user_turn = setter.trigger == ClassifyTrigger::UserTurn;
+        let profiles = StageProfiles([
+            build_stage_route(profile_0, reset_on_user_turn)?,
+            build_stage_route(profile_1, reset_on_user_turn)?,
+        ]);
         let route = FallThrough::new_with_state()
             .with_name(COMPOSITE)
             .with_processor(Arc::new(setter))
@@ -414,7 +417,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn profiles_keep_their_own_holds_and_prompts_when_the_judge_switches() -> Result<()> {
+    async fn profiles_reset_holds_and_keep_prompts_when_the_judge_switches() -> Result<()> {
         for (has_session_id, picker, first_target, first_prompt) in [
             (false, PickerMode::EfficientFirst, "weak", "EF efficient"),
             (true, PickerMode::EfficientFirst, "weak", "EF efficient"),
@@ -428,6 +431,12 @@ mod tests {
             capable.capable_hold_turns = 0;
             capable.capable_system_prompt = Some("CF capable".into());
             capable.efficient_system_prompt = Some("CF efficient".into());
+            for stage in [&mut efficient, &mut capable] {
+                stage.llm_fallback = Some(crate::algorithms::stage::LlmFallback {
+                    target: None,
+                    config: Default::default(),
+                });
+            }
             let router = Arc::new(CompositeRouter::new_with_profiles(
                 CompositeJudgeConfig::Capability(TaskClassifierConfig {
                     judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
@@ -453,8 +462,8 @@ mod tests {
                 (1.0, turn_request(true), "strong", "EF capable"),
                 (0.0, user_turn_request(), "strong", "CF capable"),
                 (0.0, write, "weak", "CF efficient"),
-                (1.0, user_turn_request(), "strong", "EF capable"),
-                (0.0, user_turn_request(), "weak", "CF efficient"),
+                (1.0, user_turn_request(), first_target, first_prompt),
+                (0.0, user_turn_request(), "strong", "CF capable"),
             ] {
                 *recorder.judge_p_solve.lock() = p_solve;
                 let request = if has_session_id {
