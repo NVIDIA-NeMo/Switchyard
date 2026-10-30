@@ -34,7 +34,7 @@ Without a session ID, the first mutation must remain in the request history.
 
 Set `execution_trigger = "judge"` and `judge = { target = "handoff_judge", base_threshold = 0.7 }` on the route to use an LLM judge.
 
-This uses the same settings as a [Stage classifier](stage_router_routing.md). For a decision model, use a `decision_targets` target and replace `base_threshold` with `judge.decision` settings (`cutoff`, `candidates`, and `evidence`). The default prompt follows [AgentBaton's handoff criteria](https://arxiv.org/html/2610.35959#S3.SS3) and asks whether the efficient model can finish from the current task state. Both judge types see the opening task plus 10 recent messages by default, configurable with `judge.recent_turn_window`.
+This uses the same settings as a [Stage classifier](stage_router_routing.md). For a decision model, use a `decision_targets` target and replace `base_threshold` with `judge.decision` settings (`cutoff`, `candidates`, and `evidence`). The default prompt adapts the handoff criteria from [AgentBaton: Efficient Model Collaboration in Agentic Tasks](https://arxiv.org/abs/2610.35959) (Li et al., 2026), asking whether the efficient model can finish from the current task state. Both judge types see the opening task plus 10 recent messages by default, configurable with `judge.recent_turn_window`.
 
 Each user turn starts on capable. Tool continuations consult the judge until it selects efficient, then hold efficient until the next user turn. Unavailable verdicts keep capable by default. Send a stable session ID to retain the handoff.
 
