@@ -65,6 +65,13 @@ switchyard-server --config routes.toml --dry-run
 switchyard-server --config routes.toml --host 127.0.0.1 --port 4000
 ```
 
+The standalone binary binds to `127.0.0.1` by default. For remote clients,
+pass `--host 0.0.0.0` explicitly and secure access to the server. The provided
+Docker image and `dev-server/switchyard.service` set this option to preserve
+network access. The user service created by `scripts/linux/install.sh` binds
+to `127.0.0.1`.
+A later `--host` argument overrides the image's default.
+
 The dry run prints `server OK: switchyard`. It checks configuration and credential lookup, not whether the provider accepts the key.
 
 In a second terminal, check local readiness:
