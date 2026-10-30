@@ -2479,7 +2479,7 @@ host's observations. Configure telemetry collection in your application and
 instrument model I/O performed by your own clients. See the
 <a href="../opentelemetry/#host-setup">OpenTelemetry reference</a>.</p>
 <p>For existing integrations, check <a href="../../integrations/nemo_relay/">NeMo Relay</a>
-or the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/29e741087103479603e33d0e7ac0a9011b33e369/examples/litellm/README.md#supported-algorithm-semantics">LiteLLM compatibility notes</a>.
+or the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ac4dde3cca342df9908e7b05d1655763a562dd26/examples/litellm/README.md#supported-algorithm-semantics">LiteLLM compatibility notes</a>.
 The experimental LiteLLM plugin supports decision-only routing and cannot serve
 intermediate model calls.</p>
 <h2 id="serve-routing-time-calls">Serve routing-time calls<a class="headerlink" href="#serve-routing-time-calls" title="Permanent link">&para;</a></h2>
@@ -2518,8 +2518,8 @@ adapt errors to <a href="../../rust/switchyard_libsy/enum.LibsyError.html"><code
 <h2 id="python-bindings">Python bindings<a class="headerlink" href="#python-bindings" title="Permanent link">&para;</a></h2>
 <p>The bindings run the same Rust algorithms. The local routing example below works
 with the released package. For the asynchronous callbacks and cleanup described
-after it, build matching <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/29e741087103479603e33d0e7ac0a9011b33e369/INSTALLATION.md#development">development bindings</a>
-and follow the complete <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/29e741087103479603e33d0e7ac0a9011b33e369/examples/libsy.py">Python host example</a>.</p>
+after it, build matching <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ac4dde3cca342df9908e7b05d1655763a562dd26/INSTALLATION.md#development">development bindings</a>
+and follow the complete <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ac4dde3cca342df9908e7b05d1655763a562dd26/examples/libsy.py">Python host example</a>.</p>
 <details>
 <summary>Python setup, callbacks, and metadata</summary>
 <p>With Python 3.10+ and <a href="https://docs.astral.sh/uv/getting-started/installation/">uv</a>,
@@ -2553,7 +2553,7 @@ Pass the coroutine itself to <code>respond</code>:</p>
 </span></code></pre></div>
 <p><code>respond</code> cancels and awaits the supplied provider work before returning.
 For concurrent algorithms, create handler tasks and cancel and await the remaining
-handlers when the run ends, as in the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/29e741087103479603e33d0e7ac0a9011b33e369/examples/libsy.py">Python host example</a>.
+handlers when the run ends, as in the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ac4dde3cca342df9908e7b05d1655763a562dd26/examples/libsy.py">Python host example</a>.
 Awaiting one handler at a time serializes execution. <code>call.fail(error)</code> is also
 awaitable; decision calls use the same reply pattern.</p>
 <p>For the shared cancellation behavior and upstream limits, see
