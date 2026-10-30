@@ -13,7 +13,8 @@ use switchyard_desktop::install::{Settings, credentials, execute};
 const HELP: &str = "\
 Usage: cargo desktop <install | uninstall> [--dry-run]
 
-Build and install the local server and macOS or Windows desktop app, or Linux terminal app.
+Run this command from experimental/switchyard-desktop in the Switchyard checkout.
+It builds and installs the local server and macOS or Windows desktop app, or Linux terminal app.
 Uninstall uses the recorded installation and preserves settings, history, and recovery copies.
 
 Defaults: SY_HOME=~/.switchyard, SY_PORT=4123, SY_PROFILE=sy,
@@ -105,8 +106,8 @@ fn perform(action: &str, dry_run: bool, file: Option<&Path>) -> Result<(), Strin
         {
             return Err(format!(
                 "The installed installer cannot {action} its own installation, because Windows \
-                 locks running programs. Run cargo desktop {} from the Switchyard source \
-                 checkout instead.",
+                 locks running programs. Run cargo desktop {} from experimental/switchyard-desktop \
+                 in the Switchyard checkout instead.",
                 if action == "update" {
                     "install"
                 } else {

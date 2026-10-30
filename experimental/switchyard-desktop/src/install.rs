@@ -821,6 +821,8 @@ fn prepare(s: &Settings, preserve_profile: bool) -> Result<Prepared, String> {
     })
 }
 
+/// This function builds the server from the main workspace and the app from its own
+/// experimental workspace before it installs binaries or changes services.
 fn build(s: &Settings) -> Result<(), String> {
     println!(
         "Building the desktop app and server from {}",
@@ -832,14 +834,24 @@ fn build(s: &Settings) -> Result<(), String> {
     if let Some(path) = std::env::var_os("PATH") {
         paths.extend(std::env::split_paths(&path));
     }
-    run(Command::new(&s.cargo)
-        .current_dir(&s.source)
-        .args(["build", "--locked", "--release", "--manifest-path"])
-        .arg(s.source.join("Cargo.toml"))
-        .arg("--target-dir")
-        .arg(s.source.join("target"))
-        .args(["-p", "switchyard-server", "-p", "switchyard-desktop"])
-        .env("PATH", std::env::join_paths(paths).map_err(err)?))
+    let path = std::env::join_paths(paths).map_err(err)?;
+    for (manifest, package) in [
+        ("Cargo.toml", "switchyard-server"),
+        (
+            "experimental/switchyard-desktop/Cargo.toml",
+            "switchyard-desktop",
+        ),
+    ] {
+        run(Command::new(&s.cargo)
+            .current_dir(&s.source)
+            .args(["build", "--locked", "--release", "--manifest-path"])
+            .arg(s.source.join(manifest))
+            .arg("--target-dir")
+            .arg(s.source.join("target"))
+            .args(["-p", package])
+            .env("PATH", &path))?;
+    }
+    Ok(())
 }
 
 /// Checks the server config that the install keeps, or the bundled one on a first install, and

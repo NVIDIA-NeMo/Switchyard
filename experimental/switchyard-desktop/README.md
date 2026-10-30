@@ -5,10 +5,13 @@ harness settings, and open sessions in separate Git worktrees. The server
 handles routing and continues when the app quits. The desktop app uses Tauri 2;
 the terminal app uses Ratatui.
 
+These apps are experimental. They are outside Switchyard release QA and have no
+support or compatibility guarantee.
+
 ## Install and update
 
-Install the app from the repository root with the repository's pinned Rust
-toolchain (currently Rust 1.99). Install Rust through rustup and keep Cargo on
+Install the app from `experimental/switchyard-desktop` in the repository. That
+directory pins its Rust toolchain (currently Rust 1.99). Install Rust through rustup and keep Cargo on
 `PATH`. Native dependencies also need a C compiler and linker: Xcode Command
 Line Tools on macOS, or GCC/Clang and the system development libraries on Linux.
 Cargo downloads dependencies on the first build. The default Codex profile
@@ -16,6 +19,7 @@ requires Codex CLI 0.134.0 or newer and a ChatGPT login. Sign in with Codex
 before using it.
 
 ```sh
+cd experimental/switchyard-desktop
 cargo desktop install
 ```
 
@@ -136,7 +140,7 @@ Run the terminal app with:
 
 ```sh
 ~/.switchyard/bin/switchyard-desktop --tui
-# This command runs the terminal app from a checkout.
+# This command runs the terminal app from experimental/switchyard-desktop in a checkout.
 cargo run -p switchyard-desktop -- --tui
 ```
 
@@ -268,7 +272,7 @@ the original file. Switching algorithms preserves each algorithm's full set of c
 **Save and restart** asks the installed helper to check the complete edited file
 with the installed server's `--dry-run`. The check uses the saved server keys,
 which are the keys the server starts with. If the edited file names a key that
-is not saved, the check fails. See [Server Keys](../../INSTALLATION.md#server-keys).
+is not saved, the check fails. See [Server Keys](INSTALLATION.md#server-keys).
 The app preserves comments and unrelated tables, saves a backup
 beside the config, and restarts the server. A failed check leaves the file
 unchanged. A restart failure after saving is reported separately. The app re-reads
@@ -476,7 +480,7 @@ Usage remains readable when the route config is missing or malformed.
 
 The server writes one JSONL record per call, with the model that answered, its
 token counts, and its cost. The server and app use the same
-[bundled rates](../switchyard-costs/prices.toml) by default. To replace the table,
+[bundled rates](../../crates/switchyard-costs/prices.toml) by default. To replace the table,
 pass `--pricing-file PATH` to the server and set `pricing_file` to the same TOML or JSON
 file in app settings. The [Pi cost guide](../../docs/integrations/pi.md#estimate-the-cost)
 describes the file format. If an explicitly configured file is missing or invalid,

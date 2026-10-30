@@ -3,29 +3,33 @@
 
 [package]
 name = "switchyard-desktop"
-version.workspace = true
+version = "0.3.0"
 description = "Installer, desktop app, terminal app, and usage summary for a local Switchyard server"
-authors.workspace = true
-edition.workspace = true
+authors = ["NVIDIA Corporation"]
+edition = "2024"
 homepage = "https://github.com/NVIDIA-NeMo/Switchyard"
-license.workspace = true
-repository.workspace = true
-rust-version.workspace = true
+license = "Apache-2.0"
+repository = "https://github.com/NVIDIA-NeMo/Switchyard"
+rust-version = "1.96.1"
 publish = false
 default-run = "switchyard-desktop"
 
+# The app is experimental, so it builds as its own workspace with its own lock file.
+[workspace]
+resolver = "3"
+
 [dependencies]
-switchyard-runner.workspace = true
-switchyard-costs.workspace = true
-switchyard-protocol.workspace = true
+switchyard-runner = { path = "../../crates/switchyard-runner", version = "0.3.0" }
+switchyard-costs = { path = "../../crates/switchyard-costs", version = "0.3.0" }
+switchyard-protocol = { path = "../../crates/protocol", version = "0.3.0" }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
-serde.workspace = true
-serde_json.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
 tempfile = "3"
 toml = "0.9"
 toml_edit = "0.25"
 url = "2"
-uuid.workspace = true
+uuid = { version = "1", features = ["v7"] }
 # Popups and the Data errors panel use Paragraph::line_count to size wrapped text.
 ratatui = { version = "0.30.2", features = ["unstable-rendered-line-info"] }
 shlex = "2"

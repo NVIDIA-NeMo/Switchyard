@@ -38,6 +38,7 @@ jobs:
               - "!.github/ISSUE_TEMPLATE/**"
               - "!.github/PULL_REQUEST_TEMPLATE.md"
               - "!.agents/skills/**/*.md"
+              - "!experimental/switchyard-desktop/**"
 
   # ruff is a hard gate — the codebase passes today, keep it that way.
   lint:

@@ -105,19 +105,40 @@ mod installer {
     const SERVICES: &str = ".config/systemd/user";
     /// Only these service commands may run before an install fails.
     const PREFLIGHT: [&str; 2] = ["launchctl help", "systemctl --user show-environment"];
-    /// One script fakes cargo, codesign, id, launchctl, systemctl, and the built binaries. It
-    /// logs service commands, and the server's config check fails when HOME has `fail-check`.
+    /// This script handles Cargo, codesign, id, launchctl, systemctl, and built-binary calls.
+    /// Each build produces only its selected package so a combined workspace build cannot pass.
+    /// The script checks manifests by filesystem identity and logs service commands.
+    /// The server config check fails when HOME has `fail-check`; the app build fails on `fail-build`.
     const TOOL: &str = r#"#!/bin/sh
 name=$(basename "$0")
 case "$name" in launchctl|systemctl) echo "$name $*" >> "$HOME/service_calls" ;; esac
 case "$name $1" in
 "cargo build")
-  while [ "$1" != --target-dir ]; do shift; done
-  mkdir -p "$2/release"
-  cp "$0" "$2/release/switchyard-server"
-  cp "$0" "$2/release/switchyard-desktop"
-  cp "$INSTALLER_BIN" "$2/release/switchyard-desktop-install"
-  ps -o pgid= -p $$ > "$2/build-process-group" ;;
+  shift
+  manifest= package= target=
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --manifest-path) manifest=$2; shift ;;
+      --target-dir) target=$2; shift ;;
+      -p) [ -z "$package" ] || exit 2; package=$2; shift ;;
+    esac
+    shift
+  done
+  case "$package" in
+    # Filesystem identity accepts both /var and /private/var spellings on macOS.
+    switchyard-server) [ "$manifest" -ef "$PWD/Cargo.toml" ] || exit 2 ;;
+    switchyard-desktop)
+      [ "$manifest" -ef "$PWD/experimental/switchyard-desktop/Cargo.toml" ] || exit 2
+      [ ! -e "$HOME/fail-build" ] || exit 3 ;;
+    *) exit 2 ;;
+  esac
+  echo "$package" >> "$PWD/build-packages"
+  mkdir -p "$target/release"
+  cp "$0" "$target/release/$package"
+  if [ "$package" = switchyard-desktop ]; then
+    cp "$INSTALLER_BIN" "$target/release/switchyard-desktop-install"
+  fi
+  ps -o pgid= -p $$ > "$target/build-process-group" ;;
 "id -u") echo 501 ;;
 "launchctl print") exit 1 ;;
 "switchyard-server --config") [ ! -e "$HOME/fail-check" ] ;;
@@ -275,7 +296,11 @@ esac
                 fs::set_permissions(bin.join(name), mode).expect("mode");
             }
             fs::create_dir_all(&home).expect("home");
-            fs::create_dir_all(&source).expect("checkout");
+            write(&source.join("Cargo.toml"), "");
+            write(
+                &source.join("experimental/switchyard-desktop/Cargo.toml"),
+                "",
+            );
             let s = Settings {
                 sy_home: home.join("Switchyard ' $(touch unsafe) \\ & <local> % $"),
                 codex_home: home.join(".codex"),
@@ -382,6 +407,8 @@ esac
         write(&sy_home.join("routing.jsonl"), "history");
         write(&codex.join("config.toml"), "user defaults");
         f.ok("install");
+        let builds = "switchyard-server\nswitchyard-desktop\n";
+        assert_eq!(read(&f.s.source.join("build-packages")), builds);
         let settings = f.s.desktop_settings();
         let url = |port| format!("server_url = \"http://127.0.0.1:{port}\"\n");
         assert_eq!(
@@ -461,6 +488,7 @@ esac
             "state = 'running'\nupdated_at = 0\n",
         );
         f.ok("start_update");
+        assert_eq!(read(&f.s.source.join("build-packages")), builds.repeat(3));
         assert_eq!(read(&f.profile()), edited);
         assert_eq!(read(&settings), custom);
         let status = install::update_status(&f.file).expect("status");
@@ -482,6 +510,7 @@ esac
     fn rejected_installs_change_no_files_or_services() {
         let cases = [
             ("install", "check", "--dry-run"),
+            ("install", "build", "exited with"),
             ("install", "route", "\"missing-route\""),
             ("install", "profile", "model_providers must be a table"),
             ("install", "url", "server_url value"),
@@ -494,6 +523,7 @@ esac
             let lock = lock.expect("lock");
             match setup {
                 "check" => write(&f.s.home.join("fail-check"), ""),
+                "build" => write(&f.s.home.join("fail-build"), ""),
                 "route" => f.s.model = "missing-route".into(),
                 "profile" => write(&f.profile(), "model_providers = 'not a table'\n"),
                 "url" => write(&f.s.desktop_settings(), "server_url = 42\n"),

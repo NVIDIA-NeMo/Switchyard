@@ -38,14 +38,14 @@ Create a refined Switchyard macOS app icon based on this visual description of t
 4. Keep `tray-source.png` as a separate 1024 × 1024 RGBA image. Its transparent
    background includes the gaps between rails and supports. Check the 22 × 22
    pixel preview to make sure the turnout endpoints remain visible.
-5. Run `cargo desktop-icons` from the repository. The Rust command exports
+5. Run `cargo desktop-icons` from `experimental/switchyard-desktop`. The Rust command exports
    `icon.icns` and `icon.ico` from `icon.png`, and the tray PNG and pixel file from
    `tray-source.png`. It uses Lanczos filtering when resizing both sources.
 6. Inspect both PNGs on light, dark, and vivid backgrounds. Compare the app icon
    at 16, 32, 64, and 128 pixels and the tray icon at 22 × 22 pixels.
 
 Run `cargo desktop-icons --check` to verify exports without changing files.
-`cargo test` runs the same check on every platform, so CI fails when an export
+`cargo test` in this directory runs the same check, so the app's tests fail when an export
 is stale. After changing either PNG source, regenerate its exports before you
 commit. Keep both sources as
 1024 × 1024 RGBA images.

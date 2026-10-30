@@ -209,7 +209,8 @@ fn key_command(args: &[&str], key: Option<&str>) -> Result<String, String> {
         .map_err(|error| {
             format!(
                 "Could not run {}: {error}. \
-                 Run cargo desktop install from the Switchyard repository to install it.",
+                 Run cargo desktop install from experimental/switchyard-desktop \
+                 in the Switchyard checkout to install it.",
                 helper.display()
             )
         })?;
@@ -258,7 +259,8 @@ fn server_binary() -> Result<PathBuf, String> {
     let executable = std::env::current_exe().map_err(|error| {
         format!(
             "Could not find switchyard-server next to the desktop app: {error}. \
-             Run cargo desktop install from the Switchyard repository to install it."
+             Run cargo desktop install from experimental/switchyard-desktop \
+             in the Switchyard checkout to install it."
         )
     })?;
     let metadata = switchyard_desktop::install::bundle_metadata(&executable);
@@ -405,7 +407,8 @@ fn check(binary: &Path, config: &Path) -> Result<(), String> {
         format!(
             "Could not run {}: {error}. \
              The config check needs the installed server and credential helper. \
-             Run cargo desktop install from the Switchyard repository to install them.",
+             Run cargo desktop install from experimental/switchyard-desktop \
+             in the Switchyard checkout to install them.",
             helper.display()
         )
     })?;

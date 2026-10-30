@@ -1,6 +1,6 @@
 # Desktop setup
 
-Run `cargo desktop install` from the source checkout to build and install the
+Run `cargo desktop install` from `experimental/switchyard-desktop` in the source checkout to build and install the
 desktop app and server. On Linux, open the installed app with
 `~/.switchyard/bin/switchyard-desktop --tui`. If you set `SY_HOME`, use its `bin`
 directory instead.

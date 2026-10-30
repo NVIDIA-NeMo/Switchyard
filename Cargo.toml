@@ -15,13 +15,14 @@ members = [
     "crates/protocol",
     "crates/switchyard-nemo-relay-plugin",
     "crates/switchyard-runner",
-    "crates/switchyard-desktop",
     "crates/switchyard-costs",
     "crates/switchyard-server",
     "crates/switchyard-skill-distillation",
     "crates/switchyard-soak",
     "crates/switchyard-translation",
 ]
+
+exclude = ["experimental/switchyard-desktop"]
 
 [workspace.package]
 version = "0.3.0"
