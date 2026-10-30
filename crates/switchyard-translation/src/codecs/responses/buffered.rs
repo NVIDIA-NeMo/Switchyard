@@ -731,7 +731,17 @@ fn decode_responses_input(
                     Some("additional_tools") => {}
                     _ => {
                         let message = Message {
-                            role: Role::User,
+                            role: match item_type {
+                                Some("shell_call" | "apply_patch_call" | "computer_call") => {
+                                    Role::Assistant
+                                }
+                                Some(
+                                    "shell_call_output"
+                                    | "apply_patch_call_output"
+                                    | "computer_call_output",
+                                ) => Role::Tool,
+                                _ => Role::User,
+                            },
                             content: vec![ContentBlock::Unknown {
                                 provider: WireFormat::OpenAiResponses.into(),
                                 raw: Value::Object(item.clone()),
@@ -1288,8 +1298,7 @@ fn encode_responses_input(
     for message in messages {
         // The decoder carries each valid top-level built-in tool item as one
         // provider-qualified block, so replay that block in place.
-        if message.role == Role::User
-            && let [ContentBlock::Unknown { provider, raw }] = message.content.as_slice()
+        if let [ContentBlock::Unknown { provider, raw }] = message.content.as_slice()
             && provider.as_str() == WireFormat::OpenAiResponses.as_str()
             && is_responses_builtin_tool_item(raw)
         {

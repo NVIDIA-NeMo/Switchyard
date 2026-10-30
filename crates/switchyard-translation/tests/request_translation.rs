@@ -836,6 +836,8 @@ fn anthropic_tool_result_error_survives_target_prompt() -> TestResult {
 // Target prompts force normalized re-encoding; built-in tool history must retain its wire shape.
 #[test]
 fn responses_builtin_tool_history_survives_target_prompt() -> TestResult {
+    use switchyard_translation::Role;
+
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy::default();
     let input = json!([
@@ -872,6 +874,13 @@ fn responses_builtin_tool_history_survives_target_prompt() -> TestResult {
     let mut request = engine
         .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
         .request;
+
+    let roles: Vec<_> = request
+        .messages
+        .iter()
+        .map(|message| message.role)
+        .collect();
+    assert_eq!(roles, [Role::Assistant, Role::Tool].repeat(3));
 
     prepare_request_for_target(&mut request, &"target".into(), Some("target prompt"));
 
