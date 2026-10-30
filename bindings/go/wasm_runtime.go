@@ -155,7 +155,7 @@ func (guest *guestModule) call(ctx context.Context, name string, args ...uint64)
 }
 
 func (guest *guestModule) alloc(ctx context.Context, data []byte) (uint32, error) {
-	if len(data) > int(^uint32(0)) {
+	if uint64(len(data)) > uint64(^uint32(0)) {
 		return 0, errors.New("Switchyard wasm buffer exceeds wasm32 memory")
 	}
 	values, err := guest.call(ctx, "sy_alloc", uint64(uint32(len(data))))
