@@ -114,11 +114,12 @@ func (runtime *wasmRuntime) newModule(ctx context.Context) (*guestModule, error)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := module.ExportedFunction("_initialize").Call(ctx); err != nil {
+	guest := &guestModule{module: module, stderr: stderr}
+	if _, err := guest.call(ctx, "_initialize"); err != nil {
 		_ = module.Close(context.Background())
 		return nil, fmt.Errorf("initialize Switchyard wasm: %w", err)
 	}
-	version, err := module.ExportedFunction("sy_abi_version").Call(ctx)
+	version, err := guest.call(ctx, "sy_abi_version")
 	if err != nil {
 		_ = module.Close(context.Background())
 		return nil, fmt.Errorf("read Switchyard wasm ABI: %w", err)
@@ -127,7 +128,7 @@ func (runtime *wasmRuntime) newModule(ctx context.Context) (*guestModule, error)
 		_ = module.Close(context.Background())
 		return nil, fmt.Errorf("Switchyard wasm ABI version mismatch: module=%v, binding=%d", version, wasmABIVersion)
 	}
-	return &guestModule{module: module, stderr: stderr}, nil
+	return guest, nil
 }
 
 func (runtime *wasmRuntime) closeAll() {
