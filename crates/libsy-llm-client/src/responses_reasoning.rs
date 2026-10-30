@@ -15,7 +15,8 @@ pub enum ResponsesReasoningPolicy {
     /// This is the default for every Responses model, regardless of its URL.
     #[default]
     PreserveEncrypted,
-    /// Drop all reasoning items while preserving messages and tool-call history.
+    /// Drop all reasoning items and replayed hosted web searches while preserving
+    /// messages and tool-call history.
     ///
     /// Use this for local Responses-compatible servers that cannot consume
     /// another provider's encrypted reasoning representation.
@@ -37,6 +38,14 @@ impl ResponsesReasoningPolicy {
         let Some(object) = item.as_object_mut() else {
             return true;
         };
+        // A hosted provider's server-side web search is replayed as a `web_search_call` item,
+        // which a local server cannot run or type (llama.cpp answers 400 "Cannot determine type
+        // of 'item'"). Its findings are in the assistant message that follows it.
+        if self == Self::Drop
+            && object.get("type").and_then(Value::as_str) == Some("web_search_call")
+        {
+            return false;
+        }
         if object.get("type").and_then(Value::as_str) != Some("reasoning") {
             return true;
         }

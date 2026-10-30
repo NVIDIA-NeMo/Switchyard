@@ -66,7 +66,11 @@ non-empty `encrypted_content` or a stored reasoning `id` are retained with empty
 `content`. ID-only reasoning is removed when the request sets `store: false`.
 Switchyard's translated Anthropic reasoning is always removed.
 Reasoning without either is removed. Set `responses_reasoning = "drop"` explicitly for a backend
-that cannot consume provider reasoning. Both modes keep messages, tool
+that cannot consume provider reasoning. `"drop"` also removes replayed
+`web_search_call` items: a conversation that ran a hosted web search replays
+them, and a local server such as llama.cpp rejects them with 400
+`Cannot determine type of 'item'`. The search results stay in the assistant
+message that follows. Both modes keep messages, tool
 calls and tool results. The setting is rejected on other client formats, even
 when no target uses the client. It is not inferred from the model name or URL.
 
