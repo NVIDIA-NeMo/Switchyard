@@ -379,6 +379,14 @@ impl SubagentRouteConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanExecuteTrigger {
+    #[default]
+    Edit,
+    Judge,
+}
+
 /// A routing algorithm described by configured target names. Converting it to `&str` gives
 /// the route's `type`, such as `stage_router`.
 #[derive(Clone, Debug, Deserialize, IntoStaticStr)]
@@ -406,7 +414,8 @@ pub enum AlgorithmSpec {
     },
     /// Plans on the capable target, then hands off after an edit or judge approval.
     PlanExecute {
-        execution_trigger: Option<String>,
+        #[serde(default)]
+        execution_trigger: PlanExecuteTrigger,
         judge: Option<StageClassifierConfig>,
         /// Target used before handoff.
         capable_target: String,
@@ -1645,13 +1654,7 @@ fn build_algorithm(
             planner_reasoning_as_text,
             ..
         } => {
-            if !matches!(
-                (
-                    execution_trigger.as_deref().unwrap_or("edit"),
-                    judge.is_some()
-                ),
-                ("edit", false) | ("judge", true)
-            ) {
+            if (*execution_trigger == PlanExecuteTrigger::Judge) != judge.is_some() {
                 return Err(AlgorithmConfigError::new(
                     "plan_execute requires a judge exactly when execution_trigger = judge",
                 ));
@@ -1660,6 +1663,13 @@ fn build_algorithm(
                 judge: judge
                     .as_ref()
                     .map(|judge| {
+                        if judge.classify_trigger != ClassifyTrigger::EveryRequest
+                            || judge.message_hash_fallback
+                        {
+                            return Err(AlgorithmConfigError::new(
+                                "plan_execute judge runs every tool turn. Remove classify_trigger and message_hash_fallback",
+                            ));
+                        }
                         judge.task_classifier_config(
                             route_name,
                             capable_target,

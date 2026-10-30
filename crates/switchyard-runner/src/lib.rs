@@ -23,7 +23,7 @@ pub use config::{ConfiguredTarget, RouteTargets, TargetModel, api_key_variables,
 
 pub use algorithm::{
     AdvisorTriggerConfig, AlgorithmConfigError, AlgorithmSpec, CategoryModelConfig, ClassifierMode,
-    ClassifierPolicyConfig, DecisionJudgeRouteConfig, LlmClassifierRouteConfig,
+    ClassifierPolicyConfig, DecisionJudgeRouteConfig, LlmClassifierRouteConfig, PlanExecuteTrigger,
     StageClassifierConfig, StageProfileConfig, StageSettingsConfig, SubagentRouteConfig,
     VgrModeConfig, VgrRouteConfig,
 };

@@ -70,7 +70,7 @@ impl PlanExecute {
     /// Creates a plan/execute router.
     ///
     /// Returns an error when a prompt is blank or tool semantics are invalid.
-    pub fn new(mut config: PlanExecuteConfig) -> Result<Self> {
+    pub fn new(config: PlanExecuteConfig) -> Result<Self> {
         if config.planning_prompt.trim().is_empty() {
             return Err(LibsyError::AlgorithmError {
                 message: "planning_prompt must not be empty".to_string(),
@@ -86,7 +86,7 @@ impl PlanExecute {
             });
         }
         config.tool_semantics.validate()?;
-        let judge = if let Some(mut judge) = config.judge.take() {
+        let judge = if let Some(mut judge) = config.judge.clone() {
             judge.recent_turn_window.get_or_insert(10);
             let prompt = include_str!("../prompts/plan-execute/handoff-decision.md");
             match &mut judge.judge {
@@ -205,7 +205,14 @@ impl Algorithm for PlanExecute {
         let mut phase = self.phase(&request, false)?;
         if phase == Phase::Plan {
             let handoff = if let Some(judge) = &self.judge {
-                if starts_user_turn(&request) {
+                if starts_user_turn(&request)
+                    || (driver.models_for(&Category::Judge).is_empty()
+                        && self
+                            .config
+                            .judge
+                            .as_ref()
+                            .is_some_and(|judge| judge.fail_open))
+                {
                     false
                 } else {
                     judge
