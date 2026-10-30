@@ -23,7 +23,7 @@ use super::util::affinity::ClassifyTrigger;
 use super::util::prompts::prepend_system_prompt;
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, Tier, fall_open_tier,
-    record_routing_decision,
+    record_routing_decision, selected_tier,
 };
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver};
@@ -45,13 +45,16 @@ struct TierPromptProcessor {
 impl Processor for TierPromptProcessor {
     async fn process(&self, _state: &mut State, event: Event<'_>) -> Result<()> {
         if let Event::Decision {
-            request, category, ..
+            request,
+            selected_model_id,
+            category,
+            driver,
         } = event
         {
-            let prompt = match category {
-                Some(Category::Capable) => self.capable.as_deref(),
-                Some(Category::Efficient) => self.efficient.as_deref(),
-                _ => None,
+            let prompt = match selected_tier(category.as_ref(), selected_model_id, driver) {
+                Some(Tier::Capable) => self.capable.as_deref(),
+                Some(Tier::Efficient) => self.efficient.as_deref(),
+                None => None,
             };
             if let Some(prompt) = prompt {
                 prepend_system_prompt(request, prompt);
@@ -72,6 +75,34 @@ struct SourceStamp {
 
 #[async_trait]
 impl Classifier for SourceStamp {
+    fn max_pool_targets(&self) -> Option<usize> {
+        self.inner.max_pool_targets()
+    }
+
+    async fn classify(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: &Driver,
+    ) -> Result<(crate::ClassifierOutput, Option<Response>)> {
+        let (decision, response) = self.score(state, request, driver).await?;
+        if self.source == DecisionSource::LlmClassifier
+            && let Some(pool) = driver.pool()
+            && pool.target_count() > 2
+            && let Some(winner) = decision.argmax(false)?
+        {
+            return Ok((
+                crate::ClassifierOutput::Position {
+                    value: pool.position(&winner.target)?,
+                    confidence: winner.confidence,
+                    ambiguous: false,
+                },
+                response,
+            ));
+        }
+        Ok((crate::ClassifierOutput::Decision(decision), response))
+    }
+
     async fn score(
         &self,
         state: &mut State,
@@ -213,6 +244,31 @@ impl StageRouter {
             route: build_stage_route(config)?,
         })
     }
+    /// Uses the existing custom-schema classifier for an N-target fallback.
+    pub fn new_with_custom_fallback(
+        config: StageRouterConfig,
+        fallback: super::llm_class::CustomClassifierConfig,
+        fail_open: bool,
+    ) -> Result<Self> {
+        if config.llm_fallback.is_some() {
+            return Err(LibsyError::AlgorithmError {
+                message: "configure only one stage fallback judge".into(),
+            });
+        }
+        if fallback.classify_trigger != ClassifyTrigger::EveryRequest
+            || fallback.message_hash_fallback
+        {
+            return Err(LibsyError::AlgorithmError {
+                message: "stage fallback must classify every request without retention".into(),
+            });
+        }
+        let route = build_stage_route_with_fallback(
+            config,
+            Some(LlmTaskClassifier::custom_classifier(&fallback, fail_open)?),
+        )?;
+        tracing::info!(fail_open, "Stage categorical fallback configured");
+        Ok(Self { route })
+    }
 }
 
 #[async_trait]
@@ -233,6 +289,13 @@ impl Algorithm for StageRouter {
 /// Wires the cascade the wrapper drives. Exposed so a composition above can
 /// stack a prelude onto it.
 pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough> {
+    build_stage_route_with_fallback(config, None)
+}
+
+fn build_stage_route_with_fallback(
+    config: StageRouterConfig,
+    custom_fallback: Option<Arc<dyn Classifier>>,
+) -> Result<FallThrough> {
     for (name, threshold) in [
         ("confidence_threshold", config.confidence_threshold),
         ("capable_first_threshold", config.capable_first_threshold),
@@ -284,6 +347,12 @@ pub(crate) fn build_stage_route(config: StageRouterConfig) -> Result<FallThrough
             inner: Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                 config: fallback.config,
             })?),
+            source: DecisionSource::LlmClassifier,
+        }));
+    }
+    if let Some(inner) = custom_fallback {
+        router = router.with_classifier(Arc::new(SourceStamp {
+            inner,
             source: DecisionSource::LlmClassifier,
         }));
     }
@@ -376,6 +445,58 @@ mod tests {
             .metadata
             .and_then(|metadata| metadata.evidence)
             .and_then(|evidence| evidence.get("source")?.as_str().map(str::to_string)))
+    }
+
+    #[tokio::test]
+    async fn n_target_judge_returns_an_anchor_for_final_pool_resolution() -> Result<()> {
+        let targets = vec![
+            "weak".into(),
+            "mid-low".into(),
+            "mid-high".into(),
+            "strong".into(),
+        ];
+        let mut groups = runtime_models();
+        groups.insert(Category::Any, targets.clone());
+        let models = crate::RuntimeModels::new(groups)
+            .with_pool(crate::TargetPool::new(targets, vec![0.0, 0.2, 0.8, 1.0])?)?;
+        let (driver, _) = Driver::new("test", Arc::new(models));
+        for (target, anchor) in [
+            ("weak", 0.0),
+            ("mid-low", 0.2),
+            ("mid-high", 0.8),
+            ("strong", 1.0),
+        ] {
+            let stamp = SourceStamp {
+                inner: Arc::new(Fixed(target)),
+                source: DecisionSource::LlmClassifier,
+            };
+            let (output, _) = stamp
+                .classify(&mut State::default(), &mut Request::default(), &driver)
+                .await?;
+            assert!(
+                matches!(output, crate::ClassifierOutput::Position { value, confidence: 1.0, ambiguous: false } if value == anchor)
+            );
+            assert_eq!(output.resolve(&driver)?.unwrap().target.as_str(), target);
+        }
+        let stamp = SourceStamp {
+            inner: Arc::new(Abstains),
+            source: DecisionSource::LlmClassifier,
+        };
+        let (output, _) = stamp
+            .classify(&mut State::default(), &mut Request::default(), &driver)
+            .await?;
+        assert!(output.resolve(&driver)?.is_none());
+        let stamp = SourceStamp {
+            inner: Arc::new(Fixed("not-in-pool")),
+            source: DecisionSource::LlmClassifier,
+        };
+        assert!(
+            stamp
+                .classify(&mut State::default(), &mut Request::default(), &driver)
+                .await
+                .is_err()
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -940,6 +1061,123 @@ mod tests {
             judged.contains("fix the build"),
             "the judge should see the opening task: {judged}"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn custom_fallback_rejects_conflicts_and_invalid_contracts() {
+        use crate::{CustomClassifierConfig, CustomClassifierPolicy};
+        use serde_json::json;
+        let fallback = |prompt: &str, schema, selector: &str| {
+            CustomClassifierConfig::new(
+                prompt,
+                schema,
+                CustomClassifierPolicy::target_selector(selector),
+            )
+        };
+        for (prompt, schema, selector, expected) in [
+            (
+                "route",
+                json!({"type":"invalid"}),
+                "/target",
+                "valid JSON Schema",
+            ),
+            ("route", json!({"type":"object"}), "target", "JSON Pointer"),
+            (
+                " ",
+                json!({"type":"object"}),
+                "/target",
+                "prompt must not be empty",
+            ),
+        ] {
+            let error = StageRouter::new_with_custom_fallback(
+                config(),
+                fallback(prompt, schema, selector),
+                true,
+            )
+            .err()
+            .expect("invalid contract");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+        let mut config = config();
+        config.llm_fallback = Some(LlmFallback {
+            config: TaskClassifierConfig::default(),
+        });
+        let error = StageRouter::new_with_custom_fallback(
+            config,
+            fallback("route", json!({"type":"object"}), "/target"),
+            true,
+        )
+        .err()
+        .expect("conflicting fallbacks");
+        assert!(error.to_string().contains("only one stage fallback"));
+    }
+
+    #[tokio::test]
+    async fn binary_fallback_rejects_n_target_pools_before_any_call() -> Result<()> {
+        for count in [2, 3, 4] {
+            let recorder = Arc::new(Recorder::default());
+            let router = Arc::new(StageRouter::new(config_with_judge(&recorder, 0.9))?);
+            let mut targets = vec![ModelId::from("weak"), ModelId::from("strong")];
+            for i in 2..count {
+                targets.insert(1, format!("middle-{i}").into());
+            }
+            let mut groups = runtime_models();
+            groups.insert(Category::Any, targets.clone());
+            let models = crate::RuntimeModels::new(groups)
+                .with_pool(crate::TargetPool::new(targets, vec![])?)?;
+            let result =
+                test_drive_with_models(router, turn_request(false), models, recorder.serve()).await;
+            if count > 2 {
+                assert!(
+                    result
+                        .err()
+                        .expect("binary judge must reject N targets")
+                        .to_string()
+                        .contains("supports at most 2 pool targets")
+                );
+                assert_eq!(recorder.judge_calls(), 0);
+                assert!(recorder.calls.lock().is_empty());
+            } else {
+                result?;
+                assert_eq!(recorder.judge_calls(), 1);
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn three_targets_route_neutral_signals_to_the_middle_and_preserve_override_holds()
+    -> Result<()> {
+        use crate::{RuntimeModels, TargetPool};
+        let mut groups = runtime_models();
+        groups
+            .get_mut(&Category::Any)
+            .unwrap()
+            .push("middle".into());
+        let models = RuntimeModels::new(groups).with_pool(TargetPool::new(
+            vec!["weak".into(), "middle".into(), "strong".into()],
+            vec![],
+        )?)?;
+        let recorder = Arc::new(Recorder::default());
+        let router = Arc::new(StageRouter::new(config())?);
+        for (failed, expected) in [
+            (false, "middle"),
+            (true, "strong"),
+            (false, "strong"),
+            (false, "strong"),
+            (false, "middle"),
+        ] {
+            let (target, _) = test_drive_with_models(
+                router.clone(),
+                turn_request(failed),
+                models.clone(),
+                recorder.serve(),
+            )
+            .await?;
+            assert_eq!(target, expected);
+        }
+        assert_eq!(recorder.judge_calls(), 0);
         Ok(())
     }
 }

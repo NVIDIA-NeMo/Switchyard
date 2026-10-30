@@ -205,6 +205,10 @@ impl EscalationClassifier {
 
 #[async_trait]
 impl Classifier for EscalationClassifier {
+    fn max_pool_targets(&self) -> Option<usize> {
+        Some(2)
+    }
+
     async fn score(
         &self,
         state: &mut State,

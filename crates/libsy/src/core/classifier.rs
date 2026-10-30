@@ -35,24 +35,22 @@ impl Classification {
     ///
     /// An [`Ambiguous`](Self::Ambiguous) classification also yields `None` unless
     /// `ignore_ambiguous` is set, in which case it falls back to the plain argmax.
-    /// Errors if any confidence is `NaN` (an unorderable score the caller should surface).
+    /// Errors if any confidence is non-finite or outside `[0, 1]`, including ambiguous verdicts.
     pub fn argmax(&self, ignore_ambiguous: bool) -> Result<Option<Score>> {
-        match self {
-            Classification::Scores(scores) => argmax(scores),
-            Classification::Ambiguous(scores) => {
-                if ignore_ambiguous {
-                    argmax(scores)
-                } else {
-                    Ok(None)
-                }
-            }
-        }
+        let scores = match self {
+            Self::Scores(scores) | Self::Ambiguous(scores) => scores,
+        };
+        let best = argmax(scores)?;
+        Ok(if matches!(self, Self::Ambiguous(_)) && !ignore_ambiguous {
+            None
+        } else {
+            best
+        })
     }
 }
 
 /// The highest-confidence score, or `None` when the set is empty (the classifier abstained).
-/// Ties keep the first. Errors on a `NaN` confidence,
-/// which has no defined ordering.
+/// Ties keep the first. Confidence must be finite and within `[0, 1]`.
 fn argmax(scores: &[Score]) -> Result<Option<Score>> {
     let mut best: Option<&Score> = None;
     for score in scores.iter() {
@@ -61,6 +59,14 @@ fn argmax(scores: &[Score]) -> Result<Option<Score>> {
                 message: format!(
                     "classifier returned NaN confidence for target {:?}",
                     score.target
+                ),
+            });
+        }
+        if !score.confidence.is_finite() || !(0.0..=1.0).contains(&score.confidence) {
+            return Err(LibsyError::AlgorithmError {
+                message: format!(
+                    "classifier confidence for target {:?} must be finite and between 0 and 1, got {}",
+                    score.target, score.confidence
                 ),
             });
         }
@@ -73,9 +79,69 @@ fn argmax(scores: &[Score]) -> Result<Option<Score>> {
     Ok(best.cloned())
 }
 
+/// Optional scalar output for classifiers that use a configured target pool.
+pub enum ClassifierOutput {
+    /// An existing target-based verdict, passed through unchanged.
+    Decision(Classification),
+    /// A position on the configured score line.
+    Position {
+        /// Finite value in `[0, 1]`.
+        value: f64,
+        /// Confidence in this recommendation.
+        confidence: f64,
+        /// Continue to the next classifier when true.
+        ambiguous: bool,
+    },
+}
+
+impl ClassifierOutput {
+    /// Resolve a clear position once; preserve target decisions and abstention.
+    pub fn resolve(&self, driver: &Driver) -> Result<Option<Score>> {
+        match self {
+            Self::Decision(decision) => decision.argmax(false),
+            Self::Position {
+                value,
+                confidence,
+                ambiguous,
+            } => {
+                super::pool::validate_value(*value)?;
+                super::pool::validate_value(*confidence)?;
+                let pool = driver.pool().ok_or_else(|| LibsyError::AlgorithmError {
+                    message: "a scalar classifier output requires a target pool; configure a pool or return a target decision".into(),
+                })?;
+                if *ambiguous {
+                    return Ok(None);
+                }
+                Ok(Some(Score {
+                    target: pool.resolve(*value)?.clone(),
+                    confidence: *confidence,
+                    category: None,
+                }))
+            }
+        }
+    }
+}
+
 /// Scores targets from the current request and the composition's state.
 #[async_trait]
 pub trait Classifier: Send + Sync {
+    /// Maximum score-pool size this model-selection classifier supports, if limited.
+    /// Custom classifiers with binary policies should return `Some(2)`.
+    fn max_pool_targets(&self) -> Option<usize> {
+        None
+    }
+
+    /// Optionally emit a scalar position. Existing classifiers keep their target decisions.
+    async fn classify(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: &Driver,
+    ) -> Result<(ClassifierOutput, Option<Response>)> {
+        let (decision, response) = self.score(state, request, driver).await?;
+        Ok((ClassifierOutput::Decision(decision), response))
+    }
+
     /// Score the classifier's targets given the current state and request.
     ///
     /// `driver` lets a classifier inspect runtime models and offload model calls.
@@ -106,6 +172,51 @@ mod tests {
     use super::*;
     use crate::core::testing::empty_driver;
     use switchyard_protocol::text_request;
+
+    #[test]
+    fn invalid_confidence_is_rejected_even_when_ambiguous() {
+        for confidence in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.1, 1.1] {
+            for decision in [
+                Classification::Scores(vec![score("strong", confidence)]),
+                Classification::Ambiguous(vec![score("strong", confidence)]),
+            ] {
+                assert!(
+                    decision.argmax(false).is_err(),
+                    "accepted confidence {confidence}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scalar_outputs_require_a_pool_and_validate_both_numbers() -> Result<()> {
+        let output = |value, confidence, ambiguous| ClassifierOutput::Position {
+            value,
+            confidence,
+            ambiguous,
+        };
+        assert!(output(0.5, 1.0, false).resolve(&empty_driver()).is_err());
+        assert!(output(0.5, 1.0, true).resolve(&empty_driver()).is_err());
+        let models =
+            crate::RuntimeModels::new([(Category::Any, vec!["a".into(), "b".into()])].into())
+                .with_pool(crate::TargetPool::new(
+                    vec!["a".into(), "b".into()],
+                    vec![],
+                )?)?;
+        let (driver, _) = Driver::new("test", std::sync::Arc::new(models));
+        assert_eq!(output(0.5, 1.0, true).resolve(&driver)?, None);
+        assert_eq!(
+            output(1.0, 1.0, false).resolve(&driver)?.unwrap().target,
+            "b"
+        );
+        for value in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
+            for ambiguous in [false, true] {
+                assert!(output(value, 1.0, ambiguous).resolve(&driver).is_err());
+                assert!(output(0.5, value, ambiguous).resolve(&driver).is_err());
+            }
+        }
+        Ok(())
+    }
 
     /// Terse `Score` builder for the assertions below.
     fn score(target: &str, confidence: f64) -> Score {

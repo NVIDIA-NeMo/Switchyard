@@ -1253,9 +1253,143 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
 }
 
 #[tokio::test]
+async fn pool_logs_setup_ambiguity_and_final_selection_without_request_text()
+-> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    let start = store.events().len();
+    let models = RuntimeModels::new(
+        [
+            (
+                Category::Any,
+                vec!["pool-small".into(), "pool-mid".into(), "pool-large".into()],
+            ),
+            (Category::Efficient, vec!["pool-small".into()]),
+            (Category::Capable, vec!["pool-large".into()]),
+        ]
+        .into(),
+    )
+    .with_pool(switchyard_libsy::TargetPool::new(
+        vec!["pool-small".into(), "pool-mid".into(), "pool-large".into()],
+        vec![],
+    )?)?;
+    for (threshold, expected, ambiguous, output_kind) in [
+        (0.5, "pool-mid", "false", "position"),
+        (1.0, "pool-small", "true", "target"),
+    ] {
+        let mut request = request_with_metadata("pool-log-session", "pool-log-correlation");
+        request.llm_request.messages = vec![
+            Message::text(Role::User, "private-pool-task-marker"),
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolCall(ToolCall {
+                    id: "pool-call".into(),
+                    name: "Bash".into(),
+                    arguments: json!({"command":"echo ok"}),
+                })],
+            },
+            Message {
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult(ToolResult {
+                    tool_call_id: "pool-call".into(),
+                    content: vec![ContentBlock::Text {
+                        text: "private-pool-output-marker".into(),
+                    }],
+                    is_error: Some(false),
+                })],
+            },
+        ];
+        let turn_start = store.events().len();
+        let (target, _) = switchyard_llm_client::run(
+            Arc::new(StageRouter::new(StageRouterConfig::new(
+                PickerMode::EfficientFirst,
+                threshold,
+            ))?),
+            ClientRouter::single(Arc::new(UsageClient {
+                usage: Usage::default(),
+            })),
+            request,
+            Arc::new(models.clone()),
+            None,
+        )
+        .await?;
+        assert_eq!(target, expected);
+        let events = store.events();
+        for (message, field, value) in [
+            ("Stage pool score classified", "ambiguous", ambiguous),
+            ("Model selected", "output_kind", output_kind),
+            ("Model selected", "reused_response", "false"),
+        ] {
+            assert!(
+                events[turn_start..]
+                    .iter()
+                    .any(|event| event.level == "INFO"
+                        && event.fields.get("message").map(String::as_str) == Some(message)
+                        && event.fields.get(field).map(String::as_str) == Some(value)),
+                "missing {message}: {field}={value}"
+            );
+        }
+    }
+    let events = store.events();
+    assert!(events[start..].iter().any(|event| event.level == "INFO"
+        && event.fields.get("message").map(String::as_str)
+            == Some("Routing score pool configured")));
+    assert!(!format!("{:?}", &events[start..]).contains("private-pool-"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn incompatible_pool_logs_error_before_any_upstream_call() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    let targets: Vec<ModelId> = ["a", "b", "c", "d"].into_iter().map(Into::into).collect();
+    let models = RuntimeModels::new([(Category::Any, targets.clone())].into())
+        .with_pool(switchyard_libsy::TargetPool::new(targets, vec![])?)?;
+    let mut config = StageRouterConfig::new(PickerMode::EfficientFirst, 0.0);
+    config.llm_fallback = Some(switchyard_libsy::LlmFallback {
+        config: TaskClassifierConfig::default(),
+    });
+    let start = store.events().len();
+    let mut steps = Arc::new(StageRouter::new(config)?).run_stream(
+        request_with_metadata("pool-rejection", "pool-rejection"),
+        Arc::new(models),
+        switchyard_libsy::State::default(),
+    );
+    let error = match steps.next().await {
+        Some(Err(error)) => error,
+        _ => panic!("incompatible pool must error before any model-call step"),
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("supports at most 2 pool targets, but 4 are configured")
+    );
+    assert!(steps.next().await.is_none());
+    let events = store.events();
+    let event = events[start..]
+        .iter()
+        .find(|event| {
+            event.level == "ERROR"
+                && event.fields.get("message").map(String::as_str)
+                    == Some("Classifier does not support configured target pool")
+        })
+        .expect("missing incompatibility log");
+    for (key, value) in [
+        ("algorithm", "stage_router"),
+        ("classifier_index", "1"),
+        ("max_pool_targets", "2"),
+        ("pool_targets", "4"),
+    ] {
+        assert_eq!(event.fields.get(key).map(String::as_str), Some(value));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;
     let (_, exporter, provider, _, _) = telemetry();
+    let before = flushed_metrics(exporter, provider);
     const STRONG: &str = "obs-stage-strong";
     const WEAK: &str = "obs-stage-weak";
     let algorithm = Arc::new(StageRouter::new(StageRouterConfig::new(
@@ -1336,7 +1470,11 @@ async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Res
         "switchyard.stage_router.exploring",
         "switchyard.stage_router.production_intensity",
     ] {
-        assert_eq!(f64_histogram_count(&snapshots, name, &[]), Some(1));
+        assert_eq!(
+            f64_histogram_count(&snapshots, name, &[]).unwrap_or(0)
+                - f64_histogram_count(&before, name, &[]).unwrap_or(0),
+            1
+        );
     }
     Ok(())
 }

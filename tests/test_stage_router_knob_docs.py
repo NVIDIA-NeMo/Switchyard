@@ -89,6 +89,12 @@ def expected_keys() -> set[str]:
                 f"tool_semantics.{name}"
                 for name in toml_keys(block(signals, "pub struct ToolSemantics {"))
             )
+        elif field == "pool":
+            keys.add("pool")
+            keys.update(
+                f"pool.{name}"
+                for name in toml_keys(block(runner, "pub struct TargetPoolConfig {"))
+            )
         elif field == "handoff_notes":
             keys.add("handoff_notes")
             keys.update(
@@ -138,6 +144,8 @@ def test_derived_keys_include_the_known_shape() -> None:
     keys = expected_keys()
     assert {
         "picker",
+        "pool.targets",
+        "pool.positions",
         "confidence_threshold",
         "efficient_first_threshold",
         "tool_semantics.observe",

@@ -58,3 +58,73 @@ fn rejects_classifier_knobs_that_have_no_effect() {
         );
     }
 }
+
+const POOL: &str = r#"
+[targets.middle]
+id = "middle-model"
+llm_client = "local"
+[routes.stage.pool]
+targets = ["fast", "middle", "strong"]
+positions = [0.0, 0.4, 1.0]
+"#;
+
+#[test]
+fn accepts_configured_lines_and_categorical_fallback() {
+    assert!(Runner::from_toml(&format!("{CONFIG}{POOL}")).is_ok());
+    assert!(
+        Runner::from_toml(&format!(
+            "{CONFIG}{POOL}[routes.stage.classifier]\ntarget = \"judge\"\n"
+        ))
+        .is_ok()
+    );
+}
+
+#[test]
+fn rejects_invalid_pools_and_binary_judge_knobs_for_n_targets() {
+    for bad in [
+        POOL.replace("0.4", "0.0"),
+        POOL.replace("0.4", "nan"),
+        POOL.replace("0.4", "1.1"),
+        POOL.replace("0.0, 0.4, 1.0", "0.0, 1.0"),
+        POOL.replace(
+            "[\"fast\", \"middle\", \"strong\"]",
+            "[\"strong\", \"middle\", \"fast\"]",
+        ),
+        POOL.replace(
+            "[\"fast\", \"middle\", \"strong\"]",
+            "[\"fast\", \"missing\", \"strong\"]",
+        ),
+        POOL.replace(
+            "[\"fast\", \"middle\", \"strong\"]",
+            "[\"fast\", \"fast\", \"strong\"]",
+        ),
+    ] {
+        assert!(
+            Runner::from_toml(&format!("{CONFIG}{bad}")).is_err(),
+            "{bad}"
+        );
+    }
+    assert!(load_error(&format!("{CONFIG}{POOL}{CLASSIFIER}")).contains("categorical"));
+}
+
+#[test]
+fn rejects_invalid_n_target_classifier_settings_at_load() {
+    for (setting, expected) in [
+        ("classify_trigger = 'user_turn'", "without retention"),
+        ("message_hash_fallback = true", "without retention"),
+        ("max_output_tokens = 0", "at least 1"),
+        ("prompt = '   '", "prompt must not be empty"),
+        ("threshold_step = 0.1", "categorical"),
+        ("response_format_type = 'json_object'", "categorical"),
+        ("mode = 'custom'", "categorical"),
+    ] {
+        let error = load_error(&format!(
+            "{CONFIG}{POOL}[routes.stage.classifier]\ntarget = 'judge'\n{setting}\n"
+        ));
+        assert!(error.contains(expected), "{setting}: {error}");
+    }
+    let error = load_error(&format!(
+        "{CONFIG}{POOL}[routes.stage.classifier]\ntarget = 'missing'\n"
+    ));
+    assert!(error.contains("missing"), "{error}");
+}

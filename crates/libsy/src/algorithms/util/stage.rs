@@ -29,7 +29,7 @@ use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::core::state::{State, StateValue};
 use crate::observability::meter;
-use switchyard_protocol::{Category, Request};
+use switchyard_protocol::{Category, ModelId, Request};
 
 /// Turn depth below which stall signals stay quiet — early no-write turns are
 /// normal exploration, not a stall.
@@ -270,6 +270,31 @@ pub fn dimensions_from_signal(signal: &ToolSignals) -> CodingAgentDimensions {
         ),
     }
 }
+
+pub(crate) fn selected_tier(
+    category: Option<&Category>,
+    target: &ModelId,
+    driver: &Driver,
+) -> Option<Tier> {
+    // Explicit tier metadata distinguishes aliases that use the same model ID.
+    match category {
+        Some(Category::Capable) => Some(Tier::Capable),
+        Some(Category::Efficient) => Some(Tier::Efficient),
+        _ if driver.pool().is_some()
+            && driver.models_for(&Category::Capable).first() == Some(target) =>
+        {
+            Some(Tier::Capable)
+        }
+        _ if driver.pool().is_some()
+            && driver.models_for(&Category::Efficient).first() == Some(target) =>
+        {
+            Some(Tier::Efficient)
+        }
+        _ => None,
+    }
+}
+
+const POOL_DECISION_KEY: &str = "stage_pool_decision";
 
 /// Records one stage-router decision with bounded labels.
 pub(crate) fn record_routing_decision(source: DecisionSource, target_name: &str) {
@@ -605,6 +630,16 @@ impl StageClassifier {
             .map_or_else(|| key.to_string(), |agent_id| format!("{key}:{agent_id}"))
     }
 
+    fn has_hold(state: &State, request: &Request) -> bool {
+        [CAPABLE_HOLD_KEY, EFFICIENT_HOLD_KEY].iter().any(|key| {
+            match state.extra.get(&Self::agent_key(request, key)) {
+                Some(StateValue::Bool(true)) => true,
+                Some(StateValue::Count(remaining)) => *remaining > 0,
+                _ => false,
+            }
+        })
+    }
+
     fn consume_hold(state: &mut State, key: &str) -> bool {
         // Reuse the existing state values: a true flag is an unbounded hold.
         if matches!(state.extra.get(key), Some(StateValue::Bool(true))) {
@@ -646,14 +681,8 @@ impl StageClassifier {
 impl Processor for StageClassifier {
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
         if let Event::Request { request, driver } = event {
-            let held = [CAPABLE_HOLD_KEY, EFFICIENT_HOLD_KEY].iter().any(|key| {
-                match state.extra.get(&Self::agent_key(request, key)) {
-                    Some(StateValue::Bool(true)) => true,
-                    Some(StateValue::Count(remaining)) => *remaining > 0,
-                    _ => false,
-                }
-            });
-            if held {
+            state.extra.remove(POOL_DECISION_KEY);
+            if Self::has_hold(state, request) {
                 state.tool_signals = None;
                 return Ok(());
             }
@@ -663,30 +692,59 @@ impl Processor for StageClassifier {
                 .await;
         }
         if let Event::Decision {
-            request, category, ..
+            request,
+            selected_model_id,
+            category,
+            driver,
         } = event
         {
-            let (tier, hold_key, other_key, turns) = match category {
-                Some(Category::Capable) => (
-                    Tier::Capable,
-                    CAPABLE_HOLD_KEY,
-                    EFFICIENT_HOLD_KEY,
-                    self.capable_hold_turns,
-                ),
-                Some(Category::Efficient) => (
-                    Tier::Efficient,
-                    EFFICIENT_HOLD_KEY,
-                    CAPABLE_HOLD_KEY,
-                    self.efficient_hold_turns.unwrap_or_else(|| {
-                        if fall_open_tier(state) == Some(Tier::Capable) {
-                            -1
-                        } else {
-                            0
+            let from_pool = state.extra.remove(POOL_DECISION_KEY).is_some();
+            if from_pool {
+                record_routing_decision(DecisionSource::Dimensions, selected_model_id);
+            }
+            let (tier, hold_key, other_key, turns) =
+                match selected_tier(category.as_ref(), selected_model_id, driver) {
+                    Some(Tier::Capable) => (
+                        Tier::Capable,
+                        CAPABLE_HOLD_KEY,
+                        EFFICIENT_HOLD_KEY,
+                        self.capable_hold_turns,
+                    ),
+                    Some(Tier::Efficient) => (
+                        Tier::Efficient,
+                        EFFICIENT_HOLD_KEY,
+                        CAPABLE_HOLD_KEY,
+                        self.efficient_hold_turns.unwrap_or_else(|| {
+                            if fall_open_tier(state) == Some(Tier::Capable) {
+                                -1
+                            } else {
+                                0
+                            }
+                        }),
+                    ),
+                    _ => {
+                        if driver.pool().is_some() {
+                            state.extra.insert(
+                                Self::agent_key(request, PREVIOUS_TIER_KEY),
+                                StateValue::String("intermediate".into()),
+                            );
+                            for key in [CAPABLE_HOLD_KEY, EFFICIENT_HOLD_KEY] {
+                                state.extra.remove(&Self::agent_key(request, key));
+                            }
                         }
-                    }),
-                ),
-                _ => return Ok(()),
-            };
+                        return Ok(());
+                    }
+                };
+            if from_pool {
+                self.apply_handoff_note(request, tier, DecisionSource::Dimensions);
+                if tier == Tier::Capable && self.capable_hold_turns > 0 {
+                    Self::set_hold(
+                        state,
+                        &Self::agent_key(request, CAPABLE_HOLD_KEY),
+                        self.capable_hold_turns,
+                    );
+                }
+            }
             let previous_key = Self::agent_key(request, PREVIOUS_TIER_KEY);
             let previous = state
                 .extra
@@ -703,6 +761,66 @@ impl Processor for StageClassifier {
 
 #[async_trait]
 impl Classifier for StageClassifier {
+    async fn classify(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: &Driver,
+    ) -> Result<(
+        crate::ClassifierOutput,
+        Option<switchyard_protocol::Response>,
+    )> {
+        // Existing target decisions own holds, overrides, and the binary default.
+        if let Some(pool) = driver.pool()
+            && !Self::has_hold(state, request)
+            && let Some(signal) = &state.tool_signals
+            && override_reason(signal).is_none()
+        {
+            let threshold = if fall_open_tier(state) == Some(Tier::Capable) {
+                self.capable_first_threshold
+            } else {
+                self.confidence_threshold
+            };
+            let value = score_signal(signal).probability();
+            let confidence = pool.confidence(value)?;
+            let ambiguous = !pool.is_clear(value, threshold)?;
+            tracing::info!(
+                score = value,
+                confidence,
+                threshold,
+                ambiguous,
+                "Stage pool score classified"
+            );
+            record_score_metrics(
+                signal,
+                &PickOutcome::ConsultClassifier {
+                    probability: value,
+                    confidence,
+                    default_tier: fall_open_tier(state).unwrap_or(self.mode.default_tier()),
+                },
+            );
+            if !ambiguous {
+                state
+                    .extra
+                    .insert(POOL_DECISION_KEY.into(), StateValue::Bool(true));
+                driver.set_evidence(serde_json::json!({
+                    "source": DecisionSource::Dimensions.as_str(),
+                    "score": value, "confidence": confidence, "threshold": threshold,
+                }));
+            }
+            return Ok((
+                crate::ClassifierOutput::Position {
+                    value,
+                    confidence,
+                    ambiguous,
+                },
+                None,
+            ));
+        }
+        let (decision, response) = self.score(state, request, driver).await?;
+        Ok((crate::ClassifierOutput::Decision(decision), response))
+    }
+
     async fn score(
         &self,
         state: &mut State,

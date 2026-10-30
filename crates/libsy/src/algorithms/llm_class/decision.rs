@@ -111,6 +111,10 @@ impl DecisionClassifier {
 
 #[async_trait]
 impl Classifier for DecisionClassifier {
+    fn max_pool_targets(&self) -> Option<usize> {
+        Some(2)
+    }
+
     async fn score(
         &self,
         _state: &mut State,

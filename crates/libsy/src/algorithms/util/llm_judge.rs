@@ -198,6 +198,11 @@ pub trait Judge: Send + Sync {
 /// Consider this as a deterministic policy which can act on the signals predicted from the classifier
 /// and choose the route based on the verdict.
 pub trait JudgePolicy: Send + Sync {
+    /// Pool-size limit when this policy selects the model rather than an outer routing policy.
+    fn max_pool_targets(&self) -> Option<usize> {
+        None
+    }
+
     type Verdict: Send + Sync;
 
     fn to_classification(
@@ -349,6 +354,10 @@ where
     J: Judge,
     P: JudgePolicy<Verdict = J::Verdict>,
 {
+    fn max_pool_targets(&self) -> Option<usize> {
+        self.policy.max_pool_targets()
+    }
+
     async fn score(
         &self,
         state: &mut State,

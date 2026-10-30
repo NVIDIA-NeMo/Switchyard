@@ -51,6 +51,7 @@ pub struct RuntimeModels {
     /// When using subagents this is the parent agent category.
     by_category: HashMap<Category, Vec<ModelId>>,
     subagent: Option<HashMap<Category, Vec<ModelId>>>,
+    pool: Option<crate::TargetPool>,
 }
 
 impl RuntimeModels {
@@ -59,7 +60,17 @@ impl RuntimeModels {
         Self {
             by_category,
             subagent: None,
+            pool: None,
         }
+    }
+
+    /// Opt into a score line for the parent router. Subagents retain their own decisions.
+    /// Rejects pool targets absent from the parent's `Any` completion group.
+    pub fn with_pool(mut self, pool: crate::TargetPool) -> Result<Self> {
+        pool.validate_targets(self.models_for(&Category::Any))?;
+        tracing::info!(pool = ?pool, "Routing score pool configured");
+        self.pool = Some(pool);
+        Ok(self)
     }
 
     /// Adds the groups used for delegated sub-agent work.
@@ -519,6 +530,14 @@ impl Driver {
         match self.scope {
             Scope::Parent => self.models.models_for(category),
             Scope::Subagent => self.models.subagent_models_for(category),
+        }
+    }
+
+    /// The optional parent score line; never inherited by delegated subagents.
+    pub fn pool(&self) -> Option<&crate::TargetPool> {
+        match self.scope {
+            Scope::Parent => self.models.pool.as_ref(),
+            Scope::Subagent => None,
         }
     }
 

@@ -208,6 +208,29 @@ Add Rust tests in the owning crate and Python tests in `tests/`. Export new
 public symbols from the owning crate or package rather than the top-level
 `switchyard` package unless that package owns the API.
 
+### Classifier outputs and N-target routing
+
+Prefer **score position plus confidence** as the primary output of new
+model-selection classifiers. Implement the optional `Classifier::classify` hook
+with `ClassifierOutput::Position`, and let the shared pool map a clear position to
+a target once. Keep position, confidence, and ambiguity separate; document the
+score's meaning and how ambiguity is determined. Reuse the pool geometry helpers
+when the classifier uses anchor-relative bands.
+
+Preserve the existing `Classifier::score` contract and target-decision API. An
+existing categorical classifier can continue returning targets; direct-response
+algorithms such as Advisor keep their response path. New binary-only classifiers
+must implement `max_pool_targets()` returning `Some(2)`, and wrappers must forward
+that limit.
+Do not declare unlimited support unless the classifier handles the configured
+line and target count correctly.
+
+Test two-target parity, three or more targets with uneven anchors, ambiguity and
+boundary behavior, invalid outputs, and rejection before model calls. See
+[N-target pools and FallThrough](docs/routing_algorithms/target_pools.md) for the
+shared contract. Stage is today's TOML integration; future integrations should
+reuse that contract without introducing a pool after every classifier.
+
 ## Documentation
 
 - **Code comments** — explain the *why*, not the *what*. One line max unless complex.

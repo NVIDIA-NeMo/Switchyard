@@ -249,6 +249,10 @@ impl TaskClassifierPolicy {
 }
 
 impl JudgePolicy for TaskClassifierPolicy {
+    fn max_pool_targets(&self) -> Option<usize> {
+        Some(2)
+    }
+
     type Verdict = TaskClassifierVerdict;
 
     fn to_classification(
@@ -817,6 +821,10 @@ impl LlmTaskClassifier {
 
 #[async_trait]
 impl Classifier for LlmTaskClassifier {
+    fn max_pool_targets(&self) -> Option<usize> {
+        self.inner.max_pool_targets()
+    }
+
     async fn score(
         &self,
         state: &mut State,

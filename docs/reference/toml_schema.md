@@ -422,6 +422,9 @@ the signals work and for tuning.
 |---|:---:|---|---|
 | `capable_target` | Yes | — | Capable tier. |
 | `efficient_target` | Yes | — | Efficient tier. |
+| `pool` | No | unset | Optional fixed score line for N completion targets. |
+| `pool.targets` | In `pool` | — | Distinct targets in increasing score order, starting with `efficient_target` and ending with `capable_target`. |
+| `pool.positions` | No | evenly spaced | One finite anchor per target, strictly increasing from `0` to `1`, with distinct midpoints. |
 | `picker` | Yes | — | `efficient_first`, or `capable_first` (experimental, unbenchmarked). Tier used when the signals are not confident. |
 | `confidence_threshold` | Yes | — | Corroboration a decisive pick needs. In `[0, 1]`. `efficient_first_threshold` is accepted as an alias. |
 | `capable_first_threshold` | No | `0.0` | Threshold used after an outer classifier selects the capable tier. Only a [composite](#composite) route sets that tier, so this key has no effect on a standalone `stage_router` route. |
@@ -453,7 +456,7 @@ so it is consulted on every ambiguous turn and never retains a verdict.
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `classifier.target` | Yes, when the table is present | — | Target the judge is called through. Not a routing destination. |
-| `classifier.base_threshold` | For LLM judges | — | Lowest `p_solve` that still routes to the efficient tier. In `[0, 1]`. Omit with `classifier.decision`. |
+| `classifier.base_threshold` | For binary LLM judges | — | Lowest `p_solve` that still routes to the efficient tier. In `[0, 1]`. Omit with `classifier.decision`. |
 | `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classifier.fail_open` | No | `true` | When `true`, judge client failures and deadlines let the turn fall open to the picker default and record fail-open evidence. When `false`, they stop the request. |
 | `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. It cannot be combined with `base_threshold`, `threshold_step`, `prompt`, `response_format_type`, or `max_output_tokens`; the load error is `decision cannot use LLM judge settings`. See [Decision model classifier](../routing_algorithms/composite_routing.md#decision-model-classifier). |
@@ -469,6 +472,14 @@ other than `capability` are rejected on a `stage_router` route with
 `custom classifier settings require composite with mode = custom`.
 `classifier.mode = "capability"` is accepted and changes nothing. Use a
 [composite](#composite) route for a custom judge.
+
+With more than two `pool.targets`, the fallback generates a categorical JSON
+Schema with one choice per target. Omit `classifier.mode`,
+`classifier.base_threshold`, `classifier.threshold_step`, and `classifier.decision`.
+`classifier.response_format_type` must be `json_schema`. `classifier.prompt`
+customizes the instructions before the generated choices. See
+[N-target pools and FallThrough](../routing_algorithms/target_pools.md)
+for the score line, ambiguity bands, and current Stage integration.
 
 ### `auto`
 
@@ -532,6 +543,7 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `classifier.max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
 | `stage.capable_target` | Yes | — | Capable tier. |
 | `stage.efficient_target` | Yes | — | Efficient tier. |
+| `stage.pool` | No | unset | Same `targets` and `positions` as the Stage pool above. The outer judge still selects an EF or CF policy. |
 | `stage.efficient_first_threshold` | No | `0.5` | Signal confidence required after an Efficient classification. In `[0, 1]`. Also accepts `confidence_threshold`. |
 | `stage.capable_first_threshold` | No | `0.0` | Signal confidence required after a Capable classification. In `[0, 1]`. |
 | `stage.recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |

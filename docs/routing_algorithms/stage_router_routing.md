@@ -3,8 +3,8 @@
 **Execution** routing uses the stage router to choose a model from tool results
 and agent progress. Configure it with `type = "stage_router"`.
 
-Stage-router routing sends each request to either a **capable** model or a
-typically cheaper **efficient** one, depending on where the agent is in its run.
+Stage-router routing defaults to a **capable** model and a typically cheaper
+**efficient** one. An optional pool adds intermediate targets on a fixed score line.
 The goal is to spend the capable model on turns that need exploration or error
 recovery and let the efficient model carry routine, mechanical work. Choose a
 required `picker` for ambiguous turns, tune the split with
@@ -247,6 +247,9 @@ required columns.
 |---|---|---|
 | `capable_target` | required | Capable tier. |
 | `efficient_target` | required | Efficient tier. |
+| `pool` | unset | Optional fixed score line for N targets. |
+| `pool.targets` | required in the table | Distinct targets in order, from `efficient_target` to `capable_target`. |
+| `pool.positions` | evenly spaced | One anchor per target, increasing from `0` to `1`. |
 | `picker` | required | `efficient_first` or `capable_first` (experimental). Tier used when the signals are not confident. |
 | `confidence_threshold` | required | Corroboration a decisive pick needs, `0` to `1`. Alias `efficient_first_threshold`. |
 | `capable_first_threshold` | `0.0` | Used only after an outer `composite` classifier selects the capable tier. No effect on a standalone route. |
@@ -261,7 +264,7 @@ required columns.
 | `handoff_notes.deescalation_note` | unset | Note handed to the efficient tier whenever the signals select it, with or without a capable turn before. |
 | `handoff_notes.only_on_wrong_signal_escalation` | `true` | When `true`, restricts escalation notes to signal-driven capable decisions. Held turns receive no notes with either setting. |
 | `classifier.target` | required in the table | Judge target. Not a routing destination. |
-| `classifier.base_threshold` | required for LLM judges | Lowest `p_solve` that still routes efficient. |
+| `classifier.base_threshold` | required for binary LLM judges | Lowest `p_solve` that still routes efficient. |
 | `classifier.threshold_step` | `0.0` | Added once for uncertain or unmatched verdicts, twice for unsupported. |
 | `classifier.fail_open` | `true` | On judge failure, fall open to the picker default instead of failing the request. |
 | `classifier.decision` | unset | Use a decision model instead of an LLM judge. Excludes the LLM judge keys below. |
@@ -276,7 +279,10 @@ required columns.
 `classifier.response_schema`, `classifier.policy`, and any `classifier.mode`
 other than `capability` belong to
 [composite](composite_routing.md#custom-llm-classifier) routes and are rejected
-here. `classifier.mode = "capability"` is accepted and changes nothing.
+here. For binary routes, `classifier.mode = "capability"` is accepted and changes nothing.
+With more than two pool targets, omit `classifier.mode`, `classifier.base_threshold`,
+`classifier.threshold_step`, and `classifier.decision`. The categorical fallback
+generates its schema from the pool and requires `classifier.response_format_type = "json_schema"`.
 
 ### Minimal route
 
@@ -317,6 +323,54 @@ switchyard-server --config routes.toml --port 4000
 ```
 
 This is the recommended default: routing on tool signals alone, no classifier.
+
+### Optional: more than two targets
+
+Configure a pool in increasing capability order. The first target must equal
+`efficient_target`; the last must equal `capable_target`. All targets must be
+configured completion targets with distinct model IDs.
+
+```toml
+[routes.agent]
+id = "agent"
+type = "stage_router"
+efficient_target = "small"
+capable_target = "large"
+picker = "efficient_first"
+confidence_threshold = 0.5
+capable_hold_turns = 2
+
+[routes.agent.pool]
+targets = ["small", "medium", "large"]
+positions = [0.0, 0.4, 1.0]
+
+# Optional fallback judge. Its response categories are generated from the pool.
+[routes.agent.classifier]
+target = "judge"
+recent_turn_window = 8
+```
+
+This configures the shared [N-target pool and FallThrough](target_pools.md)
+mechanism for Stage. The guide explains anchors, ambiguity bands, cascade branches,
+validation, and the unchanged valid two-target behavior. `positions` assigns one
+anchor per target; omit it for evenly spaced anchors.
+
+For pools larger than two targets, the fallback uses the existing custom-schema
+LLM classifier. It generates one choice per target (`target_0`, `target_1`, …),
+and includes their configured names in the judge prompt. Valid choices produce
+clear anchor scores, which the shared pool resolves once at the end of classification.
+Invalid verdicts fall through to the picker's default endpoint.
+Binary solve-probability settings (`base_threshold`, `threshold_step`, `decision`)
+and custom response schemas are rejected for this fallback. It requires JSON Schema
+output and runs on every ambiguous request. Existing binary judge settings remain
+unchanged when the pool has two targets or is omitted.
+
+Hard recovery overrides select the capable endpoint. Holds and endpoint prompts
+retain their existing behavior; intermediate targets have no hold. Moving from an
+intermediate target to an endpoint counts as a switch for that endpoint's hold.
+`efficient_first` falls open to the first target; `capable_first` to the last.
+Composite routes accept the same pool under `[routes.agent.stage.pool]`; their outer
+judge still selects the EF or CF policy. Subagent routing keeps its own target groups.
 
 ### Optional: custom tool semantics
 

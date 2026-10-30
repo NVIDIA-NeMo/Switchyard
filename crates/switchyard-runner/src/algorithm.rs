@@ -642,6 +642,9 @@ pub struct StageClassifierConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StageTierConfig {
+    /// Ordered completion targets and their anchors. Endpoints must match the tier pair.
+    #[serde(default)]
+    pub pool: Option<TargetPoolConfig>,
     /// The capable tier.
     pub capable_target: String,
     /// The efficient tier.
@@ -670,7 +673,74 @@ pub struct StageTierConfig {
     pub handoff_notes: Option<HandoffNoteConfig>,
 }
 
+/// A fixed score line. Omitted positions are evenly spaced from zero to one.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetPoolConfig {
+    pub targets: Vec<String>,
+    #[serde(default)]
+    pub positions: Vec<f64>,
+}
+
 impl StageTierConfig {
+    fn routing_names(&self) -> Vec<&str> {
+        self.pool.as_ref().map_or_else(
+            || vec![self.capable_target.as_str(), self.efficient_target.as_str()],
+            |pool| pool.targets.iter().map(String::as_str).collect(),
+        )
+    }
+
+    fn runtime_models(&self) -> HashMap<Category, Vec<String>> {
+        let mut models = category_models([
+            (Category::Capable, vec![self.capable_target.clone()]),
+            (Category::Efficient, vec![self.efficient_target.clone()]),
+            (
+                Category::Any,
+                self.routing_names()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+            ),
+        ]);
+        if let Some(pool) = &self.pool {
+            for (i, target) in pool.targets.iter().enumerate() {
+                models.insert(
+                    Category::Named(format!("target_{i}").into()),
+                    vec![target.clone()],
+                );
+            }
+        }
+        models
+    }
+
+    fn resolved_pool(
+        &self,
+        route: &str,
+        targets: &BTreeMap<String, ModelId>,
+    ) -> AlgorithmResult<Option<libsy::TargetPool>> {
+        let Some(pool) = &self.pool else {
+            return Ok(None);
+        };
+        if pool.targets.len() < 2
+            || pool.targets.first() != Some(&self.efficient_target)
+            || pool.targets.last() != Some(&self.capable_target)
+        {
+            return Err(AlgorithmConfigError::new(
+                "pool needs at least two targets, ordered from efficient_target to capable_target",
+            ));
+        }
+        let ids = pool
+            .targets
+            .iter()
+            .map(|name| resolve_target_model_id(route, name, targets))
+            .collect::<AlgorithmResult<Vec<_>>>()?;
+        libsy::TargetPool::new(ids, pool.positions.clone())
+            .map(Some)
+            .map_err(|error| {
+                AlgorithmConfigError::with_source(format!("route {route}: {error}"), error)
+            })
+    }
+
     /// Warns when both tiers name one target; see [`warn_identical_tiers`].
     fn warn_identical_tiers(&self, route_name: &str) {
         warn_identical_tiers(route_name, &self.capable_target, &self.efficient_target);
@@ -678,6 +748,66 @@ impl StageTierConfig {
 }
 
 impl StageClassifierConfig {
+    fn pool_classifier_config(
+        &self,
+        pool: &TargetPoolConfig,
+    ) -> AlgorithmResult<CustomClassifierConfig> {
+        if self.decision.is_some()
+            || self.base_threshold.is_some()
+            || self.threshold_step.is_some()
+            || self.response_schema.is_some()
+            || self.policy.is_some()
+            || self.mode.is_some()
+            || self.response_format_type != ClassifierResponseFormat::JsonSchema
+        {
+            tracing::error!(
+                pool_targets = pool.targets.len(),
+                "N-target Stage requires an N-option classifier; binary judge configuration rejected"
+            );
+            return Err(AlgorithmConfigError::new(
+                "N-target stage uses a categorical JSON Schema judge; binary decision settings and custom schemas are unsupported",
+            ));
+        }
+        if self
+            .prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.trim().is_empty())
+        {
+            return Err(AlgorithmConfigError::new(
+                "classifier prompt must not be empty",
+            ));
+        }
+        let choices: Vec<_> = (0..pool.targets.len())
+            .map(|i| format!("target_{i}"))
+            .collect();
+        let options: Vec<_> = choices
+            .iter()
+            .zip(&pool.targets)
+            .map(|(choice, name)| format!("{choice}: {name}"))
+            .collect();
+        let prompt = format!(
+            "{}\nChoose one target for the next agent turn. Targets are ordered from efficient to capable. Choose the least costly target that can reliably do the remaining work. Return JSON with target and reason.\n{}",
+            self.prompt
+                .as_deref()
+                .unwrap_or("Route the agent's next turn using its task and current progress."),
+            options.join("\n")
+        );
+        let mut config = CustomClassifierConfig::new(
+            prompt,
+            serde_json::json!({
+                "type":"object", "additionalProperties":false,
+                "properties":{"target":{"type":"string","enum":choices},"reason":{"type":"string"}},
+                "required":["target","reason"]
+            }),
+            CustomClassifierPolicy::target_selector("/target"),
+        );
+        config.classify_trigger = self.classify_trigger;
+        config.message_hash_fallback = self.message_hash_fallback;
+        config.recent_turn_window = self.recent_turn_window;
+        config.max_output_tokens = self.max_output_tokens;
+        Ok(config)
+    }
+
     fn task_classifier_config(
         &self,
         route_name: &str,
@@ -818,10 +948,7 @@ impl AlgorithmSpec {
             Self::StageRouter {
                 tiers, subagents, ..
             } => {
-                let mut names = vec![
-                    tiers.capable_target.as_str(),
-                    tiers.efficient_target.as_str(),
-                ];
+                let mut names = tiers.routing_names();
                 if let Some(subagents) = subagents {
                     names.extend(subagents.routing_target_names());
                 }
@@ -834,10 +961,7 @@ impl AlgorithmSpec {
             Self::Composite {
                 stage, subagents, ..
             } => {
-                let mut names = vec![
-                    stage.capable_target.as_str(),
-                    stage.efficient_target.as_str(),
-                ];
+                let mut names = stage.routing_names();
                 if let Some(subagents) = subagents {
                     names.extend(subagents.routing_target_names());
                 }
@@ -951,14 +1075,7 @@ impl AlgorithmSpec {
             Self::StageRouter {
                 tiers, classifier, ..
             } => {
-                let mut models = category_models([
-                    (Category::Capable, vec![tiers.capable_target.clone()]),
-                    (Category::Efficient, vec![tiers.efficient_target.clone()]),
-                    (
-                        Category::Any,
-                        vec![tiers.capable_target.clone(), tiers.efficient_target.clone()],
-                    ),
-                ]);
+                let mut models = tiers.runtime_models();
                 if let Some(classifier) = classifier {
                     models.insert(Category::Judge, vec![classifier.target.clone()]);
                 }
@@ -977,15 +1094,11 @@ impl AlgorithmSpec {
             ]),
             Self::Composite {
                 classifier, stage, ..
-            } => category_models([
-                (Category::Judge, vec![classifier.target.clone()]),
-                (Category::Capable, vec![stage.capable_target.clone()]),
-                (Category::Efficient, vec![stage.efficient_target.clone()]),
-                (
-                    Category::Any,
-                    vec![stage.capable_target.clone(), stage.efficient_target.clone()],
-                ),
-            ]),
+            } => {
+                let mut models = stage.runtime_models();
+                models.insert(Category::Judge, vec![classifier.target.clone()]);
+                models
+            }
             Self::Advisor {
                 executor_target,
                 advisor_target,
@@ -1089,6 +1202,18 @@ impl AlgorithmSpec {
         let names = self.runtime_model_names(route_name)?;
         let mut models =
             RuntimeModels::new(resolve_runtime_models(route_name, names.parent, targets)?);
+        let tiers = match self {
+            Self::StageRouter { tiers, .. } => Some(tiers),
+            Self::Composite { stage, .. } => Some(stage),
+            _ => None,
+        };
+        if let Some(tiers) = tiers
+            && let Some(pool) = tiers.resolved_pool(route_name, targets)?
+        {
+            models = models.with_pool(pool).map_err(|error| {
+                AlgorithmConfigError::with_source(format!("route {route_name}: {error}"), error)
+            })?;
+        }
         if let Some(subagent) = names.subagent {
             models = models.with_subagent(resolve_runtime_models(route_name, subagent, targets)?);
         }
@@ -1641,6 +1766,7 @@ fn build_algorithm(
                     "stage_router route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
                 );
             }
+            tiers.resolved_pool(route_name, targets)?;
             tiers.warn_identical_tiers(route_name);
             let threshold = confidence_threshold.ok_or_else(|| {
                 AlgorithmConfigError::new(format!(
@@ -1658,15 +1784,28 @@ fn build_algorithm(
             config.handoff_notes = handoff_notes.clone();
             // The judge is called through its own target, so it is not a routing
             // destination and stays out of the tier pair.
-            config.llm_fallback = classifier
-                .as_ref()
-                .map(|classifier| {
-                    classifier
-                        .task_classifier_config(route_name, tiers, targets)
-                        .map(|config| LlmFallback { config })
-                })
-                .transpose()?;
-            let algorithm = StageRouter::new(config).map_err(|error| {
+            let mut custom_fallback = None;
+            if let Some(classifier) = classifier {
+                if let Some(pool) = &tiers.pool
+                    && pool.targets.len() > 2
+                {
+                    custom_fallback = Some((
+                        classifier.pool_classifier_config(pool)?,
+                        classifier.fail_open.unwrap_or(true),
+                    ));
+                } else {
+                    config.llm_fallback = Some(LlmFallback {
+                        config: classifier.task_classifier_config(route_name, tiers, targets)?,
+                    });
+                }
+            }
+            let algorithm = match custom_fallback {
+                Some((fallback, fail_open)) => {
+                    StageRouter::new_with_custom_fallback(config, fallback, fail_open)
+                }
+                None => StageRouter::new(config),
+            }
+            .map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("stage_router route {route_name}: {error}"),
                     error,
@@ -1694,6 +1833,7 @@ fn build_algorithm(
             stage,
             subagents,
         } => {
+            stage.resolved_pool(route_name, targets)?;
             stage.warn_identical_tiers(route_name);
             let mut stage_config = StageRouterConfig::new(
                 PickerMode::EfficientFirst,
