@@ -112,6 +112,7 @@ fn record_gen_ai_response(span: &Span, response: &AggLlmResponse) {
     record_gen_ai_usage(span, &response.usage);
 }
 
+/// Records semantic token totals and cache-usage breakdowns on a client-call span.
 fn record_gen_ai_usage(span: &Span, usage: &Usage) {
     let cache_read = usage.cached_input_tokens();
     let cache_creation = usage.cache_creation_input_tokens();

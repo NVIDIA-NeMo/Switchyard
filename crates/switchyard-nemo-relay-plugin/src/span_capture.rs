@@ -158,6 +158,7 @@ impl CapturedSpan {
     }
 }
 
+/// Reconstructs the bounded response metadata forwarded to NeMo Relay.
 fn response_data(fields: &Json) -> Option<Json> {
     let mut output = Map::new();
     for (source, target) in [
@@ -324,6 +325,7 @@ fn relay_scope_type(name: &str) -> ScopeType {
     }
 }
 
+/// Returns whether a captured span field is safe to forward across the plugin boundary.
 fn is_safe_field(name: &str) -> bool {
     matches!(
         name,
