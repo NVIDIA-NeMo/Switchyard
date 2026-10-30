@@ -66,7 +66,9 @@ pub async fn run(
     // This says if we have an observer, put Some(..) in routing_observations.
     // No observer means we don't want any routing_observations.
     let routing_observations = observer.as_ref().map(|_| Arc::new(Mutex::new(Vec::new())));
-    let outcome = match clients.stored_state_owner(&request) {
+    let stored = clients.stored_state_owner(&request);
+    let parent = stored.as_ref().and_then(|owner| owner.history.clone());
+    let outcome = match stored {
         Some(owner) => Ok(continue_on(owner, &algorithm_name, request)),
         None => {
             drive(Arc::clone(&algorithm), request, models, {
@@ -93,7 +95,7 @@ pub async fn run(
         observer(RunObservation::Outcome(metadata));
     }
     let result = if let Some(response) = outcome.response {
-        let result = clients.remember_state_owner(&outcome.request, response);
+        let result = clients.remember_state_owner(&outcome.request, parent, response);
         let served_model = result
             .as_ref()
             .ok()
@@ -117,7 +119,7 @@ pub async fn run(
             &observe,
         )
         .await
-        .and_then(|(request, response)| clients.remember_state_owner(request, response))
+        .and_then(|(request, response)| clients.remember_state_owner(request, parent, response))
     };
     if let Some(observer) = &observer {
         observer(RunObservation::RoutingOverhead(overhead));
@@ -202,7 +204,9 @@ pub async fn decide(
     models: Arc<RuntimeModels>,
 ) -> Result<RoutingOutcome> {
     let routing_clients = clients.clone();
-    let mut outcome = match clients.stored_state_owner(&request) {
+    let stored = clients.stored_state_owner(&request);
+    let parent = stored.as_ref().and_then(|owner| owner.history.clone());
+    let mut outcome = match stored {
         Some(owner) => continue_on(owner, algorithm.name(), request),
         None => {
             drive(algorithm, request, models, move |call| {
@@ -215,7 +219,7 @@ pub async fn decide(
     outcome.request = clients.prepare_completion_request(outcome.request, &selected_model_id);
     outcome.response = outcome
         .response
-        .map(|response| clients.remember_state_owner(&outcome.request, response))
+        .map(|response| clients.remember_state_owner(&outcome.request, parent, response))
         .transpose()?;
     Ok(outcome)
 }
@@ -627,16 +631,39 @@ struct CanonicalInput {
 /// Reject new IDs at capacity rather than forgetting where an earlier response is stored.
 #[derive(Default)]
 struct StateOwners {
-    by_id: HashMap<String, StoredState>,
+    by_id: HashMap<StateKey, StoredState>,
 }
 
 const MAX_STATE_OWNERS: usize = 65_536;
 
+/// Conversation keys use a session when available to avoid accidental cross-session sharing.
+/// Session IDs are caller-provided correlation values, not an authentication boundary.
+#[derive(Clone, Eq, Hash, PartialEq)]
+struct StateKey {
+    id: String,
+    session_id: Option<String>,
+}
+
+impl StateKey {
+    fn new(id: &str, session_id: Option<&str>) -> Self {
+        Self {
+            id: id.to_owned(),
+            session_id: session_id.map(str::to_owned),
+        }
+    }
+}
+
 impl StateOwners {
+    #[cfg(test)]
     fn owner(&self, id: &str) -> Option<&StoredState> {
-        self.by_id.get(id)
+        self.owner_for_session(id, None)
     }
 
+    fn owner_for_session(&self, id: &str, session_id: Option<&str>) -> Option<&StoredState> {
+        self.by_id.get(&StateKey::new(id, session_id))
+    }
+
+    #[cfg(test)]
     fn remember(
         &mut self,
         response_id: Option<&str>,
@@ -644,14 +671,32 @@ impl StateOwners {
         model: &ModelId,
         history: Option<Arc<MessageHistory>>,
     ) -> std::result::Result<(), LlmClientError> {
+        self.remember_for_session(response_id, conversation_id, None, model, history)
+    }
+
+    fn remember_for_session(
+        &mut self,
+        response_id: Option<&str>,
+        conversation_id: Option<&str>,
+        conversation_session_id: Option<&str>,
+        model: &ModelId,
+        history: Option<Arc<MessageHistory>>,
+    ) -> std::result::Result<(), LlmClientError> {
         let materialized = history.is_some();
-        let ids = [
-            response_id,
-            conversation_id.filter(|id| Some(*id) != response_id),
-        ];
+        let response_key = response_id.map(|id| StateKey::new(id, None));
+        let conversation_key = conversation_id.map(|id| StateKey::new(id, conversation_session_id));
+        let mut keys = Vec::with_capacity(2);
+        if let Some(key) = response_key.as_ref() {
+            keys.push(key);
+        }
+        if let Some(key) = conversation_key.as_ref()
+            && !keys.contains(&key)
+        {
+            keys.push(key);
+        }
         let mut new_ids = 0;
-        for id in ids.into_iter().flatten() {
-            match self.by_id.get(id) {
+        for key in keys {
+            match self.by_id.get(key) {
                 Some(owner) if owner.model != *model && !materialized => {
                     return Err(LlmClientError::ResponseStateConflict);
                 }
@@ -668,17 +713,19 @@ impl StateOwners {
             model: model.clone(),
             history,
         };
-        if let Some(id) = response_id {
+        if let Some(key) = response_key {
             if materialized {
-                self.by_id.insert(id.to_owned(), state.clone());
+                self.by_id.insert(key, state.clone());
             } else {
-                self.by_id
-                    .entry(id.to_owned())
-                    .or_insert_with(|| state.clone());
+                self.by_id.entry(key).or_insert_with(|| state.clone());
             }
         }
-        if let Some(id) = conversation_id {
-            self.by_id.entry(id.to_owned()).or_insert(state);
+        if let Some(key) = conversation_key {
+            if materialized {
+                self.by_id.insert(key, state);
+            } else {
+                self.by_id.entry(key).or_insert(state);
+            }
         }
         Ok(())
     }
@@ -874,11 +921,24 @@ impl ClientRouter {
     /// Return the recorded model for the requested response or conversation ID.
     fn stored_state_owner(&self, request: &Request) -> Option<StateOwner> {
         let fields = &request.llm_request.extensions.fields;
-        let (trigger, id) = match fields.get("previous_response_id").and_then(Value::as_str) {
-            Some(id) => ("previous_response_id", id),
-            None => ("conversation", conversation_id(fields)?),
-        };
-        let state = self.inner.state_owners.lock().owner(id)?.clone();
+        let (trigger, id, session_id) =
+            match fields.get("previous_response_id").and_then(Value::as_str) {
+                Some(id) => ("previous_response_id", id, None),
+                None => (
+                    "conversation",
+                    conversation_id(fields)?,
+                    request
+                        .metadata
+                        .as_ref()
+                        .and_then(|metadata| metadata.session_id.as_deref()),
+                ),
+            };
+        let state = self
+            .inner
+            .state_owners
+            .lock()
+            .owner_for_session(id, session_id)?
+            .clone();
         Some(StateOwner {
             model: state.model,
             trigger,
@@ -886,14 +946,11 @@ impl ClientRouter {
         })
     }
 
-    fn canonical_input(&self, request: &Request) -> CanonicalInput {
-        let parent = request
-            .llm_request
-            .extensions
-            .fields
-            .get("previous_response_id")
-            .and_then(Value::as_str)
-            .and_then(|id| self.inner.state_owners.lock().owner(id)?.history.clone());
+    /// Split `request` into the history it continued from and its new messages.
+    ///
+    /// `parent` is the history read before the model call. Reading the conversation again here
+    /// could pick up a concurrent turn and mix or drop messages.
+    fn canonical_input(request: &Request, parent: Option<Arc<MessageHistory>>) -> CanonicalInput {
         let parent_len = parent.as_ref().map_or(0, |history| history.len);
         let (parent, messages) = match request.llm_request.messages.get(parent_len..) {
             Some(messages) => (parent, messages.to_vec()),
@@ -906,13 +963,24 @@ impl ClientRouter {
     }
 
     /// Record provider-owned Responses state or canonical history for a cross-format response.
-    fn remember_state_owner(&self, request: &Request, mut response: Response) -> Result<Response> {
+    ///
+    /// `parent` is the canonical history `request` was materialized from, if any.
+    fn remember_state_owner(
+        &self,
+        request: &Request,
+        parent: Option<Arc<MessageHistory>>,
+        mut response: Response,
+    ) -> Result<Response> {
         let Some(model) = response.served_model().cloned() else {
             return Ok(response);
         };
         let fields = &request.llm_request.extensions.fields;
         let store = fields.get("store").and_then(Value::as_bool) != Some(false);
         let conversation = conversation_id(fields).map(str::to_owned);
+        let conversation_session_id = request
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.session_id.clone());
         let responses_format = WireFormat::OpenAiResponses.into();
         let responses_request = request
             .llm_request
@@ -924,17 +992,30 @@ impl ClientRouter {
         if !responses_request && !self.inner.track_provider_state {
             return Ok(response);
         }
-        let canonical_input = responses_request.then(|| self.canonical_input(request));
+        let canonical_input = responses_request.then(|| Self::canonical_input(request, parent));
         response.llm_response = match response.llm_response {
             LlmResponse::Agg(agg) => {
                 if let Some(body) = agg.preservation.responses.get(&responses_format) {
                     if self.inner.track_provider_state {
-                        self.remember_response(body, &model, store, conversation.as_deref())
-                            .map_err(|error| LibsyError::client_call(model.clone(), error))?;
+                        self.remember_response(
+                            body,
+                            &model,
+                            store,
+                            conversation.as_deref(),
+                            conversation_session_id.as_deref(),
+                        )
+                        .map_err(|error| LibsyError::client_call(model.clone(), error))?;
                     }
                 } else if let Some(input) = &canonical_input {
-                    self.remember_canonical_response(&agg, &model, store, input)
-                        .map_err(|error| LibsyError::client_call(model.clone(), error))?;
+                    self.remember_canonical_response(
+                        &agg,
+                        &model,
+                        store,
+                        conversation.as_deref(),
+                        conversation_session_id.as_deref(),
+                        input,
+                    )
+                    .map_err(|error| LibsyError::client_call(model.clone(), error))?;
                 }
                 LlmResponse::Agg(agg)
             }
@@ -946,6 +1027,7 @@ impl ClientRouter {
                         router,
                         model,
                         conversation,
+                        conversation_session_id,
                         canonical_input,
                         ResponseAccumulator::new(),
                         false,
@@ -956,6 +1038,7 @@ impl ClientRouter {
                         router,
                         model,
                         conversation,
+                        conversation_session_id,
                         canonical_input,
                         mut accumulator,
                         mut native_responses,
@@ -970,6 +1053,8 @@ impl ClientRouter {
                                     &accumulator.finish(),
                                     &model,
                                     store,
+                                    conversation.as_deref(),
+                                    conversation_session_id.as_deref(),
                                     input,
                                 )?;
                             }
@@ -988,6 +1073,7 @@ impl ClientRouter {
                                     &model,
                                     store,
                                     conversation.as_deref(),
+                                    conversation_session_id.as_deref(),
                                 )?;
                             }
                         }
@@ -1011,6 +1097,7 @@ impl ClientRouter {
                                 router,
                                 model,
                                 conversation,
+                                conversation_session_id,
                                 canonical_input,
                                 accumulator,
                                 native_responses,
@@ -1032,6 +1119,7 @@ impl ClientRouter {
         model: &ModelId,
         store: bool,
         conversation: Option<&str>,
+        conversation_session_id: Option<&str>,
     ) -> std::result::Result<(), LlmClientError> {
         let mut owners = self.inner.state_owners.lock();
         let response_id = body
@@ -1039,7 +1127,13 @@ impl ClientRouter {
             .and_then(Value::as_str)
             .filter(|_| body.get("store").and_then(Value::as_bool).unwrap_or(store));
         let conversation = body.as_object().and_then(conversation_id).or(conversation);
-        if let Err(error) = owners.remember(response_id, conversation, model, None) {
+        if let Err(error) = owners.remember_for_session(
+            response_id,
+            conversation,
+            conversation_session_id,
+            model,
+            None,
+        ) {
             if matches!(error, LlmClientError::ResponseStateLimitExceeded { .. }) {
                 tracing::warn!(%error, "Responses state owner capacity reached; state was not retained");
             } else {
@@ -1055,10 +1149,13 @@ impl ClientRouter {
         response: &AggLlmResponse,
         model: &ModelId,
         store: bool,
+        conversation: Option<&str>,
+        conversation_session_id: Option<&str>,
         input: &CanonicalInput,
     ) -> std::result::Result<(), LlmClientError> {
         let response_id = response.id.as_deref().filter(|_| store);
-        if response_id.is_none() {
+        // `store: false` disables response-ID lookup, not conversation history.
+        if response_id.is_none() && conversation.is_none() {
             return Ok(());
         }
         let mut segment = input.messages.to_vec();
@@ -1070,11 +1167,13 @@ impl ClientRouter {
             input.parent.clone(),
             Arc::from(segment),
         ));
-        let result =
-            self.inner
-                .state_owners
-                .lock()
-                .remember(response_id, None, model, Some(history));
+        let result = self.inner.state_owners.lock().remember_for_session(
+            response_id,
+            conversation,
+            conversation_session_id,
+            model,
+            Some(history),
+        );
         if let Err(error) = result {
             if matches!(error, LlmClientError::ResponseStateLimitExceeded { .. }) {
                 tracing::warn!(%error, "cross-format Responses state capacity reached; history was not retained");
@@ -1121,8 +1220,8 @@ mod tests {
     use http::StatusCode;
     use switchyard_libsy::{Driver, RoutingOutcome};
     use switchyard_protocol::{
-        ContentBlock, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, Message, Role,
-        ToolResult, completion_text, text_request, text_response,
+        ContentBlock, LlmResponse, LlmResponseChunk, LlmResponseStreamEvent, Message, Metadata,
+        Role, ToolResult, completion_text, text_request, text_response,
     };
     use wiremock::matchers::method;
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1879,6 +1978,22 @@ mod tests {
 
     #[tokio::test]
     async fn responses_stored_tool_continuation_materializes_for_anthropic() -> Result<()> {
+        for (field, conversation, store) in [
+            ("previous_response_id", Value::Null, true),
+            ("conversation", json!("conv_tools"), true),
+            ("conversation", json!({"id": "conv_tools"}), true),
+            ("conversation", json!("conv_tools"), false),
+        ] {
+            check_stored_tool_continuation(field, conversation, store).await?;
+        }
+        Ok(())
+    }
+
+    async fn check_stored_tool_continuation(
+        field: &str,
+        conversation: Value,
+        store: bool,
+    ) -> Result<()> {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .respond_with(|request: &wiremock::Request| {
@@ -1965,11 +2080,12 @@ mod tests {
                 &json!({
                     "model": "route",
                     "input": "Call get_weather for Paris",
+                    "conversation": conversation,
                     "tools": [{
                         "type": "function", "name": "get_weather",
                         "parameters": {"type": "object"}
                     }],
-                    "store": true
+                    "store": store
                 }),
             )
             .map_err(|error| LibsyError::external("decoding seed request", error))?,
@@ -1997,7 +2113,7 @@ mod tests {
                 WireFormat::OpenAiResponses,
                 &json!({
                     "model": "route",
-                    "previous_response_id": "msg_seed",
+                    (field): if field == "conversation" { conversation.clone() } else { json!("msg_seed") },
                     "input": [{
                         "type": "function_call_output",
                         "call_id": "toolu_weather",
@@ -2007,7 +2123,7 @@ mod tests {
                         "type": "function", "name": "get_weather",
                         "parameters": {"type": "object"}
                     }],
-                    "store": true
+                    "store": store
                 }),
             )
             .map_err(|error| LibsyError::external("decoding continuation request", error))?,
@@ -2037,9 +2153,9 @@ mod tests {
                 WireFormat::OpenAiResponses,
                 &json!({
                     "model": "route",
-                    "previous_response_id": "msg_follow",
+                    (field): if field == "conversation" { conversation.clone() } else { json!("msg_follow") },
                     "input": "thanks",
-                    "store": true
+                    "store": store
                 }),
             )
             .map_err(|error| LibsyError::external("decoding chained request", error))?,
@@ -2053,6 +2169,24 @@ mod tests {
         assert_eq!(history.len, 4);
         assert_eq!(history.segment.len(), 2);
         assert!(history.parent.is_some());
+        assert_eq!(
+            clients
+                .inner
+                .state_owners
+                .lock()
+                .owner("msg_seed")
+                .is_some(),
+            store
+        );
+        assert_eq!(
+            clients
+                .inner
+                .state_owners
+                .lock()
+                .owner("msg_follow")
+                .is_some(),
+            store
+        );
         let (_, response) = run(
             Arc::new(switchyard_libsy::Passthrough),
             clients,
@@ -2079,6 +2213,10 @@ mod tests {
         assert_eq!(follow["messages"][2]["content"][0]["type"], "tool_result");
         let third: Value = serde_json::from_slice(&requests[2].body)
             .map_err(|error| LibsyError::external("decoding captured request", error))?;
+        assert_eq!(
+            third["messages"][0]["content"],
+            "Call get_weather for Paris"
+        );
         assert_eq!(third["messages"][1]["content"][0]["type"], "tool_use");
         assert_eq!(third["messages"][2]["content"][0]["type"], "tool_result");
         assert_eq!(third["messages"][3]["content"], "sunny");
@@ -2086,8 +2224,20 @@ mod tests {
         Ok(())
     }
 
+    // Stream state is recorded under the response and conversation ids only after completion.
     #[tokio::test]
     async fn streamed_cross_format_state_is_recorded_only_after_completion() -> Result<()> {
+        for (store, response_id) in [
+            (true, Some("msg_stream")),
+            (false, Some("msg_stream")),
+            (true, None),
+        ] {
+            check_streamed_state(store, response_id).await?;
+        }
+        Ok(())
+    }
+
+    async fn check_streamed_state(store: bool, response_id: Option<&str>) -> Result<()> {
         let client = Arc::new(CandidateClient {
             calls: Mutex::new(Vec::new()),
             requests: Mutex::new(Vec::new()),
@@ -2103,9 +2253,17 @@ mod tests {
             .preservation
             .requests
             .insert(WireFormat::OpenAiResponses.into(), json!({}));
+        seed.llm_request
+            .extensions
+            .fields
+            .insert("store".to_string(), json!(store));
+        seed.llm_request
+            .extensions
+            .fields
+            .insert("conversation".to_string(), json!("conv_stream"));
         let mut response = stream_response(vec![
             LlmResponseChunk::MessageStart {
-                id: Some("msg_stream".to_string()),
+                id: response_id.map(str::to_owned),
                 model: Some("weak".to_string()),
             },
             LlmResponseChunk::ToolCallDelta {
@@ -2119,47 +2277,64 @@ mod tests {
             },
         ]);
         response.set_served_model(&ModelId::from("weak"));
-        let response = clients.remember_state_owner(&seed, response)?;
+        let response = clients.remember_state_owner(&seed, None, response)?;
 
-        let mut follow = request();
-        follow
-            .llm_request
-            .extensions
-            .fields
-            .insert("previous_response_id".to_string(), json!("msg_stream"));
-        follow.llm_request.messages = vec![Message {
-            role: Role::Tool,
-            content: vec![ContentBlock::ToolResult(ToolResult {
-                tool_call_id: "toolu_stream".to_string(),
-                content: vec![ContentBlock::Text {
-                    text: "ready".to_string(),
-                }],
-                is_error: None,
-            })],
-        }];
-        assert!(clients.stored_state_owner(&follow).is_none());
+        let follow = |field: &str, value: Value| {
+            let mut follow = request();
+            follow
+                .llm_request
+                .extensions
+                .fields
+                .insert(field.to_string(), value);
+            follow.llm_request.messages = vec![Message {
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult(ToolResult {
+                    tool_call_id: "toolu_stream".to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: "ready".to_string(),
+                    }],
+                    is_error: None,
+                })],
+            }];
+            follow
+        };
+        let follows = [
+            (
+                follow("previous_response_id", json!("msg_stream")),
+                store && response_id.is_some(),
+            ),
+            (follow("conversation", json!("conv_stream")), true),
+        ];
+        for (follow, _) in &follows {
+            assert!(clients.stored_state_owner(follow).is_none());
+        }
         response
             .llm_response
             .into_agg()
             .await
             .map_err(|error| LibsyError::client_call("weak", error))?;
 
-        let outcome = continue_on(
-            clients
-                .stored_state_owner(&follow)
-                .expect("completed stream state"),
-            "passthrough",
-            follow,
-        );
-        assert_eq!(outcome.request.llm_request.messages.len(), 3);
-        assert!(matches!(
-            outcome.request.llm_request.messages[1].content.as_slice(),
-            [ContentBlock::ToolCall(call)] if call.id == "toolu_stream"
-        ));
-        assert!(matches!(
-            outcome.request.llm_request.messages[2].content.as_slice(),
-            [ContentBlock::ToolResult(result)] if result.tool_call_id == "toolu_stream"
-        ));
+        for (follow, retained) in follows {
+            let Some(owner) = clients.stored_state_owner(&follow) else {
+                assert!(!retained);
+                continue;
+            };
+            assert!(retained);
+            let outcome = continue_on(owner, "passthrough", follow);
+            assert_eq!(outcome.request.llm_request.messages.len(), 3);
+            assert!(matches!(
+                outcome.request.llm_request.messages[0].content.as_slice(),
+                [ContentBlock::Text { text }] if text == "inspect"
+            ));
+            assert!(matches!(
+                outcome.request.llm_request.messages[1].content.as_slice(),
+                [ContentBlock::ToolCall(call)] if call.id == "toolu_stream"
+            ));
+            assert!(matches!(
+                outcome.request.llm_request.messages[2].content.as_slice(),
+                [ContentBlock::ToolResult(result)] if result.tool_call_id == "toolu_stream"
+            ));
+        }
         Ok(())
     }
 
@@ -2191,7 +2366,7 @@ mod tests {
             upstream_headers: http::HeaderMap::new(),
         };
         response.set_served_model(&ModelId::from("weak"));
-        clients.remember_state_owner(&seed, response)?;
+        clients.remember_state_owner(&seed, None, response)?;
 
         let mut follow = request();
         follow
@@ -2218,7 +2393,7 @@ mod tests {
         clients.inner.state_owners.lock().by_id = (0..MAX_STATE_OWNERS)
             .map(|id| {
                 (
-                    format!("existing_{id}"),
+                    StateKey::new(&format!("existing_{id}"), None),
                     StoredState {
                         model: model.clone(),
                         history: None,
@@ -2241,7 +2416,7 @@ mod tests {
             upstream_headers: http::HeaderMap::new(),
         };
         buffered.set_served_model(&model);
-        clients.remember_state_owner(&request, buffered)?;
+        clients.remember_state_owner(&request, None, buffered)?;
 
         let mut streamed = stream_response(vec![
             LlmResponseChunk::MessageStart {
@@ -2258,7 +2433,7 @@ mod tests {
         ]);
         streamed.set_served_model(&model);
         clients
-            .remember_state_owner(&request, streamed)?
+            .remember_state_owner(&request, None, streamed)?
             .llm_response
             .into_agg()
             .await
@@ -2305,6 +2480,209 @@ mod tests {
         Ok(())
     }
 
+    // Materialized conversation records keep the latest history.
+    #[test]
+    fn materialized_conversation_state_keeps_latest_history()
+    -> std::result::Result<(), LlmClientError> {
+        let mut owners = StateOwners::default();
+        let model = ModelId::from("model/a");
+        let first = Arc::new(MessageHistory::new(
+            None,
+            Arc::from(vec![Message::text(Role::User, "seed question")]),
+        ));
+        let second = Arc::new(MessageHistory::new(
+            None,
+            Arc::from(vec![Message::text(Role::User, "recall question")]),
+        ));
+        owners.remember(Some("resp_1"), Some("conv_1"), &model, Some(first))?;
+        owners.remember(Some("resp_2"), Some("conv_1"), &model, Some(second))?;
+        let latest = owners
+            .owner("conv_1")
+            .and_then(|state| state.history.clone())
+            .expect("materialized conversation state");
+        assert!(matches!(
+            latest.segment.as_ref(),
+            [Message { content, .. }] if matches!(
+                content.as_slice(),
+                [ContentBlock::Text { text }] if text == "recall question"
+            )
+        ));
+        owners.remember(Some("resp_3"), Some("conv_1"), &model, None)?;
+        let kept = owners
+            .owner("conv_1")
+            .and_then(|state| state.history.clone())
+            .expect("conversation state survived a provider-owned record");
+        assert!(matches!(
+            kept.segment.as_ref(),
+            [Message { content, .. }] if matches!(
+                content.as_slice(),
+                [ContentBlock::Text { text }] if text == "recall question"
+            )
+        ));
+        Ok(())
+    }
+
+    // A caller-controlled conversation ID must not attach another session's canonical history.
+    #[tokio::test]
+    async fn materialized_conversation_state_is_scoped_to_session() -> Result<()> {
+        let client = Arc::new(CandidateClient {
+            calls: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
+            first: FirstOutcome::StreamSuccess,
+        });
+        let clients = ClientRouter::new(HashMap::from([(
+            ModelId::from("strong"),
+            client.clone() as Arc<dyn RoutedLlmClient>,
+        )]));
+        let models = to_category_map(&["strong"]);
+        let make_request = |session: &str, input: &str| -> Result<Request> {
+            Ok(Request {
+                llm_request: switchyard_translation::decode_request(
+                    WireFormat::OpenAiResponses,
+                    &json!({
+                        "model": "route",
+                        "input": input,
+                        "conversation": "conv_shared"
+                    }),
+                )
+                .map_err(|error| LibsyError::external("decoding conversation request", error))?,
+                raw_request: None,
+                metadata: Some(Metadata {
+                    session_id: Some(session.to_string()),
+                    ..Metadata::default()
+                }),
+            })
+        };
+
+        for request in [
+            make_request("session-a", "session-a seed")?,
+            make_request("session-b", "session-b first turn")?,
+            make_request("session-a", "session-a follow-up")?,
+        ] {
+            run(
+                Arc::new(switchyard_libsy::Passthrough),
+                clients.clone(),
+                request,
+                models.clone(),
+                None,
+            )
+            .await?;
+        }
+
+        let requests = client.requests.lock();
+        assert_eq!(requests.len(), 3);
+        assert_eq!(requests[0].llm_request.messages.len(), 1);
+        assert_eq!(requests[1].llm_request.messages.len(), 1);
+        assert!(matches!(
+            requests[1].llm_request.messages[0].content.as_slice(),
+            [ContentBlock::Text { text }] if text == "session-b first turn"
+        ));
+        assert_eq!(requests[2].llm_request.messages.len(), 3);
+        assert!(matches!(
+            requests[2].llm_request.messages[0].content.as_slice(),
+            [ContentBlock::Text { text }] if text == "session-a seed"
+        ));
+        assert!(matches!(
+            requests[2].llm_request.messages[2].content.as_slice(),
+            [ContentBlock::Text { text }] if text == "session-a follow-up"
+        ));
+        Ok(())
+    }
+
+    /// Holds its first call until the test releases it.
+    struct GatedClient {
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        requests: Mutex<Vec<Request>>,
+    }
+
+    #[async_trait]
+    impl RoutedLlmClient for GatedClient {
+        async fn call(&self, request: Request) -> std::result::Result<Response, LlmClientError> {
+            let call = {
+                let mut requests = self.requests.lock();
+                requests.push(request);
+                requests.len()
+            };
+            if call == 1 {
+                self.entered.notify_one();
+                self.release.notified().await;
+            }
+            Ok(Response {
+                llm_response: LlmResponse::Agg(text_response(None, format!("reply {call}"))),
+                metadata: None,
+                upstream_headers: http::HeaderMap::new(),
+            })
+        }
+    }
+
+    // A turn saves against the history it was sent with, even when another turn on the same
+    // conversation finishes while its model call is in flight.
+    #[tokio::test]
+    async fn concurrent_conversation_turns_keep_their_own_history() -> Result<()> {
+        let client = Arc::new(GatedClient {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            requests: Mutex::new(Vec::new()),
+        });
+        let clients = ClientRouter::new(HashMap::from([(
+            ModelId::from("strong"),
+            client.clone() as Arc<dyn RoutedLlmClient>,
+        )]));
+        let models = to_category_map(&["strong"]);
+        let make_request = |input: Value| -> Result<Request> {
+            Ok(Request {
+                llm_request: switchyard_translation::decode_request(
+                    WireFormat::OpenAiResponses,
+                    &json!({"model": "route", "input": input, "conversation": "conv_race"}),
+                )
+                .map_err(|error| LibsyError::external("decoding conversation request", error))?,
+                raw_request: None,
+                metadata: None,
+            })
+        };
+        let run_turn = |request| {
+            run(
+                Arc::new(switchyard_libsy::Passthrough),
+                clients.clone(),
+                request,
+                models.clone(),
+                None,
+            )
+        };
+
+        let first = run_turn(make_request(json!([
+            {"role": "user", "content": "first a"},
+            {"role": "assistant", "content": "first b"},
+            {"role": "user", "content": "first c"}
+        ]))?);
+        let second_request = make_request(json!("second"))?;
+        let second = async {
+            client.entered.notified().await;
+            let result = run_turn(second_request).await;
+            client.release.notify_one();
+            result
+        };
+        let (first, second) = tokio::join!(first, second);
+        first?;
+        second?;
+        run_turn(make_request(json!("next"))?).await?;
+
+        let requests = client.requests.lock();
+        let texts = requests[2]
+            .llm_request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(texts, ["first a", "first b", "first c", "reply 1", "next"]);
+        Ok(())
+    }
+
     #[test]
     fn concurrent_state_owners_do_not_exceed_capacity() {
         let model = ModelId::from("model/a");
@@ -2312,7 +2690,7 @@ mod tests {
             by_id: (0..MAX_STATE_OWNERS - 16)
                 .map(|id| {
                     (
-                        format!("existing_{id}"),
+                        StateKey::new(&format!("existing_{id}"), None),
                         StoredState {
                             model: model.clone(),
                             history: None,
