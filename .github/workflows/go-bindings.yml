@@ -60,7 +60,11 @@ jobs:
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build Go WASM module
-        run: scripts/build-go-wasm.sh
+        run: |
+          rustup target add wasm32-wasip1
+          cargo build -p switchyard-ffi --target wasm32-wasip1 --release --locked --lib
+          mkdir -p bindings/go/internal/wasm
+          cp target/wasm32-wasip1/release/switchyard_ffi.wasm bindings/go/internal/wasm/switchyard.wasm
       - name: go test (WASM, no cgo)
         working-directory: bindings/go
         env:
