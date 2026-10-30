@@ -732,9 +732,12 @@ fn decode_responses_input(
                     _ => {
                         let message = Message {
                             role: match item_type {
-                                Some("shell_call" | "apply_patch_call" | "computer_call") => {
-                                    Role::Assistant
-                                }
+                                Some(
+                                    "shell_call"
+                                    | "apply_patch_call"
+                                    | "computer_call"
+                                    | "image_generation_call",
+                                ) => Role::Assistant,
                                 Some(
                                     "shell_call_output"
                                     | "apply_patch_call_output"
