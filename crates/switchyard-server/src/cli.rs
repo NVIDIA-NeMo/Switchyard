@@ -29,6 +29,7 @@ pub(crate) struct ServerArgs {
     config: PathBuf,
 
     /// Host address to bind.
+    // Let a later --host override the Docker ENTRYPOINT default.
     #[arg(long, default_value_t = DEFAULT_HOST, overrides_with = "host")]
     host: IpAddr,
 
