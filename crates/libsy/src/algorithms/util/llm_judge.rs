@@ -249,7 +249,12 @@ where
     }
 
     /// Adds fail-open evidence only for evidence-enabled judges and preserves an earlier decision.
-    fn report_fail_open(&self, driver: &Driver, error: String, reason: &'static str) {
+    fn report_fail_open(
+        &self,
+        driver: &Driver,
+        error: String,
+        reason: &'static str,
+    ) -> &'static str {
         let judge_target = driver
             .first_model_for(&Category::Judge)
             .map(|c| c.as_str())
@@ -261,21 +266,21 @@ where
                 "reason_code": reason,
             }));
         }
+        reason
     }
 
-    /// Consults the judge, yielding `None` when it is unavailable or unintelligible.
+    /// Consults the judge, returning a bounded reason when no verdict is available.
     ///
-    /// Errors delivered by the host and invalid verdicts are logged and folded into `None`
-    /// for the policy's fallback branch. The HTTP driver delivers client errors here when
-    /// error recovery is enabled; otherwise it stops the run.
+    /// The host delivers client errors here when recovery is enabled.
+    /// Otherwise, client errors stop the run.
     pub(crate) async fn verdict(
         &self,
         state: &mut State,
         request: &Request,
         driver: &Driver,
         judge_models: &[ModelId],
-    ) -> Option<J::Verdict> {
-        let judge_model = judge_models.first()?.as_str();
+    ) -> std::result::Result<J::Verdict, &'static str> {
+        let judge_model = judge_models.first().ok_or("missing_judge")?.as_str();
 
         tracing::info!(target = judge_model, "consulting llm judge");
         let response = driver
@@ -285,24 +290,23 @@ where
                 self.recover_errors,
             )
             .await
-            .inspect_err(|error| {
-                self.report_fail_open(driver, safe_error_summary(error), libsy_error_reason(error));
-            })
-            .ok()?;
-        let aggregate = response
-            .llm_response
-            .into_agg()
-            .await
-            .inspect_err(|error| {
-                self.report_fail_open(driver, safe_client_error(error), client_error_reason(error));
-            })
-            .ok()?;
-        self.judge
-            .parse(&aggregate)
-            .inspect_err(|error| {
-                self.report_fail_open(driver, safe_error_summary(error), "parse_error");
-            })
-            .ok()
+            .map_err(|error| {
+                self.report_fail_open(
+                    driver,
+                    safe_error_summary(&error),
+                    libsy_error_reason(&error),
+                )
+            })?;
+        let aggregate = response.llm_response.into_agg().await.map_err(|error| {
+            self.report_fail_open(
+                driver,
+                safe_client_error(&error),
+                client_error_reason(&error),
+            )
+        })?;
+        self.judge.parse(&aggregate).map_err(|error| {
+            self.report_fail_open(driver, safe_error_summary(&error), "parse_error")
+        })
     }
 }
 
@@ -362,10 +366,13 @@ where
             });
         }
         let verdict = self.verdict(state, request, driver, judge_models).await;
-        let classification = self.policy.to_classification(verdict.as_ref(), driver)?;
-        let evidence = self
-            .evidence
-            .and_then(|evidence| evidence(&self.policy, verdict.as_ref()));
+        let classification = self
+            .policy
+            .to_classification(verdict.as_ref().ok(), driver)?;
+        let evidence = self.evidence.and_then(|evidence| match verdict.as_ref() {
+            Ok(verdict) => evidence(&self.policy, Some(verdict)),
+            Err(reason) => Some(serde_json::json!({"source": "fail_open", "reason_code": reason})),
+        });
         driver.record_judgment(classification.argmax(false)?, evidence.clone());
         if let Some(evidence) = evidence {
             match &classification {
@@ -583,7 +590,8 @@ mod tests {
         let models = RuntimeModels::new([(Category::Judge, vec![ModelId::from("judge")])].into());
         let (driver, step_rx) = Driver::new("test", Arc::new(models));
         let mut steps = tokio_stream::wrappers::ReceiverStream::new(step_rx);
-        let classifier = classifier();
+        let classifier = classifier().with_evidence(|_, _| None);
+        driver.set_evidence(serde_json::json!({"reason_code": "earlier"}));
         let mut state = State::default();
         let mut request = request();
 
@@ -595,7 +603,26 @@ mod tests {
         let (classification, ()) =
             tokio::join!(classifier.score(&mut state, &mut request, &driver), serve);
         let (classification, _) = classification?;
-        selected(classification)
+        let target = selected(classification)?;
+        driver
+            .finish(Ok(crate::RoutingOutcome::route_to(
+                target.clone(),
+                vec![],
+                request,
+            )))
+            .await?;
+        let Some(Ok(Step::Done(outcome))) = steps.next().await else {
+            panic!("missing outcome");
+        };
+        let judgments = outcome.metadata.expect("metadata").judgments;
+        assert_eq!(judgments.len(), 1);
+        if target == "no-verdict" {
+            let reason = judgments[0].evidence.as_ref().expect("failure reason")["reason_code"]
+                .as_str()
+                .expect("reason code");
+            assert_ne!(reason, "earlier");
+        }
+        Ok(target)
     }
 
     #[tokio::test]
