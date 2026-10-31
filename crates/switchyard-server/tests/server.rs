@@ -2461,6 +2461,11 @@ escalation = {{ confirmations = 1 }}
             "metadata": {
                 "algorithm": "llm_task_classifier",
                 "evidence": {"source": "llm-classifier", "score": 0.9, "threshold": 0.5},
+                "judgments": [{
+                    "target": "model/weak",
+                    "category": "efficient",
+                    "evidence": {"source": "llm-classifier", "score": 0.9, "threshold": 0.5},
+                }],
             },
         })
     );

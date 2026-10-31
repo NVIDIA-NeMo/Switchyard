@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use humantime::format_rfc3339_millis;
+use libsy::OutcomeMetadata;
 use serde::{Deserialize, Serialize};
 use switchyard_protocol::{Metadata, ModelId, Usage};
 
@@ -65,6 +66,7 @@ impl RoutingLog {
             .unwrap_or(0);
         let usage = token_usage(usage);
         let record = RoutingRecord {
+            outcome: None,
             cost,
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
             route_id: context.route_id.into(),
@@ -90,7 +92,29 @@ impl RoutingLog {
             reasoning_tokens: usage.reasoning_tokens,
             total_tokens: usage.prompt_tokens.saturating_add(usage.completion_tokens),
         };
-        let mut line = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
+        self.append_record(&record)
+    }
+
+    pub(crate) fn append_outcome(
+        &mut self,
+        context: &RoutingLogContext,
+        metadata: OutcomeMetadata,
+    ) -> std::io::Result<()> {
+        self.append_record(&serde_json::json!({
+            "session_id": context.session_id,
+            "outcome": LoggedOutcome {
+                ts: format_rfc3339_millis(SystemTime::now()).to_string(),
+                route_id: context.route_id.clone(),
+                turn_id: context.turn_id.clone(),
+                agent_id: context.agent.agent_id.clone(),
+                parent_agent_id: context.agent.parent_agent_id.clone(),
+                metadata,
+            },
+        }))
+    }
+
+    fn append_record(&mut self, record: &impl Serialize) -> std::io::Result<()> {
+        let mut line = serde_json::to_vec(record).map_err(std::io::Error::other)?;
         line.push(b'\n');
 
         self.file.write_all(&line)
@@ -119,10 +143,10 @@ pub(crate) fn snapshot(
         let Ok(record) = serde_json::from_slice::<RoutingRecord>(&line) else {
             continue;
         };
-        snapshot.add_record(&record, session_id);
+        snapshot.add_record(record, session_id);
     }
     snapshot.sum_totals();
-    Ok((snapshot.total_calls > 0).then_some(snapshot))
+    Ok((snapshot.total_calls > 0 || !snapshot.outcomes.is_empty()).then_some(snapshot))
 }
 
 /// Which agent made a call. A child agent can share its parent's session id, so
@@ -209,6 +233,8 @@ impl RoutingLogContext {
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default)]
 struct RoutingRecord<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<LoggedOutcome>,
     #[serde(default)]
     cost: Option<RecordedCost>,
     ts: Cow<'a, str>,
@@ -268,6 +294,21 @@ pub(crate) struct SessionStatsSnapshot {
     total_cache_creation_tokens: u64,
     total_completion_tokens: u64,
     models: BTreeMap<ModelId, SessionModelStats>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    outcomes: Vec<LoggedOutcome>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct LoggedOutcome {
+    ts: String,
+    route_id: String,
+    turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_agent_id: Option<String>,
+    #[serde(flatten)]
+    metadata: OutcomeMetadata,
 }
 
 #[derive(Default, Serialize)]
@@ -281,8 +322,12 @@ struct SessionModelStats {
 }
 
 impl SessionStatsSnapshot {
-    fn add_record(&mut self, record: &RoutingRecord<'_>, session_id: &str) {
+    fn add_record(&mut self, mut record: RoutingRecord<'_>, session_id: &str) {
         if record.session_id.as_deref() != Some(session_id) {
+            return;
+        }
+        if let Some(outcome) = record.outcome.take() {
+            self.outcomes.push(outcome);
             return;
         }
         let model = match record.model.as_ref() {

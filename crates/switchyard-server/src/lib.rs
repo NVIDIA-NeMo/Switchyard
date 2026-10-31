@@ -206,6 +206,19 @@ impl SharedRoutingLog {
     ) -> std::io::Result<Option<routing_log::SessionStatsSnapshot>> {
         routing_log::snapshot(&self.path, session_id)
     }
+
+    fn append_outcome(
+        &self,
+        context: &routing_log::RoutingLogContext,
+        metadata: libsy::OutcomeMetadata,
+    ) {
+        if metadata.judgments.is_empty() {
+            return;
+        }
+        if let Err(error) = self.writer.lock().append_outcome(context, metadata) {
+            tracing::warn!(path = %self.path.display(), %error, "routing outcome append failed");
+        }
+    }
 }
 
 impl ServerState {
@@ -453,7 +466,11 @@ fn stats_observer(
     classifier_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
 ) -> RunObserver {
     Arc::new(move |observation| match observation {
-        RunObservation::Outcome(_) => {}
+        RunObservation::Outcome(metadata) => {
+            if let Some((log, context)) = classifier_log.as_ref() {
+                log.append_outcome(context, metadata);
+            }
+        }
         RunObservation::AnswerCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
             if call.is_success {
@@ -1861,6 +1878,25 @@ targets = ["only"]
         };
         observer(call("judge-model", false));
         observer(call("routed-model", true));
+        observer(RunObservation::Outcome(libsy::OutcomeMetadata::new(
+            "stage".into(),
+            None,
+        )));
+        for (target, category) in [
+            ("strong", switchyard_protocol::Category::Capable),
+            ("weak", switchyard_protocol::Category::Efficient),
+        ] {
+            let mut outcome = libsy::OutcomeMetadata::new(
+                "composite".into(),
+                Some(serde_json::json!({"source": "stage"})),
+            );
+            outcome.judgments.push(libsy::JudgeDecision {
+                target: Some(target.into()),
+                category: Some(category.as_str().to_string()),
+                evidence: None,
+            });
+            observer(RunObservation::Outcome(outcome));
+        }
 
         let snapshot = log
             .snapshot_session("session-1")
@@ -1871,7 +1907,19 @@ targets = ["only"]
         assert_eq!(snapshot["models"]["judge-model"]["prompt_tokens"], 100);
         assert_eq!(snapshot["models"]["judge-model"]["completion_tokens"], 7);
         assert!(snapshot["models"].get("routed-model").is_none());
-        let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&log.path)?)?;
+        assert_eq!(snapshot["total_calls"], 1);
+        assert_eq!(snapshot["outcomes"].as_array().expect("outcomes").len(), 2);
+        assert_eq!(snapshot["outcomes"][0]["judgments"][0]["target"], "strong");
+        assert_eq!(
+            snapshot["outcomes"][1]["judgments"][0]["category"],
+            "efficient"
+        );
+        assert_eq!(snapshot["outcomes"][1]["turn_id"], "turn-1");
+        assert!(log.snapshot_session("another-session")?.is_none());
+        let contents = std::fs::read_to_string(&log.path)?;
+        assert_eq!(contents.lines().count(), 3);
+        let record: serde_json::Value =
+            serde_json::from_str(contents.lines().next().expect("call record"))?;
         assert_eq!(record["session_id"], "session-1");
         assert_eq!(record["turn_id"], "turn-1");
         Ok(())

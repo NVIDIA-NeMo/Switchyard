@@ -361,7 +361,8 @@ impl Classifier for EscalationClassifier {
         let verdict = self
             .escalation_judge
             .verdict(state, &judge_request, driver, judge_models)
-            .await;
+            .await
+            .ok();
 
         let held = count(state, STREAK_KEY);
         let held_category = category(state).map(str::to_string);
