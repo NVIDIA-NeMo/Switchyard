@@ -72,7 +72,7 @@ impl TierSetter {
         // matching how affinity retains an assignment.
         let writable = self.trigger == ClassifyTrigger::UserTurn || !tiers.contains_key(&identity);
         if writable {
-            evict_if_full(&mut tiers);
+            evict_if_full(&mut tiers, &identity);
             tiers.insert(identity, tier);
         }
     }
@@ -280,6 +280,7 @@ mod tests {
     use switchyard_protocol::{Category, LlmClientError, Message, ModelId, Role};
 
     use super::*;
+    use crate::algorithms::util::affinity::MAX_ASSIGNMENTS;
     use crate::algorithms::util::tier_fixtures::{JUDGE, Recorder, turn_request};
     use crate::core::testing::test_drive_with_models;
 
@@ -330,6 +331,30 @@ mod tests {
 
     fn router() -> Result<Arc<CompositeRouter>> {
         router_with_trigger(ClassifyTrigger::UserTurn)
+    }
+
+    #[test]
+    fn updates_at_capacity_preserve_other_sessions() -> Result<()> {
+        let setter = CompositeRouter::tier_setter(
+            CompositeJudgeConfig::Capability(TaskClassifierConfig {
+                classify_trigger: ClassifyTrigger::UserTurn,
+                ..TaskClassifierConfig::default()
+            }),
+            Tier::Efficient,
+        )?;
+        for index in 0..MAX_ASSIGNMENTS {
+            setter.retain(
+                RoutingIdentity::Session(format!("session-{index}")),
+                Tier::Efficient,
+            );
+        }
+        let identities: Vec<_> = setter.tiers.lock().keys().cloned().collect();
+        setter.retain(identities[1].clone(), Tier::Capable);
+        let tiers = setter.tiers.lock();
+        assert_eq!(tiers.len(), MAX_ASSIGNMENTS);
+        assert_eq!(tiers.get(&identities[0]), Some(&Tier::Efficient));
+        assert_eq!(tiers.get(&identities[1]), Some(&Tier::Capable));
+        Ok(())
     }
 
     #[tokio::test]
