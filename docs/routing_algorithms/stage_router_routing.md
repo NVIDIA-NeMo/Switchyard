@@ -271,6 +271,7 @@ required columns.
 | `classifier.prompt` | packaged | Replaces the judge prompt. |
 | `classifier.response_format_type` | `json_schema` | `json_object` for providers without JSON Schema. |
 | `classifier.max_output_tokens` | `4096` | Token budget for the verdict. |
+| `classifier.judge_deadline_ms` | unset | Whole-consultation bound in milliseconds on the judge call, response drain included. On expiry the judge counts as failed and `classifier.fail_open` applies. Must be at least `1`. |
 | `subagents` | unset | Separate policy for delegated sub-agent work. |
 
 `classifier.response_schema`, `classifier.policy`, and any `classifier.mode`

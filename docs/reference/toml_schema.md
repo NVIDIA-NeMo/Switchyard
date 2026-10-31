@@ -464,6 +464,7 @@ so it is consulted on every ambiguous turn and never retains a verdict.
 | `classifier.prompt` | No | packaged prompt | Replaces the capability judge prompt. The verdict schema is unchanged. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the LLM judge. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Not with `classifier.decision`. |
 | `classifier.max_output_tokens` | No | `4096` | Maximum completion tokens for the LLM judge verdict. Must be at least `1`. Not with `classifier.decision`. |
+| `classifier.judge_deadline_ms` | No | unset | Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry the judge is treated as unavailable and the turn falls open to the picker default, or stops the request with `classifier.fail_open` = `false`. Must be at least `1`. Unset leaves the consultation unbounded. |
 
 `classifier.response_schema`, `classifier.policy`, and any `classifier.mode`
 other than `capability` are rejected on a `stage_router` route with
