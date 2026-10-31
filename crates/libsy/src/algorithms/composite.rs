@@ -456,12 +456,18 @@ mod tests {
             {
                 call.name = "Write".into();
             }
+            let mut context_update = write.clone();
+            context_update.llm_request.messages.push(Message::text(
+                Role::User,
+                "<environment_context><current_date>2026-10-31</current_date></environment_context>",
+            ));
             let mut state = State::default();
             for (p_solve, request, target, prompt) in [
                 (1.0, user_turn_request(), first_target, first_prompt),
                 (1.0, turn_request(true), "strong", "EF capable"),
                 (0.0, user_turn_request(), "strong", "CF capable"),
                 (0.0, write, "weak", "CF efficient"),
+                (1.0, context_update, "weak", "CF efficient"),
                 (1.0, user_turn_request(), first_target, first_prompt),
                 (0.0, user_turn_request(), "strong", "CF capable"),
             ] {

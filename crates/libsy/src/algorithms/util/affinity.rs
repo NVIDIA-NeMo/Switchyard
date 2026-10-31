@@ -48,14 +48,18 @@ pub enum ClassifyTrigger {
     NewSession,
 }
 
-/// Anthropic carries tool results as a `Role::User` message, so role alone cannot tell a
-/// human turn from a tool continuation.
+/// Tool results and standalone Codex environment updates do not start a user turn.
 pub(crate) fn is_user_turn(message: &Message) -> bool {
     message.role == Role::User
-        && !message
-            .content
-            .iter()
-            .all(|block| matches!(block, ContentBlock::ToolResult(_)))
+        && message.content.iter().any(|block| match block {
+            ContentBlock::ToolResult(_) => false,
+            ContentBlock::Text { text } => !text
+                .trim()
+                .strip_prefix("<environment_context>")
+                .and_then(|context| context.split_once("</environment_context>"))
+                .is_some_and(|(_, rest)| rest.trim().is_empty()),
+            _ => true,
+        })
 }
 
 pub(crate) fn has_new_user_turn(messages: &[Message]) -> bool {
@@ -324,6 +328,29 @@ mod tests {
 
     /// Boxed, thread-safe error type keeping the test helpers ergonomic.
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;
+
+    #[test]
+    fn environment_updates_preserve_real_user_content() {
+        let context =
+            "<environment_context><current_date>2026-10-31</current_date></environment_context>";
+        assert!(!is_user_turn(&Message::text(
+            Role::User,
+            format!(" {context}\n")
+        )));
+        assert!(is_user_turn(&Message::text(
+            Role::User,
+            format!("{context}\nfix the parser")
+        )));
+        assert!(is_user_turn(&Message::text(
+            Role::User,
+            format!("explain this: {context}")
+        )));
+        let mut mixed = Message::text(Role::User, context);
+        mixed.content.push(ContentBlock::Text {
+            text: "fix the parser".into(),
+        });
+        assert!(is_user_turn(&mixed));
+    }
 
     fn fixed_model(target: &str) -> ModelId {
         ModelId::from(target)
