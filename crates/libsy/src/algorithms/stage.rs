@@ -21,7 +21,7 @@ use super::fall_through::FallThrough;
 use super::llm_class::{
     LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig, affinity_router,
 };
-use super::util::affinity::has_new_user_turn;
+use super::util::affinity::{AffinityRouter, has_new_user_turn};
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, Tier, fall_open_tier,
     record_routing_decision,
@@ -104,6 +104,45 @@ impl Classifier for SourceStamp {
             driver.set_evidence_if_empty(serde_json::json!({
                 "source": self.source.as_str(),
             }));
+        }
+        Ok((classification, served))
+    }
+}
+
+/// Latches a judge win into affinity, and nothing else.
+///
+/// Affinity's processor role latches every decision it is replayed, and the
+/// cascade's post-decision replay does not say who won, so registering
+/// affinity as a processor here would pin signal and fall-open wins too. The
+/// judge wrapper replays its own win through the same processor logic, which
+/// leaves the standalone and subagent routes' latch-everything behavior
+/// untouched.
+struct JudgeVerdictLatch {
+    inner: Arc<dyn Classifier>,
+    affinity: Arc<AffinityRouter>,
+}
+
+#[async_trait]
+impl Classifier for JudgeVerdictLatch {
+    async fn score(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: &Driver,
+    ) -> Result<(Classification, Option<Response>)> {
+        let (classification, served) = self.inner.score(state, request, driver).await?;
+        if let Some(winner) = classification.argmax(false)? {
+            self.affinity
+                .process(
+                    state,
+                    Event::Decision {
+                        request,
+                        selected_model_id: &winner.target,
+                        category: winner.category.clone(),
+                        driver,
+                    },
+                )
+                .await?;
         }
         Ok((classification, served))
     }
@@ -296,25 +335,32 @@ pub(crate) fn build_stage_route(
         .with_classifier(classifier);
     if let Some(fallback) = config.llm_fallback {
         // A retaining trigger keeps the judge's verdict, so the cascade needs
-        // the affinity component the standalone route builds for itself. Both
-        // roles share one `Arc`, and the classifier sits ahead of the judge so
-        // a retained verdict short-circuits the judge call.
-        if let Some(affinity) = affinity_router(
-            fallback.config.classify_trigger,
-            fallback.config.message_hash_fallback,
-        ) {
-            router = router
-                .with_processor(affinity.clone())
-                .with_classifier(affinity);
-        }
-        router = router.with_classifier(Arc::new(SourceStamp {
+        // the affinity component the standalone route builds for itself. The
+        // classifier sits ahead of the judge so a retained verdict
+        // short-circuits the judge call, but affinity is never a processor
+        // here: the post-decision replay would latch signal and fall-open
+        // wins too. The judge wrapper below latches only the judge's win.
+        let trigger = fallback.config.classify_trigger;
+        let hash_fallback = fallback.config.message_hash_fallback;
+        let judge = Arc::new(SourceStamp {
             inner: Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                 config: fallback.config,
             })?),
             source: DecisionSource::LlmClassifier,
             judge: fallback.target,
             skip_user_turn: reset_on_user_turn,
-        }));
+        });
+        let judge: Arc<dyn Classifier> = match affinity_router(trigger, hash_fallback) {
+            Some(affinity) => {
+                router = router.with_classifier(affinity.clone());
+                Arc::new(JudgeVerdictLatch {
+                    inner: judge,
+                    affinity,
+                })
+            }
+            None => judge,
+        };
+        router = router.with_classifier(judge);
     }
     // Nothing behind this, so no turn is left unrouted.
     router = router.with_classifier(Arc::new(SourceStamp {
@@ -1028,6 +1074,79 @@ mod tests {
             1,
             "one session should pay for one judge call"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_signal_decision_does_not_latch_for_later_turns() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        let router = recording_router(config_with_judge_trigger(
+            &recorder,
+            0.9,
+            ClassifyTrigger::NewSession,
+        ))?;
+
+        // A failed tool result decides the turn on signals alone: strong,
+        // and the judge is never called.
+        test_drive_with_models(
+            router.clone(),
+            turn_request(true),
+            runtime_models(),
+            recorder.serve(),
+        )
+        .await?;
+        assert_eq!(recorder.routed()[0].target, "strong");
+        assert_eq!(judge_call_count(&recorder), 0);
+
+        // The next turn's signals leave it undecided. Had the signal win
+        // latched, affinity would serve "strong" and the judge would never
+        // run; instead the judge decides this turn.
+        test_drive_with_models(
+            router.clone(),
+            turn_request(false),
+            runtime_models(),
+            recorder.serve(),
+        )
+        .await?;
+        assert_eq!(judge_call_count(&recorder), 1);
+        assert_eq!(recorder.routed()[1].target, "weak");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_fall_open_win_does_not_latch_for_later_turns() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        let router = recording_router(config_with_judge_trigger(
+            &recorder,
+            42.0,
+            ClassifyTrigger::NewSession,
+        ))?;
+
+        // The judge cannot tell, so the turn lands on the picker default —
+        // and the judge call is still recorded.
+        test_drive_with_models(
+            router.clone(),
+            turn_request(false),
+            runtime_models(),
+            recorder.serve(),
+        )
+        .await?;
+        assert_eq!(recorder.routed()[0].target, "weak");
+        assert_eq!(judge_call_count(&recorder), 1);
+
+        // The next turn's signals leave it undecided too. Had the fall-open
+        // win latched, affinity would serve "weak" and the judge would never
+        // run; instead the judge decides this turn.
+        *recorder.judge_p_solve.lock() = 0.1;
+        test_drive_with_models(
+            router.clone(),
+            turn_request(false),
+            runtime_models(),
+            recorder.serve(),
+        )
+        .await?;
+        assert_eq!(judge_call_count(&recorder), 2);
+        assert_eq!(recorder.routed()[1].target, "strong");
         Ok(())
     }
 
