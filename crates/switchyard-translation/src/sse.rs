@@ -53,6 +53,7 @@ pub(crate) fn is_terminal_event(format: WireFormat, event: &Value) -> bool {
                     .and_then(Value::as_str)
                     .is_some()
             }),
+        WireFormat::BedrockConverse => false,
         WireFormat::AnthropicMessages => {
             event.get("type").and_then(Value::as_str) == Some("message_stop")
         }

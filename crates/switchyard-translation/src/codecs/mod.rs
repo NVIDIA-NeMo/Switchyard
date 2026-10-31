@@ -4,6 +4,7 @@
 //! Buffered wire-format codecs that translate between provider JSON and IR.
 
 pub mod anthropic;
+pub mod bedrock;
 pub(crate) mod common;
 pub mod openai_chat;
 mod openai_media;

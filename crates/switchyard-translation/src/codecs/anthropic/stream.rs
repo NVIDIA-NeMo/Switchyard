@@ -211,7 +211,18 @@ fn encode_anthropic_stream(
             }));
             out
         }
-        LlmResponseChunk::ReasoningDetailsDelta { text, .. } => {
+        LlmResponseChunk::ReasoningDetailsDelta { text, details, .. } => {
+            if details.iter().any(|detail| {
+                detail.get("type").and_then(Value::as_str) == Some("bedrock.redacted_content")
+            }) {
+                return encode_anthropic_stream(
+                    state,
+                    LlmResponseChunk::DecodeError {
+                        message: "Bedrock redacted reasoning has no Anthropic stream mapping"
+                            .into(),
+                    },
+                );
+            }
             if text.is_empty() {
                 return Vec::new();
             }
