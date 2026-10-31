@@ -439,6 +439,8 @@ the signals work and for tuning.
 | `tool_semantics.new` | No | `[]` | Exact ASCII case-insensitive domain tool names that demonstrate forward activity without favoring either tier. |
 | `handoff_notes` | No | unset | Table of notes appended to the forwarded request when the signals pick a tier. Keys below. |
 | `classifier` | No | unset | Table for the optional capability judge consulted on ambiguous turns. Keys below. |
+| `classifier.classify_trigger` | No | `every_request` | When the judge runs on turns the signals leave undecided. `user_turn` keeps the judge's verdict across the tool calls in one user turn, and `new_session` keeps it for the session. Keeping a verdict needs a session ID, or `classifier.message_hash_fallback`. |
+| `classifier.message_hash_fallback` | No | `false` | Keeps the judge's verdict against a hash of the first user message when a request carries no session ID. Needs a retaining `classifier.classify_trigger`. |
 | `subagents` | No | unset | Nested `passthrough` or custom `llm_classifier` policy used only for delegated sub-agent work. See [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md). |
 
 #### `handoff_notes` keys
@@ -452,8 +454,9 @@ the signals work and for tuning.
 #### `classifier` keys
 
 The judge runs when the signals are ambiguous or the request has no tool
-history. It runs as a step inside the stage cascade, not as a standalone route,
-so it is consulted on every ambiguous turn and never retains a verdict.
+history. It runs as a step inside the stage cascade, not as a standalone route.
+With a retaining `classify_trigger`, its verdict is kept for the rest of the
+user turn or the session instead of being recomputed on every ambiguous turn.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
@@ -462,8 +465,8 @@ so it is consulted on every ambiguous turn and never retains a verdict.
 | `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classifier.fail_open` | No | `true` | When `true`, judge client failures and deadlines let the turn fall open to the picker default and record fail-open evidence. When `false`, they stop the request. |
 | `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. It cannot be combined with `base_threshold`, `threshold_step`, `prompt`, `response_format_type`, or `max_output_tokens`; the load error is `decision cannot use LLM judge settings`. See [Decision model classifier](../routing_algorithms/composite_routing.md#decision-model-classifier). |
-| `classifier.classify_trigger` | No | `every_request` | Only the default is accepted here. The stage fallback judge runs on every ambiguous turn and retains no verdict, so `user_turn` and `new_session` are rejected at load. Use a [composite](#composite) route to judge once per user turn. |
-| `classifier.message_hash_fallback` | No | `false` | Rejected at load on a `stage_router` route. The fallback judge retains nothing to key on. |
+| `classifier.classify_trigger` | No | `every_request` | When the judge runs on turns the signals leave undecided. `user_turn` keeps the judge's verdict across the tool calls in one user turn, and `new_session` keeps it for the session. Keeping a verdict needs a session ID, or `classifier.message_hash_fallback`. |
+| `classifier.message_hash_fallback` | No | `false` | Keeps the judge's verdict against a hash of the first user message when a request carries no session ID. Needs a retaining `classifier.classify_trigger`. |
 | `classifier.recent_turn_window` | No | unset | LLM judges default to task messages. Decision judges default to 10 recent messages plus the opening task. An explicit value counts trailing messages, while the route window counts tool results. |
 | `classifier.prompt` | No | packaged prompt | Replaces the capability judge prompt. The verdict schema is unchanged. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the LLM judge. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Not with `classifier.decision`. |

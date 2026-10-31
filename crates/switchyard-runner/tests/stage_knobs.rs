@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Stage fallback-judge knobs that cannot take effect are rejected at load.
+//! Stage fallback-judge knobs: retaining triggers keep the judge's verdict.
 
 use switchyard_runner::Runner;
 
@@ -30,13 +30,6 @@ confidence_threshold = 0.5
 
 const CLASSIFIER: &str = "[routes.stage.classifier]\ntarget = \"judge\"\nbase_threshold = 0.5\n";
 
-fn load_error(config: &str) -> String {
-    match Runner::from_toml(config) {
-        Ok(_) => panic!("expected a load error for:\n{config}"),
-        Err(error) => error.to_string(),
-    }
-}
-
 #[test]
 fn accepts_the_default_classifier_trigger() {
     assert!(Runner::from_toml(&format!("{CONFIG}{CLASSIFIER}")).is_ok());
@@ -45,16 +38,15 @@ fn accepts_the_default_classifier_trigger() {
 }
 
 #[test]
-fn rejects_classifier_knobs_that_have_no_effect() {
+fn accepts_retaining_classifier_triggers() {
     for setting in [
         "classify_trigger = \"user_turn\"",
         "classify_trigger = \"new_session\"",
-        "message_hash_fallback = true",
+        "classify_trigger = \"user_turn\"\nmessage_hash_fallback = true",
     ] {
-        let error = load_error(&format!("{CONFIG}{CLASSIFIER}{setting}\n"));
         assert!(
-            error.contains("have no effect on the stage fallback judge"),
-            "{setting}: {error}"
+            Runner::from_toml(&format!("{CONFIG}{CLASSIFIER}{setting}\n")).is_ok(),
+            "{setting} should load: a retaining trigger keeps the judge's verdict"
         );
     }
 }
