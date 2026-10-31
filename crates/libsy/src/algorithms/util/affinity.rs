@@ -33,7 +33,7 @@ use crate::core::state::State;
 
 /// Upper bound on retained assignments, keeping the process-local map from growing
 /// without limit; the oldest entry is evicted once the bound is reached.
-const MAX_ASSIGNMENTS: usize = 4096;
+pub(crate) const MAX_ASSIGNMENTS: usize = 4096;
 
 /// How often the classifier re-decides a session's target.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
@@ -214,7 +214,7 @@ impl Processor for AffinityRouter {
             let mut assignments = self.assignments.lock();
             let writable = self.release_on_user_turn || !assignments.contains_key(&key);
             if self.should_latch(selected_model_id) && writable {
-                evict_if_full(&mut assignments);
+                evict_if_full(&mut assignments, &key);
                 assignments.insert(key, (selected_model_id.clone(), category));
             } else if self.release_on_user_turn && starts_user_turn(request) {
                 // The new turn was decided for a model that is not retained, so the
@@ -303,9 +303,13 @@ impl Classifier for AffinityRouter {
     }
 }
 
-/// Evicts one arbitrary assignment when the map has reached [`MAX_ASSIGNMENTS`].
-pub(crate) fn evict_if_full<V>(retained: &mut HashMap<RoutingIdentity, V>) {
+/// Evicts one arbitrary assignment when a new identity needs room in a full map.
+pub(crate) fn evict_if_full<V>(
+    retained: &mut HashMap<RoutingIdentity, V>,
+    identity: &RoutingIdentity,
+) {
     if retained.len() >= MAX_ASSIGNMENTS
+        && !retained.contains_key(identity)
         && let Some(evicted) = retained.keys().next().cloned()
     {
         retained.remove(&evicted);
@@ -872,6 +876,50 @@ mod tests {
 
         let len = router.assignments.lock().len();
         assert_eq!(len, MAX_ASSIGNMENTS);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn updates_at_capacity_preserve_other_sessions() -> Result<(), BoxErr> {
+        let router = AffinityRouter::new().with_release_on_user_turn();
+        let mut state = State::default();
+        for index in 0..MAX_ASSIGNMENTS {
+            retain(
+                &router,
+                &mut state,
+                &mut request(session(&format!("session-{index}"), "agent-a")),
+                "model-a",
+            )
+            .await?;
+        }
+        let identities: Vec<_> = router.assignments.lock().keys().cloned().collect();
+        let [
+            RoutingIdentity::Session(other),
+            RoutingIdentity::Session(updated),
+            ..,
+        ] = identities.as_slice()
+        else {
+            return Err("expected root session identities".into());
+        };
+        // Update a different entry from the one capacity eviction would remove.
+        retain(
+            &router,
+            &mut state,
+            &mut request(session(updated, "agent-a")),
+            "model-b",
+        )
+        .await?;
+        assert_eq!(router.assignments.lock().len(), MAX_ASSIGNMENTS);
+        for (session_id, expected) in [(other, "model-a"), (updated, "model-b")] {
+            let mut continued = request(session(session_id, "agent-a"));
+            continued
+                .llm_request
+                .messages
+                .push(Message::text(Role::Tool, "ok"));
+            let retained = scores(&router, &mut state, &mut continued).await?;
+            assert_eq!(retained.len(), 1);
+            assert_eq!(retained[0].target.as_str(), expected);
+        }
         Ok(())
     }
 
