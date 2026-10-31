@@ -112,6 +112,10 @@ fn router_typing_selects_the_verification_regime() {
     let mut follow_up = session.llm_request.messages.clone();
     follow_up.extend([
         Message::text(Role::Assistant, "The build passes."),
+        Message::text(
+            Role::User,
+            "<environment_context>update</environment_context>",
+        ),
         Message::text(Role::User, "What is 1+1?"),
     ]);
     let follow_up = request(follow_up);

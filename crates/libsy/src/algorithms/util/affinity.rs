@@ -51,19 +51,30 @@ pub enum ClassifyTrigger {
 /// Tool results and standalone Codex environment updates do not start a user turn.
 pub(crate) fn is_user_turn(message: &Message) -> bool {
     message.role == Role::User
-        && message.content.iter().any(|block| match block {
-            ContentBlock::ToolResult(_) => false,
-            ContentBlock::Text { text } => !text
-                .trim()
-                .strip_prefix("<environment_context>")
-                .and_then(|context| context.split_once("</environment_context>"))
-                .is_some_and(|(_, rest)| rest.trim().is_empty()),
-            _ => true,
+        && message.content.iter().any(|block| {
+            !matches!(block, ContentBlock::ToolResult(_)) && !is_environment_context(block)
         })
 }
 
+fn is_environment_context(block: &ContentBlock) -> bool {
+    matches!(block, ContentBlock::Text { text } if text.trim()
+        .strip_prefix("<environment_context>")
+        .and_then(|context| context.split_once("</environment_context>"))
+        .is_some_and(|(_, rest)| rest.trim().is_empty()))
+}
+
+pub(crate) fn is_environment_update(message: &Message) -> bool {
+    message.role == Role::User
+        && !message.content.is_empty()
+        && message.content.iter().all(is_environment_context)
+}
+
 pub(crate) fn has_new_user_turn(messages: &[Message]) -> bool {
-    messages.last().is_some_and(is_user_turn)
+    messages
+        .iter()
+        .rev()
+        .find(|message| !is_environment_update(message))
+        .is_some_and(is_user_turn)
 }
 
 /// Who started the request, `user` or `agent` (GitHub Copilot's convention).
@@ -350,6 +361,19 @@ mod tests {
             text: "fix the parser".into(),
         });
         assert!(is_user_turn(&mixed));
+        for (role, expected) in [
+            (Role::User, true),
+            (Role::Assistant, false),
+            (Role::Tool, false),
+        ] {
+            assert_eq!(
+                has_new_user_turn(&[
+                    Message::text(role, "follow-up"),
+                    Message::text(Role::User, context),
+                ]),
+                expected
+            );
+        }
     }
 
     fn fixed_model(target: &str) -> ModelId {

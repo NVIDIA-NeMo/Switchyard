@@ -11,7 +11,7 @@ use regex::Regex;
 use serde_json::Value;
 use switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role, ToolResult};
 
-use crate::algorithms::util::affinity::{initiated_by_user, is_user_turn};
+use crate::algorithms::util::affinity::{initiated_by_user, is_environment_update, is_user_turn};
 use crate::algorithms::util::tool_signals::classify_text;
 
 /// One flattened turn: instructions first, then messages.
@@ -128,7 +128,12 @@ pub(super) fn has_tool_trajectory(request: &Request) -> bool {
 pub(super) fn starts_user_turn(messages: &[Message], index: usize) -> bool {
     let (Some(message), Some(previous)) = (
         messages.get(index),
-        index.checked_sub(1).and_then(|i| messages.get(i)),
+        messages.get(..index).and_then(|previous| {
+            previous
+                .iter()
+                .rev()
+                .find(|message| !is_environment_update(message))
+        }),
     ) else {
         return false;
     };
