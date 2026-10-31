@@ -146,6 +146,8 @@ The decision counters show one `fall_open` choice and one `override`. Here, `fal
 
 For per-request records, restart with `--routing-log-file routing.jsonl`. Each record includes the selected model and token usage. Decision reasons are reported by the stats endpoint. These checks confirm routing behavior, not task quality or savings.
 
+`GET /v1/routing/session-stats?session_id=...` includes judge selections under `outcomes[].judgments`, with their targets, categories and available score evidence. Later Stage decisions leave these selections intact.
+
 ## Compare configurations
 
 - [Benchmark results](../benchmarks.md) link to model pools, results, and runnable profiles. For Terminal-Bench 2.1, the [escalation profile](../../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml) includes its judge and reasoning settings. Its comments explain the endpoint differences from the measured runs.

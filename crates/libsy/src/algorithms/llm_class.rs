@@ -1515,11 +1515,11 @@ mod tests {
             assert_eq!(outcome.selected_model_id()?, expected, "{name}");
             assert!(outcome.response.is_none());
             assert_eq!(outcome.request.llm_request.messages, original_messages);
-            let evidence = outcome
-                .metadata
-                .and_then(|metadata| metadata.evidence)
-                .expect("routing evidence");
+            let metadata = outcome.metadata.expect("routing metadata");
+            assert_eq!(metadata.judgments.len(), 1);
+            let evidence = metadata.evidence.expect("routing evidence");
             if matches!(name, "above" | "equal" | "below") {
+                assert_eq!(metadata.judgments[0].target.as_deref(), Some(expected));
                 assert_eq!(evidence["source"], "decision_classifier");
                 assert_eq!(evidence["verdict"], "relative_advantage");
                 assert_eq!(evidence["threshold"], settings.cutoff);
@@ -1537,6 +1537,13 @@ mod tests {
             }
             let retained = drive(router, request.clone(), models, &serve).await?;
             assert_eq!(retained.selected_model_id()?, expected);
+            assert!(
+                retained
+                    .metadata
+                    .expect("retained metadata")
+                    .judgments
+                    .is_empty()
+            );
             assert_eq!(
                 calls.load(Ordering::SeqCst),
                 1,

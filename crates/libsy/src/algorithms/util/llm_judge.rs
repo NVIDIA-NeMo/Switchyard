@@ -363,10 +363,11 @@ where
         }
         let verdict = self.verdict(state, request, driver, judge_models).await;
         let classification = self.policy.to_classification(verdict.as_ref(), driver)?;
-        if let Some(evidence) = self
+        let evidence = self
             .evidence
-            .and_then(|evidence| evidence(&self.policy, verdict.as_ref()))
-        {
+            .and_then(|evidence| evidence(&self.policy, verdict.as_ref()));
+        driver.record_judgment(classification.argmax(false)?, evidence.clone());
+        if let Some(evidence) = evidence {
             match &classification {
                 Classification::Scores(scores) if !scores.is_empty() => {
                     driver.set_evidence(evidence);
