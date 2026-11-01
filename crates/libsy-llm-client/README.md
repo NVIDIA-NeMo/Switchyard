@@ -71,6 +71,7 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
         forward_auth: false,
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
+        omit_body_fields: Default::default(),
         reasoning_effort: None,
         max_retries: 2,
         failure_cooldown: std::time::Duration::from_secs(5),
