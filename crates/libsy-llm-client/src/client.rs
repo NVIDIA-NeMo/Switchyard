@@ -33,7 +33,8 @@ use crate::observed_translation;
 use crate::raw::RawResponse;
 
 // Caller headers safe to send when caller auth forwarding is disabled.
-const ALLOWED_METADATA_HEADERS: &[&str] = &["x-request-id"];
+// LiteLLM uses `x-litellm-session-id` to keep a conversation on one prompt cache.
+const ALLOWED_METADATA_HEADERS: &[&str] = &["x-request-id", "x-litellm-session-id"];
 
 // Headers tied to the inbound connection, destination, or body. The HTTP client
 // must rebuild these for the upstream request, even when forwarding auth.
@@ -3373,6 +3374,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(wiremock::matchers::header("x-request-id", "abc"))
+            .and(wiremock::matchers::header("x-litellm-session-id", "session-1"))
             // A forwarded Authorization must NOT override the backend's bearer key.
             .and(wiremock::matchers::header("authorization", "Bearer secret"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -3385,6 +3387,10 @@ mod tests {
 
         let mut headers = http::HeaderMap::new();
         headers.insert("x-request-id", http::HeaderValue::from_static("abc"));
+        headers.insert(
+            "x-litellm-session-id",
+            http::HeaderValue::from_static("session-1"),
+        );
         headers.insert(
             "authorization",
             http::HeaderValue::from_static("Bearer client-key"),
