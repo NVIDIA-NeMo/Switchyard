@@ -6,8 +6,8 @@ explains it, names what it produces, and says what it costs to run.
 
 For choosing what to optimize, read
 [Tuning Foundations](foundations.md). It connects user goals
-to reference labels and probability loss, with worked examples of GEPA prompt
-tuning and model-pair selection with fixed algorithm settings.
+to reference labels and probability loss. See [Examples of tuning](examples.md)
+for GEPA prompt tuning and model-pair selection with fixed algorithm settings.
 
 Start where your goal is:
 
