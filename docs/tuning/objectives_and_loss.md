@@ -137,13 +137,6 @@ preferred. BCE rewards justified confidence and penalizes confident mistakes.
 Two probabilities can produce the same decision at a chosen threshold while
 receiving different losses.
 
-BCE models a binary label conditional on the input. It does not assume balanced
-classes or normally distributed inputs. Expected log loss is minimized by the
-true target probability, but finite tuning does not guarantee calibration.
-See [Gneiting and Raftery](https://doi.org/10.1198/016214506000001437) for the
-proper-scoring-rule result. Score representative workload data; artificial class
-balancing changes the target distribution unless corrected.
-
 **Probability loss is not operating cost.** A binary label records which choice
 wins, but not the size of the advantage. Check actual cost, success rate, or the
 other application objective alongside BCE. When the size of a mistake dominates
