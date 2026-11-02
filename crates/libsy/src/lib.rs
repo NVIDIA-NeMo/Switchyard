@@ -10,7 +10,7 @@ pub use core::algorithm::{
     Step, StepStream, drive,
 };
 pub use core::classifier::{Classification, Classifier, Score};
-pub use core::outcome_metadata::OutcomeMetadata;
+pub use core::outcome_metadata::{JudgeDecision, OutcomeMetadata};
 pub use core::processor::{Event, Processor};
 pub use core::state::{State, StateValue};
 

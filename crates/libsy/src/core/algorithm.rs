@@ -348,6 +348,12 @@ impl AnswerSummary {
     }
 }
 
+#[derive(Default)]
+struct RunEvidence {
+    outcome: Option<Value>,
+    judgments: Vec<crate::JudgeDecision>,
+}
+
 /// An algorithm's handle for requesting external work and awaiting the host's typed replies.
 #[derive(Clone)]
 pub struct Driver {
@@ -357,7 +363,7 @@ pub struct Driver {
     algorithm: String,
 
     /// Run-scoped evidence shared by driver clones and attached only to a successful outcome.
-    evidence: Arc<Mutex<Option<Value>>>,
+    evidence: Arc<Mutex<RunEvidence>>,
 
     /// Caller-supplied routing state, read and updated when a request carries no session ID.
     state: Arc<Mutex<State>>,
@@ -386,7 +392,7 @@ impl Driver {
             Self {
                 step_tx,
                 algorithm: algorithm.to_string(),
-                evidence: Arc::new(Mutex::new(None)),
+                evidence: Arc::new(Mutex::new(RunEvidence::default())),
                 state: Arc::new(Mutex::new(State::default())),
                 models,
                 scope: Scope::Parent,
@@ -406,15 +412,26 @@ impl Driver {
 
     /// Replace the current run's evidence when a component makes the final decision.
     pub(crate) fn set_evidence(&self, evidence: Value) {
-        *self.evidence.lock() = Some(evidence);
+        self.evidence.lock().outcome = Some(evidence);
     }
 
     /// Supply fallback evidence without replacing a decision made earlier in the cascade.
     pub(crate) fn set_evidence_if_empty(&self, evidence: Value) {
         let mut current = self.evidence.lock();
-        if current.is_none() {
-            *current = Some(evidence);
+        if current.outcome.is_none() {
+            current.outcome = Some(evidence);
         }
+    }
+
+    pub(crate) fn record_judgment(&self, selected: Option<crate::Score>, evidence: Option<Value>) {
+        let (target, category) = selected
+            .map(|score| (Some(score.target), score.category))
+            .unwrap_or_default();
+        self.evidence.lock().judgments.push(crate::JudgeDecision {
+            target,
+            category: category.map(|category| category.as_str().to_string()),
+            evidence,
+        });
     }
 
     /// Publish a model call and await the consumer's response.
@@ -569,9 +586,11 @@ impl Driver {
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
         let result = result.map(|mut outcome| {
             outcome.state = self.take_state();
+            let evidence = std::mem::take(&mut *self.evidence.lock());
             let metadata = outcome.metadata.get_or_insert_with(|| {
-                crate::OutcomeMetadata::new(self.algorithm.clone(), self.evidence.lock().take())
+                crate::OutcomeMetadata::new(self.algorithm.clone(), evidence.outcome)
             });
+            metadata.judgments.extend(evidence.judgments);
             observability::record_outcome(metadata, &outcome.selected_model_ids);
             outcome
         });
@@ -908,6 +927,14 @@ mod tests {
             let response = driver
                 .call_model(request.clone(), vec![target.clone()])
                 .await?;
+            driver.record_judgment(
+                Some(crate::Score {
+                    target: target.clone(),
+                    category: Some(Category::Capable),
+                    confidence: 1.0,
+                }),
+                Some(serde_json::json!({"source": "judge"})),
+            );
             driver.set_evidence(serde_json::json!({"source": "test"}));
             driver.set_evidence_if_empty(serde_json::json!({"source": "ignored"}));
             Ok(RoutingOutcome::answered(target, request, response))
@@ -1328,6 +1355,10 @@ mod tests {
                     assert_eq!(
                         metadata.evidence,
                         Some(serde_json::json!({"source": "test"}))
+                    );
+                    assert_eq!(
+                        metadata.judgments[0].evidence,
+                        Some(serde_json::json!({"source": "judge"}))
                     );
                     let response = outcome
                         .response

@@ -365,6 +365,8 @@ impl Classifier for EscalationClassifier {
             .escalation_judge
             .verdict(state, &judge_request, driver, judge_models)
             .await?;
+        self.escalation_judge.classify_verdict(&verdict, driver)?;
+        let verdict = verdict.ok();
 
         let held = count(state, STREAK_KEY);
         let held_category = category(state).map(str::to_string);
@@ -645,8 +647,13 @@ mod tests {
         )
         .await?;
 
+        let metadata = outcome.metadata.expect("routing outcome metadata");
+        assert_eq!(metadata.judgments.len(), 1);
+        assert_eq!(metadata.judgments[0].target, Some("efficient".into()));
+        assert_eq!(metadata.judgments[0].category.as_deref(), Some("efficient"));
+        assert_eq!(metadata.judgments[0].evidence, metadata.evidence);
         assert_eq!(
-            outcome.metadata.and_then(|metadata| metadata.evidence),
+            metadata.evidence,
             Some(serde_json::json!({
                 "source": "escalation",
                 "verdict": "continue",

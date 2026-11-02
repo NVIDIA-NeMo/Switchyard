@@ -197,20 +197,22 @@ impl Classifier for DecisionClassifier {
         } else {
             (efficient, Category::Efficient)
         };
-        driver.set_evidence(json!({
+        let evidence = json!({
             "source": "decision_classifier",
             "verdict": if self.config.criteria.is_some() { "candidate_choice" } else { "relative_advantage" },
+            "selected_candidate": self.config.candidate(target)?,
+            "score_option": score_option,
             "score": score,
             "threshold": self.config.cutoff,
-        }));
-        Ok((
-            Classification::Scores(vec![Score {
-                target: target.clone(),
-                confidence: 1.0,
-                category: Some(category),
-            }]),
-            None,
-        ))
+        });
+        let selected = Score {
+            target: target.clone(),
+            confidence: 1.0,
+            category: Some(category),
+        };
+        driver.record_judgment(Some(selected.clone()), Some(evidence.clone()));
+        driver.set_evidence(evidence);
+        Ok((Classification::Scores(vec![selected]), None))
     }
 }
 
@@ -221,6 +223,8 @@ fn unavailable(
     reason: &'static str,
 ) -> (Classification, Option<Response>) {
     report_fail_open(judge.as_str(), error, reason);
-    driver.set_evidence_if_empty(json!({"source": "fail_open", "reason_code": reason}));
+    let evidence = json!({"source": "fail_open", "reason_code": reason});
+    driver.record_judgment(None, Some(evidence.clone()));
+    driver.set_evidence_if_empty(evidence);
     (Classification::Ambiguous(vec![]), None)
 }

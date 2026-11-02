@@ -280,7 +280,12 @@ where
     }
 
     /// Adds fail-open evidence only for evidence-enabled judges and preserves an earlier decision.
-    fn report_fail_open(&self, driver: &Driver, error: String, reason: &'static str) {
+    fn report_fail_open(
+        &self,
+        driver: &Driver,
+        error: String,
+        reason: &'static str,
+    ) -> &'static str {
         let judge_target = driver
             .first_model_for(&Category::Judge)
             .map(|c| c.as_str())
@@ -292,25 +297,19 @@ where
                 "reason_code": reason,
             }));
         }
+        reason
     }
 
-    /// Consults the judge, yielding `None` when it is unavailable, unintelligible, or
-    /// over its route deadline.
-    ///
-    /// Errors delivered by the host and invalid verdicts are logged and folded into `None`
-    /// for the policy's fallback branch. The HTTP driver delivers client errors here when
-    /// error recovery is enabled; otherwise it stops the run. A route deadline covers the
-    /// whole consultation — the model call and the response drain — so a judge that
-    /// answers headers promptly and then stalls mid-stream cannot hold the turn past
-    /// `judge_deadline_ms` either. On expiry it follows the same recovery split: folded
-    /// into `None` when recovering, surfaced as a client timeout when not.
+    /// Consults the judge, retaining a bounded reason when a consultation fails open.
+    /// The deadline covers both the model call and response drain. Deadline errors
+    /// stop the run when recovery is disabled.
     pub(crate) async fn verdict(
         &self,
         state: &mut State,
         request: &Request,
         driver: &Driver,
         judge_models: &[ModelId],
-    ) -> Result<Option<J::Verdict>> {
+    ) -> Result<std::result::Result<J::Verdict, &'static str>> {
         let judge_model = judge_models.first().ok_or(LibsyError::NoTargets)?.as_str();
 
         tracing::info!(target = judge_model, "consulting llm judge");
@@ -323,32 +322,23 @@ where
                     self.recover_errors,
                 )
                 .await
-                .inspect_err(|error| {
+                .map_err(|error| {
                     self.report_fail_open(
                         driver,
-                        safe_error_summary(error),
-                        libsy_error_reason(error),
-                    );
-                })
-                .ok()?;
-            let aggregate = response
-                .llm_response
-                .into_agg()
-                .await
-                .inspect_err(|error| {
-                    self.report_fail_open(
-                        driver,
-                        safe_client_error(error),
-                        client_error_reason(error),
-                    );
-                })
-                .ok()?;
-            self.judge
-                .parse(&aggregate)
-                .inspect_err(|error| {
-                    self.report_fail_open(driver, safe_error_summary(error), "parse_error");
-                })
-                .ok()
+                        safe_error_summary(&error),
+                        libsy_error_reason(&error),
+                    )
+                })?;
+            let aggregate = response.llm_response.into_agg().await.map_err(|error| {
+                self.report_fail_open(
+                    driver,
+                    safe_client_error(&error),
+                    client_error_reason(&error),
+                )
+            })?;
+            self.judge.parse(&aggregate).map_err(|error| {
+                self.report_fail_open(driver, safe_error_summary(&error), "parse_error")
+            })
         };
         let verdict = match self.judge.deadline_ms() {
             None => consult.await,
@@ -368,12 +358,37 @@ where
                                 },
                             ));
                         }
-                        None
+                        Err("deadline")
                     }
                 }
             }
         };
         Ok(verdict)
+    }
+
+    /// Classifies and records one judge consultation.
+    pub(crate) fn classify_verdict(
+        &self,
+        verdict: &std::result::Result<J::Verdict, &'static str>,
+        driver: &Driver,
+    ) -> Result<Classification> {
+        let classification = self
+            .policy
+            .to_classification(verdict.as_ref().ok(), driver)?;
+        let evidence = self.evidence.and_then(|evidence| match verdict.as_ref() {
+            Ok(verdict) => evidence(&self.policy, Some(verdict)),
+            Err(reason) => Some(serde_json::json!({"source": "fail_open", "reason_code": reason})),
+        });
+        driver.record_judgment(classification.argmax(false)?, evidence.clone());
+        if let Some(evidence) = evidence {
+            match &classification {
+                Classification::Scores(scores) if !scores.is_empty() => {
+                    driver.set_evidence(evidence);
+                }
+                _ => driver.set_evidence_if_empty(evidence),
+            }
+        }
+        Ok(classification)
     }
 }
 
@@ -433,18 +448,7 @@ where
             });
         }
         let verdict = self.verdict(state, request, driver, judge_models).await?;
-        let classification = self.policy.to_classification(verdict.as_ref(), driver)?;
-        if let Some(evidence) = self
-            .evidence
-            .and_then(|evidence| evidence(&self.policy, verdict.as_ref()))
-        {
-            match &classification {
-                Classification::Scores(scores) if !scores.is_empty() => {
-                    driver.set_evidence(evidence);
-                }
-                _ => driver.set_evidence_if_empty(evidence),
-            }
-        }
+        let classification = self.classify_verdict(&verdict, driver)?;
         // A judge consultation is a side call, never the turn's answer.
         Ok((classification, None))
     }
@@ -653,7 +657,8 @@ mod tests {
         let models = RuntimeModels::new([(Category::Judge, vec![ModelId::from("judge")])].into());
         let (driver, step_rx) = Driver::new("test", Arc::new(models));
         let mut steps = tokio_stream::wrappers::ReceiverStream::new(step_rx);
-        let classifier = classifier();
+        let classifier = classifier().with_evidence(|_, _| None);
+        driver.set_evidence(serde_json::json!({"reason_code": "earlier"}));
         let mut state = State::default();
         let mut request = request();
 
@@ -665,7 +670,26 @@ mod tests {
         let (classification, ()) =
             tokio::join!(classifier.score(&mut state, &mut request, &driver), serve);
         let (classification, _) = classification?;
-        selected(classification)
+        let target = selected(classification)?;
+        driver
+            .finish(Ok(crate::RoutingOutcome::route_to(
+                target.clone(),
+                vec![],
+                request,
+            )))
+            .await?;
+        let Some(Ok(Step::Done(outcome))) = steps.next().await else {
+            panic!("missing outcome");
+        };
+        let judgments = outcome.metadata.expect("metadata").judgments;
+        assert_eq!(judgments.len(), 1);
+        if target == "no-verdict" {
+            let reason = judgments[0].evidence.as_ref().expect("failure reason")["reason_code"]
+                .as_str()
+                .expect("reason code");
+            assert_ne!(reason, "earlier");
+        }
+        Ok(target)
     }
 
     #[tokio::test]
