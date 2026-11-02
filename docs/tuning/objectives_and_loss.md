@@ -30,16 +30,6 @@ candidates.
   the evaluation workload. Specify the target percentage and any quality
   requirement before comparing candidates.
 
-Separate the quantity to improve from the requirements a candidate must meet.
-For example: "Minimize mean cost per task on this workload, subject to at least
-80% task success." The success requirement determines eligibility; cost ranks the
-eligible candidates. These numbers are illustrative.
-
-A desired routing split still needs a rule for choosing *which* requests use
-each tier. Cache benefits depend on the serving system and workload. More cache
-usage does not by itself establish lower cost or latency. Define how to handle
-ties and tradeoffs before reviewing candidate results.
-
 ## 2. Design configuration candidates
 
 A candidate is a complete configuration to evaluate under the fixed objective.
