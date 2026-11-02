@@ -1363,22 +1363,44 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-outcome-based-labels-and-binary-cross-entropy" class="md-nav__link">
+  <a href="#3-outcome-based-labels-and-cross-entropy" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Outcome-based labels and binary cross-entropy
+        3. Outcome-based labels and cross-entropy
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="3. Outcome-based labels and binary cross-entropy">
+    <nav class="md-nav" aria-label="3. Outcome-based labels and cross-entropy">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#31-worked-configuration-comparison" class="md-nav__link">
+  <a href="#31-cross-entropy-for-multiple-choices" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3.1. Worked configuration comparison
+        3.1. Cross-entropy for multiple choices
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-binary-cross-entropy-as-the-two-choice-case" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2. Binary cross-entropy as the two-choice case
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-worked-configuration-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3. Worked configuration comparison
       
     </span>
   </a>
@@ -2436,22 +2458,44 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-outcome-based-labels-and-binary-cross-entropy" class="md-nav__link">
+  <a href="#3-outcome-based-labels-and-cross-entropy" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Outcome-based labels and binary cross-entropy
+        3. Outcome-based labels and cross-entropy
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="3. Outcome-based labels and binary cross-entropy">
+    <nav class="md-nav" aria-label="3. Outcome-based labels and cross-entropy">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#31-worked-configuration-comparison" class="md-nav__link">
+  <a href="#31-cross-entropy-for-multiple-choices" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3.1. Worked configuration comparison
+        3.1. Cross-entropy for multiple choices
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-binary-cross-entropy-as-the-two-choice-case" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2. Binary cross-entropy as the two-choice case
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-worked-configuration-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3. Worked configuration comparison
       
     </span>
   </a>
@@ -2584,38 +2628,27 @@
 
 
 <h1 id="objectives-and-loss-functions-for-configuration-tuning">Objectives and Loss Functions for Configuration Tuning<a class="headerlink" href="#objectives-and-loss-functions-for-configuration-tuning" title="Permanent link">&para;</a></h1>
-<p>This guide uses two sample configurations and a fixed objective to show how to
-define and compute the losses used to compare them. Start with the desired
-outcome and a rule for measuring it, then evaluate both configurations. When a
-decision model learns which configuration to choose, those outcomes also provide
-reference labels for scoring its predictions.</p>
-<p>The same objective and scoring rule can support different tuning experiments:</p>
-<ul>
-<li><strong>Prompt tuning for a <a href="../../protocols/decisions/">decision model</a>:</strong> keep the
-  model and the two execution configurations fixed, and use prediction loss to
-  guide instruction changes. <a href="#4a-prompt-tuning-with-gepa">Section 4.a</a> shows this
-  with GEPA.</li>
-<li><strong>Model selection with fixed algorithm settings:</strong> compare candidate models
-  under the same objective, algorithm settings, and scoring rule.
-  <a href="#4b-model-selection-with-the-same-loss">Section 4.b</a> compares models that make
-  the routing decision while holding the prompt and execution configurations
-  fixed.</li>
-</ul>
-<p>The sections below establish the objective, candidate configurations, and loss
-before applying them to these examples. For the steps to run a routing
-experiment, start with <a href="../">Compare and Tune</a>.</p>
+<p>Configuration settings describe how the system behaves. The user's objective
+describes what that behavior should achieve. This guide bridges the gap between
+the two: define a measurable objective, design candidate configurations, and use
+a loss function to compare them against that fixed objective.</p>
+<p>The objective determines what counts as better. The configurations define the
+alternatives we can test. The loss connects the two by assigning a score to each
+candidate's results. For the steps to run a routing experiment, start with
+<a href="../">Compare and Tune</a>.</p>
 <h2 id="1-define-the-objective">1. Define the objective<a class="headerlink" href="#1-define-the-objective" title="Permanent link">&para;</a></h2>
 <p>Start with the outcome the user wants. Define what to measure, on which workload,
 and what makes a result acceptable. Keep this definition fixed while comparing
-candidates.</p>
+candidates, whether the experiment contains two configurations or many.</p>
 <ul>
 <li><strong>Reduce cost while preserving accuracy.</strong> Minimize total cost per task while
   meeting a defined accuracy requirement. Include decision calls, retries, and
   cache charges in the cost.</li>
 <li><strong>Maximize task success.</strong> Maximize the fraction of tasks completed correctly,
   subject to any cost or latency limits.</li>
-<li><strong>Reach a desired routing split.</strong> Target a defined allocation, such as 70% of
-  model calls on the efficient tier and 30% on the capable tier. Specify the
+<li><strong>Reach a desired routing split.</strong> Target a defined allocation across the
+  configured targets. This could be 70% of calls on the efficient tier and 30% on
+  the capable tier, or a distribution across three or more targets. Specify the
   counting unit, allowed deviation, and quality requirement.</li>
 <li><strong>Reach a capable-tier cache-usage target.</strong> Target a specified percentage of
   capable-tier input tokens served from cache, such as at least 80%. Measure
@@ -2628,7 +2661,10 @@ might achieve it. This separates the outcome we want from the settings we will
 test.</p>
 <h2 id="2-design-configuration-candidates">2. Design configuration candidates<a class="headerlink" href="#2-design-configuration-candidates" title="Permanent link">&para;</a></h2>
 <p>A candidate is a complete configuration to evaluate under the fixed objective.
-The objective describes what success means; candidate design determines which
+The candidate set can contain any number of alternatives. Give each a distinct
+ID, such as A, B, and C, and compare all of them using the same objective and
+evaluation procedure.</p>
+<p>The objective describes what success means; candidate design determines which
 possible solutions the experiment will consider. A loss can rank the candidates
 we test, but it cannot find an improvement that none of them can produce.</p>
 <p>Build the candidate set in these steps:</p>
@@ -2673,54 +2709,82 @@ cases where switching lost cache savings.</p>
 cost but misses the quality requirement is ineligible under that objective.
 Changing the requirement creates a different comparison.</p>
 <p>With the objective and candidates fixed, we can measure their outcomes and
-assign a loss to each. When training a decision model to choose between them, we
-also turn those outcomes into reference choices. The next section explains that
-step and the loss used to score the model's probabilities.</p>
-<h2 id="3-outcome-based-labels-and-binary-cross-entropy">3. Outcome-based labels and binary cross-entropy<a class="headerlink" href="#3-outcome-based-labels-and-binary-cross-entropy" title="Permanent link">&para;</a></h2>
-<p>For configurations A and B, use the fixed objective to determine which outcome is
-better on each evaluated request. This could mean a correct answer at lower cost
-or a defined tradeoff between execution cost and failure.</p>
+assign a loss to each. If the task is to learn which configuration to choose,
+those outcomes also provide reference choices. The next section explains how to
+represent these choices and score the probabilities assigned to them.</p>
+<h2 id="3-outcome-based-labels-and-cross-entropy">3. Outcome-based labels and cross-entropy<a class="headerlink" href="#3-outcome-based-labels-and-cross-entropy" title="Permanent link">&para;</a></h2>
+<p>Use the fixed objective to identify the preferred configuration for each
+evaluated request. This could mean a correct answer at lower cost or a defined
+tradeoff between execution cost and failure. The reference label <strong>y</strong> is the ID
+of that configuration. With candidates A, B, and C, the label can be A, B, or C;
+it is not limited to 0 or 1. Define a consistent rule for ties.</p>
 <p>Some objectives apply to a whole workload, such as an accuracy floor or routing
 allocation. Compare complete runs against those constraints. Turning them into
 per-request reference choices requires an explicit labeling or allocation rule;
-the constraint alone does not supply a binary label.</p>
-<ul>
-<li><strong>y = 1:</strong> B is preferred under the objective's labeling rule.</li>
-<li><strong>y = 0:</strong> A is preferred under that rule. Define ties in advance; in the examples
-  below, ties go to A.</li>
-</ul>
+the constraint alone does not supply a label.</p>
 <p>The objective determines the labeling rule; measured outcomes determine each
 label. Labels belong to the configurations and evaluation conditions that
-produced them. If either changes, the labels may need to change too. The same
-request can favor B for accuracy and A for cost.</p>
-<p>The model predicts <strong>p</strong>, the probability that B is the reference choice. This is
-different from the probability that B succeeds: B can succeed and still cost more
-than an equally successful A. The labeling process can use completed outcomes;
-the decision model must use only information available when it chooses.</p>
-<p>For a Boolean decision question, make the event explicit: "Is B preferable to A
-under this objective?" Use its answer probability as <strong>p</strong>. For a two-option
-choice question, use the probability assigned to B. Keep answer probabilities
-separate from provider confidence, and keep missing probabilities unknown rather
-than turning a hard choice into certainty. See
-<a href="../../reference/protocols/decision_answers/#answer-values">Decision Answers</a>.</p>
-<p>Binary cross-entropy (BCE) scores that probability against the reference label:</p>
+produced them. If the objective or candidate set changes, the labels may need to
+change too. The same request can favor one configuration for accuracy and another
+for cost.</p>
+<p>A model that selects one configuration predicts a probability for every available
+choice. These probabilities sum to 1. <strong>p(y)</strong> is the probability assigned to the
+reference choice. It represents the chance that this choice is preferred under
+the labeling rule, rather than simply the chance that it succeeds. A configuration
+can succeed and still cost more than an equally successful alternative.</p>
+<p>For a choice question, use the probability distribution over the declared
+configuration IDs. Keep answer probabilities separate from provider confidence,
+and keep missing probabilities unknown rather than turning a hard choice into
+certainty. See <a href="../../reference/protocols/decision_answers/#answer-values">Decision Answers</a>.
+The labeling process can use completed outcomes; the model must use only
+information available when it chooses.</p>
+<h3 id="31-cross-entropy-for-multiple-choices">3.1. Cross-entropy for multiple choices<a class="headerlink" href="#31-cross-entropy-for-multiple-choices" title="Permanent link">&para;</a></h3>
+<p>When each request has one reference choice, categorical cross-entropy is:</p>
+<p><strong>Cross-entropy(y, p) = −log p(y)</strong></p>
+<p>In words, take the negative logarithm of the probability assigned to the
+reference configuration. Use natural logarithms and average the per-request
+losses to compare candidates.</p>
+<p>For example, suppose the available configurations are A, B, and C, and the
+objective makes <strong>C</strong> the reference choice:</p>
+<ul>
+<li>Predicted probabilities <strong>A: 0.20, B: 0.50, C: 0.30</strong> give a loss of
+  <strong>−log(0.30) = 1.204</strong>.</li>
+<li>Predicted probabilities <strong>A: 0.10, B: 0.20, C: 0.70</strong> give a loss of
+  <strong>−log(0.70) = 0.357</strong>.</li>
+</ul>
+<p>The second prediction has lower loss because it assigns more probability to the
+reference configuration. The same calculation applies to any number of mutually
+exclusive choices. It scores probability predictions; configurations evaluated
+directly by cost, task success, or another operating outcome use the loss defined
+for that outcome.</p>
+<h3 id="32-binary-cross-entropy-as-the-two-choice-case">3.2. Binary cross-entropy as the two-choice case<a class="headerlink" href="#32-binary-cross-entropy-as-the-two-choice-case" title="Permanent link">&para;</a></h3>
+<p>With only configurations A and B, encode the reference choice as:</p>
+<ul>
+<li><strong>y = 1:</strong> B is preferred under the objective's labeling rule.</li>
+<li><strong>y = 0:</strong> A is preferred. In the worked examples below, ties go to A.</li>
+</ul>
+<p>Let <strong>p</strong> be the predicted probability of B. The probability of A is <strong>1 − p</strong>.
+Categorical cross-entropy then becomes binary cross-entropy (BCE):</p>
 <p><strong>BCE(y, p) = −y log(p) − (1 − y) log(1 − p)</strong></p>
-<p>Use natural logarithms and average the per-example losses to compare candidates.</p>
+<p>A Boolean decision question can express this as "Is B preferable to A under this
+objective?" Its probability of true supplies <strong>p</strong>. For a two-option choice
+question, use the probability assigned to B.</p>
 <p><img alt="BCE decreases as the predicted probability of B increases when B is preferred, and increases when A is preferred." src="../../assets/tuning/binary-cross-entropy.svg" /></p>
-<p><em>Figure 1. Binary cross-entropy as a function of the predicted probability of B.
-The reference label determines which curve applies.</em></p>
+<p><em>Figure 1. The two-choice case of cross-entropy. The reference label determines
+which curve applies.</em></p>
 <p>At <strong>p = 0.99</strong>, loss is <strong>0.010</strong> when B is preferred and <strong>4.605</strong> when A is
 preferred. BCE rewards justified confidence and penalizes confident mistakes.
 Two probabilities can produce the same decision at a chosen threshold while
 receiving different losses.</p>
-<p><strong>Probability loss is not operating cost.</strong> A binary label records which choice
-wins, but not the size of the advantage. Check actual cost, success rate, or the
-other application objective alongside BCE. When the size of a mistake dominates
-the objective, consider predicting each configuration's expected operating loss
-directly.</p>
-<h3 id="31-worked-configuration-comparison">3.1. Worked configuration comparison<a class="headerlink" href="#31-worked-configuration-comparison" title="Permanent link">&para;</a></h3>
-<p>To make the connection from outcomes to labels concrete, consider two execution
-configurations at one pipeline stage. We will measure both under a cost-and-failure
+<p><strong>Probability loss is not operating cost.</strong> A reference label records which
+choice wins, but not the size of the advantage. Check actual cost, success rate,
+or the other application objective alongside cross-entropy. When the size of a
+mistake dominates the objective, consider predicting each configuration's
+expected operating loss directly.</p>
+<h3 id="33-worked-configuration-comparison">3.3. Worked configuration comparison<a class="headerlink" href="#33-worked-configuration-comparison" title="Permanent link">&para;</a></h3>
+<p>The remaining worked examples use two execution configurations at one pipeline
+stage to keep the arithmetic easy to follow. They illustrate the binary case of
+the broader approach above. We will measure both under a cost-and-failure
 objective, then reuse their reference labels in the tuning examples.</p>
 <ul>
 <li><strong>Configuration A (Fast):</strong> a fast executor with a 512-token generation budget;
@@ -2756,7 +2820,10 @@ and reference labels. We can now use the same prediction loss to evaluate two
 different changes: first the decision model's prompt, then the model itself. In
 both experiments, the objective stays fixed.</p>
 <h3 id="4a-prompt-tuning-with-gepa">4.a. Prompt tuning with GEPA<a class="headerlink" href="#4a-prompt-tuning-with-gepa" title="Permanent link">&para;</a></h3>
-<p><strong>What changes:</strong> the router instruction. <strong>What is scored:</strong> negative mean BCE.</p>
+<p><strong>What changes:</strong> the instruction for a <a href="../../protocols/decisions/">decision model</a>
+that selects an execution configuration. <strong>What is scored:</strong> negative mean BCE
+for this two-choice example. With more choices, use negative mean categorical
+cross-entropy.</p>
 <p>GEPA improves a prompt by trying revisions. Run the decision model on labeled
 examples, show another LLM where it struggled, and ask it to rewrite the
 instructions. That LLM is the reflector. Evaluate the rewrite and repeat; model
