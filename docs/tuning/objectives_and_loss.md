@@ -24,9 +24,11 @@ candidates.
 - **Reach a desired routing split.** Target a defined allocation, such as 70% of
   model calls on the efficient tier and 30% on the capable tier. Specify the
   counting unit, allowed deviation, and quality requirement.
-- **Benefit from cached context.** Minimize measured cost or latency while
-  preserving acceptable quality. Track cache usage to explain the result. If
-  cache usage itself is the objective, define the target metric explicitly.
+- **Reach a capable-tier cache-usage target.** Target a specified percentage of
+  capable-tier input tokens served from cache, such as at least 80%. Measure
+  cache-read input tokens divided by all input tokens on capable-tier calls over
+  the evaluation workload. Specify the target percentage and any quality
+  requirement before comparing candidates.
 
 Separate the quantity to improve from the requirements a candidate must meet.
 For example: "Minimize mean cost per task on this workload, subject to at least
