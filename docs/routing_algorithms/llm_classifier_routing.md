@@ -265,7 +265,6 @@ id = "direct"
 type = "llm_classifier"
 mode = "direct"
 default_target = "balanced"
-evidence = { team = "search" }
 
 [routes.direct.models]
 judge = ["router"]
@@ -280,9 +279,9 @@ option ID, so name each group with an ID the decision service returns. Options a
 in group-name order. A route needs at least two options. `models.judge` must name
 a decision target.
 
-The request context holds the conversation as `task`, the caller's session ID as
-`session` (or null), and `evidence` unchanged. `recent_turn_window` sets how many
-trailing turns `task` carries after the opening task. The default is 10.
+The request context holds the conversation as `task` and the caller's session ID
+as `session` (or null). `recent_turn_window` sets how many trailing turns `task`
+carries after the opening task. The default is 10.
 
 Switchyard routes on the selected option and ignores the probabilities. When
 the decision call fails, times out, or returns a choice that is not an option,

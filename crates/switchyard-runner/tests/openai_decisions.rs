@@ -149,7 +149,6 @@ id = "switchyard/direct"
 type = "llm_classifier"
 mode = "direct"
 default_target = "fast"
-evidence = {{ team = "search" }}
 [routes.direct.models]
 judge = ["router"]
 any = ["fast", "balanced", "premium"]
@@ -218,7 +217,6 @@ async fn direct_mode_serves_the_selected_group() -> Result<(), Box<dyn std::erro
         json!({
             "task": [{"role": "user", "content": [{"type": "text", "text": "Route this request"}]}],
             "session": "session-1",
-            "evidence": {"team": "search"},
         })
     );
     server.verify().await;

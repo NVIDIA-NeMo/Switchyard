@@ -344,8 +344,8 @@ pub struct LlmClassifierRouteConfig {
     pub escalation: Option<EscalationJudgeConfig>,
     /// Capability mode: use a decision target as the judge, with relative-advantage scoring.
     pub decision: Option<DecisionJudgeRouteConfig>,
-    /// Custom and direct modes: runtime model groups. In direct mode, every group
-    /// except `judge` and `any` is an option the decision target may select.
+    /// Custom and direct modes: runtime model groups. In direct mode, every non-empty
+    /// group except `judge` and `any` is an option the decision target may select.
     pub models: Option<CategoryModelConfig>,
     /// Custom and direct modes: category used when the judge fails or its verdict
     /// cannot be routed.
@@ -354,8 +354,6 @@ pub struct LlmClassifierRouteConfig {
     pub response_schema: Option<String>,
     /// Custom mode: how to read the chosen target out of the verdict.
     pub policy: Option<ClassifierPolicyConfig>,
-    /// Direct mode: JSON passed unchanged to the decision target.
-    pub evidence: Option<Value>,
 }
 
 /// Routing policy applied only to delegated sub-agent work, nested inside a
@@ -1337,7 +1335,6 @@ impl LlmClassifierRouteConfig {
             default_target,
             response_schema,
             policy,
-            evidence,
         } = self;
 
         let selected_mode = match (mode, escalation.is_some()) {
@@ -1349,12 +1346,6 @@ impl LlmClassifierRouteConfig {
         if decision.is_some() && !matches!(selected_mode, ClassifierMode::Capability) {
             return Err(AlgorithmConfigError::new(format!(
                 "llm_classifier route {route_name}: decision requires capability mode"
-            )));
-        }
-
-        if evidence.is_some() && !matches!(selected_mode, ClassifierMode::Direct) {
-            return Err(AlgorithmConfigError::new(format!(
-                "llm_classifier route {route_name}: evidence requires direct mode"
             )));
         }
 
@@ -1558,7 +1549,6 @@ impl LlmClassifierRouteConfig {
                     default_target,
                     config: DirectClassifierConfig {
                         options,
-                        evidence: evidence.clone().unwrap_or_default(),
                         fail_open: fail_open.unwrap_or(true),
                         classify_trigger: *classify_trigger,
                         message_hash_fallback: *message_hash_fallback,

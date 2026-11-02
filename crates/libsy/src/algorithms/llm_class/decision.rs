@@ -244,8 +244,6 @@ impl Classifier for DecisionClassifier {
 pub struct DirectClassifierConfig {
     /// Categories the service may select. Their names are the option IDs.
     pub options: Vec<Category>,
-    /// JSON passed unchanged to the decision service.
-    pub evidence: Value,
     /// Routes to the default target on decision client failures and deadlines.
     pub fail_open: bool,
     /// How often the decision service re-decides this session's target.
@@ -335,7 +333,6 @@ impl Classifier for DirectClassifier {
             context: json!({
                 "task": self.input.messages(request),
                 "session": request.metadata.as_ref().and_then(|m| m.session_id.as_deref()),
-                "evidence": self.config.evidence,
             }),
             questions: BTreeMap::from([("route".into(), self.question.clone())]),
         };
