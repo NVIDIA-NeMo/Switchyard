@@ -422,9 +422,9 @@ Direct mode asks a decision target to select one model group. See
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
-| `models` | Yes | — | Model groups, as in custom mode. Every group except `judge` and `any` is an option, and its name is the option ID. Needs at least two options. `models.judge` must name a decision target. |
-| `default_target` | Yes | — | Option used when the decision call fails or returns no usable choice. |
-| `fail_open` | No | `true` | When `true`, decision call failures and deadlines route to `default_target`. When `false`, they stop the request. The `openai_decisions` client counts a choice outside the options as a failed call. |
+| `models` | Yes | — | Model groups, as in custom mode. Every non-empty group except `judge` and `any` is an option, and its name is the option ID. Needs at least two options. `models.judge` must name a decision target. |
+| `default_target` | Yes | — | Option used when the decision call fails or returns a choice that is not an option. |
+| `fail_open` | No | `true` | When `true`, decision call failures, deadlines, and invalid choices route to `default_target`. When `false`, they stop the request. |
 | `evidence` | No | null | JSON passed unchanged to the decision target. |
 | `recent_turn_window` | No | `10` | Trailing turns sent as `task` after the opening task. |
 

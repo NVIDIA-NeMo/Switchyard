@@ -1548,8 +1548,10 @@ impl LlmClassifierRouteConfig {
                     validated_models(route_name, models, default_target)?;
                 let options = models
                     .groups()
+                    .filter(|(category, targets)| {
+                        !targets.is_empty() && !matches!(category, Category::Judge | Category::Any)
+                    })
                     .map(|(category, _)| category)
-                    .filter(|category| !matches!(category, Category::Judge | Category::Any))
                     .collect();
                 Ok(LlmClassifierModeConfig::Direct {
                     models,

@@ -156,6 +156,7 @@ any = ["fast", "balanced", "premium"]
 fast = ["fast"]
 balanced = ["balanced"]
 premium = ["premium"]
+unused = []
 "#
     )
 }

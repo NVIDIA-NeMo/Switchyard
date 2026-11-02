@@ -295,6 +295,30 @@ impl DirectClassifier {
             question,
         })
     }
+
+    async fn try_select(
+        &self,
+        decision: DecisionRequest,
+        driver: &Driver,
+        judge: &ModelId,
+    ) -> Result<&Category> {
+        let response = driver.call_decision(decision, judge.clone()).await?;
+        let Some(DecisionValue::Choice { selected, .. }) =
+            response.answers.get("route").map(|answer| &answer.value)
+        else {
+            return Err(LibsyError::invalid_decision(
+                judge.clone(),
+                "expected a route choice",
+            ));
+        };
+        self.config
+            .options
+            .iter()
+            .find(|option| option.as_str() == selected)
+            .ok_or_else(|| {
+                LibsyError::invalid_decision(judge.clone(), "route choice is not an option")
+            })
+    }
 }
 
 #[async_trait]
@@ -315,8 +339,8 @@ impl Classifier for DirectClassifier {
             }),
             questions: BTreeMap::from([("route".into(), self.question.clone())]),
         };
-        let response = match driver.call_decision(decision, judge.clone()).await {
-            Ok(response) => response,
+        let category = match self.try_select(decision, driver, judge).await {
+            Ok(category) => category,
             Err(error) if self.config.fail_open => {
                 return Ok(unavailable(
                     driver,
@@ -326,25 +350,6 @@ impl Classifier for DirectClassifier {
                 ));
             }
             Err(error) => return Err(error),
-        };
-        let selected = response
-            .answers
-            .get("route")
-            .and_then(|answer| match &answer.value {
-                DecisionValue::Choice { selected, .. } => self
-                    .config
-                    .options
-                    .iter()
-                    .find(|option| option.as_str() == selected),
-                _ => None,
-            });
-        let Some(category) = selected else {
-            return Ok(unavailable(
-                driver,
-                judge,
-                "missing or unknown route choice".into(),
-                "invalid_verdict",
-            ));
         };
         let evidence = json!({
             "source": "decision_classifier",

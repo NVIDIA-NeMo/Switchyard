@@ -275,8 +275,8 @@ premium = ["premium"]
 any = ["balanced", "fast", "premium"]
 ```
 
-Every group except `judge` and `any` is an option, and its name is the option
-ID, so name each group with an ID the decision service returns. Options are sent
+Every non-empty group except `judge` and `any` is an option, and its name is the
+option ID, so name each group with an ID the decision service returns. Options are sent
 in group-name order. A route needs at least two options. `models.judge` must name
 a decision target.
 
@@ -285,9 +285,9 @@ The request context holds the conversation as `task`, the caller's session ID as
 trailing turns `task` carries after the opening task. The default is 10.
 
 Switchyard routes on the selected option and ignores the probabilities. When
-the decision call fails or times out, the route uses `default_target`. Set
-`fail_open = false` to stop the request instead. The `openai_decisions` client
-counts a choice outside the options as a failed call.
+the decision call fails, times out, or returns a choice that is not an option,
+the route uses `default_target`. Set `fail_open = false` to stop the request
+instead.
 
 Direct mode is available only on standalone `llm_classifier` routes.
 

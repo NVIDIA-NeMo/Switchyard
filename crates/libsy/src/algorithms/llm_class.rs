@@ -1837,7 +1837,8 @@ mod tests {
         use switchyard_protocol::{DecisionAnswer, DecisionResponse, DecisionValue};
 
         for (reply, fail_open, expected) in [
-            (Some("unknown"), false, Some("efficient")),
+            (Some("unknown"), true, Some("efficient")),
+            (Some("unknown"), false, None),
             (None, true, Some("efficient")),
             (None, false, None),
         ] {
@@ -1884,7 +1885,7 @@ mod tests {
             let result = drive(router, classify_request(), models, &serve).await;
             match expected {
                 Some(expected) => assert_eq!(result?.selected_model_id()?, expected),
-                None => assert!(matches!(result, Err(LibsyError::ClientCall { .. }))),
+                None => assert!(result.is_err()),
             }
         }
         Ok(())
