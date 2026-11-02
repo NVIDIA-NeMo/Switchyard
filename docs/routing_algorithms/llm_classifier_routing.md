@@ -255,6 +255,7 @@ routing policy.
 format = "openai_decisions"
 endpoint = "https://router.example.com/v1/decisions"
 api_key_env = "ROUTER_API_KEY"
+timeout_ms = 10000
 
 [decision_targets.router]
 id = "router-model"
@@ -275,9 +276,9 @@ any = ["balanced", "fast", "premium"]
 ```
 
 Every non-empty group except `judge` and `any` is an option, and its name is the
-option ID, so name each group with an ID the decision service returns. Options are sent
-in group-name order. A route needs at least two options. `models.judge` must name
-a decision target.
+option ID, so name each group with an ID the decision service returns. Options
+are sent in group-name order. A route needs at least two options. `models.judge`
+must name a decision target.
 
 The request context holds the conversation as `task` and the caller's session ID
 as `session` (or null). `recent_turn_window` sets how many trailing turns `task`
@@ -286,7 +287,7 @@ carries after the opening task. The default is 10.
 Switchyard routes on the selected option and ignores the probabilities. When
 the decision call fails, times out, or returns a choice that is not an option,
 the route uses `default_target`. Set `fail_open = false` to stop the request
-instead.
+instead. The decision client's `timeout_ms` sets how long the call may take.
 
 Direct mode is available only on standalone `llm_classifier` routes.
 

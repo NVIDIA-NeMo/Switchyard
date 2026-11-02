@@ -102,7 +102,9 @@ continues, preserving provider events for replay. After the configured retries,
 an HTTP client failure stops routing unless the call enables recovery.
 Capability classifiers, direct classifiers, and advisor gates default to
 `fail_open = true`. A capability classifier routes to the capable tier on judge
-failures, including deadlines. A direct classifier routes to its `default_target`. An advisor returns the buffered executor turn when its consult fails.
+failures, including deadlines. A direct classifier routes to its
+`default_target`. An advisor returns the buffered executor turn when its consult
+fails.
 Set `fail_open = false` to stop the request on these failures.
 Answer calls keep their usual error behavior.
 
