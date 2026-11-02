@@ -12,13 +12,13 @@
     "capture_routing_payloads": {
       "type": "boolean",
       "default": false,
-      "description": "Opt in to bounded routing request and buffered response bodies in Relay scopes. Payloads may contain sensitive task context."
+      "description": "Opt in to bounded routing request and buffered response bodies for debugging. Payloads may contain sensitive task context."
     },
     "max_routing_payload_bytes": {
       "type": "integer",
       "minimum": 1,
       "default": 262144,
-      "description": "Maximum encoded bytes per routing request or buffered response. Larger bodies are omitted and marked truncated."
+      "description": "Maximum encoded bytes per routing request or buffered response, per attempt. Larger bodies are omitted entirely with body=null and truncated=true."
     },
     "priority": {
       "type": "integer",

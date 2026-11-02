@@ -158,7 +158,7 @@ mod tests {
         assert!(
             matches!(config.load_runner(), Err(error) if error.contains("max_routing_payload_bytes"))
         );
-        config.max_routing_payload_bytes = 128 * 1024;
+        config.max_routing_payload_bytes = 2 * 1024 * 1024;
         assert!(config.load_runner().is_ok());
     }
 

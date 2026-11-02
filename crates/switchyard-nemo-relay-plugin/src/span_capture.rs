@@ -586,6 +586,7 @@ mod tests {
             if enabled {
                 let actual = received
                     .into_iter()
+                    .rev()
                     .map(|r| r.body_json::<Value>().unwrap())
                     .find(|body| body["model"] == "judge/model")
                     .unwrap();

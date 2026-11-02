@@ -332,9 +332,10 @@ classification as `routing` or `answer`.
 
 ### Inspect Classifier and Judge Payloads
 
-Enable capture to inspect the request a classifier actually received, including
-its system prompt, task context, output schema, resolved model, and target body
-settings. This helps distinguish a poor verdict from missing task context.
+Enable bounded capture when debugging a classifier's routing decision. It records
+the final request, including its system prompt, task context, output schema,
+resolved model, and target body settings. This helps distinguish a poor verdict
+from missing task context. Capture is disabled by default.
 
 Add these options to the existing `plugins.dynamic.config` table in your Relay
 `plugins.toml`, then restart the host:
@@ -343,14 +344,33 @@ Add these options to the existing `plugins.dynamic.config` table in your Relay
 [plugins.dynamic.config]
 switchyard_config_path = "/etc/switchyard/routes.toml"
 capture_routing_payloads = true
-max_routing_payload_bytes = 262144
 ```
 
-`capture_routing_payloads` defaults to `false`. The positive
-`max_routing_payload_bytes` limit defaults to 262144 encoded bytes (256 KiB) per body.
-Bodies over the limit are omitted with
-`body = null` and `truncated = true`; increase the limit when an experiment
-needs the complete context. Capture does not change what the model receives.
+`max_routing_payload_bytes` defaults to 262144 encoded bytes (256 KiB) per
+request or response body, per attempt. It must be positive. Larger bodies are
+omitted entirely, not retained as a prefix:
+
+```json
+{"body": null, "truncated": true}
+```
+
+The full request still reaches the model. The capture limit does not change
+which messages the classifier receives; see
+[classifier context selection](../routing_algorithms/llm_classifier_routing.md#tuning-options).
+
+For a debugging session that needs larger bodies, set an override in the same
+`plugins.dynamic.config` table and restart the host. For example, allow up to
+2 MiB per body:
+
+```toml
+max_routing_payload_bytes = 2097152
+```
+
+This is a per-body limit, not a total memory budget. Larger limits increase
+memory use and export volume, especially with concurrent calls or retries.
+Exporters and their backends can impose smaller limits. After debugging, set
+`capture_routing_payloads = false` and restart the host; remove the size override
+to restore the default for later sessions.
 
 Within the routed request's trace:
 
@@ -358,7 +378,8 @@ Within the routed request's trace:
    `switchyard.call_phase = routing`.
 2. Open its `libsy.upstream_attempt` child. The request is the scope input;
    its successful buffered response is the scope output. Retries have separate
-   attempt scopes. Each payload has a JSON string in `body` and a `truncated` flag.
+   attempt scopes. Retained payloads have a JSON string in `body` and
+   `truncated = false`.
 3. Inspect the `switchyard.routing.decision` mark on the same routed request
    for the selected and served model. The judge response contains the returned
    verdict; the decision mark records what Switchyard did with it.
@@ -371,6 +392,12 @@ captured requests with:
 
 ```bash
 jq 'select(.name == "libsy.upstream_attempt" and .scope_category == "start" and .data.body != null) | .data.body | fromjson' events.jsonl
+```
+
+Find omitted request or response bodies with:
+
+```bash
+jq 'select(.name == "libsy.upstream_attempt" and .data.truncated == true) | {uuid, scope_category}' events.jsonl
 ```
 
 Capture follows routing-phase HTTP calls, which include LLM classifier/judge

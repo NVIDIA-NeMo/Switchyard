@@ -238,7 +238,8 @@ projection contains allowlisted routing metadata by default. To inspect the
 final classifier/judge request and buffered response, enable
 [routing payload capture](../../docs/integrations/nemo_relay.md#inspect-classifier-and-judge-payloads)
 in the plugin configuration. Capture uses Relay's existing exporters and writes
-no payload files inside the plugin.
+no payload files inside the plugin. It is disabled by default and omits bodies
+above the configured size limit.
 
 ## Observability
 
