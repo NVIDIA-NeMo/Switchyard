@@ -129,6 +129,48 @@ impl DecisionClassifier {
             question,
         })
     }
+
+    async fn try_score(
+        &self,
+        decision: DecisionRequest,
+        driver: &Driver,
+        judge: &ModelId,
+        score_option: &str,
+    ) -> Result<f64> {
+        let response = driver.call_decision(decision, judge.clone()).await?;
+        let answer = response
+            .answers
+            .get("route")
+            .ok_or_else(|| LibsyError::invalid_decision(judge.clone(), "missing route answer"))?;
+        let DecisionValue::Choice {
+            probabilities: Some(probabilities),
+            ..
+        } = &answer.value
+        else {
+            return Err(LibsyError::invalid_decision(
+                judge.clone(),
+                "expected a choice with probabilities",
+            ));
+        };
+        // The selected option can differ from the cutoff event, so only the
+        // requested option's probability is used.
+        let score = probabilities
+            .get(score_option)
+            .map(|p| p.0)
+            .ok_or_else(|| {
+                LibsyError::invalid_decision(
+                    judge.clone(),
+                    format!("missing probability for {score_option}"),
+                )
+            })?;
+        if !(0.0..=1.0).contains(&score) {
+            return Err(LibsyError::invalid_decision(
+                judge.clone(),
+                "decision probability must be between 0 and 1",
+            ));
+        }
+        Ok(score)
+    }
 }
 
 #[async_trait]
@@ -161,8 +203,8 @@ impl Classifier for DecisionClassifier {
             }),
             questions: BTreeMap::from([("route".into(), self.question.clone())]),
         };
-        let response = match driver.call_decision(decision, judge.clone()).await {
-            Ok(response) => response,
+        let score = match self.try_score(decision, driver, judge, score_option).await {
+            Ok(score) => score,
             Err(error) if self.fail_open => {
                 return Ok(unavailable(
                     driver,
@@ -172,27 +214,6 @@ impl Classifier for DecisionClassifier {
                 ));
             }
             Err(error) => return Err(error),
-        };
-        // The provider's selected option can differ from the application's cutoff.
-        // Only the requested event's score is used; confidence is a separate signal.
-        let score = response
-            .answers
-            .get("route")
-            .and_then(|answer| match &answer.value {
-                DecisionValue::Choice {
-                    probabilities: Some(probabilities),
-                    ..
-                } => probabilities.get(score_option).map(|p| p.0),
-                _ => None,
-            })
-            .filter(|p| (0.0..=1.0).contains(p));
-        let Some(score) = score else {
-            return Ok(unavailable(
-                driver,
-                judge,
-                format!("missing or invalid {score_option} score"),
-                "invalid_verdict",
-            ));
         };
         let (target, category) = if score > self.config.cutoff {
             (capable, Category::Capable)
