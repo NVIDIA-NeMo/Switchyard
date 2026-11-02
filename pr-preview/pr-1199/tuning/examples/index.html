@@ -2557,9 +2557,10 @@ measured outcomes that explain the labels.</p>
 </ul>
 <p><strong>Return <code>score = -loss</code>.</strong> GEPA maximizes its score. Include text feedback that
 explains the reference choice and the prediction's loss. With negative BCE,
-failed executions must receive a sufficiently negative score; zero would
-incorrectly reward failure. If probabilities are clipped for numerical stability,
-choose a failure score below the worst valid clipped score. See
+decision-program errors or missing probabilities must receive a sufficiently
+negative score; zero would incorrectly reward them. If probabilities are clipped
+for numerical stability, choose a failure score below the worst valid clipped
+score. See
 <a href="https://github.com/stanfordnlp/dspy/blob/main/dspy/teleprompt/gepa/gepa.py">DSPy's GEPA metric and failure-score interface</a>.</p>
 <p>When decision calls are cheap, use larger reflection batches and try more prompts
 within the budget. Check promising candidates on the full validation set so one
@@ -2607,7 +2608,7 @@ decision question when applying this example to a classifier.</p>
 assigns different models to the efficient and capable tiers. The question is
 which model pair best supports the objective under that fixed routing policy.</p>
 <p><strong>What changes:</strong> the efficient/capable model pair. <strong>What is scored:</strong> mean
-operating loss across completed tasks.</p>
+operating loss across all evaluated tasks, including failures.</p>
 <h3 id="define-the-experiment">Define the experiment<a class="headerlink" href="#define-the-experiment" title="Permanent link">&para;</a></h3>
 <p>Keep the following conditions fixed:</p>
 <ul>
