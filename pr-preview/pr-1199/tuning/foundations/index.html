@@ -2486,6 +2486,11 @@ a loss function to compare them against that fixed objective.</p>
 alternatives we can test. The loss connects the two by assigning a score to each
 candidate's results. For the steps to run a routing experiment, start with
 <a href="../">Compare and Tune</a>.</p>
+<p>Use a representative subset of benchmark tasks for development: training tasks
+guide changes, while separate validation tasks select configurations and
+thresholds. Make these splits before tuning, keep related tasks together, and
+reserve an untouched test set for the final evaluation. See
+<a href="#4-check-the-final-choice">Check the final choice</a> for split and evaluation guidance.</p>
 <p>For a quick walkthrough with concrete data, jump to
 <a href="../examples/">Section 5: Examples of tuning</a>.</p>
 <h2 id="1-define-the-objective">1. Define the objective<a class="headerlink" href="#1-define-the-objective" title="Permanent link">&para;</a></h2>
