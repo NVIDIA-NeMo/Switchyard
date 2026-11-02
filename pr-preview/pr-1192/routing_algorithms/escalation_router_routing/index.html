@@ -2642,7 +2642,9 @@ route. The request still succeeds, but its temporary state cannot carry into the
 next request.</p>
 <p>Anchor and transcript caps remain fixed. Set the route-level
 <code>max_output_tokens</code> key to change the judge's reply budget. Any decline or
-verdict without new evidence resets the streak to zero.</p>
+verdict without new evidence resets the streak to zero. Set <code>judge_deadline_ms</code>
+to bound the whole judge consultation in milliseconds; on expiry the judge is
+treated as unavailable and the session stays where it is.</p>
 <h2 id="run-the-route">Run the route<a class="headerlink" href="#run-the-route" title="Permanent link">&para;</a></h2>
 <p>After installing the Rust server, as described in
 <a href="../../operations/local_evaluation/#install-the-server">Local Evaluation</a>, export the provider
