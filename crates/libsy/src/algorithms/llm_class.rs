@@ -706,7 +706,7 @@ pub enum LlmClassifierConfig {
     },
     /// Routes to the model category a decision service selects.
     Direct {
-        /// Category selected when the service does not return a usable choice.
+        /// Category used when the decision call fails or returns an invalid choice.
         default_target: Category,
         /// Direct selection settings.
         config: DirectClassifierConfig,

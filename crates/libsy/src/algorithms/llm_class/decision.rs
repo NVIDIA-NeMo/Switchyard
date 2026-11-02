@@ -19,6 +19,9 @@ use crate::algorithms::util::llm_judge::{libsy_error_reason, report_fail_open};
 use crate::algorithms::util::robustness::safe_error_summary;
 use crate::{Classification, Classifier, Driver, LibsyError, Result, Score, State};
 
+/// Trailing turns sent to a decision service when the route sets no window.
+const DEFAULT_TURN_WINDOW: usize = 10;
+
 /// Instructions, evidence, and cutoff policy for a decision judge.
 ///
 /// Candidate labels keep model names out of the generated context. Evidence must use
@@ -91,7 +94,7 @@ impl DecisionClassifier {
         mut input: TaskInput,
         fail_open: bool,
     ) -> Result<Self> {
-        input.recent_turn_window.get_or_insert(10);
+        input.recent_turn_window.get_or_insert(DEFAULT_TURN_WINDOW);
         let instructions = match config.instructions.take() {
             Some(instructions) => instructions,
             None => serde_json::from_str(include_str!(
@@ -244,7 +247,8 @@ impl Classifier for DecisionClassifier {
 pub struct DirectClassifierConfig {
     /// Categories the service may select. Their names are the option IDs.
     pub options: Vec<Category>,
-    /// Routes to the default target on decision client failures and deadlines.
+    /// Routes to the default target when the decision call fails or returns an
+    /// invalid choice.
     pub fail_open: bool,
     /// How often the decision service re-decides this session's target.
     pub classify_trigger: ClassifyTrigger,
@@ -287,7 +291,7 @@ impl DirectClassifier {
         };
         Ok(Self {
             input: TaskInput {
-                recent_turn_window: Some(config.recent_turn_window.unwrap_or(10)),
+                recent_turn_window: Some(config.recent_turn_window.unwrap_or(DEFAULT_TURN_WINDOW)),
             },
             config,
             question,

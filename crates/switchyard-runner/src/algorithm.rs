@@ -316,8 +316,8 @@ pub struct LlmClassifierRouteConfig {
     /// Capability mode: threshold steps for an unmatched verdict (no capability rule
     /// applies). 1 by default, the same as uncertain; 2 treats it like unsupported.
     pub unmatched_steps: Option<u8>,
-    /// Capability and direct modes: routes to the capable tier or `default_target` on
-    /// judge client failures and deadlines. Defaults to true in these modes.
+    /// Capability and direct modes: routes to the capable tier or `default_target` when
+    /// the judge call fails. Defaults to true in these modes.
     pub fail_open: Option<bool>,
     /// How often the judge runs: every request, once per user turn, or once per session.
     pub classify_trigger: ClassifyTrigger,
