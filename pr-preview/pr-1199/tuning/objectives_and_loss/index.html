@@ -2605,18 +2605,12 @@ candidates.</p>
 <li><strong>Reach a desired routing split.</strong> Target a defined allocation, such as 70% of
   model calls on the efficient tier and 30% on the capable tier. Specify the
   counting unit, allowed deviation, and quality requirement.</li>
-<li><strong>Benefit from cached context.</strong> Minimize measured cost or latency while
-  preserving acceptable quality. Track cache usage to explain the result. If
-  cache usage itself is the objective, define the target metric explicitly.</li>
+<li><strong>Reach a capable-tier cache-usage target.</strong> Target a specified percentage of
+  capable-tier input tokens served from cache, such as at least 80%. Measure
+  cache-read input tokens divided by all input tokens on capable-tier calls over
+  the evaluation workload. Specify the target percentage and any quality
+  requirement before comparing candidates.</li>
 </ul>
-<p>Separate the quantity to improve from the requirements a candidate must meet.
-For example: "Minimize mean cost per task on this workload, subject to at least
-80% task success." The success requirement determines eligibility; cost ranks the
-eligible candidates. These numbers are illustrative.</p>
-<p>A desired routing split still needs a rule for choosing <em>which</em> requests use
-each tier. Cache benefits depend on the serving system and workload. More cache
-usage does not by itself establish lower cost or latency. Define how to handle
-ties and tradeoffs before reviewing candidate results.</p>
 <h2 id="2-design-configuration-candidates">2. Design configuration candidates<a class="headerlink" href="#2-design-configuration-candidates" title="Permanent link">&para;</a></h2>
 <p>A candidate is a complete configuration to evaluate under the fixed objective.
 The objective describes what success means; candidate design determines which
