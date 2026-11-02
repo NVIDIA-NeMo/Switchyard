@@ -1,0 +1,230 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="518.4pt" height="165.6pt" viewBox="0 0 518.4 165.6" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-11-02T12:53:14.426085</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>Matplotlib v3.11.2, https://matplotlib.org/</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 165.6
+L 518.4 165.6
+L 518.4 0
+L 0 0
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 62.208 125.856
+L 223.039169 125.856
+L 223.039169 41.4
+L 62.208 41.4
+z
+" style="fill: #ffffff"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 62.208 64.7496
+L 179.944164 64.7496
+L 179.944164 52.8264
+L 62.208 52.8264
+z
+" clip-path="url(#p69ebffe1fd)" style="fill: #5a6873"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 62.208 89.5896
+L 121.860843 89.5896
+L 121.860843 77.6664
+L 62.208 77.6664
+z
+" clip-path="url(#p69ebffe1fd)" style="fill: #087f8c"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 62.208 114.4296
+L 115.886516 114.4296
+L 115.886516 102.5064
+L 62.208 102.5064
+z
+" clip-path="url(#p69ebffe1fd)" style="fill: #7961a8"/>
+   </g>
+   <g id="matplotlib.axis_1"/>
+   <g id="matplotlib.axis_2">
+    <g id="ytick_1">
+     <g id="line2d_1"/>
+     <g id="text_1">
+      <text style="font-size: 9px; font-family: 'Arial'; text-anchor: end; fill: #181818" x="58.708" y="62.064123" transform="rotate(-0 58.708 62.064123)">Small</text>
+     </g>
+    </g>
+    <g id="ytick_2">
+     <g id="line2d_2"/>
+     <g id="text_2">
+      <text style="font-size: 9px; font-family: 'Arial'; text-anchor: end; fill: #181818" x="58.708" y="86.904123" transform="rotate(-0 58.708 86.904123)">Medium</text>
+     </g>
+    </g>
+    <g id="ytick_3">
+     <g id="line2d_3"/>
+     <g id="text_3">
+      <text style="font-size: 9px; font-family: 'Arial'; text-anchor: end; fill: #181818" x="58.708" y="111.744123" transform="rotate(-0 58.708 111.744123)">Large</text>
+     </g>
+    </g>
+   </g>
+   <g id="text_4">
+    <text style="font-size: 11px; font-family: 'Arial'; text-anchor: start; fill: #181818" x="62.208" y="31.4" transform="rotate(-0 62.208 31.4)">Mean BCE ↓</text>
+   </g>
+   <g id="text_5">
+    <g id="patch_6">
+     <path d="M 184.853255 63.731145
+L 213.817786 63.731145
+L 213.817786 53.844855
+L 184.853255 53.844855
+z
+" style="fill: #ffffff"/>
+    </g>
+    <text style="font-size: 9px; font-family: 'Arial'; text-anchor: start; fill: #181818" x="185.573255" y="61.117102" transform="rotate(-0 185.573255 61.117102)">0.5124</text>
+   </g>
+   <g id="text_6">
+    <g id="patch_7">
+     <path d="M 126.769934 88.571145
+L 155.734465 88.571145
+L 155.734465 78.684855
+L 126.769934 78.684855
+z
+" style="fill: #ffffff"/>
+    </g>
+    <text style="font-size: 9px; font-family: 'Arial'; text-anchor: start; fill: #181818" x="127.489934" y="85.957102" transform="rotate(-0 127.489934 85.957102)">0.2596</text>
+   </g>
+   <g id="text_7">
+    <g id="patch_8">
+     <path d="M 120.795607 113.411145
+L 149.760138 113.411145
+L 149.760138 103.524855
+L 120.795607 103.524855
+z
+" style="fill: #ffffff"/>
+    </g>
+    <text style="font-size: 9px; font-family: 'Arial'; text-anchor: start; fill: #181818" x="121.515607" y="110.797102" transform="rotate(-0 121.515607 110.797102)">0.2336</text>
+   </g>
+  </g>
+  <g id="axes_2">
+   <g id="patch_9">
+    <path d="M 331.117714 125.856
+L 508.032 125.856
+L 508.032 41.4
+L 331.117714 41.4
+z
+" style="fill: #ffffff"/>
+   </g>
+   <g id="patch_10">
+    <path d="M 331.117714 64.7496
+L 334.45572 64.7496
+L 334.45572 52.8264
+L 331.117714 52.8264
+z
+" clip-path="url(#p6c433e8e8e)" style="fill: #5a6873"/>
+   </g>
+   <g id="patch_11">
+    <path d="M 331.117714 89.5896
+L 364.497768 89.5896
+L 364.497768 77.6664
+L 331.117714 77.6664
+z
+" clip-path="url(#p6c433e8e8e)" style="fill: #087f8c"/>
+   </g>
+   <g id="patch_12">
+    <path d="M 331.117714 114.4296
+L 464.63793 114.4296
+L 464.63793 102.5064
+L 331.117714 102.5064
+z
+" clip-path="url(#p6c433e8e8e)" style="fill: #7961a8"/>
+   </g>
+   <g id="line2d_4">
+    <path d="M 364.497768 125.856
+L 364.497768 41.4
+" clip-path="url(#p6c433e8e8e)" style="fill: none; stroke-dasharray: 3.7,1.6; stroke-dashoffset: 0; stroke: #bd5b35"/>
+   </g>
+   <g id="matplotlib.axis_3"/>
+   <g id="matplotlib.axis_4">
+    <g id="ytick_4">
+     <g id="line2d_5"/>
+     <g id="text_8">
+      <text style="font-size: 9px; font-family: 'Arial'; text-anchor: end; fill: #181818" x="327.617714" y="62.064123" transform="rotate(-0 327.617714 62.064123)">Small</text>
+     </g>
+    </g>
+    <g id="ytick_5">
+     <g id="line2d_6"/>
+     <g id="text_9">
+      <text style="font-size: 9px; font-family: 'Arial'; text-anchor: end; fill: #181818" x="327.617714" y="86.904123" transform="rotate(-0 327.617714 86.904123)">Medium</text>
+     </g>
+    </g>
+    <g id="ytick_6">
+     <g id="line2d_7"/>
+     <g id="text_10">
+      <text style="font-size: 9px; font-family: 'Arial'; text-anchor: end; fill: #181818" x="327.617714" y="111.744123" transform="rotate(-0 327.617714 111.744123)">Large</text>
+     </g>
+    </g>
+   </g>
+   <g id="text_11">
+    <text style="font-size: 8.5px; font-family: 'Arial'; text-anchor: middle; fill: #bd5b35" x="364.497768" y="130.265009" transform="rotate(-0 364.497768 130.265009)">Budget: $0.001</text>
+   </g>
+   <g id="text_12">
+    <text style="font-size: 11px; font-family: 'Arial'; text-anchor: start; fill: #181818" x="331.117714" y="31.4" transform="rotate(-0 331.117714 31.4)">Router cost per request</text>
+   </g>
+   <g id="text_13">
+    <g id="patch_13">
+     <path d="M 339.92772 63.972756
+L 373.897095 63.972756
+L 373.897095 53.603244
+L 339.92772 53.603244
+z
+" style="fill: #ffffff"/>
+    </g>
+    <text style="font-size: 9px; font-family: 'Arial'; text-anchor: start; fill: #181818" x="340.64772" y="61.358713" transform="rotate(-0 340.64772 61.358713)">$0.0001</text>
+   </g>
+   <g id="text_14">
+    <g id="patch_14">
+     <path d="M 369.969768 88.812756
+L 403.939143 88.812756
+L 403.939143 78.443244
+L 369.969768 78.443244
+z
+" style="fill: #ffffff"/>
+    </g>
+    <text style="font-size: 9px; font-family: 'Arial'; text-anchor: start; fill: #181818" x="370.689768" y="86.198713" transform="rotate(-0 370.689768 86.198713)">$0.0010</text>
+   </g>
+   <g id="text_15">
+    <g id="patch_15">
+     <path d="M 470.10993 113.652756
+L 504.079305 113.652756
+L 504.079305 103.283244
+L 470.10993 103.283244
+z
+" style="fill: #ffffff"/>
+    </g>
+    <text style="font-size: 9px; font-family: 'Arial'; text-anchor: start; fill: #181818" x="470.82993" y="111.038713" transform="rotate(-0 470.82993 111.038713)">$0.0040</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p69ebffe1fd">
+   <rect x="62.208" y="41.4" width="160.831169" height="84.456"/>
+  </clipPath>
+  <clipPath id="p6c433e8e8e">
+   <rect x="331.117714" y="41.4" width="176.914286" height="84.456"/>
+  </clipPath>
+ </defs>
+</svg>

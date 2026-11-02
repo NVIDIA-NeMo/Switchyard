@@ -1,0 +1,73 @@
+/* Neutral reading surfaces with NVIDIA green accents. */
+:root,
+[data-md-color-scheme="default"] {
+  --md-default-fg-color: #1a1a1a;
+  --md-default-fg-color--light: #666;
+  --md-default-fg-color--lighter: #767676;
+  --md-default-fg-color--lightest: #e5e5e5;
+  --md-default-bg-color: #fff;
+  --md-primary-fg-color: #004831;
+  --md-primary-fg-color--light: #76b900;
+  --md-primary-fg-color--dark: #004831;
+  --md-accent-fg-color: #004831;
+  --md-code-fg-color: #1a1a1a;
+  --md-code-bg-color: #f7f7f7;
+}
+
+[data-md-color-scheme="slate"] {
+  --md-default-fg-color: #eee;
+  --md-default-fg-color--light: #aaa;
+  --md-default-fg-color--lighter: #888;
+  --md-default-fg-color--lightest: #333;
+  --md-default-bg-color: #111;
+  --md-default-bg-color--light: #1111118a;
+  --md-default-bg-color--lighter: #11111142;
+  --md-default-bg-color--lightest: #11111112;
+  --md-primary-fg-color: #76b900;
+  --md-primary-fg-color--light: #93d400;
+  --md-primary-fg-color--dark: #5a8c00;
+  --md-primary-bg-color: #111;
+  --md-primary-bg-color--light: #111111b3;
+  --md-accent-fg-color: #76b900;
+  --md-code-fg-color: #eee;
+  --md-code-bg-color: #1a1a1a;
+  --md-code-bg-color--light: #1a1a1ae6;
+  --md-code-bg-color--lighter: #1a1a1a8a;
+  --md-typeset-table-color: #ffffff1f;
+  --md-typeset-table-color--light: #ffffff09;
+  --md-footer-bg-color: #000;
+  --md-footer-bg-color--dark: #000;
+}
+
+[data-md-color-scheme] {
+  --md-accent-fg-color--transparent: #76b9001a;
+}
+
+.md-header {
+  --md-primary-bg-color: var(--md-default-fg-color);
+  --md-primary-bg-color--light: var(--md-default-fg-color--light);
+  background-color: var(--md-default-bg-color);
+  color: var(--md-default-fg-color);
+}
+
+[data-md-color-scheme="slate"] .md-header {
+  background-color: #000;
+}
+
+.md-search__form {
+  background-color: var(--md-code-bg-color);
+}
+
+.md-typeset {
+  --md-typeset-a-color: var(--md-default-fg-color);
+}
+
+.md-typeset h1 {
+  color: var(--md-default-fg-color);
+}
+
+.md-typeset a {
+  text-decoration: underline;
+  text-decoration-color: #76b900;
+  text-underline-offset: 0.15em;
+}
