@@ -17,16 +17,42 @@ use super::llm_class::{
     CustomClassifierConfig, LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
 };
 use super::stage::{StageRouterConfig, build_stage_route};
-use super::util::affinity::{ClassifyTrigger, evict_if_full, has_new_user_turn, retention_key};
+use super::util::affinity::{
+    ClassifyTrigger, evict_if_full, is_environment_update, is_user_turn, retention_key,
+};
 use super::util::stage::{PickerMode, Tier, fall_open_tier, set_fall_open};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::processor::{Event, Processor};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Category, Request, Response};
+use switchyard_protocol::{Category, ContentBlock, Message, Request, Response};
 
 const COMPOSITE: &str = "composite";
+
+fn has_new_profile_turn(messages: &[Message]) -> bool {
+    messages
+        .iter()
+        .rev()
+        .find(|message| !is_environment_update(message))
+        .is_some_and(|message| {
+            is_user_turn(message)
+                && !message.content.iter().all(|block| {
+                    let ContentBlock::Text { text } = block else {
+                        return false;
+                    };
+                    let text = text.trim_start().to_ascii_lowercase();
+                    [
+                        "another language model started to solve this problem and produced a summary of its thinking process.",
+                        "this session is being continued from a previous conversation that ran out of context.",
+                        "[context compaction \u{2014} reference only]",
+                        "[still in progress \u{2014} this is the active request, restated after the compaction boundary",
+                    ]
+                    .iter()
+                    .any(|prefix| text.starts_with(prefix))
+                })
+        })
+}
 
 /// Sets the stage router's fall-open tier from a judge verdict.
 ///
@@ -54,7 +80,7 @@ impl TierSetter {
     /// judge call sits between here and [`retain`](Self::retain). The later wins.
     fn is_due(&self, identity: Option<&RoutingIdentity>, state: &State, request: &Request) -> bool {
         match self.trigger {
-            ClassifyTrigger::UserTurn => has_new_user_turn(&request.llm_request.messages),
+            ClassifyTrigger::UserTurn => has_new_profile_turn(&request.llm_request.messages),
             // Unkeyed requests with no carried tier cannot be told apart, so every one
             // is a new session.
             ClassifyTrigger::NewSession => {
@@ -330,6 +356,51 @@ mod tests {
 
     fn router() -> Result<Arc<CompositeRouter>> {
         router_with_trigger(ClassifyTrigger::UserTurn)
+    }
+
+    #[tokio::test]
+    async fn compaction_retains_the_profile_until_a_real_user_turn() -> Result<()> {
+        for summary in [
+            "Another language model started to solve this problem and produced a summary of its thinking process.\nSummary",
+            "This session is being continued from a previous conversation that ran out of context.\nSummary",
+            "[CONTEXT COMPACTION \u{2014} REFERENCE ONLY] Summary",
+            "[STILL IN PROGRESS \u{2014} this is the active request, restated after the compaction boundary] Task",
+        ] {
+            let router = router()?;
+            let recorder = Arc::new(Recorder::default());
+            *recorder.judge_p_solve.lock() = 1.0;
+            test_drive_with_models(
+                router.clone(),
+                user_turn_request(),
+                runtime_models(),
+                recorder.serve(),
+            )
+            .await?;
+            *recorder.judge_p_solve.lock() = 0.0;
+            let mut request = user_turn_request();
+            *request.llm_request.messages.last_mut().unwrap() = Message::text(Role::User, summary);
+            request.llm_request.messages.push(Message::text(
+                Role::User, "<environment_context><current_date>2026-11-02</current_date></environment_context>",
+            ));
+            let (model, _) = test_drive_with_models(
+                router.clone(),
+                request.clone(),
+                runtime_models(),
+                recorder.serve(),
+            )
+            .await?;
+            assert_eq!(recorder.judge_calls(), 1, "{summary}");
+            assert_eq!(model.as_str(), "weak");
+            request
+                .llm_request
+                .messages
+                .push(Message::text(Role::User, "Now fix the parser"));
+            let (model, _) =
+                test_drive_with_models(router, request, runtime_models(), recorder.serve()).await?;
+            assert_eq!(recorder.judge_calls(), 2);
+            assert_eq!(model.as_str(), "strong");
+        }
+        Ok(())
     }
 
     #[tokio::test]
