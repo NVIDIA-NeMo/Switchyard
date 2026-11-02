@@ -10,6 +10,12 @@ alternatives we can test. The loss connects the two by assigning a score to each
 candidate's results. For the steps to run a routing experiment, start with
 [Compare and Tune](index.md).
 
+Use a representative subset of benchmark tasks for development: training tasks
+guide changes, while separate validation tasks select configurations and
+thresholds. Make these splits before tuning, keep related tasks together, and
+reserve an untouched test set for the final evaluation. See
+[Check the final choice](#4-check-the-final-choice) for split and evaluation guidance.
+
 For a quick walkthrough with concrete data, jump to
 [Section 5: Examples of tuning](examples.md).
 
