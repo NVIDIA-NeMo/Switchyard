@@ -5,7 +5,7 @@ and what a run costs. Tuning is the loop below. Every step links the page that
 explains it, names what it produces, and says what it costs to run.
 
 For choosing what to optimize, read
-[Objectives and Loss Functions](objectives_and_loss.md). It connects user goals
+[Tuning Foundations](foundations.md). It connects user goals
 to reference labels and probability loss, with worked examples of GEPA prompt
 tuning and model-pair selection with fixed algorithm settings.
 

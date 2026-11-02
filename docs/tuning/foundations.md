@@ -1,4 +1,4 @@
-# Objectives and Loss Functions for Configuration Tuning
+# Tuning Foundations
 
 Configuration settings describe how the system behaves. The user's objective
 describes what that behavior should achieve. This guide bridges the gap between

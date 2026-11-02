@@ -294,7 +294,7 @@ Record it with every result. Three rules apply:
 
 ## Related
 
-- [Objectives and Loss Functions](../tuning/objectives_and_loss.md#4b-model-pair-selection-with-fixed-algorithm-settings): compare efficient/capable model pairs under fixed routing settings.
+- [Tuning Foundations](../tuning/foundations.md#4b-model-pair-selection-with-fixed-algorithm-settings): compare efficient/capable model pairs under fixed routing settings.
 - [Routing Overview](overview.md): choose a strategy and read what Auto resolves to.
 - [Verify routing is active](../operations/local_evaluation.md#verify-routing-is-active): see the served model and the decision counts.
 - [Stage Router](stage_router_routing.md#tuning-confidence_threshold): tune the threshold once the pair is right.

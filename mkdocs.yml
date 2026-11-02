@@ -45,7 +45,7 @@ nav:
   - Evaluate Routing:
       - Benchmarks: benchmarks.md
       - Compare and Tune: tuning/index.md
-      - Objectives and Loss Functions: tuning/objectives_and_loss.md
+      - Tuning Foundations: tuning/foundations.md
   - Local Demo:
       - Run the Reference Server: operations/local_evaluation.md
       - Local Agents:
