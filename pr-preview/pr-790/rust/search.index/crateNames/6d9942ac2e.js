@@ -1,1 +1,0 @@
-rd_("A`switchyard_libsyAcswitchyard_protocol")
