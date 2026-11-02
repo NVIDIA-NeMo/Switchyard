@@ -108,6 +108,8 @@ pub struct CallModel {
     /// The name of the algorithm that produced this call, so a host instrumenting the
     /// calls it serves can attribute its own spans to the algorithm behind them.
     pub algorithm: String,
+    /// Profile whose routing-call prompt policy applies to this call.
+    pub profile: Option<String>,
     /// The request to serve; its `model` is stamped with the first candidate.
     pub request: Request,
     /// Candidate models, tried in order until one answers. Never empty.
@@ -255,6 +257,8 @@ impl Drop for CallDecision {
 
 /// The terminal result of routing.
 pub struct RoutingOutcome {
+    /// Receives observations of this request's served answer when a profile delegates routing.
+    pub answer_observer: Option<Arc<dyn Algorithm>>,
     /// Models selected by the algorithm, ordered best model first.
     pub selected_model_ids: Vec<ModelId>,
     /// The request after all routing-time rewrites, stamped with the selected model.
@@ -296,6 +300,7 @@ impl RoutingOutcome {
         selected_model_ids.push(selected_model_id);
         selected_model_ids.extend(fallback_models);
         Self {
+            answer_observer: None,
             selected_model_ids,
             request,
             fallback_request: None,
@@ -311,6 +316,7 @@ impl RoutingOutcome {
     pub fn answered(selected_model_id: ModelId, mut request: Request, response: Response) -> Self {
         request.llm_request.model = Some(selected_model_id.to_string());
         Self {
+            answer_observer: None,
             selected_model_ids: vec![selected_model_id],
             request,
             fallback_request: None,
@@ -374,6 +380,7 @@ pub struct Driver {
     /// Which of those groups this driver reads.
     scope: Scope,
     judge: Option<ModelId>,
+    profile: Option<String>,
 }
 
 impl Driver {
@@ -397,6 +404,7 @@ impl Driver {
                 models,
                 scope: Scope::Parent,
                 judge: None,
+                profile: None,
             },
             step_rx,
         )
@@ -408,6 +416,22 @@ impl Driver {
 
     pub(crate) fn set_state(&self, state: State) {
         *self.state.lock() = state;
+    }
+
+    pub(crate) fn for_profile(
+        &self,
+        name: String,
+        models: Arc<RuntimeModels>,
+        state: State,
+    ) -> Self {
+        Self {
+            models,
+            state: Arc::new(Mutex::new(state)),
+            scope: Scope::Parent,
+            judge: None,
+            profile: Some(name),
+            ..self.clone()
+        }
     }
 
     /// Replace the current run's evidence when a component makes the final decision.
@@ -478,6 +502,7 @@ impl Driver {
         let (reply, response) = oneshot::channel::<Result<Response>>();
         let call = CallModel {
             algorithm: self.algorithm.clone(),
+            profile: self.profile.clone(),
             request,
             models,
             recover_errors,
@@ -587,9 +612,12 @@ impl Driver {
         let result = result.map(|mut outcome| {
             outcome.state = self.take_state();
             let evidence = std::mem::take(&mut *self.evidence.lock());
-            let metadata = outcome.metadata.get_or_insert_with(|| {
-                crate::OutcomeMetadata::new(self.algorithm.clone(), evidence.outcome)
-            });
+            let metadata = outcome
+                .metadata
+                .get_or_insert_with(|| crate::OutcomeMetadata::new(self.algorithm.clone(), None));
+            if metadata.evidence.is_none() {
+                metadata.evidence = evidence.outcome;
+            }
             metadata.judgments.extend(evidence.judgments);
             observability::record_outcome(metadata, &outcome.selected_model_ids);
             outcome

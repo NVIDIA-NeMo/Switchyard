@@ -1,0 +1,57 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 2
+
+[llm_clients.models]
+format = "openai_chat"
+base_url = "http://localhost:8000/v1"
+
+[targets]
+capable = { id = "capable", llm_client = "models" }
+efficient = { id = "efficient", llm_client = "models" }
+
+[decision_clients.decisions]
+format = "openai_decisions"
+endpoint = "http://localhost:8001/v1/decisions"
+api_key_env = "DECISION_API_KEY"
+timeout_ms = 10000
+
+[decision_targets.decider]
+id = "decider"
+decision_client = "decisions"
+
+[profiles.adaptive]
+strategy = "stage_router"
+capable_target = "capable"
+efficient_target = "efficient"
+picker = "efficient_first"
+confidence_threshold = 0.4
+
+[profiles.planning]
+strategy = "plan_execute"
+capable_target = "capable"
+efficient_target = "efficient"
+
+[routes.fixed]
+id = "switchyard/adaptive"
+profile = "adaptive"
+
+[routes.selected]
+id = "switchyard/composite"
+profile = "adaptive"
+
+[routes.selected.selector]
+kind = "decision"
+target = "decider"
+choices = { adaptive = "adaptive", planning = "planning" }
+positive_choice = "planning"
+classify_trigger = "new_session"
+on_error = "retain_or_default"
+
+[routes.selected.selector.decision]
+cutoff = 0.92
+candidates = { adaptive = "efficient", planning = "capable" }
+criteria = { adaptive = "Adapt during execution", planning = "Plan before execution" }
+instructions = { task = "Choose the execution strategy that best fits this task." }
+evidence = {}

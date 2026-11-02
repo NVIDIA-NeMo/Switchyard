@@ -29,6 +29,7 @@ pub use algorithms::llm_class::{
 pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::Passthrough;
 pub use algorithms::plan_execute::{PlanExecute, PlanExecuteConfig};
+pub use algorithms::profiles::{ProfileRouter, ProfileSelector, RoutingProfile};
 pub use algorithms::rand::{Random, RandomClassifier};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::subagent::{SubagentRouter, SubagentRouterConfig};

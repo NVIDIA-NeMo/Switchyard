@@ -530,6 +530,7 @@ fn python_response_stream(
 struct PyModelCall {
     inner: Option<CallModel>,
     algorithm: String,
+    profile: Option<String>,
     request: Py<PyAny>,
     models: Vec<String>,
 }
@@ -539,6 +540,7 @@ impl PyModelCall {
         let request = to_python(py, &call.request.llm_request)?;
         Ok(Self {
             algorithm: call.algorithm.clone(),
+            profile: call.profile.clone(),
             models: call.models.iter().map(ToString::to_string).collect(),
             inner: Some(call),
             request,
@@ -554,6 +556,12 @@ impl PyModelCall {
 
 #[pymethods]
 impl PyModelCall {
+    /// Profile that issued the call, when routing uses named profiles.
+    #[getter]
+    fn profile(&self) -> Option<&str> {
+        self.profile.as_deref()
+    }
+
     /// The algorithm that produced this call.
     #[getter]
     fn algorithm(&self) -> &str {
@@ -756,6 +764,18 @@ struct PyOutcomeMetadata {
 
 #[pymethods]
 impl PyOutcomeMetadata {
+    /// Profile selected for this request.
+    #[getter]
+    fn profile(&self) -> Option<&str> {
+        self.inner.profile.as_deref()
+    }
+
+    /// Strategy used by the selected profile.
+    #[getter]
+    fn strategy(&self) -> Option<&str> {
+        self.inner.strategy.as_deref()
+    }
+
     /// UUIDv7 generated for this outcome.
     #[getter]
     fn outcome_id(&self) -> &str {
@@ -1058,6 +1078,7 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                 response,
                 metadata,
                 state: _,
+                answer_observer: _,
             } = *outcome;
             Python::attach(|py| {
                 Ok(PyStep::Done {

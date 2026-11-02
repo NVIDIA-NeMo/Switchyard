@@ -15,9 +15,9 @@ use libsy::{
     CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
     DEFAULT_UNMATCHED_STEPS, DecisionJudgeConfig, EscalationJudgeConfig, GateTrigger,
     HandoffNoteConfig, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier,
-    Noop, Passthrough, PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels,
-    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
-    ToolSemantics, Vgr, VgrConfig,
+    Noop, Passthrough, PickerMode, PlanExecute, PlanExecuteConfig, ProfileRouter, ProfileSelector,
+    Random, RoutingProfile, RuntimeModels, StageRouter, StageRouterConfig, SubagentRouter,
+    SubagentRouterConfig, TaskClassifierConfig, ToolSemantics, Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -402,6 +402,13 @@ pub enum PlanExecuteTrigger {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 #[strum(serialize_all = "snake_case")]
 pub enum AlgorithmSpec {
+    /// Selects an independently configured strategy once per session.
+    #[strum(serialize = "composite")]
+    ProfileSelector {
+        default_profile: String,
+        selector: ProfileSelectorConfig,
+        profiles: BTreeMap<String, AlgorithmSpec>,
+    },
     /// Replies `OK` without calling any model. Useful for smoke tests.
     Noop {},
     /// Splits traffic across several targets.
@@ -555,6 +562,113 @@ pub enum AlgorithmSpec {
         /// Maximum prompts per encoder forward pass.
         batch_size: Option<usize>,
     },
+}
+
+/// Decision-model selection between named execution profiles.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileSelectorConfig {
+    /// Selector implementation.
+    pub kind: ProfileSelectorKind,
+    /// Configured decision target.
+    pub target: String,
+    /// Judge labels mapped to profile names.
+    pub choices: BTreeMap<String, String>,
+    /// Label whose score must exceed the cutoff.
+    pub positive_choice: String,
+    /// Selection cadence.
+    #[serde(default = "profile_selection_trigger")]
+    pub classify_trigger: ClassifyTrigger,
+    /// Retain a profile using the opening message when session identity is absent.
+    #[serde(default)]
+    pub message_hash_fallback: bool,
+    /// Judge transcript window.
+    pub recent_turn_window: Option<usize>,
+    /// Behavior when the decision service fails.
+    #[serde(default)]
+    pub on_error: ProfileErrorPolicy,
+    /// Existing decision request and cutoff configuration.
+    pub decision: DecisionJudgeRouteConfig,
+}
+
+/// Supported profile selector.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileSelectorKind {
+    /// Binary choice from a decision service.
+    Decision,
+}
+
+/// Profile selection failure policy.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileErrorPolicy {
+    /// Retain the selection or commit the default profile for a new session.
+    #[default]
+    RetainOrDefault,
+    /// Return decision service errors to the caller.
+    Error,
+}
+
+fn profile_selection_trigger() -> ClassifyTrigger {
+    ClassifyTrigger::NewSession
+}
+
+impl ProfileSelectorConfig {
+    fn build(
+        &self,
+        route: &str,
+        targets: &BTreeMap<String, ModelId>,
+    ) -> AlgorithmResult<ProfileSelector> {
+        if self.choices.len() != 2
+            || !self.choices.contains_key(&self.positive_choice)
+            || !self.choices.keys().eq(self.decision.candidates.keys())
+        {
+            return Err(AlgorithmConfigError::new(format!(
+                "route {route}: selector requires two choices matching decision candidates and a valid positive_choice"
+            )));
+        }
+        if self.classify_trigger != ClassifyTrigger::NewSession {
+            return Err(AlgorithmConfigError::new(format!(
+                "route {route}: profile selection currently requires classify_trigger = new_session"
+            )));
+        }
+        let other = self
+            .choices
+            .keys()
+            .find(|label| **label != self.positive_choice)
+            .unwrap();
+        let resolve = |name: &str| resolve_target_model_id(route, name, targets);
+        let capable = resolve(&self.decision.candidates[&self.positive_choice])?;
+        let efficient = resolve(&self.decision.candidates[other])?;
+        Ok(ProfileSelector {
+            capable: self.choices[&self.positive_choice].clone(),
+            efficient: self.choices[other].clone(),
+            models: RuntimeModels::new(HashMap::from([
+                (Category::Capable, vec![capable]),
+                (Category::Efficient, vec![efficient]),
+                (Category::Judge, vec![resolve(&self.target)?]),
+            ])),
+            classifier: TaskClassifierConfig {
+                judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
+                    cutoff: self.decision.cutoff,
+                    instructions: self.decision.instructions.clone(),
+                    criteria: self.decision.criteria.clone(),
+                    candidates: self
+                        .decision
+                        .candidates
+                        .iter()
+                        .map(|(label, name)| Ok((label.clone(), resolve(name)?)))
+                        .collect::<AlgorithmResult<_>>()?,
+                    evidence: self.decision.evidence.clone(),
+                }),
+                fail_open: matches!(self.on_error, ProfileErrorPolicy::RetainOrDefault),
+                classify_trigger: self.classify_trigger,
+                message_hash_fallback: self.message_hash_fallback,
+                recent_turn_window: self.recent_turn_window,
+            },
+        })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -848,7 +962,16 @@ impl StageClassifierConfig {
 impl AlgorithmSpec {
     pub(crate) fn classifier_targets(
         &self,
-    ) -> impl Iterator<Item = (&str, Option<&DecisionJudgeRouteConfig>)> {
+    ) -> Box<dyn Iterator<Item = (&str, Option<&DecisionJudgeRouteConfig>)> + '_> {
+        if let Self::ProfileSelector {
+            selector, profiles, ..
+        } = self
+        {
+            return Box::new(
+                std::iter::once((selector.target.as_str(), Some(&selector.decision)))
+                    .chain(profiles.values().flat_map(Self::classifier_targets)),
+            );
+        }
         let (primary, profiles) = match self {
             Self::LlmClassifier { config, .. }
                 if !matches!(config.classifier_mode(), ClassifierMode::Custom) =>
@@ -878,18 +1001,24 @@ impl AlgorithmSpec {
             ),
             _ => (None, [None, None]),
         };
-        primary.into_iter().chain(
-            profiles
-                .into_iter()
-                .flatten()
-                .filter_map(|profile| profile.classifier.as_ref())
-                .map(|c| (c.target.as_str(), c.decision.as_ref())),
+        Box::new(
+            primary.into_iter().chain(
+                profiles
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|profile| profile.classifier.as_ref())
+                    .map(|c| (c.target.as_str(), c.decision.as_ref())),
+            ),
         )
     }
 
     /// Completion targets in algorithm order; judge-only targets are excluded.
     pub fn routing_target_names(&self) -> Vec<&str> {
         match self {
+            Self::ProfileSelector { profiles, .. } => profiles
+                .values()
+                .flat_map(Self::routing_target_names)
+                .collect(),
             Self::Noop { .. } => Vec::new(),
             Self::Random { targets, .. } => targets.iter().map(String::as_str).collect(),
             Self::Passthrough {
@@ -983,6 +1112,12 @@ impl AlgorithmSpec {
     pub fn judge_target_names(&self) -> Vec<&str> {
         let mut names = Vec::new();
         match self {
+            Self::ProfileSelector {
+                selector, profiles, ..
+            } => {
+                names.push(selector.target.as_str());
+                names.extend(profiles.values().flat_map(Self::judge_target_names));
+            }
             // Custom mode names its judge in `models.judge`; the other two modes
             // use the top-level `classifier_target`.
             Self::LlmClassifier { config, .. } => {
@@ -1032,6 +1167,13 @@ impl AlgorithmSpec {
     /// Target names grouped as the runtime [`Driver`](libsy::Driver) expects them.
     fn runtime_model_names(&self, route_name: &str) -> AlgorithmResult<RuntimeModelNames> {
         let parent = match self {
+            Self::ProfileSelector { .. } => category_models([(
+                Category::Any,
+                self.routing_target_names()
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            )]),
             Self::Noop { .. } => HashMap::new(),
             Self::Random { targets, .. } | Self::PrefillRouter { targets, .. } => {
                 category_models([(Category::Any, targets.clone())])
@@ -1166,6 +1308,7 @@ impl AlgorithmSpec {
                     .unwrap_or(&config.efficient_target),
             )),
             Self::Noop { .. }
+            | Self::ProfileSelector { .. }
             | Self::Random { .. }
             | Self::Passthrough { .. }
             | Self::PlanExecute { .. }
@@ -1627,6 +1770,29 @@ fn build_algorithm(
     targets: &BTreeMap<String, ModelId>,
 ) -> AlgorithmResult<Arc<dyn Algorithm>> {
     match config {
+        AlgorithmSpec::ProfileSelector {
+            default_profile,
+            selector,
+            profiles,
+        } => {
+            let profiles = profiles
+                .iter()
+                .map(|(name, spec)| {
+                    let (algorithm, models) =
+                        spec.build_with_runtime_models(route_name, targets)?;
+                    Ok((name.clone(), RoutingProfile { algorithm, models }))
+                })
+                .collect::<AlgorithmResult<_>>()?;
+            let algorithm = ProfileRouter::new(
+                profiles,
+                default_profile.clone(),
+                selector.build(route_name, targets)?,
+            )
+            .map_err(|error| {
+                AlgorithmConfigError::with_source(format!("route {route_name}: {error}"), error)
+            })?;
+            Ok(Arc::new(algorithm))
+        }
         AlgorithmSpec::Noop { .. } => Ok(Arc::new(Noop {})),
         AlgorithmSpec::Random {
             targets: names,

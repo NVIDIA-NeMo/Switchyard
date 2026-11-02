@@ -29,8 +29,10 @@ type = "passthrough"
 target = "strong"
 ```
 
-`schema_version` must be `1`. Table names under `llm_clients`, `targets`, and
-`routes` are local references; clients send the route's `id` as the model name.
+`schema_version` must be `1` or `2`. Schema 2 adds reusable
+[routing profiles](../routing_algorithms/profiles.md) and optional profile selection.
+Table names under `llm_clients`, `targets`, and `routes` are local references.
+Clients send the route's `id` as the model name.
 
 The optional top-level `fallback_client` names an entry under `[llm_clients]`. When set, any HTTP
 method and path not implemented by Switchyard is forwarded through that client without translating

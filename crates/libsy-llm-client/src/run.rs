@@ -123,10 +123,11 @@ pub async fn run(
         observer(RunObservation::RoutingOverhead(overhead));
     }
     let mut response = result?;
-    if algorithm.tracks_answers()
+    let answer_observer = outcome.answer_observer.unwrap_or(algorithm);
+    if answer_observer.tracks_answers()
         && let Some(session) = session_id(&outcome.request)
     {
-        response = report_answer(algorithm, session, response).await;
+        response = report_answer(answer_observer, session, response).await;
     }
     Ok((selected_model_id, response))
 }
@@ -296,7 +297,8 @@ async fn serve(
         }
     };
     let target = call.models.first().cloned().ok_or(LibsyError::NoTargets)?;
-    let request = clients.prepare_routing_request(call.request.clone(), &target);
+    let request =
+        clients.prepare_routing_request(call.request.clone(), &target, call.profile.as_deref());
     let algorithm = call.algorithm.clone();
     let candidates = call.models.len();
     call.respond(call_one(
@@ -704,6 +706,7 @@ fn conversation_id(fields: &serde_json::Map<String, Value>) -> Option<&str> {
 pub struct ClientRouter {
     inner: Arc<ClientRouting>,
     rate_limit_fallback_disabled: Arc<HashSet<ModelId>>,
+    profile_answer_targets: Arc<HashMap<String, Option<ModelId>>>,
 }
 
 struct ClientRouting {
@@ -791,6 +794,7 @@ impl ClientRouter {
             .is_some_and(|first| clients.any(|client| !Arc::ptr_eq(first, client)));
         Self {
             rate_limit_fallback_disabled: Arc::default(),
+            profile_answer_targets: Arc::default(),
             inner: Arc::new(ClientRouting {
                 routing: Routing::ByModel(by_model),
                 decision_clients,
@@ -818,6 +822,7 @@ impl ClientRouter {
     ) -> Self {
         Self {
             rate_limit_fallback_disabled: Arc::default(),
+            profile_answer_targets: Arc::default(),
             inner: Arc::new(ClientRouting {
                 routing: Routing::Single(client),
                 decision_clients,
@@ -836,6 +841,15 @@ impl ClientRouter {
     /// so later calls are not skipped with a generic cooldown error.
     pub fn without_rate_limit_fallback(mut self, models: HashSet<ModelId>) -> Self {
         self.rate_limit_fallback_disabled = Arc::new(models);
+        self
+    }
+
+    /// Sets the answer-producing routing target separately for each execution profile.
+    pub fn with_profile_answer_targets(
+        mut self,
+        targets: HashMap<String, Option<ModelId>>,
+    ) -> Self {
+        self.profile_answer_targets = Arc::new(targets);
         self
     }
 
@@ -1095,8 +1109,20 @@ impl ClientRouter {
     }
 
     /// Prepare a routing call, adding a target prompt only when it generates a candidate answer.
-    fn prepare_routing_request(&self, mut request: Request, target: &ModelId) -> Request {
-        let prompt = if self.inner.routing_answer_target.as_ref() == Some(target) {
+    fn prepare_routing_request(
+        &self,
+        mut request: Request,
+        target: &ModelId,
+        profile: Option<&str>,
+    ) -> Request {
+        let answer_target = match profile {
+            Some(profile) => self
+                .profile_answer_targets
+                .get(profile)
+                .and_then(Option::as_ref),
+            None => self.inner.routing_answer_target.as_ref(),
+        };
+        let prompt = if answer_target == Some(target) {
             self.inner.target_prompts.get(target).map(String::as_str)
         } else {
             None

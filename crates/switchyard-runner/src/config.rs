@@ -25,7 +25,7 @@ use crate::{
     ModelCapabilities, Route, Runner, RunnerError,
 };
 
-const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+const SUPPORTED_SCHEMA_VERSION: u32 = 2;
 const MAX_CONFIGURED_RETRIES: u32 = 10;
 
 /// This function returns a deployment's declared credential variable names without reading their values.
@@ -36,7 +36,7 @@ pub fn api_key_variables(source: &str) -> Result<BTreeSet<String>, RunnerError> 
             "Could not parse the server config to read credential references.",
         )
     })?;
-    if config.schema_version != SUPPORTED_SCHEMA_VERSION {
+    if !matches!(config.schema_version, 1 | SUPPORTED_SCHEMA_VERSION) {
         return Err(RunnerError::configuration(
             "Unsupported server config schema version.",
         ));
@@ -137,7 +137,7 @@ pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DeploymentConfig {
+pub(crate) struct DeploymentFields {
     schema_version: u32,
     fallback_client: Option<String>,
     #[serde(default)]
@@ -148,6 +148,27 @@ pub(crate) struct DeploymentConfig {
     #[serde(default)]
     decision_targets: BTreeMap<String, DecisionTargetConfig>,
     routes: BTreeMap<String, RouteConfig>,
+}
+
+#[derive(Debug)]
+pub(crate) struct DeploymentConfig(DeploymentFields);
+
+impl std::ops::Deref for DeploymentConfig {
+    type Target = DeploymentFields;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for DeploymentConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let document = crate::profiles::normalize(toml::Table::deserialize(deserializer)?)
+            .map_err(serde::de::Error::custom)?;
+        let fields = toml::Value::Table(document)
+            .try_into()
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self(fields))
+    }
 }
 
 #[derive(Debug)]
@@ -233,11 +254,11 @@ impl RouteConfig {
 
 impl DeploymentConfig {
     fn check_schema_version(&self) -> RunnerResult<()> {
-        if self.schema_version == SUPPORTED_SCHEMA_VERSION {
+        if matches!(self.schema_version, 1 | SUPPORTED_SCHEMA_VERSION) {
             return Ok(());
         }
         Err(RunnerError::configuration(format!(
-            "unsupported schema_version {}; expected {SUPPORTED_SCHEMA_VERSION}",
+            "unsupported schema_version {}, expected 1 or {SUPPORTED_SCHEMA_VERSION}",
             self.schema_version
         )))
     }
@@ -427,6 +448,20 @@ impl DeploymentConfig {
         let mut model_properties_probes = BTreeMap::new();
         for entry in self.build_algorithms() {
             let (route_name, config, (algorithm, models)) = entry?;
+            if let AlgorithmSpec::ProfileSelector { profiles, .. } = &config.algorithm {
+                for (name, spec) in profiles {
+                    if let AlgorithmSpec::Vgr { config: vgr } = spec
+                        && config.context_window.is_none()
+                        && self
+                            .build_model_properties_probe(&vgr.efficient_target, &clients)
+                            .is_some()
+                    {
+                        return Err(RunnerError::configuration(format!(
+                            "route {route_name} profile {name}: selected VGR profiles require an explicit context_window when context_discovery is enabled"
+                        )));
+                    }
+                }
+            }
             let capabilities = config.capabilities();
             if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
                 && let Some(probe) =
@@ -688,6 +723,7 @@ impl DeploymentConfig {
             routing_answer_target,
             &completion_targets,
         )
+        .with_profile_answer_targets(self.profile_answer_targets(route_name, &route.algorithm)?)
         .without_rate_limit_fallback(
             route
                 .routing_target_names()
@@ -754,6 +790,32 @@ impl DeploymentConfig {
         }
         policy.routing_answer_target = Some(response.id.clone());
         Ok(policy)
+    }
+
+    fn profile_answer_targets(
+        &self,
+        route_name: &str,
+        spec: &AlgorithmSpec,
+    ) -> RunnerResult<HashMap<String, Option<ModelId>>> {
+        let AlgorithmSpec::ProfileSelector { profiles, .. } = spec else {
+            return Ok(HashMap::new());
+        };
+        profiles
+            .iter()
+            .map(|(name, algorithm)| {
+                let route = RouteConfig {
+                    id: route_name.into(),
+                    context_window: None,
+                    tool_calling: None,
+                    reasoning: None,
+                    vision: None,
+                    infra: None,
+                    algorithm: algorithm.clone(),
+                };
+                let policy = self.build_route_target_prompts(route_name, &route)?;
+                Ok((name.clone(), policy.routing_answer_target))
+            })
+            .collect()
     }
 
     fn fallback_base_url(&self) -> RunnerResult<Option<String>> {
@@ -2087,8 +2149,8 @@ classifier_magic = true
                 "mode escalation cannot use classify_trigger",
             ),
             (
-                VALID_CONFIG.replace("schema_version = 1", "schema_version = 2"),
-                "unsupported schema_version 2",
+                VALID_CONFIG.replace("schema_version = 1", "schema_version = 3"),
+                "unsupported schema_version 3",
             ),
             (
                 VALID_CONFIG.replace("[targets.strong]", "[targets.\" strong \"]"),

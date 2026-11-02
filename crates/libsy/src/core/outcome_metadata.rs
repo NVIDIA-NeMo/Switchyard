@@ -23,6 +23,12 @@ pub struct OutcomeMetadata {
     outcome_id: String,
     /// Stable name of the algorithm that produced the outcome.
     pub algorithm: String,
+    /// Selected named profile, when routing chooses an execution strategy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// Strategy used by the selected profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
     /// Optional algorithm-defined JSON evidence.
     ///
     /// Built-in algorithms include a `source` and relevant scores or decision details.
@@ -39,6 +45,8 @@ impl OutcomeMetadata {
         Self {
             outcome_id: uuid::Uuid::now_v7().to_string(),
             algorithm,
+            profile: None,
+            strategy: None,
             evidence,
             judgments: Vec::new(),
         }

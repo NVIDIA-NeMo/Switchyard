@@ -12,6 +12,8 @@ mod algorithm_factory;
 mod config;
 #[cfg(not(target_os = "wasi"))]
 mod failure;
+#[cfg(not(target_os = "wasi"))]
+mod profiles;
 mod provider_key_redactor;
 #[cfg(not(target_os = "wasi"))]
 mod route;
@@ -24,8 +26,8 @@ pub use config::{ConfiguredTarget, RouteTargets, TargetModel, api_key_variables,
 pub use algorithm::{
     AdvisorTriggerConfig, AlgorithmConfigError, AlgorithmSpec, CategoryModelConfig, ClassifierMode,
     ClassifierPolicyConfig, DecisionJudgeRouteConfig, LlmClassifierRouteConfig, PlanExecuteTrigger,
-    StageClassifierConfig, StageProfileConfig, StageSettingsConfig, SubagentRouteConfig,
-    VgrModeConfig, VgrRouteConfig,
+    ProfileErrorPolicy, ProfileSelectorConfig, ProfileSelectorKind, StageClassifierConfig,
+    StageProfileConfig, StageSettingsConfig, SubagentRouteConfig, VgrModeConfig, VgrRouteConfig,
 };
 #[cfg(not(target_os = "wasi"))]
 pub use algorithm_factory::AlgorithmFactory;

@@ -30,6 +30,7 @@ nav:
       - Gateways:
           - NeMo Relay: integrations/nemo_relay.md
   - Routing:
+      - Configure Profiles: routing_algorithms/profiles.md
       - Algorithms:
           - Overview: routing_algorithms/overview.md
           - Task (LLM Classifier): routing_algorithms/llm_classifier_routing.md
