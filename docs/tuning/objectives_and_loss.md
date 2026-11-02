@@ -5,34 +5,88 @@ describes what that behavior should achieve. Tuning connects the two through
 measurement.
 
 This guide explains how to compare configurations against a fixed objective:
-define reference choices from that objective, then use a loss function to score
-each candidate. For the steps to run a routing experiment, start with
+define the outcome, design candidate configurations, and use a loss function to
+score each candidate. When learning a decision rule, derive reference choices
+from the objective. For the steps to run a routing experiment, start with
 [Compare and Tune](index.md).
 
-## 1. Objectives and configuration choices
+## 1. Define the objective
 
-Users describe outcomes such as lower cost, higher task success, a desired
-routing split, or more effective cache usage. A goal can require several settings
-to change, and one setting can affect several goals. Compare candidates using
-evidence tied to the objective:
+Start with the outcome the user wants. Define what to measure, on which workload,
+and what makes a result acceptable. Keep this definition fixed while comparing
+candidates.
 
-- **Reduce cost while preserving accuracy.** Vary model targets, routing
-  preference, and threshold. Measure total cost while meeting a defined accuracy
-  requirement.
-- **Maximize task success.** Vary the capable model and recovery behavior,
-  including how long the router stays on the capable model. Measure successfully
-  completed tasks.
-- **Reach a desired routing split.** Vary routing preference and confidence
-  threshold. Measure the resulting allocation between the efficient and capable
-  tiers.
-- **Benefit from cached context.** Vary model targets and switching behavior.
-  Measure cost or latency while preserving acceptable quality.
+- **Reduce cost while preserving accuracy.** Minimize total cost per task while
+  meeting a defined accuracy requirement. Include decision calls, retries, and
+  cache charges in the cost.
+- **Maximize task success.** Maximize the fraction of tasks completed correctly,
+  subject to any cost or latency limits.
+- **Reach a desired routing split.** Target a defined allocation, such as 70% of
+  model calls on the efficient tier and 30% on the capable tier. Specify the
+  counting unit, allowed deviation, and quality requirement.
+- **Benefit from cached context.** Minimize measured cost or latency while
+  preserving acceptable quality. Track cache usage to explain the result. If
+  cache usage itself is the objective, define the target metric explicitly.
 
-A desired split such as 70% efficient / 30% capable still needs a rule for choosing
-*which* requests use each tier. Cache benefits depend on the serving system and
-workload. A setting change alone does not guarantee them. See
+Separate the quantity to improve from the requirements a candidate must meet.
+For example: "Minimize mean cost per task on this workload, subject to at least
+80% task success." The success requirement determines eligibility; cost ranks the
+eligible candidates. These numbers are illustrative.
+
+A desired routing split still needs a rule for choosing *which* requests use
+each tier. Cache benefits depend on the serving system and workload. More cache
+usage does not by itself establish lower cost or latency. Define how to handle
+ties and tradeoffs before reviewing candidate results.
+
+## 2. Design configuration candidates
+
+A candidate is a complete configuration to evaluate under the fixed objective.
+The objective describes what success means; candidate design determines which
+possible solutions the experiment will consider. A loss can rank the candidates
+we test, but it cannot find an improvement that none of them can produce.
+
+Build the candidate set in these steps:
+
+1. **Choose a baseline.** Record the current configuration and its measured
+   outcomes. Include it in the comparison so improvements have a reference point.
+2. **State a reason for each change.** Connect the proposed behavior to the
+   objective. For example, staying on one model longer might preserve cached
+   context and reduce cost. Test both the cost effect and the quality effect.
+3. **Choose what can vary.** This could be model targets, routing policy,
+   thresholds, hold durations, or decision instructions. Specify the allowed
+   values and hold other settings fixed. Start with a small set that can answer
+   the question behind the experiment.
+4. **Include combinations when settings interact.** A threshold and a hold
+   duration can affect the same routing decisions. After a small initial
+   comparison, test selected combinations rather than assuming their individual
+   effects will add up.
+5. **Make candidates reproducible and comparable.** Give each one an ID and save
+   its full configuration. Use the same workload and evaluation procedure, pin
+   model and provider versions where possible, and apply the same cache setup
+   procedure. Let each candidate's behavior determine subsequent cache usage.
+
+For example, suppose the objective is lower cost while maintaining the specified
+task-success floor. One small stage-router experiment could be:
+
+- **Baseline:** `confidence_threshold = 0.5` and `capable_hold_turns = 2`.
+- **Initial candidates:** thresholds `0.3`, `0.5`, and `0.7`, all with a capable
+  hold of `2` turns. This gives three candidates, including the baseline.
+- **Interaction check:** add a hold duration of `0` for each threshold. The full
+  set now has six candidates, not six plus the baseline.
+- **Fixed conditions:** the model pair, picker, classifier configuration, other
+  routing settings, and evaluation workload. Compare task success and total cost
+  for every candidate, then rank those that meet the success floor.
+
+These values illustrate candidate design, not recommended settings. The effect
+of a threshold depends on the picker, classifier, and other routing rules. Follow
+the [stage-router threshold guide](../routing_algorithms/stage_router_routing.md#tuning-confidence_threshold)
+when choosing values. See
 [model selection](../routing_algorithms/model_selection.md#counter-examples) for
-examples where switching lost cache savings.
+cases where switching lost cache savings.
+
+Keep the objective fixed throughout the comparison. A candidate that improves
+cost but misses the quality requirement is ineligible under that objective.
+Changing the requirement creates a different comparison.
 
 When a decision model chooses between two configurations, the objective
 determines the reference labels. The loss scores the model's predictions against
@@ -43,11 +97,16 @@ outcomes.
 The settings define what we can change. The objective and loss define how we
 judge the change.
 
-## 2. Outcome-based labels and binary cross-entropy
+## 3. Outcome-based labels and binary cross-entropy
 
 Given configurations A and B, first define "better." It might mean a correct answer
 at the lowest cost, the highest task success, or a specified tradeoff between cost
 and failure. Then evaluate both configurations on comparable requests.
+
+Some objectives apply to a whole workload, such as an accuracy floor or routing
+allocation. Compare complete runs against those constraints. Turning them into
+per-request reference choices requires an explicit labeling or allocation rule;
+the constraint alone does not supply a binary label.
 
 - **y = 1:** B is preferred under the objective's labeling rule.
 - **y = 0:** A is preferred under that rule. Define ties in advance; in the examples
@@ -99,7 +158,7 @@ other application objective alongside BCE. When the size of a mistake dominates
 the objective, consider predicting each configuration's expected operating loss
 directly.
 
-## 3. Worked configuration comparison
+### 3.1. Worked configuration comparison
 
 Consider two alternative execution configurations at one pipeline stage:
 
