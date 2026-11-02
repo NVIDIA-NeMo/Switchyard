@@ -256,7 +256,12 @@ impl Classifier for VgrClassifier {
 
         let attempt = rungs::response_text(&buffered.agg).unwrap_or_default();
         let task_type = self.type_task(&context).await;
-        let caps = derive_capabilities(request, &attempt, task_type);
+        let caps = derive_capabilities(
+            request,
+            &attempt,
+            task_type,
+            self.config.efficient_supports_images,
+        );
         let signals = self.gather(&context, &caps).await;
         let route = decide::decide(&caps, &signals, self.config.confirmed_min_clean_tail());
         if route == Route::Capable {
