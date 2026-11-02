@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Select a candidate by applying a cutoff to a decision model's choice score.
+//! Select a candidate by applying a cutoff to a decision model's choice score, or
+//! take the category a decision service selects.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -13,6 +14,7 @@ use switchyard_protocol::{
 };
 
 use crate::algorithms::llm_class::TaskInput;
+use crate::algorithms::util::affinity::ClassifyTrigger;
 use crate::algorithms::util::llm_judge::{libsy_error_reason, report_fail_open};
 use crate::algorithms::util::robustness::safe_error_summary;
 use crate::{Classification, Classifier, Driver, LibsyError, Result, Score, State};
@@ -209,6 +211,129 @@ impl Classifier for DecisionClassifier {
             target: target.clone(),
             confidence: 1.0,
             category: Some(category),
+        };
+        driver.record_judgment(Some(selected.clone()), Some(evidence.clone()));
+        driver.set_evidence(evidence);
+        Ok((Classification::Scores(vec![selected]), None))
+    }
+}
+
+/// Settings for a decision service that selects one model category.
+#[derive(Clone, Debug)]
+pub struct DirectClassifierConfig {
+    /// Categories the service may select. Their names are the option IDs.
+    pub options: Vec<Category>,
+    /// JSON passed unchanged to the decision service.
+    pub evidence: Value,
+    /// Routes to the default target on decision client failures and deadlines.
+    pub fail_open: bool,
+    /// How often the decision service re-decides this session's target.
+    pub classify_trigger: ClassifyTrigger,
+    /// Uses the first user message when session metadata is unavailable.
+    pub message_hash_fallback: bool,
+    /// Trailing conversation turns sent to the decision service. Defaults to 10.
+    pub recent_turn_window: Option<usize>,
+}
+
+pub(super) struct DirectClassifier {
+    config: DirectClassifierConfig,
+    input: TaskInput,
+    question: DecisionQuestion,
+}
+
+impl DirectClassifier {
+    pub(super) fn new(config: DirectClassifierConfig) -> Result<Self> {
+        if config.options.len() < 2
+            || config
+                .options
+                .iter()
+                .any(|option| matches!(option, Category::Judge | Category::Any))
+        {
+            return Err(LibsyError::AlgorithmError {
+                message: "direct mode needs at least two options other than judge and any".into(),
+            });
+        }
+        let question = DecisionQuestion {
+            instructions: json!("Select the option that should serve this request."),
+            kind: DecisionKind::Choice {
+                options: config
+                    .options
+                    .iter()
+                    .map(|option| ChoiceOption {
+                        id: option.as_str().into(),
+                        description: None,
+                    })
+                    .collect(),
+            },
+        };
+        Ok(Self {
+            input: TaskInput {
+                recent_turn_window: Some(config.recent_turn_window.unwrap_or(10)),
+            },
+            config,
+            question,
+        })
+    }
+}
+
+#[async_trait]
+impl Classifier for DirectClassifier {
+    async fn score(
+        &self,
+        _state: &mut State,
+        request: &mut Request,
+        driver: &Driver,
+    ) -> Result<(Classification, Option<Response>)> {
+        let judge = driver.first_model_for(&Category::Judge)?;
+        let decision = DecisionRequest {
+            model: None,
+            context: json!({
+                "task": self.input.messages(request),
+                "session": request.metadata.as_ref().and_then(|m| m.session_id.as_deref()),
+                "evidence": self.config.evidence,
+            }),
+            questions: BTreeMap::from([("route".into(), self.question.clone())]),
+        };
+        let response = match driver.call_decision(decision, judge.clone()).await {
+            Ok(response) => response,
+            Err(error) if self.config.fail_open => {
+                return Ok(unavailable(
+                    driver,
+                    judge,
+                    safe_error_summary(&error),
+                    libsy_error_reason(&error),
+                ));
+            }
+            Err(error) => return Err(error),
+        };
+        let selected = response
+            .answers
+            .get("route")
+            .and_then(|answer| match &answer.value {
+                DecisionValue::Choice { selected, .. } => self
+                    .config
+                    .options
+                    .iter()
+                    .find(|option| option.as_str() == selected),
+                _ => None,
+            });
+        let Some(category) = selected else {
+            return Ok(unavailable(
+                driver,
+                judge,
+                "missing or unknown route choice".into(),
+                "invalid_verdict",
+            ));
+        };
+        let evidence = json!({
+            "source": "decision_classifier",
+            "verdict": "direct",
+            "selected": category.as_str(),
+        });
+        let selected = Score {
+            target: driver.first_model_for(category)?.clone(),
+            confidence: 1.0,
+            category: Some(category.clone()),
         };
         driver.record_judgment(Some(selected.clone()), Some(evidence.clone()));
         driver.set_evidence(evidence);

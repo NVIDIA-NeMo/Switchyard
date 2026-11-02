@@ -13,11 +13,11 @@ use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, BreakerConfig, CapabilityJudgeConfig,
     ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeJudgeConfig,
     CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    DEFAULT_UNMATCHED_STEPS, DecisionJudgeConfig, EscalationJudgeConfig, GateTrigger,
-    HandoffNoteConfig, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier,
-    Noop, Passthrough, PickerMode, PlanExecute, PlanExecuteConfig, Random, RuntimeModels,
-    StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
-    ToolSemantics, Vgr, VgrConfig,
+    DEFAULT_UNMATCHED_STEPS, DecisionJudgeConfig, DirectClassifierConfig, EscalationJudgeConfig,
+    GateTrigger, HandoffNoteConfig, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback,
+    LlmTaskClassifier, Noop, Passthrough, PickerMode, PlanExecute, PlanExecuteConfig, Random,
+    RuntimeModels, StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig,
+    TaskClassifierConfig, ToolSemantics, Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -72,7 +72,7 @@ pub enum ClassifierPolicyConfig {
     },
 }
 
-/// Which of the three `llm_classifier` behaviors a route uses.
+/// Which of the four `llm_classifier` behaviors a route uses.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClassifierMode {
@@ -83,6 +83,8 @@ pub enum ClassifierMode {
     Escalation,
     /// Judges against your own JSON schema and routes to any configured target.
     Custom,
+    /// Asks a decision target to select one configured model group.
+    Direct,
 }
 
 impl ClassifierPolicyConfig {
@@ -98,6 +100,11 @@ enum LlmClassifierModeConfig {
     Capability(CapabilityClassifierRouteConfig),
     Escalation(EscalationClassifierRouteConfig),
     Custom(CustomClassifierRouteConfig),
+    Direct {
+        models: CategoryModelConfig,
+        default_target: Category,
+        config: DirectClassifierConfig,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -309,8 +316,8 @@ pub struct LlmClassifierRouteConfig {
     /// Capability mode: threshold steps for an unmatched verdict (no capability rule
     /// applies). 1 by default, the same as uncertain; 2 treats it like unsupported.
     pub unmatched_steps: Option<u8>,
-    /// Capability mode: routes to the capable tier on judge client failures and deadlines.
-    /// Defaults to true when capability mode is selected.
+    /// Capability and direct modes: routes to the capable tier or `default_target` on
+    /// judge client failures and deadlines. Defaults to true in these modes.
     pub fail_open: Option<bool>,
     /// How often the judge runs: every request, once per user turn, or once per session.
     pub classify_trigger: ClassifyTrigger,
@@ -337,14 +344,18 @@ pub struct LlmClassifierRouteConfig {
     pub escalation: Option<EscalationJudgeConfig>,
     /// Capability mode: use a decision target as the judge, with relative-advantage scoring.
     pub decision: Option<DecisionJudgeRouteConfig>,
-    /// Custom mode: runtime model groups.
+    /// Custom and direct modes: runtime model groups. In direct mode, every group
+    /// except `judge` and `any` is an option the decision target may select.
     pub models: Option<CategoryModelConfig>,
-    /// Custom mode: category used when the judge fails or its verdict cannot be routed.
+    /// Custom and direct modes: category used when the judge fails or its verdict
+    /// cannot be routed.
     pub default_target: Option<String>,
     /// Custom mode: JSON Schema the verdict must match, written as a string.
     pub response_schema: Option<String>,
     /// Custom mode: how to read the chosen target out of the verdict.
     pub policy: Option<ClassifierPolicyConfig>,
+    /// Direct mode: JSON passed unchanged to the decision target.
+    pub evidence: Option<Value>,
 }
 
 /// Routing policy applied only to delegated sub-agent work, nested inside a
@@ -851,7 +862,10 @@ impl AlgorithmSpec {
     ) -> impl Iterator<Item = (&str, Option<&DecisionJudgeRouteConfig>)> {
         let (primary, profiles) = match self {
             Self::LlmClassifier { config, .. }
-                if !matches!(config.classifier_mode(), ClassifierMode::Custom) =>
+                if !matches!(
+                    config.classifier_mode(),
+                    ClassifierMode::Custom | ClassifierMode::Direct
+                ) =>
             {
                 (
                     Some((config.classifier_target.as_str(), config.decision.as_ref())),
@@ -887,6 +901,22 @@ impl AlgorithmSpec {
         )
     }
 
+    /// Judge targets that must be decision targets.
+    pub(crate) fn decision_target_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .classifier_targets()
+            .filter(|(_, decision)| decision.is_some())
+            .map(|(target, _)| target)
+            .collect();
+        if let Self::LlmClassifier { config, .. } = self
+            && matches!(config.classifier_mode(), ClassifierMode::Direct)
+            && let Some(models) = &config.models
+        {
+            names.extend(models.get(&Category::Judge).iter().map(String::as_str));
+        }
+        names
+    }
+
     /// Completion targets in algorithm order; judge-only targets are excluded.
     pub fn routing_target_names(&self) -> Vec<&str> {
         match self {
@@ -919,7 +949,7 @@ impl AlgorithmSpec {
                     .chain(&config.weak_target)
                     .map(String::as_str)
                     .collect(),
-                ClassifierMode::Custom => config
+                ClassifierMode::Custom | ClassifierMode::Direct => config
                     .models
                     .as_ref()
                     .map(CategoryModelConfig::routing_names)
@@ -983,10 +1013,13 @@ impl AlgorithmSpec {
     pub fn judge_target_names(&self) -> Vec<&str> {
         let mut names = Vec::new();
         match self {
-            // Custom mode names its judge in `models.judge`; the other two modes
-            // use the top-level `classifier_target`.
+            // Custom and direct modes name their judge in `models.judge`; the other
+            // two modes use the top-level `classifier_target`.
             Self::LlmClassifier { config, .. } => {
-                if matches!(config.classifier_mode(), ClassifierMode::Custom) {
+                if matches!(
+                    config.classifier_mode(),
+                    ClassifierMode::Custom | ClassifierMode::Direct
+                ) {
                     names.extend(
                         config
                             .models
@@ -1244,6 +1277,7 @@ fn classifier_runtime_model_names(
             ),
         ]),
         LlmClassifierModeConfig::Custom(config) => custom_runtime_model_names(&config.models),
+        LlmClassifierModeConfig::Direct { models, .. } => custom_runtime_model_names(&models),
     }
 }
 
@@ -1303,6 +1337,7 @@ impl LlmClassifierRouteConfig {
             default_target,
             response_schema,
             policy,
+            evidence,
         } = self;
 
         let selected_mode = match (mode, escalation.is_some()) {
@@ -1317,9 +1352,19 @@ impl LlmClassifierRouteConfig {
             )));
         }
 
-        if !matches!(selected_mode, ClassifierMode::Capability) && *fail_open == Some(true) {
+        if evidence.is_some() && !matches!(selected_mode, ClassifierMode::Direct) {
             return Err(AlgorithmConfigError::new(format!(
-                "llm_classifier route {route_name}: fail_open = true requires capability mode"
+                "llm_classifier route {route_name}: evidence requires direct mode"
+            )));
+        }
+
+        if !matches!(
+            selected_mode,
+            ClassifierMode::Capability | ClassifierMode::Direct
+        ) && *fail_open == Some(true)
+        {
+            return Err(AlgorithmConfigError::new(format!(
+                "llm_classifier route {route_name}: fail_open = true requires capability or direct mode"
             )));
         }
 
@@ -1459,24 +1504,8 @@ impl LlmClassifierRouteConfig {
                         "llm_classifier route {route_name} mode custom cannot use capability or escalation fields and response_format_type must be 'json_schema'"
                     )));
                 }
-                let models = required_classifier_field(route_name, "models", models)?;
-                let default_target: Category = required_classifier_field(
-                    route_name,
-                    "default_target",
-                    default_target,
-                )?
-                .parse()
-                .map_err(|error| {
-                    AlgorithmConfigError::new(format!(
-                        "llm_classifier route {route_name} has invalid default_target: {error}"
-                    ))
-                })?;
-                if default_target == Category::Judge {
-                    return Err(AlgorithmConfigError::new(format!(
-                        "llm_classifier route {route_name} default_target cannot be judge"
-                    )));
-                }
-                models.validate(route_name, &default_target)?;
+                let (models, default_target) =
+                    validated_models(route_name, models, default_target)?;
                 Ok(LlmClassifierModeConfig::Custom(
                     CustomClassifierRouteConfig {
                         models,
@@ -1496,8 +1525,70 @@ impl LlmClassifierRouteConfig {
                     },
                 ))
             }
+            ClassifierMode::Direct => {
+                if !classifier_target.is_empty()
+                    || strong_target.is_some()
+                    || weak_target.is_some()
+                    || base_threshold.is_some()
+                    || threshold_step.is_some()
+                    || unmatched_steps.is_some()
+                    || escalation.is_some()
+                    || prompt.is_some()
+                    || response_schema.is_some()
+                    || policy.is_some()
+                    || *response_format_type != ClassifierResponseFormat::JsonSchema
+                    || *max_output_tokens != default_classifier_max_output_tokens()
+                    || judge_deadline_ms.is_some()
+                {
+                    return Err(AlgorithmConfigError::new(format!(
+                        "llm_classifier route {route_name} mode direct cannot use capability, escalation, or LLM judge fields"
+                    )));
+                }
+                let (models, default_target) =
+                    validated_models(route_name, models, default_target)?;
+                let options = models
+                    .groups()
+                    .map(|(category, _)| category)
+                    .filter(|category| !matches!(category, Category::Judge | Category::Any))
+                    .collect();
+                Ok(LlmClassifierModeConfig::Direct {
+                    models,
+                    default_target,
+                    config: DirectClassifierConfig {
+                        options,
+                        evidence: evidence.clone().unwrap_or_default(),
+                        fail_open: fail_open.unwrap_or(true),
+                        classify_trigger: *classify_trigger,
+                        message_hash_fallback: *message_hash_fallback,
+                        recent_turn_window: *recent_turn_window,
+                    },
+                })
+            }
         }
     }
+}
+
+fn validated_models(
+    route_name: &str,
+    models: &Option<CategoryModelConfig>,
+    default_target: &Option<String>,
+) -> AlgorithmResult<(CategoryModelConfig, Category)> {
+    let models = required_classifier_field(route_name, "models", models)?;
+    let default_target: Category =
+        required_classifier_field(route_name, "default_target", default_target)?
+            .parse()
+            .map_err(|error| {
+                AlgorithmConfigError::new(format!(
+                    "llm_classifier route {route_name} has invalid default_target: {error}"
+                ))
+            })?;
+    if default_target == Category::Judge {
+        return Err(AlgorithmConfigError::new(format!(
+            "llm_classifier route {route_name} default_target cannot be judge"
+        )));
+    }
+    models.validate(route_name, &default_target)?;
+    Ok((models, default_target))
 }
 
 fn reject_custom_fields(
@@ -1762,6 +1853,14 @@ fn build_algorithm(
                         config: classifier_config,
                     })
                 }
+                LlmClassifierModeConfig::Direct {
+                    default_target,
+                    config,
+                    ..
+                } => LlmTaskClassifier::new(LlmClassifierConfig::Direct {
+                    default_target,
+                    config,
+                }),
             }
             .map_err(|error| {
                 AlgorithmConfigError::with_source(

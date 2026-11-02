@@ -100,9 +100,9 @@ server sends a framed error and ends the stream without a success marker.
 The Rust runner collects streams used during routing before the algorithm
 continues, preserving provider events for replay. After the configured retries,
 an HTTP client failure stops routing unless the call enables recovery.
-Capability classifiers and advisor gates default to `fail_open = true`.
-A capability classifier routes to the capable tier on judge failures, including
-deadlines. An advisor returns the buffered executor turn when its consult fails.
+Capability classifiers, direct classifiers, and advisor gates default to
+`fail_open = true`. A capability classifier routes to the capable tier on judge
+failures, including deadlines. A direct classifier routes to its `default_target`. An advisor returns the buffered executor turn when its consult fails.
 Set `fail_open = false` to stop the request on these failures.
 Answer calls keep their usual error behavior.
 
@@ -334,13 +334,13 @@ checkpoint = "/models/router.pt"
 
 ### `llm_classifier`
 
-Runs one of three judge-backed modes: `capability`, `escalation`, or `custom`.
-`max_output_tokens` and `judge_deadline_ms` apply to all three.
+Runs one of four modes: `capability`, `escalation`, `custom`, or `direct`.
+`max_output_tokens` and `judge_deadline_ms` apply to LLM judges.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
 | `mode` | No | `capability` | Classifier behavior. Set it explicitly for new configurations. |
-| `classifier_target` | Capability, escalation | — | Target the judge is called through. Not a routing destination. Custom mode uses `models.judge`. |
+| `classifier_target` | Capability, escalation | — | Target the judge is called through. Not a routing destination. Custom and direct modes use `models.judge`. |
 | `max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
 | `judge_deadline_ms` | No | unset | Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry the judge is treated as unavailable and follows the route's `fail_open` setting. Must be at least `1`. Unset leaves the consultation unbounded. |
 | `response_format_type` | No | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` when the provider does not support JSON Schema; Switchyard adds the schema to the prompt and validates the verdict locally. Custom mode always uses its configured JSON Schema. |
@@ -353,7 +353,7 @@ Capability mode classifies before serving. See
 | `strong_target` | Yes | — | Capable tier. |
 | `weak_target` | Yes | — | Efficient tier. |
 | `base_threshold` | Yes | — | Lowest solve probability that routes to the weak target. In `[0, 1]`. |
-| `fail_open` | No | `true` | Capability mode only. When `true`, judge client failures and deadlines route to the capable tier and record fail-open evidence. When `false`, they stop the request. Invalid verdicts use the capable tier with either setting. |
+| `fail_open` | No | `true` | When `true`, judge client failures and deadlines route to the capable tier and record fail-open evidence. When `false`, they stop the request. Invalid verdicts use the capable tier with either setting. |
 | `threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain verdicts, `unmatched_steps` times for unmatched verdicts, and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `unmatched_steps` | No | `1` | Threshold steps applied to an unmatched verdict (no capability rule applies). `0`, `1`, or `2`; `2` treats it like an unsupported verdict. |
 | `classify_trigger` | No | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and retains that target across intervening tool calls only when requests carry a session ID; without a session ID, it behaves like `every_request`. `new_session` judges once and reuses that target for the session. |
@@ -415,6 +415,18 @@ rather than a group, or a group you did not configure, falls back to
 Classifier prompts must not contain `{{RESPONSE_SCHEMA}}`. Switchyard supplies
 the schema automatically: through the structured-output request in `json_schema`
 mode, or in the prompt in `json_object` mode.
+
+Direct mode asks a decision target to select one model group. See
+[Direct selection](../routing_algorithms/llm_classifier_routing.md#direct-selection).
+`classify_trigger` and `message_hash_fallback` work as in custom mode.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `models` | Yes | — | Model groups, as in custom mode. Every group except `judge` and `any` is an option, and its name is the option ID. Needs at least two options. `models.judge` must name a decision target. |
+| `default_target` | Yes | — | Option used when the decision call fails or returns no usable choice. |
+| `fail_open` | No | `true` | When `true`, decision call failures and deadlines route to `default_target`. When `false`, they stop the request. The `openai_decisions` client counts a choice outside the options as a failed call. |
+| `evidence` | No | null | JSON passed unchanged to the decision target. |
+| `recent_turn_window` | No | `10` | Trailing turns sent as `task` after the opening task. |
 
 ### `stage_router`
 
