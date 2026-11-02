@@ -111,7 +111,7 @@ Start with Auto. Choose Task, Execution, or Composite when you need more control
 
 | Choice | How it chooses | TOML configuration |
 | --- | --- | --- |
-| **[Auto](docs/routing_algorithms/overview.md#auto)** | A Decision model selects a fixed capable-first or efficient-first Stage profile once per session. | `type = "auto"` |
+| **[Auto](docs/routing_algorithms/overview.md#auto)** | A Decision model selects a fixed capable-first or efficient-first Stage profile on each real user turn. | `type = "auto"` |
 | **[Task](docs/routing_algorithms/llm_classifier_routing.md)** | A model judges whether the efficient model can handle the task. | `type = "llm_classifier"`, `mode = "capability"` |
 | **[Execution](docs/routing_algorithms/stage_router_routing.md)** | Uses recent tool activity and outcome signals to choose a model as the agent runs. | `type = "stage_router"` |
 | **[Composite](docs/routing_algorithms/composite_routing.md)** | Combines Task and Execution: a classifier sets the default model tier when execution signals are uncertain. | `type = "composite"` |

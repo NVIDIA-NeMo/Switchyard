@@ -496,10 +496,11 @@ must name `targets` entries with different model IDs. No policy tuning keys are
 accepted. See [`examples/auto.toml`](../../examples/auto.toml) for the full client
 and target configuration, including reasoning effort.
 
-The classifier runs once per session. A score above `0.92` selects Capable First
-at threshold `0`, with a planning prompt and permanent efficient hold after
-handoff. Otherwise it selects Efficient First at threshold `0.4`, with a
-two-turn capable hold. Both profiles use a three-result window.
+The classifier runs on each real user turn. Compaction summaries retain the
+profile. A score above `0.92` selects Capable First at threshold `0`, with a
+planning prompt and an efficient hold after handoff until Stage resets. Otherwise
+it selects Efficient First at threshold `0.4`, with a two-turn capable hold.
+Both profiles use a three-result window.
 
 Earlier Auto configurations have no Decision target. To keep their behavior,
 replace `type = "auto"` with this explicit Stage configuration:

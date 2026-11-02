@@ -76,7 +76,7 @@ fn tool_step(request: &mut Request, name: &str, failed: bool) {
 }
 
 #[tokio::test]
-async fn auto_selects_once_and_preserves_each_profiles_behavior()
+async fn auto_reselects_on_user_turns_and_preserves_each_profiles_behavior()
 -> Result<(), Box<dyn std::error::Error>> {
     for (score, capable_first) in [(0.92, false), (0.93, true)] {
         let server = MockServer::start().await;
@@ -102,7 +102,7 @@ async fn auto_selects_once_and_preserves_each_profiles_behavior()
                 }],
                 "usage": {"input_tokens": 42, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
                     "output_tokens": 3, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 45}
-            }))).expect(1).mount(&server).await;
+            }))).expect(2).mount(&server).await;
         Mock::given(method("POST")).and(path("/v1/chat/completions"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "id": "answer", "object": "chat.completion",
@@ -131,7 +131,11 @@ async fn auto_selects_once_and_preserves_each_profiles_behavior()
                 .unwrap()
                 .execute(request.clone(), None)
                 .await?;
-            let capable = if capable_first { step == 0 } else { step >= 2 };
+            let capable = if capable_first {
+                step == 0 || step == 3
+            } else {
+                step == 2
+            };
             assert_eq!(
                 output.selected_model,
                 if capable {

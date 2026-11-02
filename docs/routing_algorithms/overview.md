@@ -33,7 +33,7 @@ quality, follow the [tuning loop](../tuning/index.md).
 
 | Name | Route `type` | What it does |
 |---|---|---|
-| [Auto](#auto) | `auto` | A Decision model selects between two fixed Stage profiles once per session. |
+| [Auto](#auto) | `auto` | A Decision model selects between two fixed Stage profiles on each real user turn. |
 | [Task](llm_classifier_routing.md) | `llm_classifier`, `mode = "capability"` | A judge reads the task before the turn is served and picks the strong or weak model. |
 | [Execution](stage_router_routing.md) | `stage_router` | Tool results from the last few turns pick the capable or efficient model for each turn. |
 | [Composite](composite_routing.md) | `composite` | A judge picks the starting tier at each user turn. Execution runs the turns in between. |
@@ -51,7 +51,7 @@ quality, follow the [tuning loop](../tuning/index.md).
 
 | Route `type` | Decides from | Extra model calls | Switches | Session ID | When it cannot decide | Measured | Start from |
 |---|---|---|---|---|---|---|---|
-| `auto` | Task classification, then tool results | One Decision call per session | Depends on the selected profile | Required to retain profile and handoff state | Classifier errors stop the request | Fixed Composite recipe. See [Auto](#auto). | [`examples/auto.toml`](../../examples/auto.toml) |
+| `auto` | Task classification, then tool results | One Decision call per real user turn | Depends on the selected profile | Required to retain profile and handoff state | Classifier errors stop the request | Fixed Composite recipe. See [Auto](#auto). | [`examples/auto.toml`](../../examples/auto.toml) |
 | `stage_router` | Tool results in the request | Optional judge on ambiguous turns | Every request | Optional. Keeps the capable hold. | Picker default | [Terminal-Bench 2.1 and DeepSWE results](../benchmarks.md) with the [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml) | That profile |
 | `llm_classifier`, capability | A judge's view of the task | One judge call per request, user turn, or session | Per trigger | Optional. Needed to retain a verdict. | Strong target | [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21) for an LLM judge and for Jev as a decision judge. The LLM-judge config is not published; a [smoke-test config](../../benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml) is checked in. | That config |
 | `llm_classifier`, escalation | A judge's view of the finished weak turn | One judge call per unlatched turn | Latches once. Reversible with de-escalation. | Required to latch. Without it, `confirmations = 1` escalates single turns only. | An unreadable verdict keeps the current tier. A failed judge call stops the request in the server. | [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21) with the [checked-in profile](../../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml), and a [public report](https://www.langchain.com/blog/switchyard-agent-routing-benchmark) | That profile |
@@ -146,18 +146,20 @@ are the measured starting point. Their dial is the judge rubric in `prompt`.
 ### Auto
 
 Auto builds a Composite router with fixed prompts and routing settings. A
-Decision model chooses between two Stage profiles once per session:
+Decision model chooses between two Stage profiles on each real user turn:
 
 - **Capable First (0):** The capable model receives a planning prompt. Stage
   signals decide the handoff. With `efficient_hold_turns = -1`, the efficient
-  model stays selected after handoff, including later errors and user turns.
+  model stays selected after handoff until Stage resets on a user message.
 - **Efficient First (0.4):** Starts on the efficient model. Tool signals can
   escalate to the capable model, which stays selected for two turns.
 
 The numbers are Stage signal-confidence thresholds. Both profiles use the
 latest three tool results. The Decision selector chooses Capable First only
 when its score is strictly greater than `0.92`. Otherwise it chooses Efficient
-First. There are no inner judges or handoff notes.
+First. Compaction summaries retain the profile without rerunning the Decision
+selector. Stage still handles compaction and resets its holds. There are no inner
+judges or handoff notes.
 
 Start from [`examples/auto.toml`](../../examples/auto.toml). Set a Decision target
 and the capable and efficient completion targets. The example uses Astra at

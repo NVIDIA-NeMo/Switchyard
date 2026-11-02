@@ -41,7 +41,7 @@ pub(crate) fn build(capable: ModelId, efficient: ModelId) -> libsy::Result<Compo
             ]),
             evidence: json!({}),
         }),
-        classify_trigger: ClassifyTrigger::NewSession,
+        classify_trigger: ClassifyTrigger::UserTurn,
         fail_open: false,
         message_hash_fallback: false,
         recent_turn_window: None,

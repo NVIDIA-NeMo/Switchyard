@@ -468,7 +468,7 @@ pub enum AlgorithmSpec {
     },
     /// A Decision model selects the fixed capable-first or efficient-first Stage profile.
     Auto {
-        /// Decision target that chooses the profile once per session.
+        /// Decision target that chooses the profile on each real user turn.
         classifier_target: String,
         /// The capable tier.
         capable_target: String,
