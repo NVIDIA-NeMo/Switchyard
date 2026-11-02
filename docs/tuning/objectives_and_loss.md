@@ -1,14 +1,26 @@
 # Objectives and Loss Functions for Configuration Tuning
 
-Configuration settings describe how the system behaves. The user's objective
-describes what that behavior should achieve. Tuning connects the two through
-measurement.
+This guide uses two sample configurations and a fixed objective to show how to
+define and compute the losses used to compare them. Start with the desired
+outcome and a rule for measuring it, then evaluate both configurations. When a
+decision model learns which configuration to choose, those outcomes also provide
+reference labels for scoring its predictions.
 
-This guide explains how to compare configurations against a fixed objective:
-define the outcome, design candidate configurations, and use a loss function to
-score each candidate. When learning a decision rule, derive reference choices
-from the objective. For the steps to run a routing experiment, start with
-[Compare and Tune](index.md).
+The same objective and scoring rule can support different tuning experiments:
+
+- **Prompt tuning for a [decision model](../protocols/decisions.md):** keep the
+  model and the two execution configurations fixed, and use prediction loss to
+  guide instruction changes. [Section 4.a](#4a-prompt-tuning-with-gepa) shows this
+  with GEPA.
+- **Model selection with fixed algorithm settings:** compare candidate models
+  under the same objective, algorithm settings, and scoring rule.
+  [Section 4.b](#4b-model-selection-with-the-same-loss) compares models that make
+  the routing decision while holding the prompt and execution configurations
+  fixed.
+
+The sections below establish the objective, candidate configurations, and loss
+before applying them to these examples. For the steps to run a routing
+experiment, start with [Compare and Tune](index.md).
 
 ## 1. Define the objective
 
@@ -29,6 +41,10 @@ candidates.
   cache-read input tokens divided by all input tokens on capable-tier calls over
   the evaluation workload. Specify the target percentage and any quality
   requirement before comparing candidates.
+
+Once the objective is measurable, the next step is to choose configurations that
+might achieve it. This separates the outcome we want from the settings we will
+test.
 
 ## 2. Design configuration candidates
 
@@ -80,20 +96,16 @@ Keep the objective fixed throughout the comparison. A candidate that improves
 cost but misses the quality requirement is ineligible under that objective.
 Changing the requirement creates a different comparison.
 
-When a decision model chooses between two configurations, the objective
-determines the reference labels. The loss scores the model's predictions against
-those labels. We can use the same loss to compare different prompts or models.
-When changing execution settings directly, compare their measured operating
-outcomes.
-
-The settings define what we can change. The objective and loss define how we
-judge the change.
+With the objective and candidates fixed, we can measure their outcomes and
+assign a loss to each. When training a decision model to choose between them, we
+also turn those outcomes into reference choices. The next section explains that
+step and the loss used to score the model's probabilities.
 
 ## 3. Outcome-based labels and binary cross-entropy
 
-Given configurations A and B, first define "better." It might mean a correct answer
-at the lowest cost, the highest task success, or a specified tradeoff between cost
-and failure. Then evaluate both configurations on comparable requests.
+For configurations A and B, use the fixed objective to determine which outcome is
+better on each evaluated request. This could mean a correct answer at lower cost
+or a defined tradeoff between execution cost and failure.
 
 Some objectives apply to a whole workload, such as an accuracy floor or routing
 allocation. Compare complete runs against those constraints. Turning them into
@@ -145,7 +157,9 @@ directly.
 
 ### 3.1. Worked configuration comparison
 
-Consider two alternative execution configurations at one pipeline stage:
+To make the connection from outcomes to labels concrete, consider two execution
+configurations at one pipeline stage. We will measure both under a cost-and-failure
+objective, then reuse their reference labels in the tuning examples.
 
 - **Configuration A (Fast):** a fast executor with a 512-token generation budget;
   usual execution cost of **$0.010** per request.
@@ -180,6 +194,11 @@ the preferred choice. These losses exclude router inference cost; the
 model-selection example adds it.
 
 ## 4. Examples of tuning
+
+The comparison above gives us fixed execution configurations, measured outcomes,
+and reference labels. We can now use the same prediction loss to evaluate two
+different changes: first the decision model's prompt, then the model itself. In
+both experiments, the objective stays fixed.
 
 ### 4.a. Prompt tuning with GEPA
 
@@ -276,9 +295,11 @@ decision question when applying this example to a classifier.
 
 ### 4.b. Model selection with the same loss
 
-Now select the model that makes the A/B routing decision. Keep the prompt,
-reference labels, and execution configurations fixed. Replacing an executor
-would require new outcome measurements and potentially new labels. See
+After comparing prompts, keep the selected prompt and algorithm settings fixed
+and change the model that makes the A/B routing decision. Reuse the same
+reference labels and loss because the objective and execution configurations
+have not changed. Replacing an executor would require new outcome measurements
+and potentially new labels. See
 [Choose Models](../routing_algorithms/model_selection.md) for checks on executor
 and judge compatibility.
 
