@@ -564,7 +564,7 @@ mod tests {
                     Request {
                         llm_request: text_request(
                             Some("switchyard/test".into()),
-                            "Fix a failing Rust test.",
+                            "Fix a failing Rust test.\nPreserve \"雪\" and \\ exactly.",
                         ),
                         raw_request: None,
                         metadata: None,
@@ -587,16 +587,13 @@ mod tests {
                 let actual = received
                     .into_iter()
                     .rev()
-                    .map(|r| r.body_json::<Value>().unwrap())
-                    .find(|body| body["model"] == "judge/model")
+                    .find(|request| request.body_json::<Value>().unwrap()["model"] == "judge/model")
                     .unwrap();
-                let captured: Value = serde_json::from_str(
-                    attempt.payloads.request.as_ref().unwrap()["body"]
-                        .as_str()
-                        .unwrap(),
-                )
-                .unwrap();
-                assert_eq!(captured, actual);
+                let captured_body = attempt.payloads.request.as_ref().unwrap()["body"]
+                    .as_str()
+                    .unwrap();
+                assert_eq!(captured_body.as_bytes(), actual.body);
+                let captured: Value = serde_json::from_str(captured_body).unwrap();
                 assert_eq!(captured["debug_canary"], "final-body-only");
                 assert_eq!(captured["messages"][0]["content"], "Judge task complexity.");
                 assert_eq!(
