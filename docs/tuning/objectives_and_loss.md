@@ -4,9 +4,10 @@ Configuration settings describe how the system behaves. The user's objective
 describes what that behavior should achieve. Tuning connects the two through
 measurement.
 
-This guide explains how to turn an objective into reference choices, score the
-probabilities of those choices, and compare prompts or decision models. For the
-steps to run a routing experiment, start with [Compare and Tune](index.md).
+This guide explains how to compare configurations against a fixed objective:
+define reference choices from that objective, then use a loss function to score
+each candidate. For the steps to run a routing experiment, start with
+[Compare and Tune](index.md).
 
 ## 1. Objectives and configuration choices
 
