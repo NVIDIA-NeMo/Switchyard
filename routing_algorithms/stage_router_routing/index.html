@@ -2848,7 +2848,7 @@ These are the ones that matter when you choose a threshold:</p>
 the capable side stays below 0.46. An error in the window removes the
 clean-production bonus, so with a hard error the efficient side reaches at most
 0.24. The unit test <code>scorer_ceilings_match_the_documented_values</code> in
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/bdd7647b5d55be46b19764136128646edb08692e/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5a195060fd55423f130726f93c7c5b5fe91d132b/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
 pins these values, so a change to the scorer fails CI until this table is
 updated.</p>
 <h3 id="reachable-scores-per-picker">Reachable scores per picker<a class="headerlink" href="#reachable-scores-per-picker" title="Permanent link">&para;</a></h3>
@@ -3093,6 +3093,11 @@ required columns.</p>
 <td><code>classifier.max_output_tokens</code></td>
 <td><code>4096</code></td>
 <td>Token budget for the verdict.</td>
+</tr>
+<tr>
+<td><code>classifier.judge_deadline_ms</code></td>
+<td>unset</td>
+<td>Whole-consultation bound in milliseconds on the judge call, response drain included. On expiry the judge counts as failed and <code>classifier.fail_open</code> applies. Must be at least <code>1</code>.</td>
 </tr>
 <tr>
 <td><code>subagents</code></td>

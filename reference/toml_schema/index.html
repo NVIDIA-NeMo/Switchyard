@@ -3084,7 +3084,7 @@ counts. Plain <code>decide</code> and <code>execute</code> retain task routing. 
 </span></code></pre></div>
 <p>All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/bdd7647b5d55be46b19764136128646edb08692e/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5a195060fd55423f130726f93c7c5b5fe91d132b/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
 for collection and capacity safeguards.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
@@ -3287,7 +3287,7 @@ dependencies available in the active virtual environment.</p>
 </span></code></pre></div>
 <h3 id="llm_classifier"><code>llm_classifier</code><a class="headerlink" href="#llm_classifier" title="Permanent link">&para;</a></h3>
 <p>Runs one of three judge-backed modes: <code>capability</code>, <code>escalation</code>, or <code>custom</code>.
-<code>max_output_tokens</code> applies to all three.</p>
+<code>max_output_tokens</code> and <code>judge_deadline_ms</code> apply to all three.</p>
 <table>
 <thead>
 <tr>
@@ -3315,6 +3315,12 @@ dependencies available in the active virtual environment.</p>
 <td style="text-align: center;">No</td>
 <td><code>4096</code></td>
 <td>Maximum completion tokens for the judge verdict. Must be at least <code>1</code>.</td>
+</tr>
+<tr>
+<td><code>judge_deadline_ms</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry the judge is treated as unavailable and follows the route's <code>fail_open</code> setting. Must be at least <code>1</code>. Unset leaves the consultation unbounded.</td>
 </tr>
 <tr>
 <td><code>response_format_type</code></td>
@@ -3809,6 +3815,12 @@ so it is consulted on every ambiguous turn and never retains a verdict.</p>
 <td><code>4096</code></td>
 <td>Maximum completion tokens for the LLM judge verdict. Must be at least <code>1</code>. Not with <code>classifier.decision</code>.</td>
 </tr>
+<tr>
+<td><code>classifier.judge_deadline_ms</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry the judge is treated as unavailable and the turn falls open to the picker default, or stops the request with <code>classifier.fail_open</code> = <code>false</code>. Must be at least <code>1</code>. Unset leaves the consultation unbounded.</td>
+</tr>
 </tbody>
 </table>
 <p><code>classifier.response_schema</code>, <code>classifier.policy</code>, and any <code>classifier.mode</code>
@@ -3946,6 +3958,12 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 <td style="text-align: center;">No</td>
 <td><code>4096</code></td>
 <td>Maximum completion tokens for the judge verdict. Must be at least <code>1</code>.</td>
+</tr>
+<tr>
+<td><code>classifier.judge_deadline_ms</code></td>
+<td style="text-align: center;">No</td>
+<td>unset</td>
+<td>Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry the judge is treated as unavailable and the route falls back to the capable tier. Must be at least <code>1</code>. Unset leaves the consultation unbounded.</td>
 </tr>
 <tr>
 <td><code>stage.capable_target</code></td>
