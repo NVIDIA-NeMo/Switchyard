@@ -3084,7 +3084,7 @@ counts. Plain <code>decide</code> and <code>execute</code> retain task routing. 
 </span></code></pre></div>
 <p>All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e8afdc339faa882907337a05e3250a3c0947ad12/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a25a3f9e1904c38e60adb07f4fb0733900a3a418/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
 for collection and capacity safeguards.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
@@ -3364,7 +3364,7 @@ dependencies available in the active virtual environment.</p>
 <td><code>fail_open</code></td>
 <td style="text-align: center;">No</td>
 <td><code>true</code></td>
-<td>Capability mode only. When <code>true</code>, judge client failures and deadlines route to the capable tier and record fail-open evidence. When <code>false</code>, they stop the request. Invalid verdicts use the capable tier with either setting.</td>
+<td>Capability mode only. When <code>true</code>, judge client failures and deadlines route to the capable tier and record fail-open evidence. When <code>false</code>, they stop the request. Invalid decision-model verdicts route to the capable tier when <code>fail_open = true</code> and stop the request with an error when <code>fail_open = false</code>. Invalid LLM-judge verdicts still use the capable tier with either setting.</td>
 </tr>
 <tr>
 <td><code>threshold_step</code></td>
