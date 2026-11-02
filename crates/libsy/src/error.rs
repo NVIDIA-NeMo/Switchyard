@@ -50,6 +50,15 @@ pub enum LibsyError {
         source: LlmClientError,
     },
 
+    /// A decision judge returned an unusable answer.
+    #[error("invalid decision from target {target:?}: {message}")]
+    InvalidDecision {
+        /// Judge that supplied the answer.
+        target: ModelId,
+        /// Description of the answer validation failure.
+        message: String,
+    },
+
     /// A user extension or other foreign operation failed.
     #[error("{operation} failed: {source}")]
     External {
@@ -67,6 +76,14 @@ impl LibsyError {
         Self::ClientCall {
             target: target.into(),
             source,
+        }
+    }
+
+    /// Describe an invalid answer returned by a decision judge.
+    pub fn invalid_decision(target: impl Into<ModelId>, message: impl Into<String>) -> Self {
+        Self::InvalidDecision {
+            target: target.into(),
+            message: message.into(),
         }
     }
 
