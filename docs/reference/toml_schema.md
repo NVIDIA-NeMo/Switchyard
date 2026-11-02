@@ -479,43 +479,43 @@ other than `capability` are rejected on a `stage_router` route with
 
 ### `auto`
 
-`auto` is a preset. It builds a `stage_router` route with fixed settings and no
-classifier. Use it when you want the recommended starting point without tuning.
-See [Auto](../routing_algorithms/overview.md#auto) for what the preset does and
-when it does not route.
-
-| Key | Required | Default | Meaning |
-|---|:---:|---|---|
-| `capable_target` | Yes | — | Capable tier. |
-| `efficient_target` | Yes | — | Efficient tier. |
-
-`auto` accepts no other keys. Adding one is a configuration error. For example,
-adding `confidence_threshold = 0.5` to an `auto` route fails `--dry-run` with:
-
-```text
-unknown field `confidence_threshold`, expected `capable_target` or `efficient_target`
-```
-
-An `auto` route behaves the same as this `stage_router` route. It has no
-classifier, no handoff notes, and no per-tier system prompts:
+`auto` builds the fixed [Composite preset](../routing_algorithms/overview.md#auto).
+It requires one Decision target and two completion targets:
 
 ```toml
-[routes.smart]
-id = "switchyard"
+[routes.auto]
+id = "switchyard/auto"
+type = "auto"
+classifier_target = "decider"
+capable_target = "capable"
+efficient_target = "efficient"
+```
+
+`classifier_target` must name a `decision_targets` entry. The other two bindings
+must name `targets` entries with different model IDs. No policy tuning keys are
+accepted. See [`examples/auto.toml`](../../examples/auto.toml) for the full client
+and target configuration, including reasoning effort.
+
+The classifier runs on each real user turn. Compaction summaries retain the
+profile. A score above `0.92` selects Capable First at threshold `0`, with a
+planning prompt and an efficient hold after handoff until Stage resets. Otherwise
+it selects Efficient First at threshold `0.4`, with a two-turn capable hold.
+Both profiles use a three-result window.
+
+Earlier Auto configurations have no Decision target. To keep their behavior,
+replace `type = "auto"` with this explicit Stage configuration:
+
+```toml
+[routes.auto]
+id = "switchyard/auto"
 type = "stage_router"
-capable_target = "strong"
-efficient_target = "weak"
+capable_target = "capable"
+efficient_target = "efficient"
 picker = "efficient_first"
 confidence_threshold = 0.5
 recent_turn_window = 3
 capable_hold_turns = 2
 ```
-
-To tune the preset, replace the `auto` route with this block and edit the keys.
-The [stage_router](#stage_router) table lists every key. See
-[Stage-Router Routing](../routing_algorithms/stage_router_routing.md) for
-tuning guidance and the [model selection guide](../routing_algorithms/model_selection.md)
-for choosing the two targets.
 
 ### `composite`
 

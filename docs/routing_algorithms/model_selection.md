@@ -11,7 +11,7 @@ Each strategy names its models by role. The TOML keys differ by route type:
 
 | Route `type` | Serves most turns | Takes the hard turns | Decides |
 |---|---|---|---|
-| `auto`, `stage_router`, `composite` | `efficient_target` | `capable_target` | Tool-result signals. `composite` adds a classifier. |
+| `auto`, `stage_router`, `composite` | `efficient_target` | `capable_target` | Tool-result signals. `auto` and `composite` add a classifier. |
 | `plan_execute` | `efficient_target`, after the first edit | `capable_target`, while planning | The first file edit. |
 | `llm_classifier` (capability, escalation) | `weak_target` | `strong_target` | The judge at `classifier_target`. |
 | `llm_classifier` (custom) | Your target names | Your target names | The judge in `models.judge`. |
