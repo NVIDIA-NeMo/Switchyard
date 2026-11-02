@@ -182,7 +182,7 @@ or the other application objective alongside cross-entropy. When the size of a
 mistake dominates the objective, consider predicting each configuration's
 expected operating loss directly.
 
-### 3.3. Worked configuration comparison
+### 3.3. Example configuration comparison
 
 The remaining worked examples use two execution configurations at one pipeline
 stage to keep the arithmetic easy to follow. They illustrate the binary case of
