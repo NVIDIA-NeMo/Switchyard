@@ -10,6 +10,9 @@ alternatives we can test. The loss connects the two by assigning a score to each
 candidate's results. For the steps to run a routing experiment, start with
 [Compare and Tune](index.md).
 
+For a quick walkthrough with concrete data, jump to
+[Section 4: Examples of tuning](#4-examples-of-tuning).
+
 ## 1. Define the objective
 
 Start with the outcome the user wants. Define what to measure, on which workload,
@@ -218,15 +221,16 @@ each bar.*
   A passes and B fails, so the reference choice is A, giving **y = 0**.
 
 The target reflects the desired outcome. The more capable executor is not always
-the preferred choice. These losses exclude router inference cost; the
-model-selection example adds it.
+the preferred choice. These losses exclude router inference cost. Keep that cost
+fixed for the prompt comparison below; include it when evaluating deployment cost.
 
 ## 4. Examples of tuning
 
-The comparison above gives us fixed execution configurations, measured outcomes,
-and reference labels. We can now use the same prediction loss to evaluate two
-different changes: first the decision model's prompt, then the model itself. In
-both experiments, the objective stays fixed.
+The following are independent examples of configuration tuning. One changes the
+instruction used to choose an execution configuration and scores its predictions.
+The other holds the routing algorithm settings fixed, swaps the execution model
+pair, and scores the resulting task outcomes. In each experiment, the objective
+and its scoring rule stay fixed across candidates.
 
 ### 4.a. Prompt tuning with GEPA
 
@@ -324,52 +328,89 @@ these labels. Follow the
 when tuning that setting. Use the probability and policy defined by the actual
 decision question when applying this example to a classifier.
 
-### 4.b. Model selection with the same loss
+### 4.b. Model-pair selection with fixed algorithm settings
 
-After comparing prompts, keep the selected prompt and algorithm settings fixed
-and change the model that makes the A/B routing decision. Reuse the same
-reference labels and loss because the objective and execution configurations
-have not changed. Replacing an executor would require new outcome measurements
-and potentially new labels. See
-[Choose Models](../routing_algorithms/model_selection.md) for checks on executor
-and judge compatibility.
+In this example, each candidate uses the same routing algorithm and settings but
+assigns different models to the efficient and capable tiers. The question is
+which model pair best supports the objective under that fixed routing policy.
 
-Set a router budget of **at most $0.001 per request**. Among eligible models,
-choose the lowest validation BCE and check the resulting operating outcome.
-The probabilities and costs below are dummy data, not measurements of real
-models.
+**What changes:** the efficient/capable model pair. **What is scored:** mean
+operating loss across completed tasks.
 
-![Dummy probabilities for Small, Medium, and Large router models on six requests. Small assigns 0.90 to B on request 5 even though A is preferred.](../assets/tuning/model-probabilities.svg)
+#### Define the experiment
 
-![Small, Medium, and Large have mean BCE 0.5124, 0.2596, and 0.2336. Their per-request router costs are $0.0001, $0.0010, and $0.0040.](../assets/tuning/model-loss-and-budget.svg)
+Keep the following conditions fixed:
 
-*Figure 4. Dummy router-model probabilities, mean BCE, and inference cost. The
-dashed line marks the $0.001 per-request router budget.*
+- **Algorithm:** `stage_router`, with `picker = "efficient_first"`.
+- **Routing settings:** `confidence_threshold = 0.5`, `recent_turn_window = 5`,
+  `capable_hold_turns = 2`, and `efficient_hold_turns = 0`; no optional classifier.
+- **Evaluation:** the same six tasks, agent instructions, tools, per-task limits,
+  cache setup procedure, and number of trials. Pin each model's version and
+  serving configuration. Keep all other algorithm settings fixed.
+- **Objective:** minimize mean execution cost plus a **$0.10 penalty per failed
+  task**. Count all billed model calls, including retries and cache charges.
 
-- **Small:** its confident mistake on request 5 contributes a loss of **2.303**.
-  Its six losses average **0.5124**.
-- **Medium:** assigns only 0.25 to B on request 5, giving a loss of **0.288** and an
-  overall mean of **0.2596**.
-- **Large:** has the lowest mean BCE, **0.2336**, but exceeds the router budget.
+Test three candidate pairs. The model IDs below are fictional:
 
-**Select Medium under the stated rule.** At a 0.5 threshold:
+- **Pair 1:** efficient model **E1**, capable model **C1**.
+- **Pair 2:** efficient model **E2**, capable model **C1**. Relative to Pair 1,
+  this changes only the efficient model.
+- **Pair 3:** efficient model **E2**, capable model **C2**. Relative to Pair 2,
+  this changes only the capable model.
 
-- Small has one task failure and **$0.2446** total operating loss.
-- Medium has no task failures and **$0.1200** total operating loss.
-- Large also has no task failures but costs **$0.1380**.
+Run each pair on the full task set. Fixed algorithm settings do not imply the
+same routing decisions: changing a model can change its outputs, tool results,
+and the later routing signals. Measure each pair's complete runs, including
+these effects. See [Choose Models](../routing_algorithms/model_selection.md) for
+compatibility checks before running the comparison.
 
-These totals include execution, failure penalties, and router inference. Medium
-and Large make the same decisions here. Large's better probability loss does not
-improve the observed task outcomes, so its extra inference cost is not justified
-on this sample. The six invented cases illustrate the selection rule; they are
-not evidence about real models.
+#### Measure outcomes and calculate loss
+
+The following task costs and pass/fail outcomes are dummy data. They illustrate
+the experiment and are not results for real models.
+
+![Dummy results for three execution model pairs on six tasks. Pair 1 fails tasks 2 and 4; Pairs 2 and 3 pass all six tasks. Each cell shows execution cost and pass or fail.](../assets/tuning/model-pair-outcomes.svg)
+
+![Pair 1 has $0.100 execution cost plus $0.200 in failure penalties, for $0.300 total loss. Pair 2 has $0.140 total loss and Pair 3 has $0.192; both pass every task.](../assets/tuning/model-pair-loss.svg)
+
+*Figure 4. Execution cost and task outcomes for three model pairs under the same
+algorithm settings. Failure penalties contribute to the objective but are not
+billed execution costs.*
+
+For every task, add its execution cost and the failure penalty, if any. Average
+these task losses to score the pair:
+
+- **Pair 1:** total execution cost is **$0.100** and **4 of 6** tasks pass. Two
+  failures add **$0.200**, giving **$0.300** total operating loss, or **$0.0500 per
+  task**.
+- **Pair 2:** total execution cost is **$0.140** and **6 of 6** tasks pass. No
+  failure penalty applies, giving **$0.140** total operating loss, or **$0.0233 per
+  task**.
+- **Pair 3:** total execution cost is **$0.192** and **6 of 6** tasks pass. No
+  failure penalty applies, giving **$0.192** total operating loss, or **$0.0320 per
+  task**.
+
+For example, on task 2, Pair 1 costs $0.030 and fails, so its operating loss is
+**$0.130**. Pair 2 costs $0.045 and passes, so its operating loss is **$0.045**.
+The higher execution cost is justified under the chosen failure penalty.
+
+**Select Pair 2 under this objective.** Pair 1 has the lowest billed cost but the
+highest operating loss once failures are counted. Pair 3 costs more than Pair 2
+without improving task success on this sample. The algorithm settings stayed
+fixed throughout; the model pair changed.
+
+This comparison scores measured task outcomes directly. It does not require
+reference-choice probabilities or cross-entropy. The loss must match the outcome
+being optimized and the kind of candidate being evaluated. Repeat the experiment
+on representative tasks and independent trials before drawing conclusions about
+real model pairs.
 
 ### Reproduce the calculations
 
-This example uses only the Python standard library. It reproduces the labels,
-mean BCE, task failures, and operating losses for both comparisons without
-calling any models. GEPA itself runs separately through DSPy and a configured
-decision model and reflector.
+The code below uses only the Python standard library. It reproduces the prompt
+comparison from section 4.a and the independent model-pair comparison from section
+4.b without calling any models. GEPA itself runs separately through DSPy and a
+configured decision model and reflector.
 
 ```python
 import math
@@ -399,11 +440,11 @@ def bce(y, p):
     return -(y * math.log(p) + (1 - y) * math.log1p(-p))
 
 
-def evaluate(probabilities, router_cost=0.0):
+def evaluate_prompt(probabilities):
     assert len(probabilities) == len(outcomes)
     loss = mean(bce(y, p) for y, p in zip(labels, probabilities))
     choices = [int(p >= 0.5) for p in probabilities]  # 0 = A, 1 = B.
-    total = sum((loss_b[i] if b else loss_a[i]) + router_cost
+    total = sum(loss_b[i] if b else loss_a[i]
                 for i, b in enumerate(choices))
     failures = sum(not outcomes[i][3 if b else 1]
                    for i, b in enumerate(choices))
@@ -412,23 +453,37 @@ def evaluate(probabilities, router_cost=0.0):
 
 seed = [0.20, 0.55, 0.40, 0.35, 0.70, 0.30]
 revised = [0.10, 0.80, 0.20, 0.75, 0.25, 0.65]
-models = {
-    "Small": ([0.05, 0.80, 0.05, 0.80, 0.90, 0.80], 0.0001),
-    "Medium": (revised, 0.0010),
-    "Large": ([0.15, 0.78, 0.15, 0.78, 0.20, 0.70], 0.0040),
-}
-
 print("Labels:", labels)
 for name, ps in {"Seed": seed, "Revised": revised}.items():
-    loss, failures, total = evaluate(ps)
-    print(f"{name}: BCE={loss:.4f}, failures={failures}, total=${total:.4f}")
-for name, (ps, cost) in models.items():
-    loss, failures, total = evaluate(ps, cost)
+    loss, failures, total = evaluate_prompt(ps)
     print(f"{name}: BCE={loss:.4f}, failures={failures}, total=${total:.4f}")
 
-eligible = {name: evaluate(ps, cost)[0]
-            for name, (ps, cost) in models.items() if cost <= 0.001}
-print("Selected:", min(eligible, key=eligible.get))
+# Independent model-pair experiment: (execution cost, task passed), tasks 1–6.
+# Each cost covers the whole task run under the fixed algorithm settings.
+pairs = {
+    "Pair 1 (E1/C1)": [
+        (0.008, True), (0.030, False), (0.008, True),
+        (0.035, False), (0.015, True), (0.004, True),
+    ],
+    "Pair 2 (E2/C1)": [
+        (0.012, True), (0.045, True), (0.012, True),
+        (0.045, True), (0.020, True), (0.006, True),
+    ],
+    "Pair 3 (E2/C2)": [
+        (0.018, True), (0.060, True), (0.018, True),
+        (0.060, True), (0.028, True), (0.008, True),
+    ],
+}
+
+pair_losses = {}
+for name, results in pairs.items():
+    cost = sum(cost for cost, passed in results)
+    failures = sum(not passed for cost, passed in results)
+    total = cost + failure_penalty * failures
+    pair_losses[name] = total / len(results)
+    print(f"{name}: cost=${cost:.3f}, failures={failures}, "
+          f"total=${total:.3f}, mean=${pair_losses[name]:.4f}")
+print("Selected:", min(pair_losses, key=pair_losses.get))
 ```
 
 Expected output:
@@ -437,10 +492,10 @@ Expected output:
 Labels: [0, 1, 0, 1, 0, 1]
 Seed: BCE=0.7983, failures=2, total=$0.3200
 Revised: BCE=0.2596, failures=0, total=$0.1140
-Small: BCE=0.5124, failures=1, total=$0.2446
-Medium: BCE=0.2596, failures=0, total=$0.1200
-Large: BCE=0.2336, failures=0, total=$0.1380
-Selected: Medium
+Pair 1 (E1/C1): cost=$0.100, failures=2, total=$0.300, mean=$0.0500
+Pair 2 (E2/C1): cost=$0.140, failures=0, total=$0.140, mean=$0.0233
+Pair 3 (E2/C2): cost=$0.192, failures=0, total=$0.192, mean=$0.0320
+Selected: Pair 2 (E2/C1)
 ```
 
 ### Check the final choice
