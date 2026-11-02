@@ -14,7 +14,7 @@
         <link rel="prev" href="../benchmarks/">
       
       
-        <link rel="next" href="objectives_and_loss/">
+        <link rel="next" href="foundations/">
       
       
         
@@ -1350,14 +1350,14 @@
   
   
     <li class="md-nav__item">
-      <a href="objectives_and_loss/" class="md-nav__link">
+      <a href="foundations/" class="md-nav__link">
         
   
   
   <span class="md-ellipsis">
     
   
-    Objectives and Loss Functions
+    Tuning Foundations
   
 
     
@@ -2332,9 +2332,9 @@
 and what a run costs. Tuning is the loop below. Every step links the page that
 explains it, names what it produces, and says what it costs to run.</p>
 <p>For choosing what to optimize, read
-<a href="objectives_and_loss/">Objectives and Loss Functions</a>. It connects user goals
+<a href="foundations/">Tuning Foundations</a>. It connects user goals
 to reference labels and probability loss, with worked examples of GEPA prompt
-tuning and decision-model selection.</p>
+tuning and model-pair selection with fixed algorithm settings.</p>
 <p>Start where your goal is:</p>
 <table>
 <thead>
@@ -2385,14 +2385,14 @@ tuning and decision-model selection.</p>
 </li>
 <li>
 <p><strong>Run the routed arm against the fixed arms.</strong> Use the same tasks, agent,
-   and provider for all three arms. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/45e62804bcd7b2e04c195b4823ec4ca224a461ea/benchmark/README.md">benchmark guide</a>
+   and provider for all three arms. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/28847d4915e3d36abac484e2a3041319d414030f/benchmark/README.md">benchmark guide</a>
    shows the harness the checked-in results used, and the
    <a href="../benchmarks/">Benchmarks</a> page lists the published results with their
    configs. Produces: solved tasks and
    cost per run for each arm. Costs: <code>k</code> runs per arm. The plan/execute and
    advisor profiles use three runs and report the mean with the sample standard
    deviation, as in the
-   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/45e62804bcd7b2e04c195b4823ec4ca224a461ea/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>.
+   <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/28847d4915e3d36abac484e2a3041319d414030f/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>.
    The stage profile records a single run. A single run cannot separate a small
    change from noise.</p>
 </li>
@@ -2461,7 +2461,7 @@ Costs: <code>k</code> runs per setting you try.</p>
 <li>the cost per run.</li>
 </ul>
 <p>The
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/45e62804bcd7b2e04c195b4823ec4ca224a461ea/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/28847d4915e3d36abac484e2a3041319d414030f/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml">plan/execute profile header</a>
 records all of these. Produces: the header. Costs: none.</p>
 </li>
 <li>
