@@ -187,10 +187,10 @@ expected operating loss directly.
 
 ### 3.3. Example configuration comparison
 
-The remaining worked examples use two execution configurations at one pipeline
-stage to keep the arithmetic easy to follow. They illustrate the binary case of
-the broader approach above. We will measure both under a cost-and-failure
-objective, then reuse their reference labels in the tuning examples.
+This comparison uses two execution configurations at one pipeline stage to
+illustrate the binary case. We measure both under a cost-and-failure objective,
+then reuse their reference labels in the
+[prompt-tuning example](examples.md#5a-prompt-tuning-with-gepa).
 
 - **Configuration A (Fast):** a fast executor with a 512-token generation budget;
   usual execution cost of **$0.010** per request.
@@ -221,9 +221,9 @@ each bar.*
   A passes and B fails, so the reference choice is A, giving **y = 0**.
 
 The target reflects the desired outcome. The more capable executor is not always
-the preferred choice. These losses exclude router inference cost. Keep that cost
-fixed for the [prompt comparison](examples.md#5a-prompt-tuning-with-gepa);
-include it when evaluating deployment cost.
+the preferred choice. These losses exclude router inference cost. Measure that
+cost for each prompt and include it when evaluating deployment cost, because
+prompt length and token usage can change it.
 
 ## 4. Check the final choice
 
