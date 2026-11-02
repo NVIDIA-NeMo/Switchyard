@@ -1,40 +1,29 @@
 # Objectives and Loss Functions for Configuration Tuning
 
-This guide uses two sample configurations and a fixed objective to show how to
-define and compute the losses used to compare them. Start with the desired
-outcome and a rule for measuring it, then evaluate both configurations. When a
-decision model learns which configuration to choose, those outcomes also provide
-reference labels for scoring its predictions.
+Configuration settings describe how the system behaves. The user's objective
+describes what that behavior should achieve. This guide bridges the gap between
+the two: define a measurable objective, design candidate configurations, and use
+a loss function to compare them against that fixed objective.
 
-The same objective and scoring rule can support different tuning experiments:
-
-- **Prompt tuning for a [decision model](../protocols/decisions.md):** keep the
-  model and the two execution configurations fixed, and use prediction loss to
-  guide instruction changes. [Section 4.a](#4a-prompt-tuning-with-gepa) shows this
-  with GEPA.
-- **Model selection with fixed algorithm settings:** compare candidate models
-  under the same objective, algorithm settings, and scoring rule.
-  [Section 4.b](#4b-model-selection-with-the-same-loss) compares models that make
-  the routing decision while holding the prompt and execution configurations
-  fixed.
-
-The sections below establish the objective, candidate configurations, and loss
-before applying them to these examples. For the steps to run a routing
-experiment, start with [Compare and Tune](index.md).
+The objective determines what counts as better. The configurations define the
+alternatives we can test. The loss connects the two by assigning a score to each
+candidate's results. For the steps to run a routing experiment, start with
+[Compare and Tune](index.md).
 
 ## 1. Define the objective
 
 Start with the outcome the user wants. Define what to measure, on which workload,
 and what makes a result acceptable. Keep this definition fixed while comparing
-candidates.
+candidates, whether the experiment contains two configurations or many.
 
 - **Reduce cost while preserving accuracy.** Minimize total cost per task while
   meeting a defined accuracy requirement. Include decision calls, retries, and
   cache charges in the cost.
 - **Maximize task success.** Maximize the fraction of tasks completed correctly,
   subject to any cost or latency limits.
-- **Reach a desired routing split.** Target a defined allocation, such as 70% of
-  model calls on the efficient tier and 30% on the capable tier. Specify the
+- **Reach a desired routing split.** Target a defined allocation across the
+  configured targets. This could be 70% of calls on the efficient tier and 30% on
+  the capable tier, or a distribution across three or more targets. Specify the
   counting unit, allowed deviation, and quality requirement.
 - **Reach a capable-tier cache-usage target.** Target a specified percentage of
   capable-tier input tokens served from cache, such as at least 80%. Measure
@@ -49,6 +38,10 @@ test.
 ## 2. Design configuration candidates
 
 A candidate is a complete configuration to evaluate under the fixed objective.
+The candidate set can contain any number of alternatives. Give each a distinct
+ID, such as A, B, and C, and compare all of them using the same objective and
+evaluation procedure.
+
 The objective describes what success means; candidate design determines which
 possible solutions the experiment will consider. A loss can rank the candidates
 we test, but it cannot find an improvement that none of them can produce.
@@ -97,68 +90,103 @@ cost but misses the quality requirement is ineligible under that objective.
 Changing the requirement creates a different comparison.
 
 With the objective and candidates fixed, we can measure their outcomes and
-assign a loss to each. When training a decision model to choose between them, we
-also turn those outcomes into reference choices. The next section explains that
-step and the loss used to score the model's probabilities.
+assign a loss to each. If the task is to learn which configuration to choose,
+those outcomes also provide reference choices. The next section explains how to
+represent these choices and score the probabilities assigned to them.
 
-## 3. Outcome-based labels and binary cross-entropy
+## 3. Outcome-based labels and cross-entropy
 
-For configurations A and B, use the fixed objective to determine which outcome is
-better on each evaluated request. This could mean a correct answer at lower cost
-or a defined tradeoff between execution cost and failure.
+Use the fixed objective to identify the preferred configuration for each
+evaluated request. This could mean a correct answer at lower cost or a defined
+tradeoff between execution cost and failure. The reference label **y** is the ID
+of that configuration. With candidates A, B, and C, the label can be A, B, or C;
+it is not limited to 0 or 1. Define a consistent rule for ties.
 
 Some objectives apply to a whole workload, such as an accuracy floor or routing
 allocation. Compare complete runs against those constraints. Turning them into
 per-request reference choices requires an explicit labeling or allocation rule;
-the constraint alone does not supply a binary label.
-
-- **y = 1:** B is preferred under the objective's labeling rule.
-- **y = 0:** A is preferred under that rule. Define ties in advance; in the examples
-  below, ties go to A.
+the constraint alone does not supply a label.
 
 The objective determines the labeling rule; measured outcomes determine each
 label. Labels belong to the configurations and evaluation conditions that
-produced them. If either changes, the labels may need to change too. The same
-request can favor B for accuracy and A for cost.
+produced them. If the objective or candidate set changes, the labels may need to
+change too. The same request can favor one configuration for accuracy and another
+for cost.
 
-The model predicts **p**, the probability that B is the reference choice. This is
-different from the probability that B succeeds: B can succeed and still cost more
-than an equally successful A. The labeling process can use completed outcomes;
-the decision model must use only information available when it chooses.
+A model that selects one configuration predicts a probability for every available
+choice. These probabilities sum to 1. **p(y)** is the probability assigned to the
+reference choice. It represents the chance that this choice is preferred under
+the labeling rule, rather than simply the chance that it succeeds. A configuration
+can succeed and still cost more than an equally successful alternative.
 
-For a Boolean decision question, make the event explicit: "Is B preferable to A
-under this objective?" Use its answer probability as **p**. For a two-option
-choice question, use the probability assigned to B. Keep answer probabilities
-separate from provider confidence, and keep missing probabilities unknown rather
-than turning a hard choice into certainty. See
-[Decision Answers](../reference/protocols/decision_answers.md#answer-values).
+For a choice question, use the probability distribution over the declared
+configuration IDs. Keep answer probabilities separate from provider confidence,
+and keep missing probabilities unknown rather than turning a hard choice into
+certainty. See [Decision Answers](../reference/protocols/decision_answers.md#answer-values).
+The labeling process can use completed outcomes; the model must use only
+information available when it chooses.
 
-Binary cross-entropy (BCE) scores that probability against the reference label:
+### 3.1. Cross-entropy for multiple choices
+
+When each request has one reference choice, categorical cross-entropy is:
+
+**Cross-entropy(y, p) = −log p(y)**
+
+In words, take the negative logarithm of the probability assigned to the
+reference configuration. Use natural logarithms and average the per-request
+losses to compare candidates.
+
+For example, suppose the available configurations are A, B, and C, and the
+objective makes **C** the reference choice:
+
+- Predicted probabilities **A: 0.20, B: 0.50, C: 0.30** give a loss of
+  **−log(0.30) = 1.204**.
+- Predicted probabilities **A: 0.10, B: 0.20, C: 0.70** give a loss of
+  **−log(0.70) = 0.357**.
+
+The second prediction has lower loss because it assigns more probability to the
+reference configuration. The same calculation applies to any number of mutually
+exclusive choices. It scores probability predictions; configurations evaluated
+directly by cost, task success, or another operating outcome use the loss defined
+for that outcome.
+
+### 3.2. Binary cross-entropy as the two-choice case
+
+With only configurations A and B, encode the reference choice as:
+
+- **y = 1:** B is preferred under the objective's labeling rule.
+- **y = 0:** A is preferred. In the worked examples below, ties go to A.
+
+Let **p** be the predicted probability of B. The probability of A is **1 − p**.
+Categorical cross-entropy then becomes binary cross-entropy (BCE):
 
 **BCE(y, p) = −y log(p) − (1 − y) log(1 − p)**
 
-Use natural logarithms and average the per-example losses to compare candidates.
+A Boolean decision question can express this as "Is B preferable to A under this
+objective?" Its probability of true supplies **p**. For a two-option choice
+question, use the probability assigned to B.
 
 ![BCE decreases as the predicted probability of B increases when B is preferred, and increases when A is preferred.](../assets/tuning/binary-cross-entropy.svg)
 
-*Figure 1. Binary cross-entropy as a function of the predicted probability of B.
-The reference label determines which curve applies.*
+*Figure 1. The two-choice case of cross-entropy. The reference label determines
+which curve applies.*
 
 At **p = 0.99**, loss is **0.010** when B is preferred and **4.605** when A is
 preferred. BCE rewards justified confidence and penalizes confident mistakes.
 Two probabilities can produce the same decision at a chosen threshold while
 receiving different losses.
 
-**Probability loss is not operating cost.** A binary label records which choice
-wins, but not the size of the advantage. Check actual cost, success rate, or the
-other application objective alongside BCE. When the size of a mistake dominates
-the objective, consider predicting each configuration's expected operating loss
-directly.
+**Probability loss is not operating cost.** A reference label records which
+choice wins, but not the size of the advantage. Check actual cost, success rate,
+or the other application objective alongside cross-entropy. When the size of a
+mistake dominates the objective, consider predicting each configuration's
+expected operating loss directly.
 
-### 3.1. Worked configuration comparison
+### 3.3. Worked configuration comparison
 
-To make the connection from outcomes to labels concrete, consider two execution
-configurations at one pipeline stage. We will measure both under a cost-and-failure
+The remaining worked examples use two execution configurations at one pipeline
+stage to keep the arithmetic easy to follow. They illustrate the binary case of
+the broader approach above. We will measure both under a cost-and-failure
 objective, then reuse their reference labels in the tuning examples.
 
 - **Configuration A (Fast):** a fast executor with a 512-token generation budget;
@@ -202,7 +230,10 @@ both experiments, the objective stays fixed.
 
 ### 4.a. Prompt tuning with GEPA
 
-**What changes:** the router instruction. **What is scored:** negative mean BCE.
+**What changes:** the instruction for a [decision model](../protocols/decisions.md)
+that selects an execution configuration. **What is scored:** negative mean BCE
+for this two-choice example. With more choices, use negative mean categorical
+cross-entropy.
 
 GEPA improves a prompt by trying revisions. Run the decision model on labeled
 examples, show another LLM where it struggled, and ask it to rewrite the
