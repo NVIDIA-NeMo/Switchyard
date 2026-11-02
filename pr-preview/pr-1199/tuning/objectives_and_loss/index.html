@@ -1341,10 +1341,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#1-objectives-and-configuration-choices" class="md-nav__link">
+  <a href="#1-define-the-objective" class="md-nav__link">
     <span class="md-ellipsis">
       
-        1. Objectives and configuration choices
+        1. Define the objective
       
     </span>
   </a>
@@ -1352,10 +1352,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-outcome-based-labels-and-binary-cross-entropy" class="md-nav__link">
+  <a href="#2-design-configuration-candidates" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2. Outcome-based labels and binary cross-entropy
+        2. Design configuration candidates
       
     </span>
   </a>
@@ -1363,13 +1363,30 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-worked-configuration-comparison" class="md-nav__link">
+  <a href="#3-outcome-based-labels-and-binary-cross-entropy" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Worked configuration comparison
+        3. Outcome-based labels and binary cross-entropy
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="3. Outcome-based labels and binary cross-entropy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-worked-configuration-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1. Worked configuration comparison
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -2397,10 +2414,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#1-objectives-and-configuration-choices" class="md-nav__link">
+  <a href="#1-define-the-objective" class="md-nav__link">
     <span class="md-ellipsis">
       
-        1. Objectives and configuration choices
+        1. Define the objective
       
     </span>
   </a>
@@ -2408,10 +2425,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-outcome-based-labels-and-binary-cross-entropy" class="md-nav__link">
+  <a href="#2-design-configuration-candidates" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2. Outcome-based labels and binary cross-entropy
+        2. Design configuration candidates
       
     </span>
   </a>
@@ -2419,13 +2436,30 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-worked-configuration-comparison" class="md-nav__link">
+  <a href="#3-outcome-based-labels-and-binary-cross-entropy" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Worked configuration comparison
+        3. Outcome-based labels and binary cross-entropy
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="3. Outcome-based labels and binary cross-entropy">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-worked-configuration-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1. Worked configuration comparison
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -2554,32 +2588,81 @@
 describes what that behavior should achieve. Tuning connects the two through
 measurement.</p>
 <p>This guide explains how to compare configurations against a fixed objective:
-define reference choices from that objective, then use a loss function to score
-each candidate. For the steps to run a routing experiment, start with
+define the outcome, design candidate configurations, and use a loss function to
+score each candidate. When learning a decision rule, derive reference choices
+from the objective. For the steps to run a routing experiment, start with
 <a href="../">Compare and Tune</a>.</p>
-<h2 id="1-objectives-and-configuration-choices">1. Objectives and configuration choices<a class="headerlink" href="#1-objectives-and-configuration-choices" title="Permanent link">&para;</a></h2>
-<p>Users describe outcomes such as lower cost, higher task success, a desired
-routing split, or more effective cache usage. A goal can require several settings
-to change, and one setting can affect several goals. Compare candidates using
-evidence tied to the objective:</p>
+<h2 id="1-define-the-objective">1. Define the objective<a class="headerlink" href="#1-define-the-objective" title="Permanent link">&para;</a></h2>
+<p>Start with the outcome the user wants. Define what to measure, on which workload,
+and what makes a result acceptable. Keep this definition fixed while comparing
+candidates.</p>
 <ul>
-<li><strong>Reduce cost while preserving accuracy.</strong> Vary model targets, routing
-  preference, and threshold. Measure total cost while meeting a defined accuracy
-  requirement.</li>
-<li><strong>Maximize task success.</strong> Vary the capable model and recovery behavior,
-  including how long the router stays on the capable model. Measure successfully
-  completed tasks.</li>
-<li><strong>Reach a desired routing split.</strong> Vary routing preference and confidence
-  threshold. Measure the resulting allocation between the efficient and capable
-  tiers.</li>
-<li><strong>Benefit from cached context.</strong> Vary model targets and switching behavior.
-  Measure cost or latency while preserving acceptable quality.</li>
+<li><strong>Reduce cost while preserving accuracy.</strong> Minimize total cost per task while
+  meeting a defined accuracy requirement. Include decision calls, retries, and
+  cache charges in the cost.</li>
+<li><strong>Maximize task success.</strong> Maximize the fraction of tasks completed correctly,
+  subject to any cost or latency limits.</li>
+<li><strong>Reach a desired routing split.</strong> Target a defined allocation, such as 70% of
+  model calls on the efficient tier and 30% on the capable tier. Specify the
+  counting unit, allowed deviation, and quality requirement.</li>
+<li><strong>Benefit from cached context.</strong> Minimize measured cost or latency while
+  preserving acceptable quality. Track cache usage to explain the result. If
+  cache usage itself is the objective, define the target metric explicitly.</li>
 </ul>
-<p>A desired split such as 70% efficient / 30% capable still needs a rule for choosing
-<em>which</em> requests use each tier. Cache benefits depend on the serving system and
-workload. A setting change alone does not guarantee them. See
+<p>Separate the quantity to improve from the requirements a candidate must meet.
+For example: "Minimize mean cost per task on this workload, subject to at least
+80% task success." The success requirement determines eligibility; cost ranks the
+eligible candidates. These numbers are illustrative.</p>
+<p>A desired routing split still needs a rule for choosing <em>which</em> requests use
+each tier. Cache benefits depend on the serving system and workload. More cache
+usage does not by itself establish lower cost or latency. Define how to handle
+ties and tradeoffs before reviewing candidate results.</p>
+<h2 id="2-design-configuration-candidates">2. Design configuration candidates<a class="headerlink" href="#2-design-configuration-candidates" title="Permanent link">&para;</a></h2>
+<p>A candidate is a complete configuration to evaluate under the fixed objective.
+The objective describes what success means; candidate design determines which
+possible solutions the experiment will consider. A loss can rank the candidates
+we test, but it cannot find an improvement that none of them can produce.</p>
+<p>Build the candidate set in these steps:</p>
+<ol>
+<li><strong>Choose a baseline.</strong> Record the current configuration and its measured
+   outcomes. Include it in the comparison so improvements have a reference point.</li>
+<li><strong>State a reason for each change.</strong> Connect the proposed behavior to the
+   objective. For example, staying on one model longer might preserve cached
+   context and reduce cost. Test both the cost effect and the quality effect.</li>
+<li><strong>Choose what can vary.</strong> This could be model targets, routing policy,
+   thresholds, hold durations, or decision instructions. Specify the allowed
+   values and hold other settings fixed. Start with a small set that can answer
+   the question behind the experiment.</li>
+<li><strong>Include combinations when settings interact.</strong> A threshold and a hold
+   duration can affect the same routing decisions. After a small initial
+   comparison, test selected combinations rather than assuming their individual
+   effects will add up.</li>
+<li><strong>Make candidates reproducible and comparable.</strong> Give each one an ID and save
+   its full configuration. Use the same workload and evaluation procedure, pin
+   model and provider versions where possible, and apply the same cache setup
+   procedure. Let each candidate's behavior determine subsequent cache usage.</li>
+</ol>
+<p>For example, suppose the objective is lower cost while maintaining the specified
+task-success floor. One small stage-router experiment could be:</p>
+<ul>
+<li><strong>Baseline:</strong> <code>confidence_threshold = 0.5</code> and <code>capable_hold_turns = 2</code>.</li>
+<li><strong>Initial candidates:</strong> thresholds <code>0.3</code>, <code>0.5</code>, and <code>0.7</code>, all with a capable
+  hold of <code>2</code> turns. This gives three candidates, including the baseline.</li>
+<li><strong>Interaction check:</strong> add a hold duration of <code>0</code> for each threshold. The full
+  set now has six candidates, not six plus the baseline.</li>
+<li><strong>Fixed conditions:</strong> the model pair, picker, classifier configuration, other
+  routing settings, and evaluation workload. Compare task success and total cost
+  for every candidate, then rank those that meet the success floor.</li>
+</ul>
+<p>These values illustrate candidate design, not recommended settings. The effect
+of a threshold depends on the picker, classifier, and other routing rules. Follow
+the <a href="../../routing_algorithms/stage_router_routing/#tuning-confidence_threshold">stage-router threshold guide</a>
+when choosing values. See
 <a href="../../routing_algorithms/model_selection/#counter-examples">model selection</a> for
-examples where switching lost cache savings.</p>
+cases where switching lost cache savings.</p>
+<p>Keep the objective fixed throughout the comparison. A candidate that improves
+cost but misses the quality requirement is ineligible under that objective.
+Changing the requirement creates a different comparison.</p>
 <p>When a decision model chooses between two configurations, the objective
 determines the reference labels. The loss scores the model's predictions against
 those labels. We can use the same loss to compare different prompts or models.
@@ -2587,10 +2670,14 @@ When changing execution settings directly, compare their measured operating
 outcomes.</p>
 <p>The settings define what we can change. The objective and loss define how we
 judge the change.</p>
-<h2 id="2-outcome-based-labels-and-binary-cross-entropy">2. Outcome-based labels and binary cross-entropy<a class="headerlink" href="#2-outcome-based-labels-and-binary-cross-entropy" title="Permanent link">&para;</a></h2>
+<h2 id="3-outcome-based-labels-and-binary-cross-entropy">3. Outcome-based labels and binary cross-entropy<a class="headerlink" href="#3-outcome-based-labels-and-binary-cross-entropy" title="Permanent link">&para;</a></h2>
 <p>Given configurations A and B, first define "better." It might mean a correct answer
 at the lowest cost, the highest task success, or a specified tradeoff between cost
 and failure. Then evaluate both configurations on comparable requests.</p>
+<p>Some objectives apply to a whole workload, such as an accuracy floor or routing
+allocation. Compare complete runs against those constraints. Turning them into
+per-request reference choices requires an explicit labeling or allocation rule;
+the constraint alone does not supply a binary label.</p>
 <ul>
 <li><strong>y = 1:</strong> B is preferred under the objective's labeling rule.</li>
 <li><strong>y = 0:</strong> A is preferred under that rule. Define ties in advance; in the examples
@@ -2631,7 +2718,7 @@ wins, but not the size of the advantage. Check actual cost, success rate, or the
 other application objective alongside BCE. When the size of a mistake dominates
 the objective, consider predicting each configuration's expected operating loss
 directly.</p>
-<h2 id="3-worked-configuration-comparison">3. Worked configuration comparison<a class="headerlink" href="#3-worked-configuration-comparison" title="Permanent link">&para;</a></h2>
+<h3 id="31-worked-configuration-comparison">3.1. Worked configuration comparison<a class="headerlink" href="#31-worked-configuration-comparison" title="Permanent link">&para;</a></h3>
 <p>Consider two alternative execution configurations at one pipeline stage:</p>
 <ul>
 <li><strong>Configuration A (Fast):</strong> a fast executor with a 512-token generation budget;
