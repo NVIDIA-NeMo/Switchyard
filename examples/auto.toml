@@ -1,0 +1,37 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+
+# Replace these endpoints and model IDs with your provider's values.
+[llm_clients.models]
+format = "openai_chat"
+base_url = "http://localhost:8000/v1"
+api_key_env = "MODEL_API_KEY"
+
+[targets.capable]
+id = "openai/openai/gpt-6-astra"
+llm_client = "models"
+reasoning_effort = "medium"
+
+[targets.efficient]
+id = "openai/openai/gpt-6-luna"
+llm_client = "models"
+reasoning_effort = "max"
+
+[decision_clients.decider]
+format = "openai_decisions"
+endpoint = "http://localhost:8001/v1/decisions"
+api_key_env = "DECISION_API_KEY"
+timeout_ms = 120000
+
+[decision_targets.decider]
+id = "openai/openai/gpt-6-luna"
+decision_client = "decider"
+
+[routes.auto]
+id = "switchyard/auto"
+type = "auto"
+classifier_target = "decider"
+capable_target = "capable"
+efficient_target = "efficient"

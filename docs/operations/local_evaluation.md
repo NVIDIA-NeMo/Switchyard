@@ -37,12 +37,14 @@ llm_client = "openrouter"
 
 [routes.smart]
 id = "switchyard"
-type = "auto"
+type = "stage_router"
+picker = "efficient_first"
+confidence_threshold = 0.5
 capable_target = "capable"
 efficient_target = "efficient"
 ```
 
-This uses the same Auto preset as the first libsy example: Stage routing with `efficient_first`, a confidence threshold of `0.5`, and no classifier call. The model pool also appears in our [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21). This small Auto example is not the benchmark configuration; use the linked benchmark profiles to reproduce their settings.
+This uses the same Stage configuration as the first libsy example: efficient-first with a confidence threshold of `0.5` and no classifier call. The model pool also appears in our [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21). Use the linked benchmark profiles to reproduce their settings.
 
 To use your own pool:
 

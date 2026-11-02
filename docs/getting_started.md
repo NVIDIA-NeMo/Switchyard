@@ -86,7 +86,7 @@ Selected: Efficient
 
 This Stage preset yields only `Done`, with `outcome.response` set to `None`. Your application owns the final model call. The loop also shows where other algorithms can ask for intermediate model calls.
 
-`0.5` is a signal-confidence threshold, not a measured probability of task success. This preset is **Auto** in TOML. See the [Stage router guide](routing_algorithms/stage_router_routing.md) for signal rules, and evaluate your workload before relying on savings.
+`0.5` is a signal-confidence threshold, not a measured probability of task success. Use `type = "stage_router"` for this configuration in TOML. The [Auto preset](routing_algorithms/overview.md#auto) adds a Decision model that chooses between two Stage profiles. See the [Stage router guide](routing_algorithms/stage_router_routing.md) for signal rules, and evaluate your workload before relying on savings.
 
 <details markdown="1">
 <summary>Try the same prompt after a tool failure</summary>

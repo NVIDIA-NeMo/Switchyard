@@ -8,6 +8,7 @@
 mod algorithm;
 #[cfg(not(target_os = "wasi"))]
 mod algorithm_factory;
+mod auto;
 #[cfg(not(target_os = "wasi"))]
 mod config;
 #[cfg(not(target_os = "wasi"))]

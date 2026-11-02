@@ -33,7 +33,7 @@ quality, follow the [tuning loop](../tuning/index.md).
 
 | Name | Route `type` | What it does |
 |---|---|---|
-| [Auto](#auto) | `auto` | The Execution preset with fixed settings. |
+| [Auto](#auto) | `auto` | A Decision model selects between two fixed Stage profiles once per session. |
 | [Task](llm_classifier_routing.md) | `llm_classifier`, `mode = "capability"` | A judge reads the task before the turn is served and picks the strong or weak model. |
 | [Execution](stage_router_routing.md) | `stage_router` | Tool results from the last few turns pick the capable or efficient model for each turn. |
 | [Composite](composite_routing.md) | `composite` | A judge picks the starting tier at each user turn. Execution runs the turns in between. |
@@ -51,7 +51,7 @@ quality, follow the [tuning loop](../tuning/index.md).
 
 | Route `type` | Decides from | Extra model calls | Switches | Session ID | When it cannot decide | Measured | Start from |
 |---|---|---|---|---|---|---|---|
-| `auto` | Tool results in the request | None | Every request | Optional. Keeps the capable hold. | Efficient tier | The preset of the measured `stage_router` settings, with a shorter window. See [Auto](#auto). | The [local evaluation](../operations/local_evaluation.md#configure-your-model-pool) route file |
+| `auto` | Task classification, then tool results | One Decision call per session | Depends on the selected profile | Required to retain profile and handoff state | Classifier errors stop the request | Fixed Composite recipe. See [Auto](#auto). | [`examples/auto.toml`](../../examples/auto.toml) |
 | `stage_router` | Tool results in the request | Optional judge on ambiguous turns | Every request | Optional. Keeps the capable hold. | Picker default | [Terminal-Bench 2.1 and DeepSWE results](../benchmarks.md) with the [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml) | That profile |
 | `llm_classifier`, capability | A judge's view of the task | One judge call per request, user turn, or session | Per trigger | Optional. Needed to retain a verdict. | Strong target | [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21) for an LLM judge and for Jev as a decision judge. The LLM-judge config is not published; a [smoke-test config](../../benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml) is checked in. | That config |
 | `llm_classifier`, escalation | A judge's view of the finished weak turn | One judge call per unlatched turn | Latches once. Reversible with de-escalation. | Required to latch. Without it, `confirmations = 1` escalates single turns only. | An unreadable verdict keeps the current tier. A failed judge call stops the request in the server. | [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21) with the [checked-in profile](../../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml), and a [public report](https://www.langchain.com/blog/switchyard-agent-routing-benchmark) | That profile |
@@ -93,7 +93,7 @@ These cases apply across strategies:
 - **Both tiers resolve to the same model, or the efficient model is the stronger
   one.** Routing then only adds cost. Run the
   [inverted-pair check](model_selection.md#check-for-an-inverted-pair) first.
-- **Chat-only traffic on Auto or Execution.** With no tool results the signals
+- **Chat-only traffic on Execution.** With no tool results the signals
   abstain and every turn lands on the efficient tier. Use Task or Composite,
   which judge the request itself.
 - **Responses continuations by ID.** A client that sends `previous_response_id`
@@ -124,11 +124,10 @@ These cases apply across strategies:
 Three starting points. Each names a strategy, a file in this repository to copy,
 and the one dial to move first.
 
-1. **A coding agent, and cost comes first.** Start with `auto`. When you need to
-   tune, copy the
-   [DeepSWE stage profile](../../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml)
-   and move `confidence_threshold` as described in
-   [Tuning `confidence_threshold`](stage_router_routing.md#tuning-confidence_threshold).
+1. **A coding agent, and cost comes first.** Start with
+   [`examples/auto.toml`](../../examples/auto.toml). It uses the fixed Auto policy.
+   To tune its profiles or selector, use an explicit
+   [Composite route](composite_routing.md#configuration).
 2. **Long sessions where the cheap model should run until a judge reports that it is failing.**
    Use escalation. Copy the
    [escalation profile](../../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml),
@@ -146,52 +145,34 @@ are the measured starting point. Their dial is the judge rubric in `prompt`.
 
 ### Auto
 
-Auto is a preset, not a separate routing algorithm. An `auto` route builds a
-stage router with these settings. It does not compare strategies at runtime.
+Auto builds a Composite router with fixed prompts and routing settings. A
+Decision model chooses between two Stage profiles once per session:
 
-| Setting | Value | What it does |
-|---|---|---|
-| `picker` | `efficient_first` | The efficient tier serves a turn when the tool signals are not confident. |
-| `confidence_threshold` | `0.5` | How strongly the tool signals must agree before they pick a tier on their own. |
-| `recent_turn_window` | `3` | How many recent tool results the signals are computed over. |
-| `capable_hold_turns` | `2` | How many turns stay on the capable tier after an escalation, skipping signal processing and classification. |
-| Classifier | none | No LLM judge is called. |
+- **Capable First (0):** The capable model receives a planning prompt. Stage
+  signals decide the handoff. With `efficient_hold_turns = -1`, the efficient
+  model stays selected after handoff, including later errors and user turns.
+- **Efficient First (0.4):** Starts on the efficient model. Tool signals can
+  escalate to the capable model, which stays selected for two turns.
 
-Auto accepts no tuning keys. To change a setting, write the equivalent
-`stage_router` route shown in the [TOML schema](../reference/toml_schema.md#auto)
-and edit it there. Choose the two models with the
-[model selection guide](model_selection.md).
+The numbers are Stage signal-confidence thresholds. Both profiles use the
+latest three tool results. The Decision selector chooses Capable First only
+when its score is strictly greater than `0.92`. Otherwise it chooses Efficient
+First. There are no inner judges or handoff notes.
 
-Only the `efficient_first` picker has published results. The `capable_first`
-picker is [experimental](stage_router_routing.md#pickers).
+Start from [`examples/auto.toml`](../../examples/auto.toml). Set a Decision target
+and the capable and efficient completion targets. The example uses Astra at
+medium reasoning effort and Luna at max. Model IDs, reasoning effort, endpoints,
+and credentials remain deployment settings. Auto accepts no policy tuning keys.
+Use an explicit [Composite route](composite_routing.md) to customize the policy.
 
-#### When Auto does not route
+Requests need a stable session ID to retain the profile and handoff state.
+Without a session ID, requests are classified again and handoff state is not
+retained. Failed classifier calls return errors. The capable and
+efficient targets must resolve to different model IDs.
 
-Auto decides from tool results in the request. In these cases every request goes
-to one tier:
-
-- **No tool results in the request.** Chat-only requests, and the first request
-  of an agent session, carry no tool history. The signals abstain and the
-  efficient tier serves the turn. This is by design. `GET /v1/stats` counts these
-  turns under `algorithm_stats.stage_router.routing_decisions.fall_open`. See
-  [Verify routing is active](../operations/local_evaluation.md#verify-routing-is-active).
-- **Both tiers name the same target.** The server accepts a route whose
-  `capable_target` and `efficient_target` are the same target. Every request then
-  goes to that one model, and `GET /v1/stats` lists a single entry under `.models`.
-- **No session ID on the request.** The capable hold is kept per session. A
-  request without a session ID gets fresh state, so a hold set by one request is
-  gone on the next. Requests with a session ID but no agent ID share one hold
-  within that session.
-
-A critical error, a repeated identical failure, or a context-compaction marker in
-the tool history still sends the turn to the capable tier. See
-[decision sources](stage_router_routing.md#decision-sources).
-
-Auto uses the settings of the published stage-router results, with two
-differences: those runs set `recent_turn_window = 5` and added a handoff note.
-Every published result comes from a coding agent whose requests carry tool
-results. The [model selection guide](model_selection.md#measured-pairs) lists the
-measured model pairs.
+Existing Auto configurations need a `classifier_target` backed by a
+`decision_targets` entry. To retain the earlier efficient-first Stage preset,
+use the [migration configuration](../reference/toml_schema.md#auto).
 
 ## Common route shape
 

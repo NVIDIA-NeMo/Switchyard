@@ -466,11 +466,10 @@ pub enum AlgorithmSpec {
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
     },
-    /// Picks a routing strategy automatically, preset with recommended knobs.
-    /// Currently a `stage_router` with `picker = "efficient_first"` and
-    /// `confidence_threshold = 0.5`; change `build_algorithm`'s `Auto` arm to
-    /// repoint it at a different algorithm or preset.
+    /// A Decision model selects the fixed capable-first or efficient-first Stage profile.
     Auto {
+        /// Decision target that chooses the profile once per session.
+        classifier_target: String,
         /// The capable tier.
         capable_target: String,
         /// The efficient tier.
@@ -846,6 +845,17 @@ impl StageClassifierConfig {
 }
 
 impl AlgorithmSpec {
+    pub(crate) fn is_decision_target(&self, name: &str) -> bool {
+        match self {
+            Self::Auto {
+                classifier_target, ..
+            } => classifier_target == name,
+            _ => self
+                .classifier_targets()
+                .any(|(target, decision)| target == name && decision.is_some()),
+        }
+    }
+
     pub(crate) fn classifier_targets(
         &self,
     ) -> impl Iterator<Item = (&str, Option<&DecisionJudgeRouteConfig>)> {
@@ -940,6 +950,7 @@ impl AlgorithmSpec {
             Self::Auto {
                 capable_target,
                 efficient_target,
+                ..
             } => vec![capable_target.as_str(), efficient_target.as_str()],
             Self::Composite {
                 stage, subagents, ..
@@ -983,6 +994,9 @@ impl AlgorithmSpec {
     pub fn judge_target_names(&self) -> Vec<&str> {
         let mut names = Vec::new();
         match self {
+            Self::Auto {
+                classifier_target, ..
+            } => names.push(classifier_target.as_str()),
             // Custom mode names its judge in `models.judge`; the other two modes
             // use the top-level `classifier_target`.
             Self::LlmClassifier { config, .. } => {
@@ -1068,9 +1082,11 @@ impl AlgorithmSpec {
                 models
             }
             Self::Auto {
+                classifier_target,
                 capable_target,
                 efficient_target,
             } => category_models([
+                (Category::Judge, vec![classifier_target.clone()]),
                 (Category::Capable, vec![capable_target.clone()]),
                 (Category::Efficient, vec![efficient_target.clone()]),
                 (
@@ -1814,10 +1830,11 @@ fn build_algorithm(
         AlgorithmSpec::Auto {
             capable_target,
             efficient_target,
+            ..
         } => {
-            warn_identical_tiers(route_name, capable_target, efficient_target);
-            let config = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
-            let algorithm = StageRouter::new(config).map_err(|error| {
+            let capable = resolve_target_model_id(route_name, capable_target, targets)?;
+            let efficient = resolve_target_model_id(route_name, efficient_target, targets)?;
+            let algorithm = crate::auto::build(capable, efficient).map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("auto route {route_name}: {error}"),
                     error,
