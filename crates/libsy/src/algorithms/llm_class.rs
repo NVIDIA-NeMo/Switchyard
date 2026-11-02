@@ -1578,7 +1578,16 @@ mod tests {
             ("no distribution", 0.0, true, Some("capable")),
             ("wrong type", 0.0, true, Some("capable")),
             ("out of range", 1.1, true, Some("capable")),
-            ("nonfinite", f64::NAN, false, Some("capable")),
+            ("nonfinite", f64::NAN, true, Some("capable")),
+            ("missing probability", 0.0, true, Some("capable")),
+            ("missing answer", 0.0, false, None),
+            ("no distribution", 0.0, false, None),
+            ("wrong type", 0.0, false, None),
+            ("out of range", 1.1, false, None),
+            ("negative", -0.1, false, None),
+            ("nonfinite", f64::NAN, false, None),
+            ("infinite", f64::INFINITY, false, None),
+            ("missing probability", 0.0, false, None),
             ("provider error", 0.0, true, Some("capable")),
             ("provider error", 0.0, false, None),
             ("dropped reply", 0.0, true, Some("capable")),
@@ -1666,7 +1675,15 @@ mod tests {
                             selected: "no_advantage".into(),
                             probabilities: (name != "no distribution").then(|| {
                                 BTreeMap::from([
-                                    ("advantage".into(), Probability(score)),
+                                    (
+                                        if name == "missing probability" {
+                                            "other"
+                                        } else {
+                                            "advantage"
+                                        }
+                                        .into(),
+                                        Probability(score),
+                                    ),
                                     ("no_advantage".into(), Probability(1.0 - score)),
                                 ])
                             }),
@@ -1704,10 +1721,15 @@ mod tests {
                     assert!(
                         matches!(result, Err(LibsyError::AlgorithmError { message }) if message.contains("candidate is missing"))
                     );
-                } else {
+                } else if name == "provider error" {
                     assert!(
                         matches!(result, Err(LibsyError::ClientCall { .. })),
                         "{name}"
+                    );
+                } else {
+                    assert!(
+                        matches!(result, Err(LibsyError::InvalidDecision { target, .. }) if target == "judge"),
+                        "expected invalid decision error: {name}"
                     );
                 }
                 continue;

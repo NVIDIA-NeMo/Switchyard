@@ -159,7 +159,20 @@ test("validation and decision failure policy", async () => {
     model: options.targets.efficient,
     state: { stage_previous_tier: { string: "weak" } },
   });
-  assert.deepEqual(await router.route(messages, { state, decide: async () => ({ answers: {} }) }), { model: options.targets.capable });
+  for (const answer of [
+    { answers: {} },
+    { answers: { route: { value: { type: "boolean", data: { type: "value", data: true } } } } },
+    { answers: { route: { value: { type: "choice", data: { selected: "advantage" } } } } },
+    { answers: { route: { value: { type: "choice", data: { selected: "no_advantage", probabilities: { no_advantage: 1 } } } } } },
+  ]) {
+    const decide = async () => answer;
+    await assert.rejects(router.route(messages, { state, decide }), { code: "ERR_ROUTING" });
+    assert.deepEqual(await fallback.route(messages, { state, decide }), { model: options.targets.capable });
+    assert.deepEqual(await fallback.route(messages, { decide }), {
+      model: options.targets.efficient,
+      state: { stage_previous_tier: { string: "weak" } },
+    });
+  }
 });
 
 test("abort settles promptly, ignores late answers, and removes listeners", { timeout: 5000 }, async () => {

@@ -411,6 +411,7 @@ pub(crate) fn report_fail_open(judge_model: &str, error: String, reason: &'stati
 pub(crate) fn libsy_error_reason(error: &LibsyError) -> &'static str {
     match error {
         LibsyError::ClientCall { source, .. } => client_error_reason(source),
+        LibsyError::InvalidDecision { .. } => "invalid_verdict",
         _ => "call_error",
     }
 }
