@@ -308,6 +308,31 @@ where
             self.report_fail_open(driver, safe_error_summary(&error), "parse_error")
         })
     }
+
+    /// Classifies and records one judge consultation.
+    pub(crate) fn classify_verdict(
+        &self,
+        verdict: &std::result::Result<J::Verdict, &'static str>,
+        driver: &Driver,
+    ) -> Result<Classification> {
+        let classification = self
+            .policy
+            .to_classification(verdict.as_ref().ok(), driver)?;
+        let evidence = self.evidence.and_then(|evidence| match verdict.as_ref() {
+            Ok(verdict) => evidence(&self.policy, Some(verdict)),
+            Err(reason) => Some(serde_json::json!({"source": "fail_open", "reason_code": reason})),
+        });
+        driver.record_judgment(classification.argmax(false)?, evidence.clone());
+        if let Some(evidence) = evidence {
+            match &classification {
+                Classification::Scores(scores) if !scores.is_empty() => {
+                    driver.set_evidence(evidence);
+                }
+                _ => driver.set_evidence_if_empty(evidence),
+            }
+        }
+        Ok(classification)
+    }
 }
 
 /// Logs and counts a judge failure with a bounded label that excludes message content.
@@ -366,22 +391,7 @@ where
             });
         }
         let verdict = self.verdict(state, request, driver, judge_models).await;
-        let classification = self
-            .policy
-            .to_classification(verdict.as_ref().ok(), driver)?;
-        let evidence = self.evidence.and_then(|evidence| match verdict.as_ref() {
-            Ok(verdict) => evidence(&self.policy, Some(verdict)),
-            Err(reason) => Some(serde_json::json!({"source": "fail_open", "reason_code": reason})),
-        });
-        driver.record_judgment(classification.argmax(false)?, evidence.clone());
-        if let Some(evidence) = evidence {
-            match &classification {
-                Classification::Scores(scores) if !scores.is_empty() => {
-                    driver.set_evidence(evidence);
-                }
-                _ => driver.set_evidence_if_empty(evidence),
-            }
-        }
+        let classification = self.classify_verdict(&verdict, driver)?;
         // A judge consultation is a side call, never the turn's answer.
         Ok((classification, None))
     }
