@@ -17,6 +17,11 @@ keywords = ["llm", "client", "openai", "anthropic"]
 publish = ["crates-io"]
 
 [dependencies]
+base64.workspace = true
+dynamo-multimodal = { version = "0.2.0", default-features = false, features = ["fetch", "video-decode"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+thiserror.workspace = true
+url = "2"
 switchyard-libsy.workspace = true
 switchyard-protocol.workspace = true
 switchyard-translation.workspace = true
@@ -38,6 +43,5 @@ tracing-opentelemetry.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 # SDK + in-memory exporter to assert what the observability layer records.
 opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing", "trace"] }
-thiserror.workspace = true
 tracing-subscriber.workspace = true
 wiremock = "0.6"

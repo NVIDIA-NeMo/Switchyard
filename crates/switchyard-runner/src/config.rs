@@ -13,8 +13,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
-    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    OpenAiDecisionClient, ResponsesReasoningPolicy, SystemOneClient, TranslatingLlmClient,
+    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, MediaConfig,
+    ModelConfig, OpenAiDecisionClient, ResponsesReasoningPolicy, SystemOneClient,
+    TranslatingLlmClient,
 };
 use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
@@ -404,9 +405,10 @@ impl DeploymentConfig {
                     if first.reasoning_effort != target.reasoning_effort
                         || first.extra_body != target.extra_body
                         || first.omit_body_fields != target.omit_body_fields
+                        || first.media != target.media
                     {
                         return Err(RunnerError::configuration(format!(
-                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort, extra_body, or omit_body_fields; one target per model id is kept, so give each its own model id or llm client",
+                            "targets {first_name} and {target_name} both name model {} on llm client {} but with different reasoning_effort, extra_body, omit_body_fields, or media; one target per model id is kept, so give each its own model id or llm client",
                             target.id, target.llm_client
                         )));
                     }
@@ -522,20 +524,22 @@ impl DeploymentConfig {
                     )));
                 }
             }
-            model_configs.push(
-                ModelConfig::new(
-                    target.id.clone(),
-                    build_backend(
-                        &target.llm_client,
-                        client_config,
-                        &target.extra_body,
-                        &target.omit_body_fields,
-                        target.reasoning_effort.clone(),
-                    )?,
-                    None,
-                )
-                .with_responses_reasoning(client_config.responses_reasoning.unwrap_or_default()),
-            );
+            let mut model_config = ModelConfig::new(
+                target.id.clone(),
+                build_backend(
+                    &target.llm_client,
+                    client_config,
+                    &target.extra_body,
+                    &target.omit_body_fields,
+                    target.reasoning_effort.clone(),
+                )?,
+                None,
+            )
+            .with_responses_reasoning(client_config.responses_reasoning.unwrap_or_default());
+            if let Some(media) = &target.media {
+                model_config = model_config.with_media(media.clone());
+            }
+            model_configs.push(model_config);
         }
 
         let mut clients = BTreeMap::new();
@@ -945,6 +949,8 @@ struct TargetConfig {
     /// Reasoning effort forced on every request to this target, replacing the caller's value.
     /// Only meaningful on `openai_chat` and `openai_responses` clients.
     reasoning_effort: Option<String>,
+    /// Media preparation for every outgoing call to this target.
+    media: Option<MediaConfig>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -1384,6 +1390,21 @@ task_typing = false
         Ok(())
     }
 
+    /// Reject an invalid image budget or a mode that never consumes it.
+    #[test]
+    fn rejects_invalid_judge_image_limits() {
+        let negative = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\njudge_max_images = -1",
+        );
+        assert!(Runner::from_toml(&negative).is_err());
+        let escalation = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "mode = \"escalation\"\nescalation = { confirmations = 1 }\njudge_max_images = 1",
+        );
+        assert!(error_message(&escalation).contains("mode escalation cannot use judge_max_images"));
+    }
+
     fn with_subagent_llm_classifier(config: &str, route: &str, extra: &str) -> String {
         let mut configured = config.to_string();
         configured.push_str(&format!("\n[routes.{route}.subagents]\n"));
@@ -1806,6 +1827,28 @@ classify_trigger"#,
     }
 
     #[test]
+    fn target_media_config_is_validated_and_duplicate_policies_are_rejected() {
+        let target = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
+        let valid = VALID_CONFIG.replace(target, &format!("{target}\nmedia = {{ video = \"frames\", video_max_frames = 2, frame_max_edge = 384 }}"));
+        assert!(runner_from_toml(&valid).is_ok());
+        assert!(
+            error_message(&valid.replace("video_max_frames = 2", "video_max_frames = 0"))
+                .contains("invalid media limits")
+        );
+        assert!(
+            error_message(&valid.replace("video = \"frames\"", "video = \"video_url\""))
+                .contains("require an openai_chat")
+        );
+        let conflict = format!(
+            "{valid}\n[targets.duplicate]\nid = \"strong/model\"\nllm_client = \"responses\"\nmedia = {{ video = \"frames\", video_max_frames = 1 }}\n"
+        );
+        assert!(
+            error_message(&conflict)
+                .contains("different reasoning_effort, extra_body, omit_body_fields, or media")
+        );
+    }
+
+    #[test]
     fn duplicate_targets_with_conflicting_settings_are_rejected() -> RunnerResult<()> {
         let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
         assert!(VALID_CONFIG.contains(strong));
@@ -1818,7 +1861,7 @@ classify_trigger"#,
         );
         assert!(
             error_message(&conflicting)
-                .contains("different reasoning_effort, extra_body, or omit_body_fields"),
+                .contains("different reasoning_effort, extra_body, omit_body_fields, or media"),
             "{}",
             error_message(&conflicting)
         );

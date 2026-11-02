@@ -1,5 +1,20 @@
 # Extending Server Configuration
 
+## Set the request body limit
+
+The server accepts buffered JSON requests up to 32 MiB by default. For larger
+inline media, set the server command-line option:
+
+```bash
+switchyard-server --config routes.toml --max-request-body-bytes 134217728
+```
+
+This sets a 128 MiB limit for the entire JSON body, including base64 data. The
+value must be positive. It applies before routing, so it is server-wide.
+Rust embedders can use
+`ServerState::with_max_request_body_bytes`. Target `media.max_input_bytes` remains
+a separate limit on each downloaded or decoded media source.
+
 ## Add an LLM client and target
 
 Define the upstream once under `llm_clients`, then reference it from targets.

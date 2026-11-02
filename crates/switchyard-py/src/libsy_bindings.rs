@@ -238,6 +238,7 @@ impl PyCustomClassifierConfig {
         session_affinity=false,
         message_hash_fallback=false,
         recent_turn_window=None,
+        judge_max_images=None,
         max_output_tokens=4096,
         judge_deadline_ms=None
     ))]
@@ -249,6 +250,7 @@ impl PyCustomClassifierConfig {
         session_affinity: bool,
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
+        judge_max_images: Option<usize>,
         max_output_tokens: u64,
         judge_deadline_ms: Option<u64>,
     ) -> PyResult<Self> {
@@ -262,6 +264,7 @@ impl PyCustomClassifierConfig {
         inner.classify_trigger = classify_trigger(session_affinity);
         inner.message_hash_fallback = message_hash_fallback;
         inner.recent_turn_window = recent_turn_window;
+        inner.judge_max_images = judge_max_images;
         inner.max_output_tokens = max_output_tokens;
         inner.judge_deadline_ms = judge_deadline_ms;
         Ok(Self { inner })
@@ -362,6 +365,7 @@ impl PyTaskClassifierConfig {
         session_affinity=false,
         message_hash_fallback=false,
         recent_turn_window=None,
+        judge_max_images=None,
         max_output_tokens=4096,
         judge_deadline_ms=None,
         prompt=None,
@@ -374,6 +378,7 @@ impl PyTaskClassifierConfig {
         session_affinity: bool,
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
+        judge_max_images: Option<usize>,
         max_output_tokens: u64,
         judge_deadline_ms: Option<u64>,
         prompt: Option<String>,
@@ -393,6 +398,7 @@ impl PyTaskClassifierConfig {
                 classify_trigger: classify_trigger(session_affinity),
                 message_hash_fallback,
                 recent_turn_window,
+                judge_max_images,
             },
         })
     }
