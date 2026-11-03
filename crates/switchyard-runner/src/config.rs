@@ -1759,7 +1759,7 @@ evidence = {{}}
         Ok(())
     }
 
-    // The removed type must not remain available through either config parser.
+    /// Both the TOML and JSON parsers must reject the removed `plan_execute` type.
     #[test]
     fn removed_plan_execute_type_is_rejected() {
         let route = r#"
@@ -1777,7 +1777,8 @@ efficient_target = "weak"
         assert!(error.to_string().contains("unknown variant `plan_execute`"));
     }
 
-    // Changing only the route type must not silently discard the old handoff settings.
+    /// TOML and JSON parsers must reject old `plan_execute` fields on `stage_router` routes.
+    /// Changing only the route type must not load a route that ignores its handoff settings.
     #[test]
     fn stage_rejects_obsolete_plan_execute_settings() {
         let stage = json!({
@@ -2130,6 +2131,28 @@ classify_trigger"#,
                 .models()
                 .any(|model| model.id.as_str() == "switchyard/hier")
         );
+        Ok(())
+    }
+
+    /// This test repeats `strong` for the subagent to detect removed duplicates or reordered targets.
+    /// The Composite judge must stay out of the completion target list.
+    #[test]
+    fn composite_targets_keep_parent_order_and_subagent_duplicates() -> RunnerResult<()> {
+        let configured = with_subagent_passthrough(&composite_config(), "composed");
+        let routes = super::route_targets(&configured)?;
+        let route = routes
+            .iter()
+            .find(|route| route.name == "composed")
+            .unwrap();
+        assert_eq!(
+            route
+                .answer_targets
+                .iter()
+                .map(|target| target.name.as_str())
+                .collect::<Vec<_>>(),
+            ["strong", "weak", "strong"],
+        );
+        runner_from_toml(&configured)?;
         Ok(())
     }
 

@@ -905,6 +905,9 @@ impl AlgorithmSpec {
         !matches!(self, Self::PrefillRouter { .. })
     }
 
+    /// This iterator yields tier classifier targets and their optional decision settings.
+    /// It includes classifiers in nested Composite profiles.
+    /// Standalone custom and direct modes use model groups and are excluded.
     pub(crate) fn classifier_targets(
         &self,
     ) -> impl Iterator<Item = (&str, Option<&DecisionJudgeRouteConfig>)> {
@@ -962,20 +965,15 @@ impl AlgorithmSpec {
         names
     }
 
-    /// Completion targets in algorithm order; judge-only targets are excluded.
+    /// The list keeps the parent's completion target order, then appends subagent targets.
+    /// It preserves duplicate names and excludes targets used only as judges.
     pub fn routing_target_names(&self) -> Vec<&str> {
-        match self {
+        let mut names: Vec<&str> = match self {
             Self::Noop { .. } => Vec::new(),
-            Self::Random { targets, .. } => targets.iter().map(String::as_str).collect(),
-            Self::Passthrough {
-                target, subagents, ..
-            } => {
-                let mut names = vec![target.as_str()];
-                if let Some(subagents) = subagents {
-                    names.extend(subagents.routing_target_names());
-                }
-                names
+            Self::Random { targets, .. } | Self::PrefillRouter { targets, .. } => {
+                targets.iter().map(String::as_str).collect()
             }
+            Self::Passthrough { target, .. } => vec![target.as_str()],
             Self::LlmClassifier { config, .. } => match config.classifier_mode() {
                 ClassifierMode::Capability => config
                     .weak_target
@@ -998,31 +996,16 @@ impl AlgorithmSpec {
             Self::StageRouter {
                 capable_target,
                 efficient_target,
-                subagents,
                 ..
-            } => {
-                let mut names = vec![capable_target.as_str(), efficient_target.as_str()];
-                if let Some(subagents) = subagents {
-                    names.extend(subagents.routing_target_names());
-                }
-                names
             }
-            Self::Auto {
+            | Self::Auto {
                 capable_target,
                 efficient_target,
             } => vec![capable_target.as_str(), efficient_target.as_str()],
-            Self::Composite {
-                stage, subagents, ..
-            } => {
-                let mut names = vec![
-                    stage.capable_target.as_str(),
-                    stage.efficient_target.as_str(),
-                ];
-                if let Some(subagents) = subagents {
-                    names.extend(subagents.routing_target_names());
-                }
-                names
-            }
+            Self::Composite { stage, .. } => vec![
+                stage.capable_target.as_str(),
+                stage.efficient_target.as_str(),
+            ],
             // The advisor is judge-only: reviews go through its own client,
             // so it is not a completion (or count_tokens) destination.
             Self::Advisor {
@@ -1034,8 +1017,23 @@ impl AlgorithmSpec {
                     config.capable_target.as_str(),
                 ]
             }
-            Self::PrefillRouter { targets, .. } => targets.iter().map(String::as_str).collect(),
+        };
+        if let Self::Passthrough {
+            subagents: Some(subagents),
+            ..
         }
+        | Self::StageRouter {
+            subagents: Some(subagents),
+            ..
+        }
+        | Self::Composite {
+            subagents: Some(subagents),
+            ..
+        } = self
+        {
+            names.extend(subagents.routing_target_names());
+        }
+        names
     }
 
     /// Every target the algorithm may call, including judge-only targets.
@@ -1739,6 +1737,9 @@ fn attach_subagent_router(
     Ok(Arc::new(algorithm))
 }
 
+/// `build_algorithm` builds the configured algorithm and attaches supported subagent routing.
+/// It returns errors for invalid settings or failed target lookups during construction.
+/// `AlgorithmSpec::build_with_runtime_models` also resolves the runtime model groups.
 fn build_algorithm(
     route_name: &str,
     config: &AlgorithmSpec,

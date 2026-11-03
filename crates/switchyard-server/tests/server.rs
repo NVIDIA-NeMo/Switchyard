@@ -3006,11 +3006,17 @@ mutate = ["send_payment_request"]
     Ok(())
 }
 
-// Critical errors affect tier selection before handoff; an active efficient hold bypasses them.
-// The handoff must preserve upstream history and tier prompts across API formats and streaming.
+/// Each API must preserve plan and tool history, tier prompts, and streaming completion markers.
+/// Critical tool errors keep this route on the capable model before handoff.
+/// Stage stays on the efficient model during a hold, even after another critical error.
+/// A final request must clear the hold so the next request uses the capable model.
 #[tokio::test]
 async fn stage_plan_execute_handoff_preserves_history_and_prompts() -> TestResult {
-    for path in ["/v1/chat/completions", "/v1/messages", "/v1/responses"] {
+    for (path, history_key, stream_end) in [
+        ("/v1/chat/completions", "messages", "data: [DONE]"),
+        ("/v1/messages", "messages", "event: message_stop"),
+        ("/v1/responses", "input", "event: response.completed"),
+    ] {
         let upstream = MockUpstream::start().await?;
         let app = build_switchyard_router(load_test_config(&format!(
             r#"
@@ -3036,31 +3042,31 @@ capable_system_prompt = "Inspect the task and plan before modifying files."
         ))?);
 
         for (tool, output, expected, stream, final_request) in [
-            (None, "", "model/strong", false, false),
+            (None, "", "model/strong", false, "false"),
             (
                 Some("read_file"),
                 "source code",
                 "model/strong",
                 false,
-                false,
+                "false",
             ),
             (
                 Some("write_file"),
                 "out of memory",
                 "model/strong",
                 false,
-                false,
+                "false",
             ),
             (
                 Some("write_file"),
                 "file written",
                 "model/weak",
                 true,
-                false,
+                "false",
             ),
-            (Some("bash"), "out of memory", "model/weak", false, false),
-            (None, "", "model/weak", false, true),
-            (None, "", "model/strong", false, false),
+            (Some("bash"), "out of memory", "model/weak", false, "false"),
+            (None, "", "model/weak", false, "true"),
+            (None, "", "model/strong", false, "false"),
         ] {
             let mut messages = vec![json!({"role": "user", "content": "implement the task"})];
             if let Some(tool) = tool {
@@ -3086,11 +3092,7 @@ capable_system_prompt = "Inspect the task and plan before modifying files."
                 }
             }
             let mut body = json!({"model": "plan-execute", "stream": stream, "max_tokens": 128});
-            body[if path == "/v1/responses" {
-                "input"
-            } else {
-                "messages"
-            }] = json!(messages);
+            body[history_key] = json!(messages);
             let response = send_with_headers(
                 &app,
                 "POST",
@@ -3098,10 +3100,7 @@ capable_system_prompt = "Inspect the task and plan before modifying files."
                 Some(body),
                 &[
                     ("x-switchyard-session-id", "plan-execute-session"),
-                    (
-                        "x-switchyard-session-final",
-                        if final_request { "true" } else { "false" },
-                    ),
+                    ("x-switchyard-session-final", final_request),
                 ],
             )
             .await?;
@@ -3121,12 +3120,7 @@ capable_system_prompt = "Inspect the task and plan before modifying files."
             );
             if stream {
                 let text = std::str::from_utf8(&response.bytes)?;
-                let end = match path {
-                    "/v1/chat/completions" => "data: [DONE]",
-                    "/v1/messages" => "event: message_stop",
-                    _ => "event: response.completed",
-                };
-                assert!(text.contains(end), "{path}: {text}");
+                assert!(text.contains(stream_end), "{path}: {text}");
                 assert!(!text.contains("event: error"), "{path}: {text}");
             }
             let calls = upstream.calls.lock().await;

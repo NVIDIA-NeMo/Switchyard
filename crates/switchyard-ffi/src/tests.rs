@@ -611,7 +611,7 @@ fn advisor_attributes_host_fallback() {
     }
 }
 
-// Both agents need active holds so a final request tests cleanup of the sibling's hold.
+/// Both agents have efficient holds; finalizing one must clear the other's hold too.
 #[test]
 fn stage_holds_are_isolated_per_agent_and_cleared_with_the_session() {
     let router = router(json!({
