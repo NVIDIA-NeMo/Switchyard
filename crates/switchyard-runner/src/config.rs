@@ -137,12 +137,13 @@ pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
 }
 
 pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
-    Arc::new(AlgorithmFactory::from_toml(source)?.config).build()
+    Runner::from_config(AlgorithmFactory::from_toml(source)?.config)
 }
 
+/// Deployment configuration shared by typed Rust construction and TOML loading.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DeploymentConfig {
+pub struct DeploymentConfig {
     schema_version: u32,
     fallback_client: Option<String>,
     #[serde(default)]
@@ -167,22 +168,29 @@ pub(crate) struct RouteConfig {
     eligibility: Option<TargetEligibilityConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+/// Requirements accepted by a route and ordered alternatives for its existing targets.
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct TargetEligibilityConfig {
+pub struct TargetEligibilityConfig {
+    /// Reject requests without an explicit requirement set; an empty collection counts.
     #[serde(default)]
-    require_explicit_requirements: bool,
+    pub require_explicit_requirements: bool,
+    /// Try the configured target first, then these alternatives in order. Mappings do not chain.
     #[serde(default)]
-    target_alternatives: BTreeMap<String, Vec<String>>,
+    pub target_alternatives: BTreeMap<String, Vec<String>>,
+    /// Whether requirements apply to this request or accumulate under its trusted task ID.
     #[serde(default)]
-    scope: RequirementScope,
+    pub scope: RequirementScope,
 }
 
+/// How long the caller's requirements remain in effect.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum RequirementScope {
+pub enum RequirementScope {
+    /// Apply requirements only to the current request and its model calls.
     #[default]
     Request,
+    /// Retain the union of requirements for each task in this runner instance.
     Task,
 }
 
@@ -392,7 +400,138 @@ impl RouteConfig {
     }
 }
 
+impl Default for DeploymentConfig {
+    fn default() -> Self {
+        Self {
+            schema_version: SUPPORTED_SCHEMA_VERSION,
+            fallback_client: None,
+            llm_clients: BTreeMap::new(),
+            targets: BTreeMap::new(),
+            decision_clients: BTreeMap::new(),
+            decision_targets: BTreeMap::new(),
+            routes: BTreeMap::new(),
+        }
+    }
+}
+
 impl DeploymentConfig {
+    /// Starts an empty deployment. Build it with [`Runner::from_config`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds a native HTTP client with TOML's transport defaults.
+    /// The credential is an environment variable name, not an API key.
+    /// Invalid URLs and duplicate names return configuration errors.
+    pub fn add_http_client(
+        &mut self,
+        name: impl Into<String>,
+        format: WireFormat,
+        base_url: &str,
+        api_key_env: Option<String>,
+    ) -> RunnerResult<()> {
+        let client = LlmClientConfig {
+            format: match format {
+                WireFormat::OpenAiChat => ClientFormat::OpenAiChat,
+                WireFormat::OpenAiResponses => ClientFormat::OpenAiResponses,
+                WireFormat::AnthropicMessages => ClientFormat::AnthropicMessages,
+            },
+            base_url: HttpBaseUrl::parse(base_url).map_err(RunnerError::configuration)?,
+            context_discovery: None,
+            api_key_env,
+            forward_auth: false,
+            extra_headers: BTreeMap::new(),
+            max_retries: default_max_retries(),
+            fallback_on_rate_limit: default_fallback_on_rate_limit(),
+            failure_cooldown_ms: default_failure_cooldown_ms(),
+            timeout_ms: None,
+            responses_reasoning: None,
+        };
+        insert_config(&mut self.llm_clients, "llm client", name.into(), client)
+    }
+
+    /// Adds a model and its deployment-approved labels; duplicate names are rejected.
+    /// Model references and labels are validated when the runner is built.
+    pub fn add_target(
+        &mut self,
+        name: impl Into<String>,
+        model: impl Into<ModelId>,
+        llm_client: impl Into<String>,
+        labels: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> RunnerResult<()> {
+        let target = TargetConfig {
+            id: model.into(),
+            llm_client: llm_client.into(),
+            labels: labels
+                .into_iter()
+                .map(|label| label.as_ref().to_owned())
+                .collect(),
+            extra_body: BTreeMap::new(),
+            omit_body_fields: BTreeSet::new(),
+            system_prompt: None,
+            reasoning_effort: None,
+        };
+        insert_config(&mut self.targets, "target", name.into(), target)
+    }
+
+    /// Replaces approvals on an existing LLM or typed decision target.
+    /// Unknown names return an error; labels are validated when the runner is built.
+    pub fn set_target_labels(
+        &mut self,
+        name: &str,
+        labels: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> RunnerResult<()> {
+        let target = if let Some(target) = self.targets.get_mut(name) {
+            &mut target.labels
+        } else if let Some(target) = self.decision_targets.get_mut(name) {
+            &mut target.labels
+        } else {
+            return Err(RunnerError::configuration(format!("unknown target {name}")));
+        };
+        *target = labels
+            .into_iter()
+            .map(|label| label.as_ref().to_owned())
+            .collect();
+        Ok(())
+    }
+
+    /// Adds an algorithm with optional eligibility; duplicate names are rejected.
+    /// Runner construction validates references and alternatives before execution.
+    pub fn add_route(
+        &mut self,
+        name: impl Into<String>,
+        id: impl Into<ModelId>,
+        algorithm: AlgorithmSpec,
+        eligibility: Option<TargetEligibilityConfig>,
+    ) -> RunnerResult<()> {
+        let route = RouteConfig {
+            id: id.into(),
+            context_window: None,
+            tool_calling: None,
+            reasoning: None,
+            vision: None,
+            eligibility,
+            algorithm,
+            infra: None,
+        };
+        insert_config(&mut self.routes, "route", name.into(), route)
+    }
+
+    /// Replaces eligibility before construction, using the TOML route name, not its model ID.
+    /// Unknown names return an error.
+    pub fn set_route_eligibility(
+        &mut self,
+        name: &str,
+        eligibility: Option<TargetEligibilityConfig>,
+    ) -> RunnerResult<()> {
+        let route = self
+            .routes
+            .get_mut(name)
+            .ok_or_else(|| RunnerError::configuration(format!("unknown route {name}")))?;
+        route.eligibility = eligibility;
+        Ok(())
+    }
+
     pub(crate) fn requires_target_admission(&self) -> bool {
         self.routes
             .values()
@@ -587,7 +726,7 @@ impl DeploymentConfig {
         })
     }
 
-    fn build(self: Arc<Self>) -> RunnerResult<Runner> {
+    pub(crate) fn build(self: Arc<Self>) -> RunnerResult<Runner> {
         self.validate()?;
 
         let mut approvals = HashMap::new();
@@ -1234,6 +1373,23 @@ impl DeploymentConfig {
 /// Values Anthropic accepts for `output_config.effort`.
 const ANTHROPIC_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
+fn insert_config<T>(
+    entries: &mut BTreeMap<String, T>,
+    kind: &str,
+    name: String,
+    value: T,
+) -> RunnerResult<()> {
+    match entries.entry(name) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(value);
+            Ok(())
+        }
+        std::collections::btree_map::Entry::Occupied(entry) => Err(RunnerError::configuration(
+            format!("duplicate {kind} {}", entry.key()),
+        )),
+    }
+}
+
 fn count_tokens_priority(target_name: &str, model_id: &ModelId) -> usize {
     let target_name = target_name.to_ascii_lowercase();
     let model_id = model_id.to_ascii_lowercase();
@@ -1251,6 +1407,15 @@ fn count_tokens_priority(target_name: &str, model_id: &ModelId) -> usize {
 struct HttpBaseUrl(reqwest::Url);
 
 impl HttpBaseUrl {
+    fn parse(raw: &str) -> Result<Self, String> {
+        let url = reqwest::Url::parse(raw.trim())
+            .map_err(|error| format!("base_url must be an absolute HTTP(S) URL: {error}"))?;
+        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+            return Err("base_url must be an absolute HTTP(S) URL".into());
+        }
+        Ok(Self(url))
+    }
+
     fn as_str(&self) -> &str {
         self.0.as_str()
     }
@@ -1262,15 +1427,7 @@ impl<'de> Deserialize<'de> for HttpBaseUrl {
         D: serde::Deserializer<'de>,
     {
         let raw = String::deserialize(deserializer)?;
-        let url = reqwest::Url::parse(raw.trim()).map_err(|error| {
-            serde::de::Error::custom(format!("base_url must be an absolute HTTP(S) URL: {error}"))
-        })?;
-        if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-            return Err(serde::de::Error::custom(
-                "base_url must be an absolute HTTP(S) URL",
-            ));
-        }
-        Ok(Self(url))
+        Self::parse(&raw).map_err(serde::de::Error::custom)
     }
 }
 

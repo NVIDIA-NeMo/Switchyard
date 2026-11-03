@@ -21,7 +21,10 @@ mod route;
 mod runner;
 
 #[cfg(not(target_os = "wasi"))]
-pub use config::{ConfiguredTarget, RouteTargets, TargetModel, api_key_variables, route_targets};
+pub use config::{
+    ConfiguredTarget, DeploymentConfig as RunnerConfig, RequirementScope, RouteTargets,
+    TargetEligibilityConfig, TargetModel, api_key_variables, route_targets,
+};
 #[cfg(not(target_os = "wasi"))]
 pub use eligibility::require_target_labels;
 

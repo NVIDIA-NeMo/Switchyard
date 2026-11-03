@@ -14,7 +14,7 @@ use switchyard_llm_client::TranslatingLlmClient;
 use switchyard_protocol::{ModelId, WireFormat};
 
 use crate::config;
-use crate::{ModelCapabilities, Route, RunnerError};
+use crate::{ModelCapabilities, Route, RunnerConfig, RunnerError};
 
 /// Immutable named route table.
 pub struct Runner {
@@ -68,6 +68,11 @@ impl Runner {
     /// Use [`Self::load`] when the deployment is stored in a file.
     pub fn from_toml(source: &str) -> Result<Self, RunnerError> {
         config::runner_from_toml(source)
+    }
+
+    /// Validates typed deployment configuration using the same construction as TOML.
+    pub fn from_config(config: RunnerConfig) -> Result<Self, RunnerError> {
+        Arc::new(config).build()
     }
 
     /// Builds a runner from named routes in caller-provided order.
