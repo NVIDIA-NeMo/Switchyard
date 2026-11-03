@@ -1,0 +1,142 @@
+name: Go distribution candidates
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/go-packaging.yml
+      - scripts/release/package_go_bindings.py
+      - scripts/release/test_go_bindings.sh
+      - tests/test_go_binding_packaging.py
+      - bindings/go/**
+  workflow_dispatch:
+    inputs:
+      release_candidate:
+        description: Require an existing stable Switchyard release tag; artifacts only.
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PACKAGE_MODE: ${{ inputs.release_candidate && 'release' || 'preview' }}
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Validate version policy
+        run: python3 scripts/release/package_go_bindings.py --mode "$PACKAGE_MODE" --print-version
+
+  build:
+    needs: version
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            artifact: wasm
+            target: wasm32-wasip1
+            rustflags: ""
+          - os: ubuntu-24.04
+            artifact: native-linux_amd64
+            target: x86_64-unknown-linux-gnu
+            rustflags: -C target-cpu=generic -C force-frame-pointers=yes
+          - os: ubuntu-24.04-arm
+            artifact: native-linux_arm64
+            target: aarch64-unknown-linux-gnu
+            rustflags: -C target-cpu=generic -C force-frame-pointers=yes
+    env:
+      TARGET: ${{ matrix.target }}
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build library
+        run: |
+          rustup target add "$TARGET"
+          cargo build -p switchyard-ffi --target "$TARGET" --release --locked --lib
+          mkdir -p "$RUNNER_TEMP/artifact"
+          if [ "$TARGET" = wasm32-wasip1 ]; then
+            cp "target/$TARGET/release/switchyard_ffi.wasm" "$RUNNER_TEMP/artifact/"
+          else
+            cp "target/$TARGET/release/libswitchyard_ffi.a" "$RUNNER_TEMP/artifact/"
+          fi
+          git rev-parse HEAD > "$RUNNER_TEMP/artifact/SOURCE_COMMIT"
+          {
+            rustc -Vv
+            printf 'RUSTFLAGS=%s\n' "$RUSTFLAGS"
+            getconf GNU_LIBC_VERSION
+          } > "$RUNNER_TEMP/artifact/build-info.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/artifact/*
+          retention-days: 3
+
+  package:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: ${{ runner.temp }}/artifacts
+      - name: Assemble module
+        run: |
+          python3 scripts/release/package_go_bindings.py --mode "$PACKAGE_MODE" \
+            --artifacts "$RUNNER_TEMP/artifacts" --output "$RUNNER_TEMP/package"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: go-distribution-candidate
+          path: |
+            ${{ runner.temp }}/package/proxy
+            ${{ runner.temp }}/package/manifest.json
+            ${{ runner.temp }}/package/SHA256SUMS
+          retention-days: 3
+
+  consumer:
+    needs: package
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: bindings/go/go.mod
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: go-distribution-candidate
+          path: ${{ runner.temp }}/package
+      - name: Verify checksums
+        working-directory: ${{ runner.temp }}/package
+        run: sha256sum -c SHA256SUMS
+      - name: Test downloaded module without Rust
+        run: bash scripts/release/test_go_bindings.sh "$RUNNER_TEMP/package"
