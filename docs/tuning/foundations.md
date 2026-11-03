@@ -35,7 +35,8 @@ test.
 A candidate is a complete configuration to test under the objective. Start with
 a baseline and a small set of changes you expect to help:
 
-1. **Record the baseline.** Save its configuration and measured outcomes.
+1. **Record baselines.** Measure efficient-only, capable-only, and the current
+   routed configuration on the same tasks. Save their settings and outcomes.
 2. **Choose what varies.** For example, change model targets, thresholds, or hold
    durations. Keep other settings fixed and state why each change might help.
 3. **Test interactions.** A threshold and hold duration can affect the same
@@ -63,13 +64,22 @@ Start with the comparison that matches what you want to change:
 
 ## 4. Check the final choice
 
-- Split the tasks before tuning. Compare configurations and thresholds on a
-  validation subset, then evaluate the frozen choice on an untouched test set.
-  When learning a prompt, use separate training tasks to guide its revisions.
+Split **100% of the evaluation benchmark before tuning**. A practical starting
+allocation is:
+
+| Split | Share | Use |
+|---|---|---|
+| Calibration | 20% | Collect baselines, try settings, and select the candidate. |
+| Held-out validation | 80% | Evaluate the frozen candidate against the baselines. Do not use these results to tune it. |
+
+For 500 tasks, this means 100 calibration tasks and 400 validation tasks. Adjust
+the percentages before running if the calibration set is too small to cover the
+workload. Here, validation is the final held-out check.
+
 - Keep related examples in the same split. If predicting future data, respect
   time when splitting. Use representative workloads and repeated trials when
   execution is stochastic.
 - Record the objective, scoring rule, configurations, and evaluation conditions.
   Changing the models or settings requires new measurements.
-- If a test result guides another rewrite, it has become development evidence.
-  Use fresh data for an independent check.
+- If validation results guide another change, those tasks have become
+  calibration data. Use fresh held-out tasks for the next independent check.
