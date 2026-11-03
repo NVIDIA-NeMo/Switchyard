@@ -1,21 +1,13 @@
 # Tuning Foundations
 
-Configuration settings describe how the system behaves. The user's objective
-describes what that behavior should achieve. This guide bridges the gap between
-the two: define a measurable objective, design candidate configurations, and use
-a loss function to compare them against that fixed objective.
+Configuration settings describe how the system behaves; the user's objective
+describes what that behavior should achieve. This guide connects the two: choose
+a measurable objective, decide which settings to vary, and compare the results
+on representative benchmark tasks. Reserve separate tasks for the final check.
 
-A loss is the score used to compare results; lower is better. For the steps to
-run a routing experiment, start with [Compare and Tune](index.md).
-
-Use a representative subset of benchmark tasks for development: training tasks
-guide changes, while separate validation tasks select configurations and
-thresholds. Make these splits before tuning, keep related tasks together, and
-reserve an untouched test set for the final evaluation. See
-[Check the final choice](#4-check-the-final-choice) for split and evaluation guidance.
-
-For a quick walkthrough with concrete data, jump to
-[Section 5: Examples of tuning](examples.md).
+See [Examples of tuning](examples.md) for configuration and model-pair
+comparisons with concrete data. For the steps to run an experiment, use
+[Compare and Tune](index.md).
 
 ## 1. Define the objective
 
@@ -56,23 +48,24 @@ the results to choose between them.
 
 ## 3. Choose an example
 
-Each example connects a specific change to a measurable objective:
+Start with the comparison that matches what you want to change:
 
-- **[Tune configuration options](examples.md#5a-tune-configuration-options-for-cost):**
+- **[Tune configuration options](examples.md#tune-configuration-options-for-cost):**
   keep the algorithm and model pair fixed, vary routing settings, and find the
   lowest-cost option that meets the task-success target. A Pareto chart shows
   the cost and success tradeoffs.
-- **[Select a model pair](examples.md#5b-model-pair-selection-with-fixed-algorithm-settings):**
+- **[Select a model pair](examples.md#model-pair-selection-with-fixed-algorithm-settings):**
   keep algorithm settings fixed, swap the efficient/capable models, and compare
   execution cost plus a penalty for failed tasks.
-- **[Tune the unified router with GEPA](examples.md#5c-upcoming-gepa-tuning-for-the-unified-router):**
+- **[Tune the unified router with GEPA](examples.md#upcoming-gepa-tuning-for-the-unified-router):**
   planned for a future release. Use benchmark feedback to revise routing
   instructions and select a prompt against a fixed objective.
 
 ## 4. Check the final choice
 
-- Use training examples to guide changes, validation examples to compare
-  candidates and tune thresholds, and a separate test set for the frozen choice.
+- Split the tasks before tuning. Compare configurations and thresholds on a
+  validation subset, then evaluate the frozen choice on an untouched test set.
+  When learning a prompt, use separate training tasks to guide its revisions.
 - Keep related examples in the same split. If predicting future data, respect
   time when splitting. Use representative workloads and repeated trials when
   execution is stochastic.
@@ -80,5 +73,3 @@ Each example connects a specific change to a measurable objective:
   Changing the models or settings requires new measurements.
 - If a test result guides another rewrite, it has become development evidence.
   Use fresh data for an independent check.
-
-Continue to [Section 5: Examples of tuning](examples.md) for concrete comparisons.

@@ -4,11 +4,9 @@ Routing has two outcomes you can measure: how many tasks the agent completes,
 and what a run costs. Tuning is the loop below. Every step links the page that
 explains it, names what it produces, and says what it costs to run.
 
-For choosing what to optimize, read
-[Tuning Foundations](foundations.md). It connects user goals
-to candidate configurations and measurable results. See [Examples of tuning](examples.md)
-for a cost/success Pareto comparison, model-pair selection, and planned GEPA
-support for the unified router.
+Read [Tuning Foundations](foundations.md) to define an objective and design
+candidate configurations. [Examples of tuning](examples.md) shows how to compare
+routing settings and model pairs using cost and task success.
 
 Start where your goal is:
 

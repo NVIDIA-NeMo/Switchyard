@@ -1,11 +1,11 @@
-# 5. Examples of tuning
+# Examples of tuning
 
-Use these examples after defining an objective and candidate configurations in
-[Tuning Foundations](foundations.md). Each comparison holds the objective fixed
-while changing one part of the system. All numbers below are invented to make
-the calculations easy to follow; they are not benchmark results.
+These two comparisons show how to choose routing settings or a model pair for
+a fixed objective. Start with [Tuning Foundations](foundations.md) to define
+that objective and design candidates. All numbers are illustrative, not measured
+benchmark results. The final section outlines planned GEPA support.
 
-## 5.a. Tune configuration options for cost
+## Tune configuration options for cost
 
 Suppose the goal is to **minimize mean cost per task while passing at least 85%
 of tasks**. Keep the routing algorithm and model pair fixed. Change only the
@@ -14,8 +14,8 @@ routing threshold and how long the router stays on the capable model.
 Use `stage_router` with `picker = "efficient_first"`, no classifier,
 `recent_turn_window = 5`, and `efficient_hold_turns = 0`. Keep the model pair,
 serving settings, agent, task limits, initial cache setup, and all other options
-fixed. Develop candidates on training tasks and compare them on the same 100
-validation tasks.
+fixed. Compare all six candidates on the same 100 validation tasks, with a
+separate test set reserved for the final choice.
 
 Vary `confidence_threshold` and `capable_hold_turns`. A lower threshold lets
 weaker signals trigger escalation; a hold keeps requests on the capable tier
@@ -23,9 +23,9 @@ after switching. See the [threshold guide](../routing_algorithms/stage_router_ro
 for details. Run each candidate end to end: changed routing can alter later
 prompts, cache state, and costs, so reusing one run's outcomes can misrank them.
 
-Here are illustrative results from one run per validation task. Configuration C
-is the baseline. The loss is mean cost per task among candidates meeting the
-85% target; include failed tasks, retries, and cache charges in that cost.
+Here are results from one run per validation task, with C as the baseline.
+Compare mean cost among candidates meeting the 85% target. Include failed tasks,
+retries, and cache charges in that cost.
 
 | Candidate | Threshold | Hold (requests) | Tasks passed | Mean cost per task |
 |---|---|---|---|---|
@@ -56,7 +56,7 @@ F buys a higher success rate at a higher cost.
 The frontier describes this sample. Repeat promising runs, then freeze the
 selection and evaluate it on untouched test tasks.
 
-## 5.b. Model-pair selection with fixed algorithm settings
+## Model-pair selection with fixed algorithm settings
 
 This independent example fixes the algorithm settings and changes the
 efficient/capable model pair. Score each task as **execution cost plus $0.10 if
@@ -88,8 +88,10 @@ per task. Failure penalties are part of the score, not billed charges.
 
 **Select Pair 2.** Pair 1 has the lowest billed cost but loses its advantage when
 failures count. Pair 3 costs more without improving success on this sample.
+Repeat the comparison on representative tasks before making a deployment choice;
+follow the [final validation guidance](foundations.md#4-check-the-final-choice).
 
-## 5.c. Upcoming: GEPA tuning for the unified router
+## Upcoming: GEPA tuning for the unified router
 
 GEPA-based prompt tuning for the unified router is planned for a future release,
 with tooling and concrete APIs to run the workflow. GEPA proposes instruction
@@ -106,5 +108,3 @@ the router's instructions:
 - Freeze the chosen prompt and evaluate it on separate test tasks.
 
 The API walkthrough and worked results will accompany the tooling release.
-
-Before using the selected configuration, [check the final choice](foundations.md#4-check-the-final-choice).
