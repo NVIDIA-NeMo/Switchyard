@@ -6,7 +6,7 @@ use std::sync::{Arc, mpsc};
 use serde_json::{Value, json};
 use switchyard_llm_client::RunObservation;
 use switchyard_protocol::{Metadata, Request, Usage, text_request};
-use switchyard_runner::Runner;
+use switchyard_runner::{AlgorithmFactory, Runner};
 use wiremock::matchers::{body_partial_json, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -123,4 +123,131 @@ evidence = {{ description = "Compare the two profiles" }}
     assert_eq!(context["session"], "session-1");
     server.verify().await;
     Ok(())
+}
+
+fn direct_config(endpoint: &str) -> String {
+    format!(
+        r#"
+schema_version = 1
+[llm_clients.answers]
+format = "openai_chat"
+base_url = "{endpoint}/v1"
+[targets]
+fast = {{ id = "fast/model", llm_client = "answers" }}
+balanced = {{ id = "balanced/model", llm_client = "answers" }}
+premium = {{ id = "premium/model", llm_client = "answers" }}
+[decision_clients.router]
+format = "openai_decisions"
+endpoint = "{endpoint}/v1/decisions"
+api_key_env = "SWITCHYARD_DIRECT_DECISIONS_TEST_KEY"
+timeout_ms = 2000
+[decision_targets.router]
+id = "router-model"
+decision_client = "router"
+[routes.direct]
+id = "switchyard/direct"
+type = "llm_classifier"
+mode = "direct"
+default_target = "fast"
+[routes.direct.models]
+judge = ["router"]
+any = ["fast", "balanced", "premium"]
+fast = ["fast"]
+balanced = ["balanced"]
+premium = ["premium"]
+unused = []
+"#
+    )
+}
+
+#[tokio::test]
+async fn direct_mode_serves_the_selected_group() -> Result<(), Box<dyn std::error::Error>> {
+    let server = MockServer::start().await;
+    // This unique variable is only read while constructing this client.
+    unsafe {
+        std::env::set_var("SWITCHYARD_DIRECT_DECISIONS_TEST_KEY", "test-key");
+    }
+    let runner = Runner::from_toml(&direct_config(&server.uri()));
+    unsafe {
+        std::env::remove_var("SWITCHYARD_DIRECT_DECISIONS_TEST_KEY");
+    }
+    let runner = runner?;
+    // The choice routes even though another option has the higher probability.
+    Mock::given(method("POST")).and(path("/v1/decisions"))
+        .and(body_partial_json(json!({"model": "router-model", "questions": [{
+            "name": "route", "type": "choice",
+            "choices": [{"value": "balanced"}, {"value": "fast"}, {"value": "premium"}]
+        }]})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "model": "router-model", "answers": [{
+                "type": "choice", "name": "route", "choice": "premium",
+                "probabilities": [{"value": "balanced", "probability": 0},
+                    {"value": "fast", "probability": 1}, {"value": "premium", "probability": 0}]
+            }],
+            "usage": {"input_tokens": 0, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+                "output_tokens": 0, "output_tokens_details": {"reasoning_tokens": 0}, "total_tokens": 0}
+        }))).expect(1).mount(&server).await;
+    Mock::given(method("POST")).and(path("/v1/chat/completions"))
+        .and(body_partial_json(json!({"model": "premium/model"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": "answer-1", "object": "chat.completion", "model": "premium/model",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "Answer"}, "finish_reason": "stop"}]
+        }))).expect(1).mount(&server).await;
+    let output = runner
+        .route("switchyard/direct")
+        .unwrap()
+        .execute(
+            Request {
+                llm_request: text_request(None, "Route this request"),
+                metadata: Some(Metadata {
+                    session_id: Some("session-1".into()),
+                    ..Metadata::default()
+                }),
+                ..Request::default()
+            },
+            None,
+        )
+        .await?;
+    assert_eq!(output.selected_model, "premium/model");
+    let requests = server.received_requests().await.unwrap();
+    let decision: Value = serde_json::from_slice(&requests[0].body)?;
+    let context: Value = serde_json::from_str(decision["input"].as_str().unwrap())?;
+    assert_eq!(
+        context,
+        json!({
+            "task": [{"role": "user", "content": [{"type": "text", "text": "Route this request"}]}],
+            "session": "session-1",
+        })
+    );
+    server.verify().await;
+    Ok(())
+}
+
+#[test]
+fn direct_mode_rejects_invalid_configuration() {
+    for (from, to, expected) in [
+        (
+            r#"judge = ["router"]"#,
+            r#"judge = ["fast"]"#,
+            "requires target kind decision",
+        ),
+        (
+            "balanced = [\"balanced\"]\npremium = [\"premium\"]\n",
+            "",
+            "at least two options",
+        ),
+        (
+            r#"default_target = "fast""#,
+            r#"default_target = "any""#,
+            "must be one of the options",
+        ),
+    ] {
+        let source = direct_config("http://127.0.0.1:1").replace(from, to);
+        let error = AlgorithmFactory::from_toml(&source)
+            .and_then(|factory| factory.build())
+            .err()
+            .unwrap_or_else(|| panic!("expected a load error for {to}"))
+            .to_string();
+        assert!(error.contains(expected), "{to}: {error}");
+    }
 }

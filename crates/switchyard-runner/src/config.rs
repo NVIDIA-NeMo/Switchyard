@@ -331,12 +331,9 @@ impl DeploymentConfig {
         let targets = self.build_targets();
         self.routes.iter().map(move |(route_name, config)| {
             let classifiers: Vec<_> = config.algorithm.classifier_targets().collect();
-            for (name, decision) in classifiers.iter().copied().chain(
-                config.callable_target_names().into_iter()
-                    .filter(|name| !classifiers.iter().any(|(judge, _)| judge == name))
-                    .map(|name| (name, None)),
-            ) {
-                let (exists, kind) = if decision.is_some() {
+            let decision_targets = config.algorithm.decision_target_names();
+            for name in config.callable_target_names() {
+                let (exists, kind) = if decision_targets.contains(&name) {
                     (self.decision_targets.contains_key(name), "decision")
                 } else {
                     (self.targets.contains_key(name), "LLM")
@@ -620,12 +617,9 @@ impl DeploymentConfig {
         let mut has_mixed_families = false;
         let mut forwarding_origins = BTreeSet::new();
         let mut decisions_by_model = HashMap::new();
+        let decision_targets = route.algorithm.decision_target_names();
         for name in route.callable_target_names() {
-            if route
-                .algorithm
-                .classifier_targets()
-                .any(|(judge, decision)| judge == name && decision.is_some())
-            {
+            if decision_targets.contains(&name) {
                 let target = &self.decision_targets[name];
                 decisions_by_model.insert(
                     target.id.clone(),

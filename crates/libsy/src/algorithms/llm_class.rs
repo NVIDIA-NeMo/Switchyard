@@ -12,8 +12,8 @@ use serde_json::Value;
 use switchyard_protocol::{Category, ContentBlock, Message, Role};
 
 mod decision;
-use decision::DecisionClassifier;
-pub use decision::DecisionJudgeConfig;
+use decision::{DecisionClassifier, DirectClassifier};
+pub use decision::{DecisionJudgeConfig, DirectClassifierConfig};
 
 use super::escalation;
 use super::fall_through::FallThrough;
@@ -639,7 +639,7 @@ fn affinity_router(
     Some(Arc::new(router))
 }
 
-/// Routes requests through a capability, escalation, or custom classifier mode.
+/// Routes requests through a capability, escalation, custom, or direct classifier mode.
 pub struct LlmTaskClassifier {
     route: FallThrough,
     /// Classifier used when this router is embedded in another cascade.
@@ -704,6 +704,13 @@ pub enum LlmClassifierConfig {
         /// Custom classifier settings.
         config: CustomClassifierConfig,
     },
+    /// Routes to the model category a decision service selects.
+    Direct {
+        /// Category used when the decision call fails or returns an invalid choice.
+        default_target: Category,
+        /// Direct selection settings.
+        config: DirectClassifierConfig,
+    },
 }
 
 impl LlmTaskClassifier {
@@ -726,6 +733,10 @@ impl LlmTaskClassifier {
                 default_target,
                 config,
             } => Self::build_custom(default_target, config),
+            LlmClassifierConfig::Direct {
+                default_target,
+                config,
+            } => Self::build_direct(default_target, config),
         }
     }
 
@@ -774,6 +785,20 @@ impl LlmTaskClassifier {
                 message_hash_fallback: config.message_hash_fallback,
             },
         )
+    }
+
+    fn build_direct(default_target: Category, config: DirectClassifierConfig) -> Result<Self> {
+        if !config.options.contains(&default_target) {
+            return Err(LibsyError::AlgorithmError {
+                message: "direct default_target must be one of the options".into(),
+            });
+        }
+        let route = ClassifierRouteConfig {
+            default_target,
+            classify_trigger: config.classify_trigger,
+            message_hash_fallback: config.message_hash_fallback,
+        };
+        Self::from_classifier(Arc::new(DirectClassifier::new(config)?), route)
     }
 
     /// The judge face alone, for composite's own trigger and retained tier.
@@ -1802,6 +1827,66 @@ mod tests {
         assert!(custom.validate().is_ok());
         custom.candidates.remove("b");
         assert!(custom.validate().is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn direct_judge_falls_back_to_the_default_target() -> Result<()> {
+        use crate::{Call, RuntimeModels, drive};
+        use std::collections::BTreeMap;
+        use switchyard_protocol::{DecisionAnswer, DecisionResponse, DecisionValue};
+
+        for (reply, fail_open, expected) in [
+            (Some("unknown"), true, Some("efficient")),
+            (Some("unknown"), false, None),
+            (None, true, Some("efficient")),
+            (None, false, None),
+        ] {
+            let router: Arc<dyn Algorithm> =
+                Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Direct {
+                    default_target: Category::Efficient,
+                    config: DirectClassifierConfig {
+                        options: vec![Category::Efficient, Category::Capable],
+                        fail_open,
+                        classify_trigger: ClassifyTrigger::EveryRequest,
+                        message_hash_fallback: false,
+                        recent_turn_window: None,
+                    },
+                })?);
+            let serve = |call| async move {
+                let Call::Decision(call) = call else {
+                    panic!("judge must use the decision step")
+                };
+                let response = match reply {
+                    Some(selected) => Ok(DecisionResponse {
+                        id: None,
+                        model: None,
+                        answers: BTreeMap::from([(
+                            "route".into(),
+                            DecisionAnswer {
+                                value: DecisionValue::Choice {
+                                    selected: selected.into(),
+                                    probabilities: None,
+                                },
+                                provider_confidence: None,
+                            },
+                        )]),
+                        usage: Default::default(),
+                    }),
+                    None => Err(LibsyError::client_call(
+                        "judge",
+                        LlmClientError::General("unavailable".into()),
+                    )),
+                };
+                call.respond(std::future::ready(response)).await
+            };
+            let models = Arc::new(RuntimeModels::new(runtime_models()));
+            let result = drive(router, classify_request(), models, &serve).await;
+            match expected {
+                Some(expected) => assert_eq!(result?.selected_model_id()?, expected),
+                None => assert!(result.is_err()),
+            }
+        }
         Ok(())
     }
 

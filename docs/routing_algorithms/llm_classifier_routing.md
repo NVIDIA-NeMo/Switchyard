@@ -4,8 +4,9 @@
 an efficient model can handle the task or a capable model is needed. Configure
 it with `type = "llm_classifier"` and `mode = "capability"`.
 
-The same classifier also supports [escalation](escalation_router_routing.md)
-and [custom routing](#custom-multi-target-routing) across two or more targets.
+The same classifier also supports [escalation](escalation_router_routing.md),
+[custom routing](#custom-multi-target-routing) across two or more targets, and
+[direct selection](#direct-selection) by an external decision service.
 
 For a task-level decision-model example with structured instructions, see the
 [Jev routing profile](../../benchmark/routing-profiles/tb21-jev-opus-glm.toml).
@@ -242,6 +243,53 @@ context affects the forecast.
 If a client sends only a follow-up fragment without the opening task, enable
 affinity or include the task history. Threshold tuning changes routing policy;
 it cannot recover missing task context.
+
+## Direct selection
+
+Direct mode asks a decision target to select one of the route's model groups,
+then serves the first model in that group. The decision service owns the
+routing policy.
+
+```toml
+[decision_clients.router]
+format = "openai_decisions"
+endpoint = "https://router.example.com/v1/decisions"
+api_key_env = "ROUTER_API_KEY"
+timeout_ms = 10000
+
+[decision_targets.router]
+id = "router-model"
+decision_client = "router"
+
+[routes.direct]
+id = "direct"
+type = "llm_classifier"
+mode = "direct"
+default_target = "balanced"
+
+[routes.direct.models]
+judge = ["router"]
+fast = ["fast"]
+balanced = ["balanced"]
+premium = ["premium"]
+any = ["balanced", "fast", "premium"]
+```
+
+Every non-empty group except `judge` and `any` is an option, and its name is the
+option ID, so name each group with an ID the decision service returns. Options
+are sent in group-name order. A route needs at least two options. `models.judge`
+must name a decision target.
+
+The request context holds the conversation as `task` and the caller's session ID
+as `session` (or null). `recent_turn_window` sets how many trailing turns `task`
+carries after the opening task. The default is 10.
+
+Switchyard routes on the selected option and ignores the probabilities. When
+the decision call fails, times out, or returns a choice that is not an option,
+the route uses `default_target`. Set `fail_open = false` to stop the request
+instead. The decision client's `timeout_ms` sets how long the call may take.
+
+Direct mode is available only on standalone `llm_classifier` routes.
 
 ## When the judge runs
 
