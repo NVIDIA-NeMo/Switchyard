@@ -6,6 +6,7 @@
 pub mod codecs;
 pub(crate) mod codex_custom_tools;
 pub(crate) mod codex_namespaces;
+mod compaction;
 pub mod diagnostic;
 pub mod engine;
 pub mod error;
@@ -22,6 +23,7 @@ pub use switchyard_protocol::stream::{
 };
 pub use switchyard_protocol::{format, llm};
 
+pub use compaction::normalize_compaction;
 pub use diagnostic::*;
 pub use engine::*;
 pub use error::*;

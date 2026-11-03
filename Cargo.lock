@@ -2544,6 +2544,7 @@ dependencies = [
  "serde_json",
  "shlex",
  "switchyard-protocol",
+ "switchyard-translation",
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
@@ -2613,6 +2614,7 @@ dependencies = [
  "serde_json",
  "switchyard-libsy",
  "switchyard-protocol",
+ "switchyard-translation",
 ]
 
 [[package]]
@@ -2764,6 +2766,7 @@ dependencies = [
  "async-stream",
  "base64",
  "futures",
+ "http",
  "pretty_assertions",
  "serde",
  "serde_json",

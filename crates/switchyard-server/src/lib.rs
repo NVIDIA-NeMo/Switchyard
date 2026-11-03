@@ -1023,8 +1023,9 @@ fn resolve_route(
     if let Some(metadata) = body.get_mut("metadata").and_then(Value::as_object_mut) {
         metadata.remove(switchyard_translation::util::SWITCHYARD_METADATA_KEY);
     }
-    let llm_request = observed_translation::decode_request(wire_format, &body)
+    let mut llm_request = observed_translation::decode_request(wire_format, &body)
         .map_err(|error| invalid_body_error(StatusCode::BAD_REQUEST, error.to_string()))?;
+    switchyard_translation::normalize_compaction(&mut llm_request, metadata.http_headers.as_ref());
     let requested_model = llm_request
         .model
         .clone()

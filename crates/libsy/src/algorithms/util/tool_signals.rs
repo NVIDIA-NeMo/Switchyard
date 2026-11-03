@@ -1068,7 +1068,6 @@ fn extract_tool_signals_with_window_and_semantics(
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
     // IDs whose latest call is a retrieval tool.
     let mut retrieval_calls: HashSet<&str> = HashSet::new();
-    let mut compacted = false;
     let mut tool_result_count = 0usize;
     let mut assistant_turn_count = 0usize;
 
@@ -1078,8 +1077,7 @@ fn extract_tool_signals_with_window_and_semantics(
         }
         for block in &message.content {
             match block {
-                // Only context-compaction markers carry across user turns.
-                _ if index < start && !matches!(block, ContentBlock::Text { .. }) => continue,
+                _ if index < start => continue,
                 ContentBlock::ToolCall(call) => {
                     // Responses namespaced tools arrive as `<namespace>__<tool>`.
                     let bare_name = namespaces
@@ -1245,18 +1243,6 @@ fn extract_tool_signals_with_window_and_semantics(
                     let text = texts.join("\n");
                     tool_texts.push((text, is_error));
                 }
-                // Compaction is detected anywhere in the conversation: the summary
-                // stays in the prefix on every later turn, so this self-latches
-                // once it fires.
-                ContentBlock::Text { text } => {
-                    let text = text.to_lowercase();
-                    compacted |= text.contains(COMPACTION_MARKER)
-                        || text.lines().any(|line| {
-                            HERMES_COMPACTION_MARKERS
-                                .iter()
-                                .any(|marker| line.trim_start().starts_with(marker))
-                        });
-                }
                 _ => {}
             }
         }
@@ -1269,21 +1255,11 @@ fn extract_tool_signals_with_window_and_semantics(
         recent_window,
         semantics,
     );
-    signal.compacted = compacted;
+    signal.compacted = request.llm_request.has_compaction;
     signal.tool_result_count = u32::try_from(tool_result_count).unwrap_or(u32::MAX);
     signal.assistant_turn_count = u32::try_from(assistant_turn_count).unwrap_or(u32::MAX);
     signal
 }
-
-/// Distinctive preamble Claude Code injects as a user message when it compacts an
-/// overflowed context. Matched case-insensitively; normal task text never contains it.
-const COMPACTION_MARKER: &str = "session is being continued";
-
-// Hermes can merge the summary into an existing message or restate an active task.
-const HERMES_COMPACTION_MARKERS: &[&str] = &[
-    "[context compaction \u{2014} reference only]",
-    "[still in progress \u{2014} this is the active request, restated after the compaction boundary",
-];
 
 /// The tool part of an `mcp__<server>__<tool>` name, the form Claude Code uses
 /// for MCP tools. The server name is assumed not to contain `__`; the tool name
@@ -1761,14 +1737,16 @@ mod tests {
     };
 
     fn with_messages(messages: Vec<Message>) -> Request {
-        Request {
+        let mut request = Request {
             llm_request: LlmRequest {
                 messages,
                 ..LlmRequest::default()
             },
             raw_request: None,
             metadata: None,
-        }
+        };
+        switchyard_translation::normalize_compaction(&mut request.llm_request, None);
+        request
     }
 
     // assistant message with a single named tool call

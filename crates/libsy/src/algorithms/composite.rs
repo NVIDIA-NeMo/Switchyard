@@ -54,7 +54,10 @@ impl TierSetter {
     /// judge call sits between here and [`retain`](Self::retain). The later wins.
     fn is_due(&self, identity: Option<&RoutingIdentity>, state: &State, request: &Request) -> bool {
         match self.trigger {
-            ClassifyTrigger::UserTurn => has_new_user_turn(&request.llm_request.messages),
+            ClassifyTrigger::UserTurn => {
+                !request.llm_request.is_compaction
+                    && has_new_user_turn(&request.llm_request.messages)
+            }
             // Unkeyed requests with no carried tier cannot be told apart, so every one
             // is a new session.
             ClassifyTrigger::NewSession => {
@@ -330,6 +333,27 @@ mod tests {
 
     fn router() -> Result<Arc<CompositeRouter>> {
         router_with_trigger(ClassifyTrigger::UserTurn)
+    }
+
+    #[tokio::test]
+    async fn compaction_retains_the_profile_until_a_real_user_turn() -> Result<()> {
+        let router = router()?;
+        let recorder = Arc::new(Recorder::default());
+        let mut compacted = user_turn_request();
+        compacted.llm_request.is_compaction = true;
+        for (request, verdict, calls, target) in [
+            (user_turn_request(), 1.0, 1, "weak"),
+            (compacted, 0.0, 1, "weak"),
+            (user_turn_request(), 0.0, 2, "strong"),
+        ] {
+            *recorder.judge_p_solve.lock() = verdict;
+            let (model, _) =
+                test_drive_with_models(router.clone(), request, runtime_models(), recorder.serve())
+                    .await?;
+            assert_eq!(recorder.judge_calls(), calls);
+            assert_eq!(model.as_str(), target);
+        }
+        Ok(())
     }
 
     #[tokio::test]

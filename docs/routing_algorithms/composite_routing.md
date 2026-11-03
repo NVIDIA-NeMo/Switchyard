@@ -58,6 +58,9 @@ new = ["send_message"]
 `[routes.switchyard.classifier]` is required and takes the `stage_router` classifier fields.
 `classify_trigger` sets how often the judge runs: `user_turn` re-picks the tier
 whenever the user speaks, `new_session` picks once and holds it.
+Compaction continuations keep the selected profile. Translation recognizes native
+signals and known summary wrappers, then sets `is_compaction` in the IR. Stage reads
+`has_compaction` for its existing history check. Direct IR callers can set these flags.
 `[routes.switchyard.stage]` takes the stage settings, but accepts neither `picker`
 nor a second `classifier`. The outer classifier supplies the default tier.
 `confidence_threshold` remains an alias for `efficient_first_threshold`.

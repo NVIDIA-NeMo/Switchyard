@@ -84,8 +84,10 @@ fn request_from_python(
     headers: Option<HashMap<String, String>>,
 ) -> PyResult<Request> {
     let headers = headers.as_ref().map(header_map_from_python).transpose()?;
+    let mut llm_request = from_python(request)?;
+    switchyard_translation::normalize_compaction(&mut llm_request, headers.as_ref());
     Ok(Request {
-        llm_request: from_python(request)?,
+        llm_request,
         raw_request: None,
         metadata: headers.map(|headers| Metadata::from_headers(&headers)),
     })
