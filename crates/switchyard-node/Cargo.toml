@@ -24,6 +24,7 @@ serde.workspace = true
 serde_json.workspace = true
 switchyard-libsy.workspace = true
 switchyard-protocol.workspace = true
+switchyard-runner.workspace = true
 switchyard-translation.workspace = true
 
 [build-dependencies]

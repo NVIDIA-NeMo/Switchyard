@@ -3,6 +3,8 @@
 
 //! Composite routing with caller-owned decision calls and state.
 
+mod runner;
+
 use std::future::ready;
 use std::sync::Arc;
 
@@ -16,9 +18,7 @@ use switchyard_libsy::{
     CompositeRouter, CompositeRouterConfig, DecisionChoice, DecisionJudgeConfig, LibsyError,
     PickerMode, RuntimeModels, StageRouterConfig, State, Step, StepStream, TaskClassifierConfig,
 };
-use switchyard_protocol::{
-    Category, DecisionResponse, LlmClientError, LlmRequest, ModelId, Request,
-};
+use switchyard_protocol::{Category, DecisionResponse, LlmClientError, LlmRequest, ModelId, Request};
 
 // The JS wrapper turns these prefixes into public Error codes.
 fn error(code: &str, message: impl std::fmt::Display) -> napi::Error {
