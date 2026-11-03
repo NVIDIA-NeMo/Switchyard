@@ -1,113 +1,85 @@
 # 5. Examples of tuning
 
-These examples apply the objectives, candidate design, and losses described in
-[Tuning Foundations](foundations.md).
+Use these examples after defining an objective and candidate configurations in
+[Tuning Foundations](foundations.md). Each comparison holds the objective fixed
+while changing one part of the system. All numbers below are invented to make
+the calculations easy to follow; they are not benchmark results.
 
-The following are independent examples of configuration tuning. One changes the
-instruction used to choose an execution configuration and scores its predictions.
-The other holds the routing algorithm settings fixed, swaps the execution model
-pair, and scores the resulting task outcomes. In each experiment, the objective
-and its scoring rule stay fixed across candidates.
+## 5.a. Tune configuration options for cost
 
-## 5.a. Prompt tuning with GEPA
+Suppose the goal is to **minimize mean cost per task while passing at least 85%
+of tasks**. Keep the routing algorithm and model pair fixed. Change only the
+routing threshold and how long the router stays on the capable model.
 
-This example uses the execution configurations, outcomes, and reference labels
-from the [example configuration comparison](foundations.md#33-example-configuration-comparison).
+For candidates that meet the success target, the loss is mean cost per task.
+Candidates below 85% do not qualify. Include the cost of every task, including
+failed tasks and retries.
 
-**What changes:** the instruction for a [decision model](../protocols/decisions.md)
-that selects an execution configuration. **What is scored:** negative mean BCE
-for this two-choice example. With more choices, use negative mean categorical
-cross-entropy.
+### Set up the comparison
 
-GEPA improves a prompt by trying revisions. Run the decision model on labeled
-examples, show another LLM where it struggled, and ask it to rewrite the
-instructions. That LLM is the reflector. Evaluate the rewrite and repeat; model
-weights stay fixed. DSPy provides the optimizer; supply the decision model,
-examples, and scoring function. See the
-[GEPA paper](https://arxiv.org/abs/2507.19457).
+Use a representative subset of benchmark tasks to develop the candidates, then
+compare them on the same 100 validation tasks. Reserve a separate test set for
+the final choice, as described in [Check the final choice](foundations.md#4-check-the-final-choice).
 
-- **Predict and score:** run the current prompt and compute BCE against the
-  reference labels.
-- **Reflect and rewrite:** use the errors and their context to propose a revised
-  instruction.
-- **Evaluate:** compare candidate probabilities on validation data and repeat
-  within the budget.
+Keep these settings fixed:
 
-Hold the decision model, execution configurations, labels, and scoring rule fixed
-while comparing prompts. Give the reflector the application, choice meanings,
-inference-time inputs, current prompt, training labels, probabilities, and
-measured outcomes that explain the labels.
+- **Algorithm:** `stage_router`, with `picker = "efficient_first"` and no optional
+  classifier.
+- **Models:** the same efficient/capable pair, with model versions, providers,
+  and serving settings pinned.
+- **Other settings:** `recent_turn_window = 5`, `efficient_hold_turns = 0`, and
+  all other routing options.
+- **Evaluation:** the same agent instructions, tools, task limits, cache setup,
+  and number of trials for every candidate.
 
-### Suggested reflector instruction
-
-- Improve this decision model's instruction for the application described above.
-  The reference choice minimizes execution cost plus a $0.10 penalty for failure.
-- Minimize mean log loss using the supplied labels and probabilities. Keep
-  uncertainty when the input is ambiguous.
-- Find rules that explain several examples. You may change the structure, add
-  useful domain categories, or rewrite the prompt completely.
-- Use only information available at inference time. Leave out example IDs, copied
-  examples, answer lists, and one-off exceptions. Return the revised instruction.
-
-**Return `score = -loss`.** GEPA maximizes its score. Include text feedback that
-explains the reference choice and the prediction's loss. With negative BCE,
-decision-program errors or missing probabilities must receive a sufficiently
-negative score; zero would incorrectly reward them. If probabilities are clipped
-for numerical stability, choose a failure score below the worst valid clipped
-score. See
-[DSPy's GEPA metric and failure-score interface](https://github.com/stanfordnlp/dspy/blob/main/dspy/teleprompt/gepa/gepa.py).
-
-When decision calls are cheap, use larger reflection batches and try more prompts
-within the budget. Check promising candidates on the full validation set so one
-unusual batch does not decide the winner. Budget for the reflector too; repeating
-identical deterministic calls adds no evidence.
-
-Allow the reflector to reorganize rules or replace a weak framing. Avoid imposing
-a short word limit before checking whether extra detail helps. Validate useful
-distinctions rather than treating prompt length as evidence of overfitting.
-
-### Compare prompt candidates
-
-The probabilities below are illustrative, not outputs from a live GEPA run.
-
-![The revised prompt moves B probabilities toward the six reference labels: 0.10, 0.80, 0.20, 0.75, 0.25, and 0.65.](../assets/tuning/prompt-probabilities.svg)
-
-![Mean BCE decreases from 0.7983 to 0.2596, and total operating loss decreases from $0.320 to $0.114.](../assets/tuning/prompt-results.svg)
-
-*Figure 1. Seed and revised prompt probabilities (top), with mean BCE and total
-operating loss (bottom). The dashed line marks the illustrative 0.5 decision
-threshold.*
-
-The revised prompt wins on probability loss: mean BCE falls from **0.7983** to
-**0.2596**.
-
-- For request 4, increasing B's probability from 0.35 to 0.75 reduces its loss from
-  **1.050** to **0.288**.
-- For request 5, reducing B's probability from 0.70 to 0.25 reduces its loss from
-  **1.204** to **0.288**.
-- At a threshold of 0.5, the seed causes two task failures and **$0.320** total
-  operating loss. The revision causes no failures and **$0.114** total loss across
-  six requests. These totals exclude router inference cost.
-
-### Illustrative revised instruction
-
-Estimate the probability that B has lower operating loss than A. Prefer A for
-routine work it can reliably complete at lower cost. Consider B when better
-reasoning justifies its cost. Account for verified cache savings and stale
-context. Preserve uncertainty when the evidence does not establish a clear
-preference.
-
-**Tune the threshold on validation operating outcomes.** Reuse cached
-probabilities. Thresholds change decisions, not BCE. Retune after a prompt change
-because the probability scale can shift.
-
-The 0.5 cutoff here applies to the example's predicted preference probability.
-The stage router's `confidence_threshold` controls an ambiguous band in a
-tool-signal score; that score is not automatically a calibrated probability for
-these labels. Follow the
+Try `confidence_threshold` values of `0.3`, `0.5`, and `0.7`, each with
+`capable_hold_turns` set to `0` or `2` requests. This gives six configurations.
+A lower threshold lets weaker signals
+trigger escalation; a hold keeps requests on the capable tier after a switch.
+Their cost and success effects depend on the workload. See the
 [stage-router threshold guide](../routing_algorithms/stage_router_routing.md#tuning-confidence_threshold)
-when tuning that setting. Use the probability and policy defined by the actual
-decision question when applying this example to a classifier.
+for the exact behavior.
+
+### Compare the results
+
+Here are illustrative results from one run per validation task. Configuration C
+is the baseline in this example. Mean cost includes all 100 tasks.
+
+| Candidate | Threshold | Hold (requests) | Tasks passed | Mean cost per task |
+|---|---|---|---|---|
+| A | 0.7 | 0 | 70/100 | $0.012 |
+| B | 0.5 | 0 | 80/100 | $0.018 |
+| C (baseline) | 0.3 | 0 | 88/100 | $0.030 |
+| D | 0.7 | 2 | 78/100 | $0.020 |
+| E | 0.5 | 2 | 88/100 | $0.024 |
+| F | 0.3 | 2 | 94/100 | $0.038 |
+
+First remove options that another candidate matches or improves on both measures:
+
+- **Remove C:** E passes the same number of tasks (88) and costs less on average.
+- **Remove D:** B passes more tasks and costs less on average.
+- **Keep A, B, E, and F:** each offers a cost/success tradeoff. No other tested
+  candidate costs the same or less and passes the same number or more, with an
+  improvement in at least one measure.
+
+These remaining options form the **Pareto frontier** for this sample. It is a
+shortlist of tradeoffs, not a single winner. Plot cost horizontally and task
+success vertically to see which options are worth considering.
+
+![A, B, E, and F form the cost/success Pareto frontier. C is more expensive than E at the same success rate; D costs more and passes fewer tasks than B. E is the cheapest frontier option above the 85% success target.](../assets/tuning/configuration-pareto.svg)
+
+*Figure 1. The circles form the observed Pareto frontier. Crosses mark candidates
+that another option improves on. The dashed line is the 85% task-success target.*
+
+**Select E under this objective.** A and B miss the success target. E and F both
+meet it, but E costs less: $0.024 per task, or $2.40 across 100 tasks. E reduces
+cost by 20% from baseline C while preserving its observed 88% success rate.
+F buys a higher success rate at a higher cost.
+
+This frontier covers only the configurations tested on this sample. Repeat
+promising runs to check whether differences hold up, then freeze the selected
+configuration and evaluate it on the untouched test tasks. New measurements can
+change which options belong on the frontier.
 
 ## 5.b. Model-pair selection with fixed algorithm settings
 
@@ -180,67 +152,63 @@ highest operating loss once failures are counted. Pair 3 costs more than Pair 2
 without improving task success on this sample. The algorithm settings stayed
 fixed throughout; the model pair changed.
 
-This comparison scores measured task outcomes directly. It does not require
-reference-choice probabilities or cross-entropy. The loss must match the outcome
-being optimized and the kind of candidate being evaluated. Repeat the experiment
-on representative tasks and independent trials before drawing conclusions about
-real model pairs.
+Here, the loss combines cost and failed tasks using the penalty chosen before
+the experiment. Repeat the comparison on representative tasks and independent
+trials before drawing conclusions about real model pairs.
+
+## 5.c. Upcoming: GEPA tuning for the unified router
+
+GEPA-based prompt tuning for the unified router is planned for a future release,
+with tooling and concrete APIs to run the workflow. GEPA proposes instruction
+changes from feedback, evaluates them, and repeats while model weights stay
+fixed. See the [GEPA paper](https://arxiv.org/abs/2507.19457) for the approach.
+
+The planned example will keep the model pool and objective fixed while changing
+the router's instructions:
+
+- Use training-task outcomes to show where routing choices helped or hurt the
+  objective. A reflector model uses that feedback to propose revised instructions.
+- Compare proposed prompts on validation tasks using the same cost and success
+  measures, including the cost of routing calls.
+- Freeze the chosen prompt and evaluate it on separate test tasks.
+
+The API walkthrough and worked results will accompany the tooling release.
 
 ## Reproduce the calculations
 
-The code below uses only the Python standard library. It reproduces the prompt
-comparison from section 5.a and the independent model-pair comparison from section
-5.b without calling any models. GEPA itself runs separately through DSPy and a
-configured decision model and reflector.
+Save the following as `tuning_examples.py` and run `python3 tuning_examples.py`.
+It uses only the Python 3 standard library and the dummy data above. It calculates
+the Pareto frontier and selected configuration for 5.a, then the operating losses
+for 5.b. It makes no model calls.
 
 ```python
-import math
-from statistics import mean
+# Candidate: (threshold, capable hold, mean cost, tasks passed out of 100).
+configs = {
+    "A": (0.7, 0, 0.012, 70),
+    "B": (0.5, 0, 0.018, 80),
+    "C": (0.3, 0, 0.030, 88),
+    "D": (0.7, 2, 0.020, 78),
+    "E": (0.5, 2, 0.024, 88),
+    "F": (0.3, 2, 0.038, 94),
+}
 
-# Rows 1–6: (A execution cost, A passes, B execution cost, B passes).
-outcomes = [
-    (0.010, True, 0.040, True),
-    (0.010, False, 0.040, True),
-    (0.010, True, 0.040, True),
-    (0.010, False, 0.040, True),
-    (0.010, True, 0.040, False),
-    (0.010, True, 0.004, True),
-]
-failure_penalty = 0.10
-loss_a = [cost_a + failure_penalty * (not pass_a)
-          for cost_a, pass_a, _, _ in outcomes]
-loss_b = [cost_b + failure_penalty * (not pass_b)
-          for _, _, cost_b, pass_b in outcomes]
-labels = [int(b < a) for a, b in zip(loss_a, loss_b)]  # Ties prefer A.
+frontier = []
+for name, (_, _, cost, passed) in configs.items():
+    dominated = any(
+        other_cost <= cost and other_passed >= passed
+        and (other_cost < cost or other_passed > passed)
+        for _, _, other_cost, other_passed in configs.values()
+    )
+    if not dominated:
+        frontier.append(name)
 
-
-def bce(y, p):
-    if not 0 <= p <= 1:
-        raise ValueError("Expected a finite probability in [0, 1]")
-    p = min(1 - 1e-6, max(1e-6, p))  # Avoid log(0).
-    return -(y * math.log(p) + (1 - y) * math.log1p(-p))
-
-
-def evaluate_prompt(probabilities):
-    assert len(probabilities) == len(outcomes)
-    loss = mean(bce(y, p) for y, p in zip(labels, probabilities))
-    choices = [int(p >= 0.5) for p in probabilities]  # 0 = A, 1 = B.
-    total = sum(loss_b[i] if b else loss_a[i]
-                for i, b in enumerate(choices))
-    failures = sum(not outcomes[i][3 if b else 1]
-                   for i, b in enumerate(choices))
-    return loss, failures, total
-
-
-seed = [0.20, 0.55, 0.40, 0.35, 0.70, 0.30]
-revised = [0.10, 0.80, 0.20, 0.75, 0.25, 0.65]
-print("Labels:", labels)
-for name, ps in {"Seed": seed, "Revised": revised}.items():
-    loss, failures, total = evaluate_prompt(ps)
-    print(f"{name}: BCE={loss:.4f}, failures={failures}, total=${total:.4f}")
+eligible = [name for name in frontier if configs[name][3] >= 85]
+selected = min(eligible, key=lambda name: configs[name][2])
+print("Pareto frontier:", ", ".join(frontier))
+print(f"Selected config: {selected}, mean cost=${configs[selected][2]:.3f}")
 
 # Independent model-pair experiment: (execution cost, task passed), tasks 1–6.
-# Each cost covers the whole task run under the fixed algorithm settings.
+failure_penalty = 0.10
 pairs = {
     "Pair 1 (E1/C1)": [
         (0.008, True), (0.030, False), (0.008, True),
@@ -270,9 +238,8 @@ print("Selected:", min(pair_losses, key=pair_losses.get))
 Expected output:
 
 ```text
-Labels: [0, 1, 0, 1, 0, 1]
-Seed: BCE=0.7983, failures=2, total=$0.3200
-Revised: BCE=0.2596, failures=0, total=$0.1140
+Pareto frontier: A, B, E, F
+Selected config: E, mean cost=$0.024
 Pair 1 (E1/C1): cost=$0.100, failures=2, total=$0.300, mean=$0.0500
 Pair 2 (E2/C1): cost=$0.140, failures=0, total=$0.140, mean=$0.0233
 Pair 3 (E2/C2): cost=$0.192, failures=0, total=$0.192, mean=$0.0320
