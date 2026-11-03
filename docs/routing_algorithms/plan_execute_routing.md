@@ -1,8 +1,15 @@
-# Plan/Execute Routing
+# Plan/Execute with Stage
 
-Plan/execute routing uses a capable model to inspect and plan a coding task,
-then switches to an efficient model after the first recognized edit or write
-tool call by default. Set `execution_trigger = "judge"` to use an LLM or decision judge instead.
+Plan/execute uses [Stage](stage_router_routing.md) to start a coding task on a
+capable model. Stage can switch to efficient when tool results show progress,
+then keep selecting that tier for the rest of the session. Configure the route
+with `picker = "capable_first"`, `confidence_threshold = 0.0`, a planning prompt,
+and `efficient_hold_turns = -1`.
+
+## Configuration
+
+Save this as `plan-execute.toml`. Replace the provider URL and model IDs with
+your own, and set `OPENAI_API_KEY`.
 
 ```toml
 schema_version = 1
@@ -22,74 +29,123 @@ llm_client = "provider"
 
 [routes.plan_execute]
 id = "switchyard/plan-execute"
-type = "plan_execute"
+type = "stage_router"
 capable_target = "planner"
 efficient_target = "executor"
+picker = "capable_first"
+confidence_threshold = 0.0
+capable_hold_turns = 0
+efficient_hold_turns = -1
+capable_system_prompt = """
+Inspect the task and relevant code, then form a concrete implementation plan before modifying any files. Use read-only tools as needed. Once the plan is complete, implement and check the solution. Another model may take over to finish the remaining work.
+"""
 ```
 
-Read-only inspection stays on the capable target with a planning instruction.
-The first edit or write routes the full trajectory to the efficient target and
-latches that choice by session ID. A failed edit still triggers the handoff.
-Without a session ID, the first mutation must remain in the request history.
+```bash
+switchyard-server --config plan-execute.toml --port 4000
+```
 
-Set `execution_trigger = "judge"` and `judge = { target = "handoff_judge", base_threshold = 0.7 }` on the route to use an LLM judge.
+Send requests to `switchyard/plan-execute` with the full conversation and a
+stable `x-switchyard-session-id` header from the first planning request onward.
+The route serves OpenAI Chat Completions, Anthropic Messages, and OpenAI
+Responses, including streaming responses.
 
-This uses the same settings as a [Stage classifier](stage_router_routing.md). For a decision model, use a `decision_targets` target and replace `base_threshold` with `judge.decision` settings (`cutoff`, `candidates`, and `evidence`). The default prompt adapts the handoff criteria from [AgentBaton: Efficient Model Collaboration in Agentic Tasks](https://arxiv.org/abs/2610.35959) (Li et al., 2026), asking whether the efficient model can finish from the current task state. Both judge types see the opening task plus 10 recent messages by default, configurable with `judge.recent_turn_window`.
+## Planning and handoff
 
-Each user turn starts on capable. Tool continuations consult the judge until it selects efficient, then hold efficient until the next user turn. Unavailable verdicts keep capable by default. Send a stable session ID to retain the handoff.
+An initial request without tool history uses the capable target with the
+planning prompt. Read-only inspection normally stays on that target. Stage
+scores recent tool results; clean writes and edits move the score toward
+efficient. At threshold `0`, any negative score selects efficient. A zero score
+selects capable.
 
-## Session capacity
+Recovery signals can keep the task on capable before handoff. A failed edit
+does not always switch models, and critical errors, repeated failures, or
+context compaction select capable. Setting `capable_hold_turns = 0` lets the next
+request be scored without waiting through Stage's default recovery hold.
 
-Each router instance retains up to 4,096 executing identities in memory. Root
-requests use the session ID. Subagent requests use the session ID and agent ID.
-Once retained, an identity stays on the efficient target after history compaction
-until a request marks it with `session_final: true` or the router restarts.
+After a switch from capable to efficient, `efficient_hold_turns = -1` keeps
+selecting efficient until the session state is cleared. Later errors, compaction,
+and new user turns do not end this hold. The planning prompt goes only to the
+capable target; the efficient target receives the conversation and tool results.
+If the first request already selects efficient, no switch has occurred and no
+hold starts. Keep the same session ID from the initial planning request.
 
-At capacity, a new identity's handoff returns an error before calling a model.
-Existing identities keep their execution phase. Mark an existing identity's last
-request with `session_final: true` to free its slot, then retry the handoff with
-the mutation history intact. The server accepts this flag through the
-`x-switchyard-session-final: true` header.
+Model-call fallback is separate from this routing choice. After an eligible
+provider or context-window failure, Switchyard can try the other completion
+target, even while a hold is active. Each target receives its own configured
+prompt. See [Context-Window Handling](../operations/context_window.md).
 
-A handoff marked final needs no saved slot and can still run at capacity.
-Requests that are still planning or have no stable identity also use no slots.
+## Settings and limits
 
-## Responses API history requirement
+| Setting | Value here | Effect |
+|---|---|---|
+| `picker` | `capable_first` | Stage selects capable when tool signals cannot choose a tier. |
+| `confidence_threshold` | `0.0` | Stage selects a tier for every nonzero signal score. |
+| `capable_hold_turns` | `0` | Stage scores each request before handoff. |
+| `efficient_hold_turns` | `-1` | Stage keeps selecting efficient after a switch until session state is cleared. |
+| `capable_system_prompt` | The value is a planning instruction. | Stage adds the instruction to requests served by the capable target. |
+| `tool_semantics.mutate` | The list is optional. | Stage treats these custom tools as writes or edits when scoring tool results. |
 
-Plan/execute needs the conversation history to detect edits and hand the task to
-the executor. Continuing with only `previous_response_id` or a provider
-`conversation` ID and new input is not supported for this handoff.
-
-For example, a `function_call_output` contains the result and call ID, but not
-the tool name. Without the earlier `write_file` call, the router cannot tell that
-the result belongs to an edit and can stay on the planner.
-
-Send the conversation history in `input`, including earlier tool calls and their
-results. Omit `previous_response_id` and `conversation` so routing can switch
-models between turns.
-
-When embedding `libsy`, your application must supply that history in
-`Request.llm_request.messages` before routing. `libsy` does not fetch it from the
-provider. A stable session ID remembers a detected handoff, but cannot detect an
-edit missing from the request history.
-
-## Optional settings
-
-| Key | Behavior |
-|---|---|
-| `tool_semantics.mutate` | Lists custom tools that trigger handoff. |
-| `planning_prompt` | Replaces the built-in planning instruction. |
-| `handoff_prompt` | Adds an instruction to the handoff request. |
-| `planner_reasoning_as_text` | Converts visible planner reasoning summaries to assistant text at handoff. |
-
-To make a custom tool trigger handoff:
+For example, add a custom file-writing tool:
 
 ```toml
 [routes.plan_execute.tool_semantics]
 mutate = ["persist_source_file"]
 ```
 
-This uses the same [tool matching rules](stage_router_routing.md#optional-custom-tool-semantics)
-as Stage. The other custom tool categories do not trigger handoff.
+The [Stage guide](stage_router_routing.md#knob-reference) lists the remaining
+settings and tool matching rules. The configuration above has no
+published benchmark results; the historical Plan/Execute results used the
+removed implementation.
 
-Use a stable session ID with handoff processing or history compaction.
+Each Stage route stores its session state in memory. Agent IDs have separate
+tier holds within a session. A request with `session_final: true` clears the
+whole session, including other agents' holds; the server accepts this through
+`x-switchyard-session-final: true`. Send it only when that shared session is
+complete.
+
+Stage checks hourly for sessions inactive for at least one hour and removes
+them. A server restart also clears state, and replicas do not share it. Route
+each session to the same server instance. Stage has no fixed limit on the
+number of sessions or bytes retained; memory use grows with retained sessions
+and agent IDs. Without a session ID, requests do not retain the efficient hold.
+
+## Migration from `plan_execute`
+
+The standalone `type = "plan_execute"` route and Rust `PlanExecute` API have
+been removed. Configurations with that route type or its obsolete settings
+fail to load. Keep your route ID and target names, and replace the route
+settings with the Stage configuration above. Rust callers can construct
+`StageRouter` with `StageRouterConfig` instead.
+
+| Old setting | Stage migration |
+|---|---|
+| `planning_prompt` | Use `capable_system_prompt`. Supply the instruction explicitly. |
+| `tool_semantics.mutate` | Keep the list. Stage includes these tools in its score; a matching tool alone no longer forces a handoff. |
+| `handoff_prompt` | Optionally use `handoff_notes.deescalation_note`. Stage adds the note when tool signals select efficient, even if the tier stays the same. Requests routed by a hold receive no note. |
+| `planner_reasoning_as_text` | Remove it. Stage does not convert planner reasoning into text. Supply any required plan as ordinary conversation text. |
+| `execution_trigger` and `judge` | Remove both settings for the configuration above. An optional Stage `classifier` runs only when tool signals cannot choose a tier; it does not reproduce the old `execution_trigger = "judge"` handoff. |
+
+Stage's efficient hold lasts until session state is cleared, including across new
+user turns. The old judged route restarted planning on each user turn. Stage
+also replaces the old limit of 4,096 retained identities with the session
+lifetime described above. Previously, a final request cleared only the
+requesting agent's state. Stage clears every agent's state in the shared session.
+
+## Responses API history requirement
+
+Plan/execute needs the conversation history to score tool results and hand the
+task to the executor. Continuing with only `previous_response_id` or a provider
+`conversation` ID and new input is not supported for this handoff.
+
+For example, a `function_call_output` contains the result and call ID, but not
+the tool name. Without the earlier `write_file` call, the router cannot tell
+that the result belongs to a write and can stay on the planner.
+
+Send the conversation history in `input`, including earlier tool calls and
+their results. Omit `previous_response_id` and `conversation` so routing can
+switch models between turns.
+
+When embedding `libsy`, supply that history in `Request.llm_request.messages`
+before routing. `libsy` does not fetch it from the provider. A stable session ID
+retains an active hold but cannot recover tool activity missing from the history.

@@ -205,28 +205,6 @@ pub const ALGORITHMS: &[Algorithm] = &[
         subagents: false,
     },
     Algorithm {
-        kind: "plan_execute",
-        title: "Plan, then execute",
-        summary: "The capable model inspects and plans. The efficient model takes over after \
-                  the first file edit.",
-        roles: &[
-            RoleSpec {
-                label: "Capable",
-                hint: "The capable model inspects the code and plans.",
-                tier: Tier::Capable,
-                path: &["capable_target"],
-            },
-            RoleSpec {
-                label: "Efficient",
-                hint: "The efficient model takes over after the first edit.",
-                tier: Tier::Efficient,
-                path: &["efficient_target"],
-            },
-        ],
-        settings: &[],
-        subagents: false,
-    },
-    Algorithm {
         kind: "auto",
         title: "Recommended preset",
         summary: "This stage router starts each request on the efficient model.",

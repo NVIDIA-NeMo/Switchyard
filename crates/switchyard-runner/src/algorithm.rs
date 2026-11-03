@@ -15,9 +15,9 @@ use libsy::{
     CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
     DEFAULT_UNMATCHED_STEPS, DecisionJudgeConfig, DirectClassifierConfig, EscalationJudgeConfig,
     GateTrigger, HandoffNoteConfig, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback,
-    LlmTaskClassifier, Noop, Passthrough, PickerMode, PlanExecute, PlanExecuteConfig, Random,
-    RuntimeModels, StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig,
-    TaskClassifierConfig, ToolSemantics, Vgr, VgrConfig,
+    LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, RuntimeModels, StageRouter,
+    StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
+    Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -403,14 +403,6 @@ impl SubagentRouteConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum PlanExecuteTrigger {
-    #[default]
-    Edit,
-    Judge,
-}
-
 /// A routing algorithm described by configured target names. Converting it to `&str` gives
 /// the route's `type`, such as `stage_router`.
 #[derive(Clone, Debug, Deserialize, IntoStaticStr)]
@@ -435,28 +427,6 @@ pub enum AlgorithmSpec {
         /// Separate policy for delegated sub-agent work.
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
-    },
-    /// Plans on the capable target, then hands off after an edit or judge approval.
-    PlanExecute {
-        #[serde(default)]
-        execution_trigger: PlanExecuteTrigger,
-        judge: Option<StageClassifierConfig>,
-        /// Target used before handoff.
-        capable_target: String,
-        /// Target used after handoff.
-        efficient_target: String,
-        /// Additional tool names whose mutations trigger handoff.
-        #[serde(default)]
-        tool_semantics: ToolSemantics,
-        /// Replaces the built-in planning instruction.
-        #[serde(default)]
-        planning_prompt: Option<String>,
-        /// Appends an instruction to the handoff request.
-        #[serde(default)]
-        handoff_prompt: Option<String>,
-        /// Replays visible planner reasoning summaries as assistant text at handoff.
-        #[serde(default)]
-        planner_reasoning_as_text: bool,
     },
     /// Asks a judge model which target should serve the request.
     LlmClassifier {
@@ -959,10 +929,7 @@ impl AlgorithmSpec {
                 Some((classifier.target.as_str(), classifier.decision.as_ref())),
                 [efficient.as_deref(), capable.as_deref()],
             ),
-            Self::PlanExecute {
-                judge: classifier, ..
-            }
-            | Self::StageRouter { classifier, .. } => (
+            Self::StageRouter { classifier, .. } => (
                 classifier
                     .as_ref()
                     .map(|c| (c.target.as_str(), c.decision.as_ref())),
@@ -1009,11 +976,6 @@ impl AlgorithmSpec {
                 }
                 names
             }
-            Self::PlanExecute {
-                capable_target,
-                efficient_target,
-                ..
-            } => vec![capable_target.as_str(), efficient_target.as_str()],
             Self::LlmClassifier { config, .. } => match config.classifier_mode() {
                 ClassifierMode::Capability => config
                     .weak_target
@@ -1111,7 +1073,7 @@ impl AlgorithmSpec {
                     names.push(config.classifier_target.as_str());
                 }
             }
-            Self::PlanExecute { .. } | Self::StageRouter { .. } | Self::Composite { .. } => {
+            Self::StageRouter { .. } | Self::Composite { .. } => {
                 names.extend(self.classifier_targets().map(|(target, _)| target));
             }
             Self::Advisor { advisor_target, .. } => names.push(advisor_target),
@@ -1153,13 +1115,7 @@ impl AlgorithmSpec {
             Self::LlmClassifier { config } => {
                 classifier_runtime_model_names(config.validated_classifier_mode(route_name)?)
             }
-            Self::PlanExecute {
-                capable_target,
-                efficient_target,
-                judge: classifier,
-                ..
-            }
-            | Self::StageRouter {
+            Self::StageRouter {
                 capable_target,
                 efficient_target,
                 classifier,
@@ -1279,7 +1235,6 @@ impl AlgorithmSpec {
             Self::Noop { .. }
             | Self::Random { .. }
             | Self::Passthrough { .. }
-            | Self::PlanExecute { .. }
             | Self::LlmClassifier { .. }
             | Self::StageRouter { .. }
             | Self::Auto { .. }
@@ -1825,57 +1780,6 @@ fn build_algorithm(
             let algorithm = Passthrough;
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
-        }
-        AlgorithmSpec::PlanExecute {
-            execution_trigger,
-            judge,
-            capable_target,
-            efficient_target,
-            tool_semantics,
-            planning_prompt,
-            handoff_prompt,
-            planner_reasoning_as_text,
-            ..
-        } => {
-            if (*execution_trigger == PlanExecuteTrigger::Judge) != judge.is_some() {
-                return Err(AlgorithmConfigError::new(
-                    "plan_execute requires a judge exactly when execution_trigger = judge",
-                ));
-            }
-            let mut config = PlanExecuteConfig {
-                judge: judge
-                    .as_ref()
-                    .map(|judge| {
-                        if judge.classify_trigger != ClassifyTrigger::EveryRequest
-                            || judge.message_hash_fallback
-                        {
-                            return Err(AlgorithmConfigError::new(
-                                "plan_execute judge runs every tool turn. Remove classify_trigger and message_hash_fallback",
-                            ));
-                        }
-                        judge.task_classifier_config(
-                            route_name,
-                            capable_target,
-                            efficient_target,
-                            targets,
-                        )
-                    })
-                    .transpose()?,
-                ..PlanExecuteConfig::default()
-            };
-            config.tool_semantics.clone_from(tool_semantics);
-            if let Some(prompt) = planning_prompt {
-                config.planning_prompt = prompt.clone();
-            }
-            config.handoff_prompt.clone_from(handoff_prompt);
-            config.planner_reasoning_as_text = *planner_reasoning_as_text;
-            let algorithm = PlanExecute::new(config).map_err(|error| {
-                AlgorithmConfigError::with_source(
-                    format!("plan_execute route {route_name}: {error}"),
-                    error,
-                )
-            })?;
-            Ok(Arc::new(algorithm))
         }
         AlgorithmSpec::LlmClassifier {
             config: classifier_config,

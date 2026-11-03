@@ -3,7 +3,7 @@
 Routing configurations:
 
 - [Advisor gate: Luna executor with Sol reviews](routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml)
-- [Plan/execute: Sol planner with Luna executor](routing-profiles/deepswe-v11-plan-execute-luna-sol.toml)
+- The [historical Plan/Execute configuration](#historical-planexecute-configuration) uses Sol as the planner and Luna as the executor.
 - [Stage router: Luna efficient tier with Sol capable tier](routing-profiles/deepswe-v11-stage-router-luna-sol.toml)
 
 ## Shared settings
@@ -42,3 +42,13 @@ The linked files contain the exact routing parameters, prompts, and model IDs. T
 blocks use OpenRouter so they can run outside the original evaluation environment. The qualification
 runs used a different serving stack, so absolute results can differ even when the routing settings
 are unchanged.
+
+## Historical Plan/Execute configuration
+
+The [archived TOML](https://github.com/NVIDIA-NeMo/Switchyard/blob/f979f6929f3504748d6792f5656426d2e20d623e/benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml)
+records the settings measured at revision
+`08136d7d2ed4f862e5b3dd83488b3f120457d0ac`. The TOML file was published in a
+later revision. It requires a version that still supports the removed
+`plan_execute` route. These results belong to the standalone implementation;
+the current [Plan/Execute configuration for Stage](../docs/routing_algorithms/plan_execute_routing.md)
+has no published benchmark results.

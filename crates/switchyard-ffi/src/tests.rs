@@ -611,37 +611,43 @@ fn advisor_attributes_host_fallback() {
     }
 }
 
-// Child sessions keep separate phases and clear them after the final request.
+// Both agents need active holds so a final request tests cleanup of the sibling's hold.
 #[test]
-fn plan_execute_isolates_and_finishes_child_sessions() {
+fn stage_holds_are_isolated_per_agent_and_cleared_with_the_session() {
     let router = router(json!({
-        "type": "plan_execute", "capable_target": "capable", "efficient_target": "efficient",
+        "type": "stage_router", "capable_target": "capable", "efficient_target": "efficient",
+        "picker": "capable_first", "confidence_threshold": 0.0, "efficient_hold_turns": -1,
     }));
     for (agent, is_subagent, is_final, edited, expected) in [
+        ("a", true, false, false, "capable"),
         ("a", true, false, true, "efficient"),
         ("b", true, false, false, "capable"),
+        ("b", true, false, true, "efficient"),
         ("root", false, false, false, "capable"),
         ("a", true, true, false, "efficient"),
-        ("a", true, false, false, "capable"),
+        ("b", true, false, false, "capable"),
     ] {
         let request = if edited {
-            json!({"messages": [{"role": "assistant", "content": [{
-                "type": "tool_call", "id": "edit", "name": "apply_patch", "arguments": {},
-            }]}]})
+            json!({"messages": [
+                {"role": "assistant", "content": [{
+                    "type": "tool_call", "id": "edit", "name": "apply_patch", "arguments": {},
+                }]},
+                {"role": "tool", "content": [{
+                    "type": "tool_result", "tool_call_id": "edit",
+                    "content": [{"type": "text", "text": "Applied patch"}], "is_error": false,
+                }]},
+            ]})
         } else {
             json!({})
         };
         let input = json!({
-            "request": request, "models": {"capable": ["capable"], "efficient": ["efficient"]},
+            "request": request,
+            "models": {"any": ["capable", "efficient"], "capable": ["capable"], "efficient": ["efficient"]},
             "metadata": {"session_id": "s", "agent_id": agent, "is_subagent": is_subagent,
                 "session_final": is_final},
         });
         let run = run(&router, input);
-        assert_eq!(
-            next(&run)["selected_model_ids"],
-            json!([expected]),
-            "{agent}"
-        );
+        assert_eq!(next(&run)["selected_model_ids"][0], expected, "{agent}");
     }
 }
 

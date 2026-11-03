@@ -3006,6 +3006,154 @@ mutate = ["send_payment_request"]
     Ok(())
 }
 
+// Critical errors affect tier selection before handoff; an active efficient hold bypasses them.
+// The handoff must preserve upstream history and tier prompts across API formats and streaming.
+#[tokio::test]
+async fn stage_plan_execute_handoff_preserves_history_and_prompts() -> TestResult {
+    for path in ["/v1/chat/completions", "/v1/messages", "/v1/responses"] {
+        let upstream = MockUpstream::start().await?;
+        let app = build_switchyard_router(load_test_config(&format!(
+            r#"
+schema_version = 1
+[llm_clients.local]
+format = "openai_chat"
+base_url = "{}"
+[targets]
+planner = {{ id = "model/strong", llm_client = "local" }}
+executor = {{ id = "model/weak", llm_client = "local" }}
+[routes.plan_execute]
+id = "plan-execute"
+type = "stage_router"
+capable_target = "planner"
+efficient_target = "executor"
+picker = "capable_first"
+confidence_threshold = 0.0
+capable_hold_turns = 0
+efficient_hold_turns = -1
+capable_system_prompt = "Inspect the task and plan before modifying files."
+"#,
+            upstream.base_url,
+        ))?);
+
+        for (tool, output, expected, stream, final_request) in [
+            (None, "", "model/strong", false, false),
+            (
+                Some("read_file"),
+                "source code",
+                "model/strong",
+                false,
+                false,
+            ),
+            (
+                Some("write_file"),
+                "out of memory",
+                "model/strong",
+                false,
+                false,
+            ),
+            (
+                Some("write_file"),
+                "file written",
+                "model/weak",
+                true,
+                false,
+            ),
+            (Some("bash"), "out of memory", "model/weak", false, false),
+            (None, "", "model/weak", false, true),
+            (None, "", "model/strong", false, false),
+        ] {
+            let mut messages = vec![json!({"role": "user", "content": "implement the task"})];
+            if let Some(tool) = tool {
+                match path {
+                    "/v1/chat/completions" => messages.extend([
+                        json!({"role": "assistant", "content": "The plan is to update the file.",
+                            "tool_calls": [{"id": "call", "type": "function",
+                                "function": {"name": tool, "arguments": "{}"}}]}),
+                        json!({"role": "tool", "tool_call_id": "call", "content": output}),
+                    ]),
+                    "/v1/messages" => messages.extend([
+                        json!({"role": "assistant", "content": [
+                            {"type": "text", "text": "The plan is to update the file."},
+                            {"type": "tool_use", "id": "call", "name": tool, "input": {}}]}),
+                        json!({"role": "user", "content": [
+                            {"type": "tool_result", "tool_use_id": "call", "content": output}]}),
+                    ]),
+                    _ => messages.extend([
+                        json!({"role": "assistant", "content": "The plan is to update the file."}),
+                        json!({"type": "function_call", "call_id": "call", "name": tool, "arguments": "{}"}),
+                        json!({"type": "function_call_output", "call_id": "call", "output": output}),
+                    ]),
+                }
+            }
+            let mut body = json!({"model": "plan-execute", "stream": stream, "max_tokens": 128});
+            body[if path == "/v1/responses" {
+                "input"
+            } else {
+                "messages"
+            }] = json!(messages);
+            let response = send_with_headers(
+                &app,
+                "POST",
+                path,
+                Some(body),
+                &[
+                    ("x-switchyard-session-id", "plan-execute-session"),
+                    (
+                        "x-switchyard-session-final",
+                        if final_request { "true" } else { "false" },
+                    ),
+                ],
+            )
+            .await?;
+            assert_eq!(
+                response.status,
+                StatusCode::OK,
+                "{path}: {:?}",
+                response.bytes
+            );
+            assert_eq!(
+                response
+                    .headers
+                    .get("x-model-router-selected-model")
+                    .and_then(|value| value.to_str().ok()),
+                Some(expected),
+                "{path}: {tool:?}",
+            );
+            if stream {
+                let text = std::str::from_utf8(&response.bytes)?;
+                let end = match path {
+                    "/v1/chat/completions" => "data: [DONE]",
+                    "/v1/messages" => "event: message_stop",
+                    _ => "event: response.completed",
+                };
+                assert!(text.contains(end), "{path}: {text}");
+                assert!(!text.contains("event: error"), "{path}: {text}");
+            }
+            let calls = upstream.calls.lock().await;
+            let call = calls.last().ok_or("missing upstream request")?;
+            assert_eq!(call["model"], expected);
+            assert_eq!(
+                has_system_prompt(call, "Inspect the task and plan before modifying files."),
+                expected == "model/strong",
+            );
+            if tool.is_some() {
+                let history = call["messages"].to_string();
+                assert!(history.contains("The plan is to update the file."));
+                assert!(history.contains(output));
+            }
+        }
+        assert_eq!(upstream.calls.lock().await.len(), 7);
+        let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+        assert_eq!(stats["classifier"]["total_requests"], 0);
+        assert_eq!(
+            stats["algorithm_stats"]["stage_router"]["routing_decisions"]["efficient_hold"]["targets"]
+                ["model/weak"],
+            2
+        );
+    }
+    Ok(())
+}
+
 // Composite TOML must pass custom stage semantics through to the nested stage router.
 #[tokio::test]
 async fn composite_router_uses_configured_tool_semantics() -> TestResult {

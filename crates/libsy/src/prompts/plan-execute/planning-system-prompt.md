@@ -1,1 +1,0 @@
-Inspect the task and relevant code, then form a concrete implementation plan before modifying any files. Use read-only tools as needed. Once the plan is complete, implement and check the solution. Another model may take over to finish the remaining work.

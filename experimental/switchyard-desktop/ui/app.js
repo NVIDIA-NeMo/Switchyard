@@ -609,7 +609,6 @@ function renderRoute(route,parent) {
       const roleNode=index=>{const role=roleList[index],item=button(flow,'',()=>{const row=roles.querySelector(`[data-role="${index}"]`);row?.scrollIntoView({block:'nearest',behavior:'instant'});row?.querySelector('[role="combobox"]')?.focus();});item.dataset.roleLink=index;item.title=role.hint;item.append(node('strong',role.label),node('small'));return item;};
       flow.append(node('span','Request','diagram-request'));
       if(chosen==='advisor'){connect('→');roleNode(0);connect('→ final answer review');roleNode(1);}
-      else if(chosen==='plan_execute'){connect('→');roleNode(0);connect('→ first file edit');roleNode(1);}
       else {connect('→');if(roleList[0]?.tier==='Judge'){roleNode(0);connect('→ chooses');}const choices=node('div',undefined,'diagram-choices');flow.append(choices);for(let index=roleList[0]?.tier==='Judge'?1:0;index<roleList.length;index++)choices.append(roleNode(index));}
       if(['stage_router','auto','composite'].includes(chosen))diagram.append(node('p','Tool results and agent progress select the capable or efficient model.','diagram-note'));
       if(chosen==='random')diagram.append(node('p','Each request goes to one model, selected at random.','diagram-note'));

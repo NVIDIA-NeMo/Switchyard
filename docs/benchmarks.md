@@ -1,6 +1,6 @@
 # Benchmarks
 
-Task completion, cost, and runnable configs. All configs use `OPENROUTER_API_KEY`.
+This page lists task completion, cost, and benchmark configs. All configs use `OPENROUTER_API_KEY`.
 
 [Terminal-Bench 2.1](#terminal-bench-21) · [DeepSWE](#deepswe) · [Run a benchmark](#run-a-benchmark)
 
@@ -27,13 +27,18 @@ Task completion, cost, and runnable configs. All configs use `OPENROUTER_API_KEY
 
 | Strategy | Tasks solved | Cost per run | Config |
 | --- | ---: | ---: | --- |
-| Plan/Execute | 60.8% | $180.51 | [TOML](../benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml) |
+| Plan/Execute (standalone, removed) | 60.8% | $180.51 | [Historical config](../benchmark/DEEPSWE_V11_QUALIFICATION.md#historical-planexecute-configuration) |
 | Advisor | 57.5% | $208.00 | [TOML](../benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) |
 | Stage | 61.36% | $466.28 | [TOML](../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml) |
 | Sol only | 62.8% | $720.95 | — |
 | Luna only | 52.2% | ≈$49 | — |
 
 Luna: one run; others: three-run means. [Evaluation settings](../benchmark/DEEPSWE_V11_QUALIFICATION.md).
+
+The Plan/Execute result used the removed standalone implementation. Its archived
+config requires an older Switchyard version. The current
+[Plan/Execute configuration for Stage](routing_algorithms/plan_execute_routing.md)
+has no published results.
 
 ## Run a benchmark
 

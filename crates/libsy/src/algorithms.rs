@@ -14,7 +14,6 @@ pub mod infra;
 pub mod llm_class;
 pub mod noop;
 pub mod passthrough;
-pub mod plan_execute;
 pub mod rand;
 pub mod stage;
 pub mod subagent;
