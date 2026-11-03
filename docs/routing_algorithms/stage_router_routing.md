@@ -267,8 +267,8 @@ required columns.
 | `classifier.threshold_step` | `0.0` | Added once for uncertain or unmatched verdicts, twice for unsupported. |
 | `classifier.fail_open` | `true` | On judge failure, fall open to the picker default instead of failing the request. |
 | `classifier.decision` | unset | Use a decision model instead of an LLM judge. Excludes the LLM judge keys below. |
-| `classifier.classify_trigger` | `every_request` | Only the default is accepted. The judge runs on every ambiguous turn. |
-| `classifier.message_hash_fallback` | `false` | Rejected at load. The judge retains no verdict. |
+| `classifier.classify_trigger` | `every_request` | When the judge runs on turns the signals leave undecided. `user_turn` keeps the judge's verdict across the tool calls in one user turn, and `new_session` keeps it for the session. Keeping a verdict needs a session ID, or `classifier.message_hash_fallback`. |
+| `classifier.message_hash_fallback` | `false` | Keeps the judge's verdict against a hash of the first user message when a request carries no session ID. Needs a retaining `classifier.classify_trigger`. |
 | `classifier.recent_turn_window` | unset | Trailing messages the judge sees after the opening task. A different unit from the route's `recent_turn_window`, which counts tool results. |
 | `classifier.prompt` | packaged | Replaces the judge prompt. |
 | `classifier.response_format_type` | `json_schema` | `json_object` for providers without JSON Schema. |
