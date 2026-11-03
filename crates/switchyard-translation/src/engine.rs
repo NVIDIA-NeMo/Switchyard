@@ -11,6 +11,7 @@ use serde_json::Value;
 use crate::LlmResponseStreamEvent;
 use crate::codecs::FormatCodec;
 use crate::codecs::anthropic::AnthropicMessagesCodec;
+use crate::codecs::bedrock::BedrockConverseCodec;
 use crate::codecs::openai_chat::OpenAiChatCodec;
 use crate::codecs::responses::OpenAiResponsesCodec;
 use crate::codecs::stream::{
@@ -61,6 +62,7 @@ impl FormatRegistry {
         registry.register(OpenAiChatCodec);
         registry.register(AnthropicMessagesCodec);
         registry.register(OpenAiResponsesCodec);
+        registry.register(BedrockConverseCodec);
         registry
     }
 
@@ -138,13 +140,16 @@ impl TranslationEngine {
         policy: &TranslationPolicy,
     ) -> Result<TranslationOutput> {
         let target = target.into();
+        let mut diagnostics =
+            crate::codecs::bedrock::request_projection_diagnostics(request, &target, policy)?;
         let encoded = self
             .registry
             .codec(target)?
             .encode_request(request, policy)?;
+        diagnostics.extend(encoded.diagnostics);
         Ok(TranslationOutput {
             body: encoded.body,
-            diagnostics: encoded.diagnostics,
+            diagnostics,
         })
     }
 
@@ -162,6 +167,14 @@ impl TranslationEngine {
             .registry
             .codec(source.clone())?
             .decode_request(body, policy)?;
+        let mut decoded = decoded;
+        decoded
+            .diagnostics
+            .extend(crate::codecs::bedrock::request_projection_diagnostics(
+                &decoded.request,
+                &target,
+                policy,
+            )?);
         let encoded = self
             .registry
             .codec(target.clone())?
