@@ -5,10 +5,8 @@ describes what that behavior should achieve. This guide bridges the gap between
 the two: define a measurable objective, design candidate configurations, and use
 a loss function to compare them against that fixed objective.
 
-The objective determines what counts as better. The configurations define the
-alternatives we can test. A loss is the score used to compare their results;
-lower is better. For the steps to run a routing experiment, start with
-[Compare and Tune](index.md).
+A loss is the score used to compare results; lower is better. For the steps to
+run a routing experiment, start with [Compare and Tune](index.md).
 
 Use a representative subset of benchmark tasks for development: training tasks
 guide changes, while separate validation tasks select configurations and
@@ -21,24 +19,20 @@ For a quick walkthrough with concrete data, jump to
 
 ## 1. Define the objective
 
-Start with the outcome the user wants. Define what to measure, on which workload,
-and what makes a result acceptable. Keep this definition fixed while comparing
-candidates, whether the experiment contains two configurations or many.
+Define what the user wants to improve, on which workload, and what makes a result
+acceptable. Keep this objective fixed throughout the comparison.
 
 - **Reduce cost while preserving accuracy.** Minimize total cost per task while
   meeting a defined accuracy requirement. Include decision calls, retries, and
   cache charges in the cost.
 - **Maximize task success.** Maximize the fraction of tasks completed correctly,
   subject to any cost or latency limits.
-- **Reach a desired routing split.** Target a defined allocation across the
-  configured targets. This could be 70% of calls on the efficient tier and 30% on
-  the capable tier, or a distribution across three or more targets. Specify the
-  counting unit, allowed deviation, and quality requirement.
-- **Reach a capable-tier cache-usage target.** Target a specified percentage of
-  capable-tier input tokens served from cache, such as at least 80%. Measure
-  cache-read input tokens divided by all input tokens on capable-tier calls over
-  the evaluation workload. Specify the target percentage and any quality
-  requirement before comparing candidates.
+- **Reach a desired routing split.** For example, target 70% of calls on the
+  efficient tier and 30% on the capable tier. Specify the allowed deviation and
+  quality requirement.
+- **Reach a capable-tier cache-usage target.** For example, require at least 80%
+  of capable-tier input tokens to be served from cache. Measure cache-read input
+  tokens divided by all input tokens on that tier, with a defined quality floor.
 
 Once the objective is measurable, the next step is to choose configurations that
 might achieve it. This separates the outcome we want from the settings we will
@@ -46,38 +40,19 @@ test.
 
 ## 2. Design configuration candidates
 
-A candidate is a complete configuration to evaluate under the fixed objective.
-The candidate set can contain any number of alternatives. Give each a distinct
-ID, such as A, B, and C, and compare all of them using the same objective and
-evaluation procedure.
+A candidate is a complete configuration to test under the objective. Start with
+a baseline and a small set of changes you expect to help:
 
-The objective describes what success means; candidate design determines which
-possible solutions the experiment will consider. A loss can rank the candidates
-we test, but it cannot find an improvement that none of them can produce.
+1. **Record the baseline.** Save its configuration and measured outcomes.
+2. **Choose what varies.** For example, change model targets, thresholds, or hold
+   durations. Keep other settings fixed and state why each change might help.
+3. **Test interactions.** A threshold and hold duration can affect the same
+   routing decisions, so include combinations when needed.
+4. **Keep runs comparable.** Use the same tasks, evaluation procedure, and initial
+   cache setup. Pin model and provider versions, and save each configuration.
 
-Build the candidate set in these steps:
-
-1. **Choose a baseline.** Record the current configuration and its measured
-   outcomes. Include it in the comparison so improvements have a reference point.
-2. **State a reason for each change.** Connect the proposed behavior to the
-   objective. For example, staying on one model longer might preserve cached
-   context and reduce cost. Test both the cost effect and the quality effect.
-3. **Choose what can vary.** This could be model targets, routing policy,
-   thresholds, hold durations, or decision instructions. Specify the allowed
-   values and hold other settings fixed. Start with a small set that can answer
-   the question behind the experiment.
-4. **Include combinations when settings interact.** A threshold and a hold
-   duration can affect the same routing decisions. After a small initial
-   comparison, test selected combinations rather than assuming their individual
-   effects will add up.
-5. **Make candidates reproducible and comparable.** Give each one an ID and save
-   its full configuration. Use the same workload and evaluation procedure, pin
-   model and provider versions where possible, and apply the same cache setup
-   procedure. Let each candidate's behavior determine subsequent cache usage.
-
-With the objective and candidates fixed, run the same tasks for each candidate.
-Use the results to compare cost and task success. The examples below show how to
-make that comparison and choose a configuration.
+Run the same tasks for every candidate. The following examples show how to use
+the results to choose between them.
 
 ## 3. Choose an example
 
@@ -106,5 +81,4 @@ Each example connects a specific change to a measurable objective:
 - If a test result guides another rewrite, it has become development evidence.
   Use fresh data for an independent check.
 
-Continue to [Section 5: Examples of tuning](examples.md) for concrete data and
-reproducible calculations.
+Continue to [Section 5: Examples of tuning](examples.md) for concrete comparisons.
