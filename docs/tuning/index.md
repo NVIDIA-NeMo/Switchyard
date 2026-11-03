@@ -1,5 +1,9 @@
 # Tuning
 
+Tuning helps you find a configuration that meets your goals on your workload.
+Start with Foundations to plan the comparison, then use Compare and Tune to
+see how to evaluate candidates and choose a configuration.
+
 - [Tuning Foundations](foundations.md): define your objective, candidates, and evaluation splits.
 - [Compare and Tune](examples.md): compare routing settings and model pairs with worked examples.
 
