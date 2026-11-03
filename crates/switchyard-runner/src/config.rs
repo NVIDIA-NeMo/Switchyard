@@ -183,6 +183,7 @@ struct TargetEligibilityConfig {
 enum RequirementScope {
     #[default]
     Request,
+    Task,
 }
 
 struct TargetPromptPolicy {
@@ -661,11 +662,10 @@ impl DeploymentConfig {
             let mut route = Route::from_lane(standard, caller_auth, capabilities, route_targets)
                 .with_infra(config.infra.clone());
             if let Some(eligibility) = &config.eligibility {
-                let policy = match eligibility.scope {
-                    RequirementScope::Request => {
-                        EligibilityPolicy::new(eligibility.require_explicit_requirements)
-                    }
-                };
+                let policy = EligibilityPolicy::new(
+                    eligibility.require_explicit_requirements,
+                    matches!(eligibility.scope, RequirementScope::Task),
+                );
                 route = route.with_eligibility(
                     policy,
                     EligibleLanes {
@@ -2016,8 +2016,8 @@ secondary = ["approved_secondary"]
                 "unknown field `require_explicit_requirement`",
             ),
             (
-                format!("{configured}\nscope = 'task'\n"),
-                "unknown variant `task`",
+                format!("{configured}\nscope = 'tenant'\n"),
+                "unknown variant `tenant`",
             ),
         ] {
             let message = error_message(&invalid);
@@ -2065,6 +2065,41 @@ secondary = ["approved_secondary"]
                 "expected {expected:?}, got {message}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn task_retention_is_sticky_per_task() -> RunnerResult<()> {
+        let configured = eligible_pool_config().replace(
+            "[routes.passthrough.eligibility]",
+            "[routes.passthrough.eligibility]\nscope = 'task'",
+        );
+        let runner = Runner::from_toml(&configured)?;
+        let route = runner
+            .route("switchyard/passthrough")
+            .expect("eligible route should exist");
+        let request = |task_id: Option<&str>, labels: &[&str]| -> RunnerResult<Request> {
+            let mut request = Request::default();
+            request.metadata.get_or_insert_default().task_id = task_id.map(str::to_string);
+            require_target_labels(&mut request, labels)?;
+            Ok(request)
+        };
+
+        for (task_id, labels, candidates) in [
+            ("task-a", &[][..], 2),
+            ("task-a", &["private"][..], 1),
+            ("task-a", &[][..], 1),
+            ("task-b", &[][..], 2),
+        ] {
+            let outcome = route.decide(request(Some(task_id), labels)?).await?;
+            assert_eq!(outcome.selected_model_ids.len(), candidates);
+            if candidates == 1 {
+                assert_eq!(outcome.selected_model_id()?, "strong");
+            }
+        }
+        for task_id in [None, Some(" ")] {
+            assert!(route.decide(request(task_id, &[])?).await.is_err());
+        }
+        Ok(())
     }
 
     #[test]
