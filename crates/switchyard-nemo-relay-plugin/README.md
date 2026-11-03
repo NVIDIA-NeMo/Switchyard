@@ -246,7 +246,7 @@ above the configured size limit.
 When Relay is configured with OTLP logs and metrics exporters, the plugin emits
 typed telemetry through Relay's native plugin runtime:
 
-- Routing request, decision, and overhead marks are Info logs.
+- Routing request, privacy decision, routing decision, and overhead marks are Info logs.
 - Per-model call marks are Debug logs with `call_role`, outcome, and latency,
   but no token usage. Streaming marks cover stream creation; later failures are
   reported separately.
@@ -277,6 +277,7 @@ meaning requires a new schema version.
 | Mark | Data fields |
 | --- | --- |
 | `switchyard.routing.requested` | `algorithm` |
+| `switchyard.privacy.decision` | `lane`, `source`, `reason_code`, `required_labels` |
 | `switchyard.routing.llm_call` | `call_index`, `selected_model`, `call_role`, `outcome`, `latency_ms` |
 | `switchyard.routing.overhead` | `latency_ms` |
 | `switchyard.routing.decision` | `algorithm`, optional `outcome_id`, `selected_model`, nullable `served_model`, nullable `fallback_used`, and optional `evidence` |
@@ -287,6 +288,13 @@ meaning requires a new schema version.
 `evidence` is an object containing the supported string fields `source`, `verdict`,
 `trigger`, and `reason_code`, and numeric fields `score`, `confidence`, and `threshold`.
 String values longer than 64 bytes are omitted and should be stable, non-sensitive labels.
+
+Routes with target eligibility emit one privacy decision mark after admission,
+including the effective `required_labels`. Empty requirements use the normal
+models; otherwise every approved target must carry all labels. `source` identifies
+caller requirements, retained task requirements or the default policy. The mark
+survives later model failures. This plugin does not classify content or read trusted
+requirements from Relay headers; a trusted host must attach them before Runner executes.
 
 ## Failure policy
 
