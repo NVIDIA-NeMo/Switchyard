@@ -1,0 +1,47 @@
+schema_version = 1
+
+[llm_clients.standard]
+format = "openai_chat"
+base_url = "https://cloud.example/v1"
+max_retries = 0
+timeout_ms = 10000
+
+[llm_clients.approved]
+format = "anthropic_messages"
+base_url = "https://private.example/v1"
+max_retries = 0
+timeout_ms = 10000
+
+[targets.efficient]
+id = "standard-efficient-model"
+llm_client = "standard"
+
+[targets.capable]
+id = "standard-capable-model"
+llm_client = "standard"
+
+[targets.approved_efficient]
+id = "approved-efficient-model"
+llm_client = "approved"
+labels = ["private", "customer_data"]
+
+[targets.approved_capable]
+id = "approved-capable-model"
+llm_client = "approved"
+labels = ["private", "customer_data"]
+
+[routes.assistant]
+id = "switchyard/assistant"
+type = "stage_router"
+efficient_target = "efficient"
+capable_target = "capable"
+picker = "efficient_first"
+confidence_threshold = 0.6
+
+[routes.assistant.eligibility]
+require_explicit_requirements = true
+scope = "request"
+
+[routes.assistant.eligibility.target_alternatives]
+efficient = ["approved_efficient"]
+capable = ["approved_capable"]
