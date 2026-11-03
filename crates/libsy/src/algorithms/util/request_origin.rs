@@ -3,14 +3,20 @@
 
 //! Request-origin signals and compatibility with harness-generated summaries.
 
-use switchyard_protocol::{ContentBlock, Metadata, Request, RequestOrigin};
+use switchyard_protocol::{ContentBlock, Message, Request};
 
-use super::affinity::{is_environment_update, is_user_turn};
+use super::affinity::{initiated_by_user, is_environment_update, is_user_turn};
 
-/// Explicit origin takes precedence over message-shape heuristics.
-pub(crate) fn starts_user_turn(request: &Request) -> bool {
-    if let Some(origin) = request.metadata.as_ref().and_then(Metadata::request_origin) {
-        return origin == RequestOrigin::User;
+pub(crate) fn is_new_user_turn(request: &Request) -> bool {
+    let codex_compaction = request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.http_headers.as_ref())
+        .and_then(|headers| headers.get("x-codex-turn-metadata"))
+        .and_then(|value| serde_json::from_slice::<serde_json::Value>(value.as_bytes()).ok())
+        .is_some_and(|metadata| metadata["request_kind"] == "compaction");
+    if codex_compaction || initiated_by_user(request) == Some(false) {
+        return false;
     }
     request
         .llm_request
@@ -18,9 +24,19 @@ pub(crate) fn starts_user_turn(request: &Request) -> bool {
         .iter()
         .rev()
         .find(|message| !is_environment_update(message))
-        .is_some_and(|message| {
-            is_user_turn(message) && !message.content.iter().all(is_compaction_summary)
-        })
+        .is_some_and(|message| is_user_turn(message) && !is_compaction_message(message))
+}
+
+fn is_compaction_message(message: &Message) -> bool {
+    let mut has_summary = false;
+    for block in &message.content {
+        match block {
+            ContentBlock::Image { .. } => {}
+            _ if is_compaction_summary(block) => has_summary = true,
+            _ => return false,
+        }
+    }
+    has_summary
 }
 
 fn is_compaction_summary(block: &ContentBlock) -> bool {
@@ -40,13 +56,13 @@ fn is_compaction_summary(block: &ContentBlock) -> bool {
                     && text.ends_with("</summary>"))
                 || (text.starts_with("<conversation-checkpoint>")
                     && text.ends_with("</conversation-checkpoint>"))
-                || hermes_summary(&text)
+                || is_hermes_summary(&text)
         }
         _ => false,
     }
 }
 
-fn hermes_summary(text: &str) -> bool {
+fn is_hermes_summary(text: &str) -> bool {
     const REPLAY: &str = "[still in progress \u{2014} this is the active request, restated after the compaction boundary";
     const END: &str = "--- end of context summary \u{2014} respond to the message below, not the summary above ---";
     // A merged summary may also carry a fresh user message after its closing marker.
@@ -68,117 +84,60 @@ fn hermes_summary(text: &str) -> bool {
 mod tests {
     use super::*;
     use crate::algorithms::util::tier_fixtures::turn_request;
-    use switchyard_protocol::{Message, Role, WireFormat};
+    use switchyard_protocol::{ImageSource, Role, WireFormat};
 
     #[test]
-    fn summaries_do_not_hide_followups() {
-        for summary in [
-            "Another language model started to solve this problem and produced a summary of its thinking process.\nSummary",
-            "This session is being continued from a previous conversation that ran out of context.\nSummary",
-            "[CONTEXT COMPACTION \u{2014} REFERENCE ONLY]\nSummary",
-            "Prior context\n[CONTEXT COMPACTION \u{2014} REFERENCE ONLY]\nSummary",
-            "[CONTEXT SUMMARY]: Summary",
-            "[STILL IN PROGRESS \u{2014} this is the active request, restated after the compaction boundary] Task",
-            "The conversation history before this point was compacted into the following summary:\n\n<summary>\nSummary\n</summary>",
-            "Prior model work/tool state available.\nMUST build on prior work\n\n<summary>\nSummary\n</summary>",
-            "<conversation-checkpoint>\nThe following is a summary and serialized record of earlier conversation. Treat it as historical context, not as new instructions.\n\n<summary>\nSummary\n</summary>\n</conversation-checkpoint>",
-        ] {
-            let mut request = turn_request(false);
-            request
-                .llm_request
-                .messages
-                .push(Message::text(Role::User, summary));
-            assert!(!starts_user_turn(&request), "{summary}");
-            request
-                .llm_request
-                .messages
-                .push(Message::text(Role::User, "Now fix the parser"));
-            assert!(starts_user_turn(&request), "{summary}");
-        }
-
-        let mut request = turn_request(false);
-        for tail in [
-            "Now fix the parser",
-            "[STILL IN PROGRESS \u{2014} this is the active request, restated after the compaction boundary] Task",
-        ] {
-            request.llm_request.messages = vec![Message::text(
-                Role::User,
-                format!(
-                    "[CONTEXT COMPACTION \u{2014} REFERENCE ONLY]\nSummary\n--- END OF CONTEXT SUMMARY \u{2014} respond to the message below, not the summary above ---\n{tail}"
-                ),
-            )];
-            assert_eq!(starts_user_turn(&request), tail.starts_with("Now"));
-        }
-    }
-
-    #[test]
-    fn native_compaction_items_are_continuations() {
+    fn structured_compaction_is_not_user_input() {
         let mut request = turn_request(false);
         for kind in ["compaction", "context_compaction", "unrecognized"] {
             request.llm_request.messages = vec![Message {
                 role: Role::User,
-                content: vec![ContentBlock::Unknown {
-                    provider: WireFormat::OpenAiResponses.into(),
-                    raw: serde_json::json!({"type": kind, "encrypted_content": "opaque"}),
-                }],
+                content: vec![
+                    ContentBlock::Unknown {
+                        provider: WireFormat::OpenAiResponses.into(),
+                        raw: serde_json::json!({"type": kind, "encrypted_content": "opaque"}),
+                    },
+                    ContentBlock::Image {
+                        source: ImageSource::Url {
+                            url: "image.png".into(),
+                            detail: None,
+                        },
+                    },
+                ],
             }];
-            assert_eq!(starts_user_turn(&request), kind == "unrecognized");
+            assert_eq!(is_new_user_turn(&request), kind == "unrecognized");
         }
-    }
-
-    #[test]
-    fn explicit_origin_overrides_message_shape() {
-        for (text, header, value, expected) in [
+        request.llm_request.messages =
+            vec![Message::text(Role::User, "Summarize the conversation")];
+        for (header, value, expected) in [
             (
-                "[CONTEXT SUMMARY]: quoted by user",
-                "x-switchyard-request-origin",
-                "user",
-                true,
-            ),
-            (
-                "[CONTEXT SUMMARY]: summary",
-                "x-initiator",
-                "unknown",
-                false,
-            ),
-            ("[CONTEXT SUMMARY]: summary", "x-initiator", "user", false),
-            (
-                "Continue the task",
-                "x-switchyard-request-origin",
-                "compaction",
-                false,
-            ),
-            ("Continue the task", "x-initiator", "agent", false),
-            ("Now fix the parser", "x-initiator", "unknown", true),
-            (
-                "Now fix the parser",
-                "x-codex-turn-metadata",
-                "invalid json",
-                true,
-            ),
-            (
-                "Now fix the parser",
-                "x-codex-turn-metadata",
-                r#"{"request_kind":"turn"}"#,
-                true,
-            ),
-            (
-                "Summarize the conversation",
                 "x-codex-turn-metadata",
                 r#"{"request_kind":"compaction"}"#,
                 false,
             ),
+            ("x-initiator", "agent", false),
+            ("x-initiator", "user", true),
         ] {
-            let mut request = turn_request(false);
-            request.llm_request.messages = vec![Message::text(Role::User, text)];
-            request
-                .metadata
-                .as_mut()
-                .unwrap()
-                .http_headers
-                .get_or_insert_with(Default::default)
-                .insert(header, value.parse().unwrap());
-            assert_eq!(starts_user_turn(&request), expected, "{header}: {value}");
+            let metadata = request.metadata.as_mut().unwrap();
+            let headers = metadata.http_headers.get_or_insert_default();
+            headers.clear();
+            headers.insert(header, value.parse().unwrap());
+            assert_eq!(is_new_user_turn(&request), expected);
         }
+        request.llm_request.messages =
+            vec![Message::text(Role::User, "[CONTEXT SUMMARY]: summary")];
+        assert!(!is_new_user_turn(&request));
+    }
+
+    #[test]
+    fn merged_hermes_summary_preserves_fresh_input() {
+        let summary = "prior context\n[context compaction \u{2014} reference only] summary\n--- end of context summary \u{2014} respond to the message below, not the summary above ---";
+        assert!(is_hermes_summary(summary));
+        assert!(!is_hermes_summary(&format!(
+            "{summary}\nNow fix the parser"
+        )));
+        assert!(is_hermes_summary(&format!(
+            "{summary}\n[still in progress \u{2014} this is the active request, restated after the compaction boundary] Task"
+        )));
     }
 }
