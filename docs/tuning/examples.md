@@ -11,7 +11,11 @@ Suppose the goal is to **minimize mean cost per task while passing at least 85%
 of tasks**. Keep the routing algorithm and model pair fixed, then compare its
 configuration options.
 
-### Choose the controls to tune
+### Choose the stage-router controls to tune
+
+This example focuses on the stage router. The same process applies to other
+routing algorithms: choose controls that affect your objective, compare
+candidates, and validate the selected configuration.
 
 Stage router has many fields. With the model pair fixed, start with the controls
 that most directly change the routing split and cost: **profile, threshold, and
