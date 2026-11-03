@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"enum":["DeterministicIdPolicy","LossyConversionPolicy","PreservationPolicy","UnknownFieldPolicy"],"struct":["ProviderProfile","TargetCapabilities","TranslationPolicy"]};
