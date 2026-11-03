@@ -34,6 +34,34 @@ if TYPE_CHECKING:
 
         def __init__(self) -> None: ...
 
+        def decode_request(
+            self, source: WireFormat | str, body: dict[str, Any]
+        ) -> dict[str, Any]:
+            """Return request IR and diagnostics under request and diagnostics keys."""
+            ...
+
+        def encode_request(
+            self, target: WireFormat | str, request: dict[str, Any]
+        ) -> dict[str, Any]:
+            """Encode request IR, returning body and diagnostics."""
+            ...
+
+        def decode_response(
+            self, source: WireFormat | str, body: dict[str, Any]
+        ) -> dict[str, Any]:
+            """Return response IR and diagnostics under response and diagnostics keys."""
+            ...
+
+        def encode_response(
+            self,
+            target: WireFormat | str,
+            response: dict[str, Any],
+            *,
+            request_extensions: dict[str, Any] | None = None,
+        ) -> dict[str, Any]:
+            """Return body and diagnostics, optionally using decoded request extensions."""
+            ...
+
         def translate_request(
             self, source: WireFormat | str, target: WireFormat | str, body: dict[str, Any]
         ) -> dict[str, Any]:
