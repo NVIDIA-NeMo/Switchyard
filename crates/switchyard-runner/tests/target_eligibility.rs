@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Trusted request requirements constrain routing roles and provider calls.
+//! Trusted requirements constrain routing roles, provider calls and retained tasks.
 
 use serde_json::{Value, json};
 use switchyard_llm_client::AuxiliaryOperation;
@@ -427,6 +427,59 @@ async fn explicit_requirements_apply_only_to_the_current_request() {
         .await
         .expect("empty requirements remain valid");
     assert!(route.decide(request("shared", None)).await.is_err());
+    assert!(models_called(&server).await.is_empty());
+}
+
+#[tokio::test]
+async fn explicit_empty_differs_from_missing_and_task_requirements_only_accumulate() {
+    let server = MockServer::start().await;
+    let algorithm = STAGE
+        .replace("both_fast", "fast")
+        .replace("both_capable", "capable");
+    let policy = format!("require_explicit_requirements = true\nscope = 'task'\n{ALTERNATIVES}");
+    let source = config(&server.uri(), &algorithm, &policy);
+    let runner = Runner::from_toml(&source).expect("task-scoped route");
+    let route = runner.route("chat").expect("route");
+    assert!(route.decide(request("shared", None)).await.is_err());
+    for (task, labels, expected) in [
+        ("shared", &[] as &[&str], ["fast", "capable"]),
+        ("shared", &["private"], ["private_fast", "private_capable"]),
+        ("shared", &["customer_data"], ["both_fast", "both_capable"]),
+        ("shared", &[], ["both_fast", "both_capable"]),
+        ("other", &[], ["fast", "capable"]),
+    ] {
+        let outcome = route
+            .decide(request(task, Some(labels)))
+            .await
+            .expect("retained task requirements");
+        assert_eq!(outcome.selected_model_ids, expected);
+    }
+    assert!(route.decide(request("shared", None)).await.is_err());
+
+    let unavailable = source.replace("[\"private\",\"customer_data\"]", "[\"private\"]");
+    let runner =
+        Runner::from_toml(&unavailable).expect("valid config with unavailable intersection");
+    let route = runner.route("chat").expect("route");
+    route
+        .decide(request("blocked", Some(&["private"])))
+        .await
+        .expect("initial private task");
+    for labels in [&["customer_data"] as &[&str], &["private"], &[]] {
+        assert!(
+            route
+                .decide(request("blocked", Some(labels)))
+                .await
+                .is_err()
+        );
+    }
+    let other = route
+        .decide(request("other", Some(&["private"])))
+        .await
+        .expect("independent task requirements");
+    assert_eq!(
+        other.selected_model_ids,
+        ["private_fast", "private_capable"]
+    );
     assert!(models_called(&server).await.is_empty());
 }
 
