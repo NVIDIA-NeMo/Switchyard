@@ -746,6 +746,40 @@ fn anthropic_stream_usage_and_stop_translate_to_openai_chunks() -> TestResult {
     Ok(())
 }
 
+// Verifies Anthropic stop reasons with no OpenAI equivalent become a valid
+// OpenAI finish reason instead of leaking through verbatim.
+#[test]
+fn anthropic_unknown_stop_reasons_stream_as_openai_stop() -> TestResult {
+    let engine = TranslationEngine::default();
+    for reason in ["pause_turn", "model_context_window_exceeded"] {
+        let mut state =
+            StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::OpenAiChat);
+        let start = json!({
+            "type": "message_start",
+            "message": {"id": "msg_1", "model": "claude", "role": "assistant", "content": []}
+        });
+        engine.translate_event(
+            &mut state,
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &start,
+        )?;
+        let delta = json!({
+            "type": "message_delta",
+            "delta": {"stop_reason": reason},
+            "usage": {"output_tokens": 1}
+        });
+        let events = engine.translate_event(
+            &mut state,
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &delta,
+        )?;
+        assert_eq!(events[0]["choices"][0]["finish_reason"], "stop", "{reason}");
+    }
+    Ok(())
+}
+
 // Verifies streamed moderation stops stay distinguishable from normal turns in both
 // directions, and that a named refusal category survives re-encoding.
 #[test]

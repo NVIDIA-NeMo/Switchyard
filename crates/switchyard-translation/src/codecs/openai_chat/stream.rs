@@ -437,10 +437,12 @@ fn openai_stream_id(state: &StreamTranslationState) -> String {
 // Maps provider stop reasons into OpenAI's finish-reason vocabulary.
 fn openai_finish_reason(reason: Option<&str>) -> String {
     match reason {
-        Some("end_turn") | Some("stop_sequence") | None => "stop".to_string(),
         Some("max_tokens") => "length".to_string(),
         Some("tool_use") => "tool_calls".to_string(),
         Some("refusal") => "content_filter".to_string(),
-        Some(other) => other.to_string(),
+        // Reasons with no OpenAI equivalent (e.g. `pause_turn`,
+        // `model_context_window_exceeded`) must not leak into `finish_reason`;
+        // the buffered encoder reports them as `stop` too.
+        _ => "stop".to_string(),
     }
 }
