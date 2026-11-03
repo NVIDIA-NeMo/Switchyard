@@ -1506,7 +1506,8 @@ new = ["send_message"]
                 ] {
                     let configured =
                         source.replace("capable_hold_turns = 2", &format!("{field} = {turns}"));
-                    let result = runner_from_toml(&configured);
+                    let result = AlgorithmFactory::from_toml(&configured)
+                        .and_then(|factory| factory.build());
                     assert_eq!(result.is_ok(), valid, "{field} = {turns}");
                     if let Err(error) = result {
                         assert!(error.to_string().contains(field), "{error}");
@@ -2104,7 +2105,11 @@ classifier_magic = true
         ];
 
         for (toml, expected) in cases {
-            let error = error_message(&toml);
+            let error = AlgorithmFactory::from_toml(&toml)
+                .and_then(|factory| factory.build())
+                .err()
+                .expect("invalid configuration should fail")
+                .to_string();
             assert!(
                 error.contains(expected),
                 "expected error containing {expected}, got {error}"
