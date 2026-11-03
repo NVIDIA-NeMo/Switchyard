@@ -14,7 +14,7 @@
         <link rel="prev" href="../llm/">
       
       
-        <link rel="next" href="../../integrations/nemo_relay/">
+        <link rel="next" href="../../reference/host_integration/">
       
       
         
@@ -444,34 +444,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../../reference/host_integration/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Embed in Your Gateway or Harness
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../../mechanics_of_libsy/" class="md-nav__link">
         
   
@@ -522,7 +494,7 @@
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_3" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3_2" checked>
         
           
           <div class="md-nav__link md-nav__container">
@@ -544,14 +516,14 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_3_3" id="__nav_3_3_label" tabindex="0">
+              <label class="md-nav__link " for="__nav_3_2" id="__nav_3_2_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_3_label" aria-expanded="true">
-          <label class="md-nav__title" for="__nav_3_3">
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_3_2_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3_2">
             <span class="md-nav__icon md-icon"></span>
             
   
@@ -726,6 +698,34 @@
           </ul>
         </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/host_integration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Embed in Your Gateway or Harness
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -2657,7 +2657,7 @@ See <a href="../../mechanics_of_libsy/#stepcalldecision">Mechanics of Libsy</a> 
 call-handling loop and cancellation behavior.</p>
 <h2 id="use-the-supplied-clients">Use the supplied clients<a class="headerlink" href="#use-the-supplied-clients" title="Permanent link">&para;</a></h2>
 <p>You can instead use the public <a href="../../rust/switchyard_llm_client/struct.SystemOneClient.html"><code>SystemOneClient</code></a> or <a href="../../rust/switchyard_llm_client/struct.OpenAiDecisionClient.html"><code>OpenAiDecisionClient</code></a> from
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/07b5081fbc5ea7933e4bc6acbbb5a84cdbab8291/crates/libsy-llm-client/README.md"><code>switchyard-llm-client</code></a>. Use dependencies at
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a8f40b3345a8b1bb5bb4b6206cf2d162b33a8033/crates/libsy-llm-client/README.md"><code>switchyard-llm-client</code></a>. Use dependencies at
 the same API revision as libsy and the protocol crate.</p>
 <p>This async excerpt sends the earlier <code>request</code> to System One. Set its <code>model</code> to
 an ID served by your endpoint. <code>SYSTEM_ONE_ENDPOINT</code> must include <code>/v1/systemone</code>.
