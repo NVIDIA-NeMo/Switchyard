@@ -34,6 +34,11 @@ impl AlgorithmFactory {
     /// Reuse the returned algorithms across requests to retain algorithm-owned state.
     pub fn build(&self) -> Result<BTreeMap<String, AlgorithmAndModels>, RunnerError> {
         self.config.validate()?;
+        if self.config.requires_target_admission() {
+            return Err(RunnerError::configuration(
+                "target eligibility requires Runner admission; use Runner instead of AlgorithmFactory",
+            ));
+        }
         self.config
             .build_algorithms()
             .map(|entry| {
