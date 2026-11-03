@@ -424,7 +424,6 @@ mod tests {
     use crate::{Runner, require_target_labels};
 
     const PASSTHROUGH: &str = "type = 'passthrough'\ntarget = 'fast'";
-    const POOL: &str = "type = 'random'\ntargets = ['fast', 'approved_fast']";
 
     fn config(algorithm: &str) -> String {
         let mut source = String::from(
@@ -438,8 +437,13 @@ mod tests {
         }
         source.push_str(&format!(
             "\n[routes.test]\nid = 'route'\n{algorithm}\n\
-             [routes.test.eligibility]\nscope = 'request'\n"
+             [routes.test.eligibility]\nscope = 'request'\n\
+             [routes.test.eligibility.target_alternatives]\n"
         ));
+        let spec: crate::AlgorithmSpec = toml::from_str(algorithm).expect("test algorithm");
+        for target in spec.callable_target_names() {
+            source.push_str(&format!("{target} = ['approved_{target}']\n"));
+        }
         source
     }
 
@@ -452,7 +456,7 @@ mod tests {
 
     #[test]
     fn resolved_bindings_reuse_the_algorithm_and_standard_setup() {
-        let source = config(POOL);
+        let source = config(PASSTHROUGH);
         let runner = Runner::from_toml(&source).expect("eligible route");
         let route = runner.route("route").expect("route");
         let cloned = route.clone();
@@ -490,30 +494,35 @@ mod tests {
         let source = format!(
             "{}\n[routes.test.infra]\nmax_signal_age_ms = 1000\n\
              min_waiting_requests = 4\nmax_capable_inflight = 2\n",
-            config(algorithm).replace("labels = []", "labels = ['private']")
+            config(algorithm)
         );
         let runner = Runner::from_toml(&source).expect("eligible queue policy");
         let route = runner.route("route").expect("route");
-        let signals: InfraSignals = [("fast", 8), ("capable", 0)]
-            .into_iter()
-            .map(|(model, waiting)| {
-                (
-                    model.into(),
-                    ModelInfraSignals {
-                        load: Some(PoolLoad {
-                            sampled_at: std::time::Instant::now(),
-                            min_waiting: waiting,
-                            max_waiting: waiting,
-                            running: 0,
-                        }),
-                        ..Default::default()
-                    },
-                )
-            })
-            .collect();
+        let signals: InfraSignals = [
+            ("fast", 8),
+            ("capable", 0),
+            ("approved_fast", 8),
+            ("approved_capable", 0),
+        ]
+        .into_iter()
+        .map(|(model, waiting)| {
+            (
+                model.into(),
+                ModelInfraSignals {
+                    load: Some(PoolLoad {
+                        sampled_at: std::time::Instant::now(),
+                        min_waiting: waiting,
+                        max_waiting: waiting,
+                        running: 0,
+                    }),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
 
         let mut stale =
-            RoutingOutcome::route_to("outside".into(), vec![], request("request", &["private"]));
+            RoutingOutcome::route_to("fast".into(), vec![], request("request", &["private"]));
         let error = route
             .apply_infra(&mut stale, &signals)
             .expect_err("stale decision");
@@ -522,9 +531,12 @@ mod tests {
             "{error}"
         );
 
-        for labels in [&[] as &[&str], &["private"]] {
+        for (labels, initial, expected) in [
+            (&[] as &[&str], "fast", "capable"),
+            (&["private"], "approved_fast", "approved_capable"),
+        ] {
             let mut outcome =
-                RoutingOutcome::route_to("fast".into(), vec![], request("request", labels));
+                RoutingOutcome::route_to(initial.into(), vec![], request("request", labels));
             assert!(
                 route
                     .apply_infra(&mut outcome, &signals)
@@ -532,7 +544,7 @@ mod tests {
             );
             assert_eq!(
                 outcome.selected_model_id().expect("selected model"),
-                "capable"
+                expected
             );
         }
     }
@@ -556,6 +568,10 @@ mod tests {
             .expect("unmarked request");
         assert_eq!(ordinary.selected_model_id().expect("model"), "fast");
         require_target_labels(&mut request, ["private"]).expect("trusted requirements");
-        assert!(route.decide(request).await.is_err());
+        let approved = route.decide(request).await.expect("approved request");
+        assert_eq!(
+            approved.selected_model_id().expect("model"),
+            "approved_fast"
+        );
     }
 }
