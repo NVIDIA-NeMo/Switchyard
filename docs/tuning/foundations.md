@@ -1,9 +1,9 @@
 # Tuning Foundations
 
-Configuration settings describe how the system behaves; the user's objective
-describes what that behavior should achieve. This guide connects the two: choose
-a measurable objective, decide which settings to vary, and compare the results
-on representative benchmark tasks. Reserve separate tasks for the final check.
+This guide helps you find a **golden configuration for your objective and
+workload**: define the outcome you want, compare candidate settings on
+calibration tasks, and validate the selected configuration on held-out tasks
+before adopting it as your baseline.
 
 See [Examples of tuning](examples.md) for configuration and model-pair
 comparisons with concrete data. For the steps to run an experiment, use
