@@ -2613,6 +2613,7 @@ dependencies = [
  "serde_json",
  "switchyard-libsy",
  "switchyard-protocol",
+ "switchyard-translation",
 ]
 
 [[package]]
@@ -2764,6 +2765,7 @@ dependencies = [
  "async-stream",
  "base64",
  "futures",
+ "http",
  "pretty_assertions",
  "serde",
  "serde_json",

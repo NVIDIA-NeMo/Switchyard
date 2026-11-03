@@ -551,7 +551,7 @@ pub unsafe extern "C" fn sy_run_new(
         if let Some(subagent_models) = input.subagent_models {
             models = models.with_subagent(parse_model_groups(subagent_models)?);
         }
-        let request = Request {
+        let mut request = Request {
             llm_request: input.request,
             metadata: input.metadata.map(|metadata| Metadata {
                 session_id: metadata.session_id,
@@ -563,6 +563,7 @@ pub unsafe extern "C" fn sy_run_new(
             }),
             ..Default::default()
         };
+        switchyard_translation::normalize_request_origin(&mut request.llm_request, None);
         let _entered = router.engine.runtime.enter();
         let stream = Arc::clone(&router.engine.algorithm).run_stream(
             request,

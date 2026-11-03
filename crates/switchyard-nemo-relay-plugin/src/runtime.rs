@@ -119,6 +119,7 @@ impl SwitchyardRuntime {
             .map_err(|error| self.redactor.text(error))?;
         llm_request.stream = streaming;
         let headers = string_headers(&request.headers);
+        switchyard_translation::normalize_request_origin(&mut llm_request, Some(&headers));
         let mut metadata = Metadata::from_headers(&headers);
         let relay_gateway_placeholder = !headers.contains_key("x-switchyard-session-id")
             && headers

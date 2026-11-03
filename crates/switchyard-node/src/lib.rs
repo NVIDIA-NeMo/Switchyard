@@ -158,7 +158,7 @@ impl NativeComposite {
         messages_json: String,
         state_json: Option<String>,
     ) -> napi::Result<NativeRun> {
-        let request = Request {
+        let mut request = Request {
             llm_request: LlmRequest {
                 model: Some("switchyard/auto".into()),
                 messages: parse(&messages_json)?,
@@ -166,6 +166,7 @@ impl NativeComposite {
             },
             ..Default::default()
         };
+        switchyard_translation::normalize_request_origin(&mut request.llm_request, None);
         let initial_state: State = state_json
             .as_deref()
             .map(parse)

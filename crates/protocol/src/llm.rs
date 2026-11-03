@@ -536,6 +536,9 @@ pub struct LlmRequest {
     pub instructions: Vec<InstructionBlock>,
     /// Ordered conversation messages.
     pub messages: Vec<Message>,
+    /// Whether this request is marked as continuing existing user work.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub is_continuation: bool,
     /// Tools available to the model.
     pub tools: Vec<Tool>,
     /// Policy controlling model tool selection.

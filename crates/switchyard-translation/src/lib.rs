@@ -11,6 +11,7 @@ pub mod engine;
 pub mod error;
 mod helpers;
 pub mod policy;
+mod request_origin;
 mod sse;
 pub mod stream;
 pub mod util;
@@ -29,6 +30,7 @@ pub use format::*;
 pub use helpers::*;
 pub use llm::*;
 pub use policy::*;
+pub use request_origin::normalize_request_origin;
 pub use stream::*;
 pub use util::{
     PRESERVATION_METADATA_KEY, normalize_anthropic_tool_use_ids, prepare_request_for_target,

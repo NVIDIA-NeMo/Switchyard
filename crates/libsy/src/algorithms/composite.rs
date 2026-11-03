@@ -17,8 +17,7 @@ use super::llm_class::{
     CustomClassifierConfig, LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
 };
 use super::stage::{StageRouterConfig, build_stage_route};
-use super::util::affinity::{ClassifyTrigger, evict_if_full, retention_key};
-use super::util::request_origin::is_new_user_turn;
+use super::util::affinity::{ClassifyTrigger, evict_if_full, has_new_user_turn, retention_key};
 use super::util::stage::{PickerMode, Tier, fall_open_tier, set_fall_open};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier};
@@ -55,7 +54,10 @@ impl TierSetter {
     /// judge call sits between here and [`retain`](Self::retain). The later wins.
     fn is_due(&self, identity: Option<&RoutingIdentity>, state: &State, request: &Request) -> bool {
         match self.trigger {
-            ClassifyTrigger::UserTurn => is_new_user_turn(request),
+            ClassifyTrigger::UserTurn => {
+                !request.llm_request.is_continuation
+                    && has_new_user_turn(&request.llm_request.messages)
+            }
             // Unkeyed requests with no carried tier cannot be told apart, so every one
             // is a new session.
             ClassifyTrigger::NewSession => {
@@ -334,45 +336,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compaction_retains_the_profile_until_a_real_user_turn() -> Result<()> {
-        for summary in [
-            "Another language model started to solve this problem and produced a summary of its thinking process.\nSummary",
-            "This session is being continued from a previous conversation that ran out of context.\nSummary",
-            "[CONTEXT COMPACTION \u{2014} REFERENCE ONLY] Summary",
-            "The conversation history before this point was compacted into the following summary:\n<summary>Summary</summary>",
-            "Prior model work/tool state available.\n<summary>Summary</summary>",
-            "<conversation-checkpoint>\n<summary>Summary</summary>\n</conversation-checkpoint>",
+    async fn continuation_retains_the_profile_until_a_real_user_turn() -> Result<()> {
+        let router = router()?;
+        let recorder = Arc::new(Recorder::default());
+        let mut continuation = user_turn_request();
+        continuation.llm_request.is_continuation = true;
+        for (request, verdict, calls, target) in [
+            (user_turn_request(), 1.0, 1, "weak"),
+            (continuation, 0.0, 1, "weak"),
+            (user_turn_request(), 0.0, 2, "strong"),
         ] {
-            let router = router()?;
-            let recorder = Arc::new(Recorder::default());
-            let mut compacted = user_turn_request();
-            *compacted.llm_request.messages.last_mut().unwrap() =
-                Message::text(Role::User, summary);
-            compacted.llm_request.messages.push(Message::text(
-                Role::User,
-                "<environment_context>updated</environment_context>",
-            ));
-            let mut followup = compacted.clone();
-            followup
-                .llm_request
-                .messages
-                .push(Message::text(Role::User, "Now fix the parser"));
-            for (request, verdict, calls, target) in [
-                (user_turn_request(), 1.0, 1, "weak"),
-                (compacted, 0.0, 1, "weak"),
-                (followup, 0.0, 2, "strong"),
-            ] {
-                *recorder.judge_p_solve.lock() = verdict;
-                let (model, _) = test_drive_with_models(
-                    router.clone(),
-                    request,
-                    runtime_models(),
-                    recorder.serve(),
-                )
-                .await?;
-                assert_eq!(recorder.judge_calls(), calls, "{summary}");
-                assert_eq!(model.as_str(), target);
-            }
+            *recorder.judge_p_solve.lock() = verdict;
+            let (model, _) =
+                test_drive_with_models(router.clone(), request, runtime_models(), recorder.serve())
+                    .await?;
+            assert_eq!(recorder.judge_calls(), calls);
+            assert_eq!(model.as_str(), target);
         }
         Ok(())
     }

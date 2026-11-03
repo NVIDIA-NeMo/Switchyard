@@ -58,10 +58,9 @@ new = ["send_message"]
 `[routes.switchyard.classifier]` is required and takes the `stage_router` classifier fields.
 `classify_trigger` sets how often the judge runs: `user_turn` re-picks the tier
 whenever the user speaks, `new_session` picks once and holds it.
-Known compaction requests and summary wrappers retain the selected profile.
-Detection uses available request metadata and native compaction items, with text
-matching for recognized harness summaries. Unknown text keeps the usual role-based
-behavior. Stage's compaction handling is unchanged.
+Compaction continuations keep the selected profile. Translation recognizes native
+signals and known summary wrappers, then sets `is_continuation` in the IR. Direct IR
+callers can set this flag. Stage's compaction handling is unchanged.
 `[routes.switchyard.stage]` takes the stage settings, but accepts neither `picker`
 nor a second `classifier`. The outer classifier supplies the default tier.
 `confidence_threshold` remains an alias for `efficient_first_threshold`.
