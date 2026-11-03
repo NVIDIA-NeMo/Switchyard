@@ -16,8 +16,9 @@
 
 All methods accept a WireFormat member or its string value for each format.
 Bodies and IR values must be dictionaries containing JSON-compatible values.
-Translate and encode results have "body" and "diagnostics" keys. Decode results
-have "request" or "response" and "diagnostics" keys. Diagnostics contain severity (Info,
+Translate and encode results have "body" and "diagnostics" keys. decode_request
+returns "request" and "diagnostics" keys; decode_response returns "response" and
+"diagnostics" keys. Diagnostics contain severity (Info,
 Warning, or Error), code, message, source, target, and path; the last three fields
 may be None. The default policy allows lossy conversions with diagnostics.
 
@@ -29,14 +30,16 @@ identify the failure. str(error) provides a human-readable message.
 To restore Responses tool namespaces and custom tool calls, pass the original
 decoded request's extensions when encoding the response::
 
-    request = engine.decode_request(source_format, request_body)
-    encoded = engine.encode_request(backend_format, request["request"])
+    decoded_request = engine.decode_request(source_format, request_body)
+    encoded = engine.encode_request(backend_format, decoded_request["request"])
 
     # Send encoded["body"] to the backend and receive backend_response.
-    response = engine.decode_response(backend_format, backend_response)
+    decoded_response = engine.decode_response(backend_format, backend_response)
 
     result = engine.encode_response(
-        source_format, response["response"], request_extensions=request["request"]["extensions"]
+        source_format,
+        decoded_response["response"],
+        request_extensions=decoded_request["request"]["extensions"],
     )
 
 request_extensions uses the IR shape {"fields": {...}}. Omitting it, passing None,
