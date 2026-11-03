@@ -1258,7 +1258,7 @@
   <span class="md-ellipsis">
     
   
-    Compare and Tune
+    Tuning
   
 
     
@@ -1363,52 +1363,13 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-outcome-based-labels-and-cross-entropy" class="md-nav__link">
+  <a href="#3-choose-an-example" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Outcome-based labels and cross-entropy
+        3. Choose an example
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="3. Outcome-based labels and cross-entropy">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#31-cross-entropy-for-multiple-choices" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3.1. Cross-entropy for multiple choices
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#32-binary-cross-entropy-as-the-two-choice-case" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3.2. Binary cross-entropy as the two-choice case
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#33-example-configuration-comparison" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3.3. Example configuration comparison
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -1446,7 +1407,7 @@
   <span class="md-ellipsis">
     
   
-    Examples of Tuning
+    Examples
   
 
     
@@ -2397,52 +2358,13 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-outcome-based-labels-and-cross-entropy" class="md-nav__link">
+  <a href="#3-choose-an-example" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Outcome-based labels and cross-entropy
+        3. Choose an example
       
     </span>
   </a>
-  
-    <nav class="md-nav" aria-label="3. Outcome-based labels and cross-entropy">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#31-cross-entropy-for-multiple-choices" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3.1. Cross-entropy for multiple choices
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#32-binary-cross-entropy-as-the-two-choice-case" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3.2. Binary cross-entropy as the two-choice case
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#33-example-configuration-comparison" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3.3. Example configuration comparison
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
   
 </li>
       
@@ -2478,214 +2400,96 @@
 
 
 <h1 id="tuning-foundations">Tuning Foundations<a class="headerlink" href="#tuning-foundations" title="Permanent link">&para;</a></h1>
-<p>Configuration settings describe how the system behaves. The user's objective
-describes what that behavior should achieve. This guide bridges the gap between
-the two: define a measurable objective, design candidate configurations, and use
-a loss function to compare them against that fixed objective.</p>
-<p>The objective determines what counts as better. The configurations define the
-alternatives we can test. The loss connects the two by assigning a score to each
-candidate's results. For the steps to run a routing experiment, start with
-<a href="../">Compare and Tune</a>.</p>
-<p>Use a representative subset of benchmark tasks for development: training tasks
-guide changes, while separate validation tasks select configurations and
-thresholds. Make these splits before tuning, keep related tasks together, and
-reserve an untouched test set for the final evaluation. See
-<a href="#4-check-the-final-choice">Check the final choice</a> for split and evaluation guidance.</p>
-<p>For a quick walkthrough with concrete data, jump to
-<a href="../examples/">Section 5: Examples of tuning</a>.</p>
+<p>This guide helps you find a <strong>golden configuration for your objective and
+workload</strong>: define the outcome you want, compare candidate settings on
+calibration tasks, and validate the selected configuration on held-out tasks
+before adopting it as your baseline.</p>
+<p>See <a href="../examples/">Examples</a> for configuration and model-pair comparisons
+with concrete data.</p>
 <h2 id="1-define-the-objective">1. Define the objective<a class="headerlink" href="#1-define-the-objective" title="Permanent link">&para;</a></h2>
-<p>Start with the outcome the user wants. Define what to measure, on which workload,
-and what makes a result acceptable. Keep this definition fixed while comparing
-candidates, whether the experiment contains two configurations or many.</p>
+<p>Define what the user wants to improve, on which workload, and what makes a result
+acceptable. Keep this objective fixed throughout the comparison.</p>
 <ul>
 <li><strong>Reduce cost while preserving accuracy.</strong> Minimize total cost per task while
   meeting a defined accuracy requirement. Include decision calls, retries, and
   cache charges in the cost.</li>
 <li><strong>Maximize task success.</strong> Maximize the fraction of tasks completed correctly,
   subject to any cost or latency limits.</li>
-<li><strong>Reach a desired routing split.</strong> Target a defined allocation across the
-  configured targets. This could be 70% of calls on the efficient tier and 30% on
-  the capable tier, or a distribution across three or more targets. Specify the
-  counting unit, allowed deviation, and quality requirement.</li>
-<li><strong>Reach a capable-tier cache-usage target.</strong> Target a specified percentage of
-  capable-tier input tokens served from cache, such as at least 80%. Measure
-  cache-read input tokens divided by all input tokens on capable-tier calls over
-  the evaluation workload. Specify the target percentage and any quality
-  requirement before comparing candidates.</li>
+<li><strong>Reach a desired routing split.</strong> For example, target 70% of calls on the
+  efficient tier and 30% on the capable tier. Specify the allowed deviation and
+  quality requirement.</li>
+<li><strong>Reach a capable-tier cache-usage target.</strong> For example, require at least 80%
+  of capable-tier input tokens to be served from cache. Measure cache-read input
+  tokens divided by all input tokens on that tier, with a defined quality floor.</li>
 </ul>
 <p>Once the objective is measurable, the next step is to choose configurations that
 might achieve it. This separates the outcome we want from the settings we will
 test.</p>
 <h2 id="2-design-configuration-candidates">2. Design configuration candidates<a class="headerlink" href="#2-design-configuration-candidates" title="Permanent link">&para;</a></h2>
-<p>A candidate is a complete configuration to evaluate under the fixed objective.
-The candidate set can contain any number of alternatives. Give each a distinct
-ID, such as A, B, and C, and compare all of them using the same objective and
-evaluation procedure.</p>
-<p>The objective describes what success means; candidate design determines which
-possible solutions the experiment will consider. A loss can rank the candidates
-we test, but it cannot find an improvement that none of them can produce.</p>
-<p>Build the candidate set in these steps:</p>
+<p>A candidate is a complete configuration to test under the objective. Start with
+a baseline and a small set of changes you expect to help:</p>
 <ol>
-<li><strong>Choose a baseline.</strong> Record the current configuration and its measured
-   outcomes. Include it in the comparison so improvements have a reference point.</li>
-<li><strong>State a reason for each change.</strong> Connect the proposed behavior to the
-   objective. For example, staying on one model longer might preserve cached
-   context and reduce cost. Test both the cost effect and the quality effect.</li>
-<li><strong>Choose what can vary.</strong> This could be model targets, routing policy,
-   thresholds, hold durations, or decision instructions. Specify the allowed
-   values and hold other settings fixed. Start with a small set that can answer
-   the question behind the experiment.</li>
-<li><strong>Include combinations when settings interact.</strong> A threshold and a hold
-   duration can affect the same routing decisions. After a small initial
-   comparison, test selected combinations rather than assuming their individual
-   effects will add up.</li>
-<li><strong>Make candidates reproducible and comparable.</strong> Give each one an ID and save
-   its full configuration. Use the same workload and evaluation procedure, pin
-   model and provider versions where possible, and apply the same cache setup
-   procedure. Let each candidate's behavior determine subsequent cache usage.</li>
+<li><strong>Record baselines.</strong> Measure efficient-only, capable-only, and the current
+   routed configuration on the same tasks. Save their settings and outcomes.</li>
+<li><strong>Choose what varies.</strong> For example, change model targets, thresholds, or hold
+   durations. Keep other settings fixed and state why each change might help.</li>
+<li><strong>Test interactions.</strong> A threshold and hold duration can affect the same
+   routing decisions, so include combinations when needed.</li>
+<li><strong>Keep runs comparable.</strong> Use the same tasks, evaluation procedure, and initial
+   cache setup. Pin model and provider versions, and save each configuration.</li>
 </ol>
-<p>For example, suppose the objective is lower cost while maintaining the specified
-task-success floor. One small stage-router experiment could be:</p>
+<p>Run the same tasks for every candidate. The following examples show how to use
+the results to choose between them.</p>
+<h2 id="3-choose-an-example">3. Choose an example<a class="headerlink" href="#3-choose-an-example" title="Permanent link">&para;</a></h2>
+<p>Start with the comparison that matches what you want to change:</p>
 <ul>
-<li><strong>Baseline:</strong> <code>confidence_threshold = 0.5</code> and <code>capable_hold_turns = 2</code>.</li>
-<li><strong>Initial candidates:</strong> thresholds <code>0.3</code>, <code>0.5</code>, and <code>0.7</code>, all with a capable
-  hold of <code>2</code> turns. This gives three candidates, including the baseline.</li>
-<li><strong>Interaction check:</strong> add a hold duration of <code>0</code> for each threshold. The full
-  set now has six candidates, not six plus the baseline.</li>
-<li><strong>Fixed conditions:</strong> the model pair, picker, classifier configuration, other
-  routing settings, and evaluation workload. Compare task success and total cost
-  for every candidate, then rank those that meet the success floor.</li>
+<li><strong><a href="../examples/#tune-configuration-options-for-cost">Tune configuration options</a>:</strong>
+  keep the algorithm and model pair fixed, vary routing settings, and find the
+  lowest-cost option that meets the task-success target. A Pareto chart shows
+  the cost and success tradeoffs.</li>
+<li><strong><a href="../examples/#model-pair-selection-with-fixed-algorithm-settings">Select a model pair</a>:</strong>
+  keep algorithm settings fixed, swap the efficient/capable models, and compare
+  execution cost plus a penalty for failed tasks.</li>
+<li><strong><a href="../examples/#upcoming-gepa-tuning-for-the-unified-router">Tune the unified router with GEPA</a>:</strong>
+  planned for a future release. Use benchmark feedback to revise routing
+  instructions and select a prompt against a fixed objective.</li>
 </ul>
-<p>These values illustrate candidate design, not recommended settings. The effect
-of a threshold depends on the picker, classifier, and other routing rules. Follow
-the <a href="../../routing_algorithms/stage_router_routing/#tuning-confidence_threshold">stage-router threshold guide</a>
-when choosing values. See
-<a href="../../routing_algorithms/model_selection/#counter-examples">model selection</a> for
-cases where switching lost cache savings.</p>
-<p>Keep the objective fixed throughout the comparison. A candidate that improves
-cost but misses the quality requirement is ineligible under that objective.
-Changing the requirement creates a different comparison.</p>
-<p>With the objective and candidates fixed, we can measure their outcomes and
-assign a loss to each. If the task is to learn which configuration to choose,
-those outcomes also provide reference choices. The next section explains how to
-represent these choices and score the probabilities assigned to them.</p>
-<h2 id="3-outcome-based-labels-and-cross-entropy">3. Outcome-based labels and cross-entropy<a class="headerlink" href="#3-outcome-based-labels-and-cross-entropy" title="Permanent link">&para;</a></h2>
-<p>Use the fixed objective to identify the preferred configuration for each
-evaluated request. This could mean a correct answer at lower cost or a defined
-tradeoff between execution cost and failure. The reference label <strong>y</strong> is the ID
-of that configuration. With candidates A, B, and C, the label can be A, B, or C;
-it is not limited to 0 or 1. Define a consistent rule for ties.</p>
-<p>Some objectives apply to a whole workload, such as an accuracy floor or routing
-allocation. Compare complete runs against those constraints. Turning them into
-per-request reference choices requires an explicit labeling or allocation rule;
-the constraint alone does not supply a label.</p>
-<p>The objective determines the labeling rule; measured outcomes determine each
-label. Labels belong to the configurations and evaluation conditions that
-produced them. If the objective or candidate set changes, the labels may need to
-change too. The same request can favor one configuration for accuracy and another
-for cost.</p>
-<p>A model that selects one configuration predicts a probability for every available
-choice. These probabilities sum to 1. <strong>p(y)</strong> is the probability assigned to the
-reference choice. It represents the chance that this choice is preferred under
-the labeling rule, rather than simply the chance that it succeeds. A configuration
-can succeed and still cost more than an equally successful alternative.</p>
-<p>For a choice question, use the probability distribution over the declared
-configuration IDs. Keep answer probabilities separate from provider confidence,
-and keep missing probabilities unknown rather than turning a hard choice into
-certainty. See <a href="../../reference/protocols/decision_answers/#answer-values">Decision Answers</a>.
-The labeling process can use completed outcomes; the model must use only
-information available when it chooses.</p>
-<h3 id="31-cross-entropy-for-multiple-choices">3.1. Cross-entropy for multiple choices<a class="headerlink" href="#31-cross-entropy-for-multiple-choices" title="Permanent link">&para;</a></h3>
-<p>When each request has one reference choice, categorical cross-entropy is:</p>
-<p><strong>Cross-entropy(y, p) = −log p(y)</strong></p>
-<p>In words, take the negative logarithm of the probability assigned to the
-reference configuration. Use natural logarithms and average the per-request
-losses to compare candidates.</p>
-<p>For example, suppose the available configurations are A, B, and C, and the
-objective makes <strong>C</strong> the reference choice:</p>
-<ul>
-<li>Predicted probabilities <strong>A: 0.20, B: 0.50, C: 0.30</strong> give a loss of
-  <strong>−log(0.30) = 1.204</strong>.</li>
-<li>Predicted probabilities <strong>A: 0.10, B: 0.20, C: 0.70</strong> give a loss of
-  <strong>−log(0.70) = 0.357</strong>.</li>
-</ul>
-<p>The second prediction has lower loss because it assigns more probability to the
-reference configuration. The same calculation applies to any number of mutually
-exclusive choices. It scores probability predictions; configurations evaluated
-directly by cost, task success, or another operating outcome use the loss defined
-for that outcome.</p>
-<h3 id="32-binary-cross-entropy-as-the-two-choice-case">3.2. Binary cross-entropy as the two-choice case<a class="headerlink" href="#32-binary-cross-entropy-as-the-two-choice-case" title="Permanent link">&para;</a></h3>
-<p>With only configurations A and B, encode the reference choice as:</p>
-<ul>
-<li><strong>y = 1:</strong> B is preferred under the objective's labeling rule.</li>
-<li><strong>y = 0:</strong> A is preferred. In the worked examples below, ties go to A.</li>
-</ul>
-<p>Let <strong>p</strong> be the predicted probability of B. The probability of A is <strong>1 − p</strong>.
-Categorical cross-entropy then becomes binary cross-entropy (BCE):</p>
-<p><strong>BCE(y, p) = −y log(p) − (1 − y) log(1 − p)</strong></p>
-<p>A Boolean decision question can express this as "Is B preferable to A under this
-objective?" Its probability of true supplies <strong>p</strong>. For a two-option choice
-question, use the probability assigned to B.</p>
-<p><img alt="BCE decreases as the predicted probability of B increases when B is preferred, and increases when A is preferred." src="../../assets/tuning/binary-cross-entropy.svg" /></p>
-<p><em>Figure 1. The two-choice case of cross-entropy. The reference label determines
-which curve applies.</em></p>
-<p>At <strong>p = 0.99</strong>, loss is <strong>0.010</strong> when B is preferred and <strong>4.605</strong> when A is
-preferred. BCE rewards justified confidence and penalizes confident mistakes.
-Two probabilities can produce the same decision at a chosen threshold while
-receiving different losses.</p>
-<p><strong>Probability loss is not operating cost.</strong> A reference label records which
-choice wins, but not the size of the advantage. Check actual cost, success rate,
-or the other application objective alongside cross-entropy. When the size of a
-mistake dominates the objective, consider predicting each configuration's
-expected operating loss directly.</p>
-<h3 id="33-example-configuration-comparison">3.3. Example configuration comparison<a class="headerlink" href="#33-example-configuration-comparison" title="Permanent link">&para;</a></h3>
-<p>This comparison uses two execution configurations at one pipeline stage to
-illustrate the binary case. We measure both under a cost-and-failure objective,
-then reuse their reference labels in the
-<a href="../examples/#5a-prompt-tuning-with-gepa">prompt-tuning example</a>.</p>
-<ul>
-<li><strong>Configuration A (Fast):</strong> a fast executor with a 512-token generation budget;
-  usual execution cost of <strong>$0.010</strong> per request.</li>
-<li><strong>Configuration B (Thorough):</strong> a more capable executor with a 2,048-token
-  budget and reusable context; usual cost of <strong>$0.040</strong>, which a verified cache
-  hit can reduce.</li>
-</ul>
-<p>For this example, define:</p>
-<p><strong>Operating loss = execution cost + $0.10 for a failed task.</strong></p>
-<p>Prefer the configuration with lower operating loss. The failure penalty is a
-chosen tradeoff, not a property of BCE. All execution outcomes and prices below
-are invented to show the calculation; they are not Switchyard benchmark results.</p>
-<p><img alt="Six paired outcomes produce reference labels 0, 1, 0, 1, 0, 1. A wins direct lookup, formatting, and stale B context; B wins evidence combination, conflict resolution, and a current cache hit." src="../../assets/tuning/outcomes-and-labels.svg" /></p>
-<p><em>Figure 2. Operating loss determines the reference choice for each request.
-Hatched segments show the $0.10 failure penalty. Pass/fail outcomes appear beside
-each bar.</em></p>
-<ul>
-<li><strong>Request 2:</strong> A fails, so its loss is $0.010 + $0.100 = <strong>$0.110</strong>. B passes
-  for <strong>$0.040</strong>. B is preferred, giving <strong>y = 1</strong>.</li>
-<li><strong>Request 6:</strong> both configurations pass. B has a verified current cache hit and
-  costs <strong>$0.004</strong> instead of A's <strong>$0.010</strong>. B is preferred because of the cost
-  objective, giving <strong>y = 1</strong>.</li>
-<li><strong>Request 5:</strong> A has current source data while B's reusable context is stale.
-  A passes and B fails, so the reference choice is A, giving <strong>y = 0</strong>.</li>
-</ul>
-<p>The target reflects the desired outcome. The more capable executor is not always
-the preferred choice. These losses exclude router inference cost. Measure that
-cost for each prompt and include it when evaluating deployment cost, because
-prompt length and token usage can change it.</p>
 <h2 id="4-check-the-final-choice">4. Check the final choice<a class="headerlink" href="#4-check-the-final-choice" title="Permanent link">&para;</a></h2>
+<p>Split <strong>100% of the evaluation benchmark before tuning</strong>. A practical starting
+allocation is:</p>
+<table>
+<thead>
+<tr>
+<th>Split</th>
+<th>Share</th>
+<th>Use</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Calibration</td>
+<td>20%</td>
+<td>Collect baselines, try settings, and select the candidate.</td>
+</tr>
+<tr>
+<td>Held-out validation</td>
+<td>80%</td>
+<td>Evaluate the frozen candidate against the baselines. Do not use these results to tune it.</td>
+</tr>
+</tbody>
+</table>
+<p>For 500 tasks, this means 100 calibration tasks and 400 validation tasks. Adjust
+the percentages before running if the calibration set is too small to cover the
+workload. Here, validation is the final held-out check.</p>
 <ul>
-<li>Use training examples to guide changes, validation examples to compare
-  candidates and tune thresholds, and a separate test set for the frozen choice.</li>
 <li>Keep related examples in the same split. If predicting future data, respect
   time when splitting. Use representative workloads and repeated trials when
   execution is stochastic.</li>
-<li>Record the objective, labeling rule, configurations, and evaluation conditions.
-  Replacing an executor requires new measurements and potentially new labels.</li>
-<li>If a test result guides another rewrite, it has become development evidence.
-  Use fresh data for an independent check.</li>
+<li>Record the objective, scoring rule, configurations, and evaluation conditions.
+  Changing the models or settings requires new measurements.</li>
+<li>If validation results guide another change, those tasks have become
+  calibration data. Use fresh held-out tasks for the next independent check.</li>
 </ul>
-<p>Continue to <a href="../examples/">Section 5: Examples of tuning</a> for prompt tuning and
-model-pair comparisons with concrete data and reproducible calculations.</p>
 
 
 

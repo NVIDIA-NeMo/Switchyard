@@ -1462,7 +1462,7 @@
   <span class="md-ellipsis">
     
   
-    Compare and Tune
+    Tuning
   
 
     
@@ -1518,7 +1518,7 @@
   <span class="md-ellipsis">
     
   
-    Examples of Tuning
+    Examples
   
 
     
@@ -2626,8 +2626,8 @@
 you put in each role change results more than any threshold does. This page says
 what each role needs, how to check a model before you route to it, which pairs
 have measured results, and the mistakes we have seen in real runs.</p>
-<p>For a comparison with concrete data and loss calculations, see the
-<a href="../../tuning/examples/#5b-model-pair-selection-with-fixed-algorithm-settings">model-pair selection example</a>.</p>
+<p>For a worked comparison of cost and task success, see the
+<a href="../../tuning/examples/#model-pair-selection-with-fixed-algorithm-settings">model-pair selection example</a>.</p>
 <h2 id="roles">Roles<a class="headerlink" href="#roles" title="Permanent link">&para;</a></h2>
 <p>Each strategy names its models by role. The TOML keys differ by route type:</p>
 <table>
@@ -2778,7 +2778,7 @@ serving stack.</p>
 <tr>
 <td>Qwen3.6-35B-A3B, also the judge</td>
 <td>Claude Opus 4.7</td>
-<td><code>llm_classifier</code> custom, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b6f82cd2e32f208aa31e9e69832471d44bbf7f8c/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">balanced</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b6f82cd2e32f208aa31e9e69832471d44bbf7f8c/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml">aggressive</a></td>
+<td><code>llm_classifier</code> custom, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1de76d75759a3d8d11de231a85a2ff53d327e82b/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">balanced</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1de76d75759a3d8d11de231a85a2ff53d327e82b/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml">aggressive</a></td>
 <td>tau2-bench telecom, 114 tasks</td>
 <td>0.903 ± 0.071 solve rate with 45% of turns on the weak tier. 0.891 ± 0.029 with about 85%.</td>
 <td>Within noise of the strong tier, per the profile headers</td>
@@ -2806,7 +2806,7 @@ serving stack.</p>
 </ul>
 <p>Other checked-in configurations:</p>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b6f82cd2e32f208aa31e9e69832471d44bbf7f8c/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml"><code>tb-lite-llm-classifier-opus-kimi-gemini.toml</code></a>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1de76d75759a3d8d11de231a85a2ff53d327e82b/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml"><code>tb-lite-llm-classifier-opus-kimi-gemini.toml</code></a>
   (Claude Opus 4.7 strong, Kimi K2.7 code weak, Gemini 3.5 Flash judge) is a
   smoke test. It has no published result.</li>
 </ul>
@@ -2925,7 +2925,7 @@ endpoint. See the <a href="../../reference/toml_schema/#targetsname">target keys
 <li><a href="../../operations/local_evaluation/#verify-routing-is-active">Verify routing is active</a>: see the served model and the decision counts.</li>
 <li><a href="../stage_router_routing/#tuning-confidence_threshold">Stage Router</a>: tune the threshold once the pair is right.</li>
 <li><a href="../escalation_router_routing/#judge-model-compatibility">Escalation-Router Routing</a>: judge requirements for escalation routes.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/b6f82cd2e32f208aa31e9e69832471d44bbf7f8c/benchmark/README.md">Benchmarks</a>: how the measured runs were made.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1de76d75759a3d8d11de231a85a2ff53d327e82b/benchmark/README.md">Benchmarks</a>: how the measured runs were made.</li>
 </ul>
 
 
