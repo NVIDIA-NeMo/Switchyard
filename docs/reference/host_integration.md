@@ -106,14 +106,21 @@ Save as `route.py`:
 ```python
 import asyncio
 from switchyard.libsy import Step, algorithms
+from switchyard.translation import TranslationEngine, WireFormat
 
 async def main():
+    engine = TranslationEngine()
+    oai_chat_request = {"messages": [{"role": "user", "content": "Hello"}]}
+    decoded = engine.decode_request(WireFormat.OPENAI_CHAT, oai_chat_request)
+    request = decoded["request"]
+    if decoded["diagnostics"]:
+        print(f"Translation diagnostics: {decoded['diagnostics']}")
+
     router = algorithms.stage_router(
         picker="efficient_first", confidence_threshold=0.5)
     models = {"efficient": ["Efficient"], "capable": ["Capable"]}
     models["any"] = ["Efficient", "Capable"]
-    text = {"type": "text", "text": "Hello"}
-    request = {"messages": [{"role": "user", "content": [text]}]}
+
     async for step in router.run_stream(request, models):
         if isinstance(step, Step.Done):
             print("Selected:", step.outcome.selected_model_ids[0])
