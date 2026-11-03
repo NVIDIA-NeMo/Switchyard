@@ -264,7 +264,7 @@ Your client returns `switchyard_protocol::Response` and adapts errors to `libsy:
 - **Explore the Rust API:** [libsy crate](../crates/libsy/README.md) and [generated API reference](reference/rust_api.md).
 - **Use a gateway integration:** [LiteLLM](../examples/litellm/README.md) or [NeMo Relay](integrations/nemo_relay.md). Check each guide's supported algorithms and versions.
 - **Choose another algorithm:** [routing overview](routing_algorithms/overview.md).
-- **Tune cost against quality:** [Tuning](tuning/index.md) explains how to define an objective, compare candidate settings, and validate the result before you adopt it.
+- **Tune your configuration:** [Tuning](tuning/index.md) explains how to define an objective, compare candidate configurations on calibration tasks, and validate the selected one on held-out tasks.
 - **Try the standalone proxy:** [local evaluation guide](operations/local_evaluation.md). The server is for demos, evaluation, and personal use, not a supported production path.
 - **Use Python:** [Python bindings](reference/host_integration.md#python-bindings).
 - **Use an agent directly:** [Claude Code example](../examples/claude/README.md), [pi](integrations/pi.md), or [Oh My Pi](integrations/oh_my_pi.md).
