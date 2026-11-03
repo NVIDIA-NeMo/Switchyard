@@ -55,7 +55,7 @@ impl TierSetter {
     fn is_due(&self, identity: Option<&RoutingIdentity>, state: &State, request: &Request) -> bool {
         match self.trigger {
             ClassifyTrigger::UserTurn => {
-                !request.llm_request.is_continuation
+                !request.llm_request.is_compaction
                     && has_new_user_turn(&request.llm_request.messages)
             }
             // Unkeyed requests with no carried tier cannot be told apart, so every one
@@ -336,14 +336,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn continuation_retains_the_profile_until_a_real_user_turn() -> Result<()> {
+    async fn compaction_retains_the_profile_until_a_real_user_turn() -> Result<()> {
         let router = router()?;
         let recorder = Arc::new(Recorder::default());
-        let mut continuation = user_turn_request();
-        continuation.llm_request.is_continuation = true;
+        let mut compacted = user_turn_request();
+        compacted.llm_request.is_compaction = true;
         for (request, verdict, calls, target) in [
             (user_turn_request(), 1.0, 1, "weak"),
-            (continuation, 0.0, 1, "weak"),
+            (compacted, 0.0, 1, "weak"),
             (user_turn_request(), 0.0, 2, "strong"),
         ] {
             *recorder.judge_p_solve.lock() = verdict;

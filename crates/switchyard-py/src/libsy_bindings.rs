@@ -85,7 +85,7 @@ fn request_from_python(
 ) -> PyResult<Request> {
     let headers = headers.as_ref().map(header_map_from_python).transpose()?;
     let mut llm_request = from_python(request)?;
-    switchyard_translation::normalize_request_origin(&mut llm_request, headers.as_ref());
+    switchyard_translation::normalize_compaction(&mut llm_request, headers.as_ref());
     Ok(Request {
         llm_request,
         raw_request: None,

@@ -166,7 +166,7 @@ impl NativeComposite {
             },
             ..Default::default()
         };
-        switchyard_translation::normalize_request_origin(&mut request.llm_request, None);
+        switchyard_translation::normalize_compaction(&mut request.llm_request, None);
         let initial_state: State = state_json
             .as_deref()
             .map(parse)

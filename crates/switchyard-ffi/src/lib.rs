@@ -563,7 +563,7 @@ pub unsafe extern "C" fn sy_run_new(
             }),
             ..Default::default()
         };
-        switchyard_translation::normalize_request_origin(&mut request.llm_request, None);
+        switchyard_translation::normalize_compaction(&mut request.llm_request, None);
         let _entered = router.engine.runtime.enter();
         let stream = Arc::clone(&router.engine.algorithm).run_stream(
             request,

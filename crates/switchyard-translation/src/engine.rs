@@ -120,7 +120,7 @@ impl TranslationEngine {
     ) -> Result<RequestIrOutput> {
         let source = source.into();
         let mut decoded = self.registry.codec(source)?.decode_request(body, policy)?;
-        crate::normalize_request_origin(&mut decoded.request, None);
+        crate::normalize_compaction(&mut decoded.request, None);
         Ok(RequestIrOutput {
             request: decoded.request,
             diagnostics: decoded.diagnostics,
