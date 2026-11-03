@@ -46,7 +46,7 @@ nav:
       - Benchmarks: benchmarks.md
       - Tuning: tuning/index.md
       - Tuning Foundations: tuning/foundations.md
-      - Compare and Tune: tuning/examples.md
+      - Examples: tuning/examples.md
   - Local Demo:
       - Run the Reference Server: operations/local_evaluation.md
       - Local Agents:
