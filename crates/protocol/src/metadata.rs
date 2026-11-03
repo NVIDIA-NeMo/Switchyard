@@ -156,6 +156,17 @@ const HEADER_CONFIG: &HeaderConfig = &[
     ),
 ];
 
+/// Why the harness issued this model request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestOrigin {
+    /// A new user message, including a steer during an active turn.
+    User,
+    /// An agent continuation without new user input.
+    Agent,
+    /// A context compaction request or summary replay.
+    Compaction,
+}
+
 /// Correlation and routing metadata attached to a request or response.
 ///
 /// All fields are optional (or default-empty); algorithms and observers use whichever
@@ -188,6 +199,8 @@ pub struct Metadata {
     pub task_kind: Option<String>,
     /// Id of the current agent turn.
     pub turn_id: Option<String>,
+    /// Explicit request origin, when supplied by the harness.
+    pub request_origin: Option<RequestOrigin>,
     /// Whether the harness signalled this is the session's final request (e.g. the
     /// host may evict per-session state). `None` when the harness said nothing.
     pub session_final: Option<bool>,
@@ -223,6 +236,7 @@ impl Metadata {
             task_id: sy_header(headers, SWITCHYARD_TASK_ID_HEADER),
             task_kind: sy_header(headers, SWITCHYARD_TASK_KIND_HEADER),
             turn_id: sy_header(headers, SWITCHYARD_TURN_ID_HEADER),
+            request_origin: parse_request_origin(headers),
             session_final: sy_header(headers, SWITCHYARD_SESSION_FINAL_HEADER)
                 .as_deref()
                 .and_then(parse_bool),
@@ -240,6 +254,33 @@ impl Metadata {
     pub fn is_subagent_work(&self) -> bool {
         self.is_delegated_work
     }
+
+    /// Resolves normalized origin, falling back to raw headers for SDK callers.
+    pub fn request_origin(&self) -> Option<RequestOrigin> {
+        self.request_origin
+            .or_else(|| self.http_headers.as_ref().and_then(parse_request_origin))
+    }
+}
+
+fn parse_request_origin(headers: &http::HeaderMap) -> Option<RequestOrigin> {
+    match header(headers, "x-switchyard-request-origin")
+        .map(str::trim)
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("user") => return Some(RequestOrigin::User),
+        Some("agent") => return Some(RequestOrigin::Agent),
+        Some("compaction") => return Some(RequestOrigin::Compaction),
+        _ => {}
+    }
+    if resolve_path(headers, "x-codex-turn-metadata.request_kind").as_deref() == Some("compaction")
+    {
+        return Some(RequestOrigin::Compaction);
+    }
+    // Some clients derive `user` from role alone, including for synthetic summaries.
+    header(headers, "x-initiator")
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("agent"))
+        .then_some(RequestOrigin::Agent)
 }
 
 /// Returns `(parent_agent_id, is_subagent, is_delegated_work)` from the headers.
@@ -413,6 +454,28 @@ mod tests {
 
     fn metadata(headers: &[(&str, &str)]) -> Metadata {
         Metadata::from_headers(&slice_to_header_map(headers))
+    }
+
+    #[test]
+    fn normalizes_request_origin_with_explicit_precedence() {
+        let codex = (
+            CODEX_TURN_METADATA_HEADER,
+            r#"{"request_kind":"compaction"}"#,
+        );
+        assert_eq!(
+            metadata(&[codex]).request_origin(),
+            Some(RequestOrigin::Compaction)
+        );
+        for (value, expected) in [
+            ("user", RequestOrigin::User),
+            ("agent", RequestOrigin::Agent),
+            ("compaction", RequestOrigin::Compaction),
+        ] {
+            let parsed = metadata(&[("x-switchyard-request-origin", value), codex]);
+            assert_eq!(parsed.request_origin(), Some(expected));
+            assert!(parsed.http_headers.is_none());
+        }
+        assert_eq!(metadata(&[("x-initiator", "user")]).request_origin(), None);
     }
 
     #[test]

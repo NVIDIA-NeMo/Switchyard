@@ -17,42 +17,17 @@ use super::llm_class::{
     CustomClassifierConfig, LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
 };
 use super::stage::{StageRouterConfig, build_stage_route};
-use super::util::affinity::{
-    ClassifyTrigger, evict_if_full, is_environment_update, is_user_turn, retention_key,
-};
+use super::util::affinity::{ClassifyTrigger, evict_if_full, retention_key};
+use super::util::request_origin::starts_user_turn;
 use super::util::stage::{PickerMode, Tier, fall_open_tier, set_fall_open};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier};
 use crate::core::processor::{Event, Processor};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Category, ContentBlock, Message, Request, Response};
+use switchyard_protocol::{Category, Request, Response};
 
 const COMPOSITE: &str = "composite";
-
-fn has_new_profile_turn(messages: &[Message]) -> bool {
-    messages
-        .iter()
-        .rev()
-        .find(|message| !is_environment_update(message))
-        .is_some_and(|message| {
-            is_user_turn(message)
-                && !message.content.iter().all(|block| {
-                    let ContentBlock::Text { text } = block else {
-                        return false;
-                    };
-                    let text = text.trim_start().to_ascii_lowercase();
-                    [
-                        "another language model started to solve this problem and produced a summary of its thinking process.",
-                        "this session is being continued from a previous conversation that ran out of context.",
-                        "[context compaction \u{2014} reference only]",
-                        "[still in progress \u{2014} this is the active request, restated after the compaction boundary",
-                    ]
-                    .iter()
-                    .any(|prefix| text.starts_with(prefix))
-                })
-        })
-}
 
 /// Sets the stage router's fall-open tier from a judge verdict.
 ///
@@ -80,7 +55,7 @@ impl TierSetter {
     /// judge call sits between here and [`retain`](Self::retain). The later wins.
     fn is_due(&self, identity: Option<&RoutingIdentity>, state: &State, request: &Request) -> bool {
         match self.trigger {
-            ClassifyTrigger::UserTurn => has_new_profile_turn(&request.llm_request.messages),
+            ClassifyTrigger::UserTurn => starts_user_turn(request),
             // Unkeyed requests with no carried tier cannot be told apart, so every one
             // is a new session.
             ClassifyTrigger::NewSession => {

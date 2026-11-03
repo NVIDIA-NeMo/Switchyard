@@ -7,6 +7,7 @@ pub(crate) mod classifier_contract;
 pub mod escalation;
 pub(crate) mod llm_judge;
 pub(crate) mod prompts;
+pub(crate) mod request_origin;
 pub(crate) mod robustness;
 pub(crate) mod stage;
 pub mod subagent;
