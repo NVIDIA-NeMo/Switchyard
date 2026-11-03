@@ -61,8 +61,8 @@ The new fields are:
   table rejects supplied requirements, including an explicit empty collection.
 - `require_explicit_requirements`: require a collection on every request. An empty
   collection counts; an absent one does not. Default: `false`.
-- `scope`: `"request"` by default and the only supported value. Requirements
-  apply to this request and its internal model calls.
+- `scope`: `"request"` by default. `"task"` accumulates requirements under the
+  host-authorized `request.metadata.task_id`.
 - `target_alternatives`: ordered alternatives for existing target references;
   default `{}`. Its keys are configured target names, not role keywords. Here
   `efficient` refers to `[targets.efficient]`, which fills Stage's efficient role.
@@ -108,15 +108,15 @@ require_target_labels(&mut request, std::iter::empty::<&str>())?;
 
 Omitting the helper leaves the requirements absent. With the default optional
 setting, absent and empty both permit normal routing. With
-`require_explicit_requirements = true`, absence is rejected. Requests are assessed
-independently, even when they carry the same task ID.
+`require_explicit_requirements = true`, absence is rejected. In task scope,
+neither absence nor an empty collection removes previously retained labels.
 
 ## Execution and crate responsibilities
 
 ```mermaid
 flowchart TD
     H["Trusted host<br/>request + required labels"] --> A["require_target_labels<br/>attach to Rust request"]
-    A --> P["Runner checks request requirements"]
+    A --> P["Runner checks requirements<br/>and adds retained task labels"]
     P --> B["Resolve approved targets<br/>for required roles and model pools"]
     B -->|"no valid setup"| E["Return error<br/>no model call"]
     B --> R["Existing routing algorithm"]
@@ -144,11 +144,20 @@ The LLM client drives routing calls, ordered answer fallbacks and provider
 transport. Translation keeps converting provider formats. The label rules belong
 in Runner, not in provider codecs.
 
-## Limits
+## Task requirements
 
-A route reuses at most 128 additional resolved model setups. Requirements contain
-at most 64 labels of 128 bytes each. Exceeding a limit returns an error; it does
-not evict routing state. Requirements are not retained between requests.
+Set `scope = "task"` and supply an authorized task ID to retain requirements across
+requests. A later turn can add labels but cannot remove them. For example, a task
+requiring `private` that later adds `customer_data` requires both from then on.
+If the combined requirements cannot be served, the request fails.
+
+Retention is bounded, in memory, and belongs to one route instance. There is no
+reset, expiry, restart persistence or shared state across replicas. In-flight
+requests keep their admitted requirements. The host must authorize task ownership.
+
+A route retains at most 4,096 restricted tasks and 128 additional resolved model
+setups. Requirements contain at most 64 labels of 128 bytes each. Exceeding a
+limit returns an error; it does not clear requirements or evict routing state.
 
 ## Consumers and compatibility
 
@@ -172,7 +181,7 @@ for those consumers.
 ## Validation
 
 Integration tests cover label matching, ordered alternatives, weighted pools,
-request requirements, judges, auxiliary calls and approved answer fallbacks. Relay
+task requirements, judges, auxiliary calls and approved answer fallbacks. Relay
 tests cover buffered and streaming fallback calls with label configuration.
 These suites use loopback provider fixtures; they do not measure classifier
 quality or establish physical endpoint approvals.

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Trusted request requirements constrain routing roles and provider calls.
+//! Trusted requirements constrain routing roles, provider calls and retained tasks.
 
 use serde_json::{Value, json};
 use switchyard_llm_client::AuxiliaryOperation;
@@ -214,23 +214,23 @@ seed = 7
 }
 
 #[tokio::test]
-async fn explicit_requirements_apply_only_to_the_current_request() {
+async fn explicit_empty_differs_from_missing_and_task_requirements_only_accumulate() {
     let server = MockServer::start().await;
-    let policy = format!("require_explicit_requirements = true\n{ALTERNATIVES}");
+    let policy = format!("require_explicit_requirements = true\nscope = \"task\"\n{ALTERNATIVES}");
     let source = config(&server.uri(), STAGE, &policy);
-    let runner = Runner::from_toml(&source).expect("request-scoped route");
+    let runner = Runner::from_toml(&source).expect("task route");
     let route = runner.route("chat").expect("route");
     assert!(route.decide(request("shared", None)).await.is_err());
-    for (labels, expected) in [
-        (&[] as &[&str], "cloud/fast"),
-        (&["private"], "private/fast"),
-        (&["customer_data"], "approved/fast"),
-        (&[], "cloud/fast"),
+    for (task, labels, expected) in [
+        ("shared", &["private"] as &[&str], "private/fast"),
+        ("shared", &["customer_data"], "approved/fast"),
+        ("shared", &[], "approved/fast"),
+        ("other", &[], "cloud/fast"),
     ] {
         let outcome = route
-            .decide(request("shared", Some(labels)))
+            .decide(request(task, Some(labels)))
             .await
-            .expect("explicit request requirements");
+            .expect("retained requirements");
         assert_eq!(outcome.selected_model_ids[0], expected);
     }
     assert!(route.decide(request("shared", None)).await.is_err());
@@ -239,17 +239,18 @@ async fn explicit_requirements_apply_only_to_the_current_request() {
     let runner =
         Runner::from_toml(&unavailable).expect("valid config with unavailable intersection");
     let route = runner.route("chat").expect("route");
-    assert!(
-        route
-            .decide(request("blocked", Some(&["private", "customer_data"])))
-            .await
-            .is_err()
-    );
-    let outcome = route
+    route
         .decide(request("blocked", Some(&["private"])))
         .await
-        .expect("the next request has independent requirements");
-    assert_eq!(outcome.selected_model_ids[0], "private/fast");
+        .expect("initial private task");
+    for labels in [&["customer_data"] as &[&str], &["private"], &[]] {
+        assert!(
+            route
+                .decide(request("blocked", Some(labels)))
+                .await
+                .is_err()
+        );
+    }
     assert!(models_called(&server).await.is_empty());
 }
 
