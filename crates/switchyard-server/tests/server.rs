@@ -153,6 +153,7 @@ async fn upstream_chat(
             } else {
                 StatusCode::TOO_MANY_REQUESTS
             },
+            [("retry-after", "0")],
             Json(json!({"error": {"message": "quota exhausted", "code": "usage_limit"}})),
         )
             .into_response();
@@ -1695,7 +1696,8 @@ impl Response {
 async fn models_probes_routes_concurrently_and_caches_failed_discovery() -> TestResult {
     for stalled in [false, true] {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let barrier = Arc::new(tokio::sync::Barrier::new(4));
+        let probe_barrier = Arc::clone(&barrier);
         let captured = Arc::clone(&calls);
         let upstream_app = Router::new().route(
             "/props",
@@ -1752,13 +1754,23 @@ llm_client = "efficient"
             upstream.base_url
         ))?);
 
-        let (first, concurrent) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            tokio::join!(
-                send(&app, "GET", "/v1/models", None),
-                send(&app, "GET", "/v1/models", None)
-            )
-        })
-        .await?;
+        let (first, concurrent, ()) =
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                tokio::join!(
+                    send(&app, "GET", "/v1/models", None),
+                    send(&app, "GET", "/v1/models", None),
+                    async {
+                        probe_barrier.wait().await;
+                        if stalled {
+                            // All probes have reached the server and started their deadlines.
+                            tokio::time::pause();
+                            tokio::time::advance(std::time::Duration::from_secs(2)).await;
+                            tokio::time::resume();
+                        }
+                    }
+                )
+            })
+            .await?;
         let models = first?.json()?;
         assert_eq!(concurrent?.json()?, models);
         assert_eq!(models["data"].as_array().unwrap().len(), 3);

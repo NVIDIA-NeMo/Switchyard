@@ -54,5 +54,5 @@ async-trait.workspace = true
 http-body-util = "0.1"
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["testing"] }
 tempfile = "3"
-tokio.workspace = true
+tokio = { workspace = true, features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
