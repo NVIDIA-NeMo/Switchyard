@@ -2652,7 +2652,9 @@ mod tests {
             {"type": "reasoning", "encrypted_content": ""},
             {"type": "reasoning"},
             {"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}"},
-            {"type": "function_call_output", "call_id": "call_1", "output": "ok"}
+            {"type": "function_call_output", "call_id": "call_1", "output": "ok"},
+            {"type": "web_search_call", "id": "ws_1", "status": "completed", "action": {"type": "search", "query": "switchyard"}},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "found it"}]}
         ]);
         for store in [Some(true), Some(false), None] {
             for is_drop in [false, true] {
@@ -2711,6 +2713,10 @@ mod tests {
                         }
                     }
                     expected.extend([history[6].clone(), history[7].clone()]);
+                    if !is_drop {
+                        expected.push(history[8].clone());
+                    }
+                    expected.push(history[9].clone());
                     assert_eq!(
                         body["input"],
                         json!(expected),
