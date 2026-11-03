@@ -2473,13 +2473,10 @@ route's configuration to change as more pairings are added.</p>
 <p><code>[routes.switchyard.classifier]</code> is required and takes the <code>stage_router</code> classifier fields.
 <code>classify_trigger</code> sets how often the judge runs: <code>user_turn</code> re-picks the tier
 whenever the user speaks, <code>new_session</code> picks once and holds it.
-Harness integrations can send <code>x-switchyard-request-origin: user</code>, <code>agent</code>, or
-<code>compaction</code> to distinguish new user input from continuations. SDK callers can set
-<code>Metadata.request_origin</code>. This explicit signal takes precedence over inference.
-Codex compaction metadata and <code>x-initiator: agent</code> also identify non-user requests.
-Without those signals, native compaction items and recognized Codex, Claude Code,
-Hermes, Pi, Oh My Pi, and OpenCode summary wrappers retain the selected profile.
-Unknown text keeps the usual role-based behavior. Stage's compaction handling is unchanged.
+Known compaction requests and summary wrappers retain the selected profile.
+Detection uses available request metadata and native compaction items, with text
+matching for recognized harness summaries. Unknown text keeps the usual role-based
+behavior. Stage's compaction handling is unchanged.
 <code>[routes.switchyard.stage]</code> takes the stage settings, but accepts neither <code>picker</code>
 nor a second <code>classifier</code>. The outer classifier supplies the default tier.
 <code>confidence_threshold</code> remains an alias for <code>efficient_first_threshold</code>.
