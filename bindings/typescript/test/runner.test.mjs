@@ -68,6 +68,11 @@ test("Runner preserves Stage roles, approved fallback order and request rewrites
       assert.equal(outcome.fallbackRequest, null);
     }
   }
+  const compacted = await runner.decide({
+    ...request,
+    messages: [{ role: "user", content: [{ type: "text", text: "[CONTEXT COMPACTION — REFERENCE ONLY] summary" }] }],
+  }, { requiredLabels: [] });
+  assert.equal(compacted.request.is_compaction, true);
   assert.equal(request.model, "coding");
   const noop = Runner.fromToml(`schema_version = 1
 targets = {}

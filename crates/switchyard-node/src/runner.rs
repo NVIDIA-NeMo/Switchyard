@@ -51,6 +51,7 @@ impl NativeRunner {
             llm_request: parse(&request_json)?,
             ..Default::default()
         };
+        switchyard_translation::normalize_compaction(&mut request.llm_request, None);
         if let Some(task_id) = task_id {
             request.metadata.get_or_insert_default().task_id = Some(task_id);
         }
