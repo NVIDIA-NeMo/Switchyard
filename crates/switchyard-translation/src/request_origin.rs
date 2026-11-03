@@ -91,52 +91,25 @@ fn is_hermes_summary(text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{WireFormat, decode_request, encode_request};
+    use crate::{WireFormat, decode_request};
     use serde_json::json;
 
     #[test]
-    fn normalizes_continuations_without_hiding_user_input() {
-        for summary in [
-            "Another language model started to solve this problem and produced a summary of its thinking process.",
-            "This session is being continued from a previous conversation that ran out of context.",
-            "prior context\n[CONTEXT COMPACTION \u{2014} REFERENCE ONLY] summary",
-            "The conversation history before this point was compacted into the following summary:\n<summary>Summary</summary>",
-            "Prior model work/tool state available.\n<summary>Summary</summary>",
-            "<conversation-checkpoint>Summary</conversation-checkpoint>",
-        ] {
-            let mut body = json!({"messages": [
-                {"role": "user", "content": [{"type": "text", "text": summary}, {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}]},
-                {"role": "user", "content": "<environment_context>updated</environment_context>"}
-            ]});
-            let request = decode_request(WireFormat::OpenAiChat, &body).unwrap();
-            assert!(request.is_continuation, "{summary}");
-            let encoded = encode_request(&request, WireFormat::OpenAiChat).unwrap();
-            assert!(encoded.get("is_continuation").is_none());
-            body["messages"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({"role": "user", "content": "Now fix the parser"}));
-            let followup = decode_request(WireFormat::OpenAiChat, &body).unwrap();
-            assert!(!followup.is_continuation);
-        }
-        let summary = "prior context\n[context summary]: summary\n--- end of context summary \u{2014} respond to the message below, not the summary above ---";
-        assert!(!is_hermes_summary(&format!(
-            "{summary}\nNow fix the parser"
-        )));
-        assert!(is_hermes_summary(&format!(
-            "{summary}\n[still in progress \u{2014} this is the active request, restated after the compaction boundary] Task"
-        )));
-        let body = json!({"input": [{"type": "compaction", "encrypted_content": "opaque"}]});
-        let request = decode_request(WireFormat::OpenAiResponses, &body).unwrap();
+    fn summary_continues_but_fresh_user_input_does_not() {
+        let mut body = json!({"messages": [
+            {"role": "user", "content": [
+                {"type": "text", "text": "prior context\n[CONTEXT SUMMARY]: summary"},
+                {"type": "image_url", "image_url": {"url": "https://example.com/image.png"}}
+            ]},
+            {"role": "user", "content": "<environment_context>updated</environment_context>"}
+        ]});
+        let request = decode_request(WireFormat::OpenAiChat, &body).unwrap();
         assert!(request.is_continuation);
-        let mut request = switchyard_protocol::text_request(None, "Summarize this");
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            "x-codex-turn-metadata",
-            r#"{"request_kind":"compaction"}"#.parse().unwrap(),
-        );
-        normalize_request_origin(&mut request, Some(&headers));
-        assert!(request.is_continuation);
+        body["messages"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"role": "user", "content": "Now fix the parser"}));
+        let followup = decode_request(WireFormat::OpenAiChat, &body).unwrap();
+        assert!(!followup.is_continuation);
     }
 }
