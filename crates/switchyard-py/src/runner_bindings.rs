@@ -49,8 +49,10 @@ impl PythonRunner {
             .map(from_python::<HashMap<String, String>>)
             .transpose()?;
         let headers = headers.as_ref().map(header_map_from_python).transpose()?;
+        let mut llm_request = from_python(request)?;
+        switchyard_translation::normalize_compaction(&mut llm_request, headers.as_ref());
         let mut request = Request {
-            llm_request: from_python(request)?,
+            llm_request,
             metadata: headers.map(|headers| {
                 let mut metadata = switchyard_protocol::Metadata::from_headers(&headers);
                 metadata.http_headers = Some(headers);

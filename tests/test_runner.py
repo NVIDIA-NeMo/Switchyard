@@ -140,6 +140,12 @@ async def test_stage_keeps_roles_and_uses_first_alternative_matching_every_label
         assert fallback["instructions"][0]["content"][0]["text"] == "Capable role."
         assert "Efficient role." not in json.dumps(fallback)
         assert body["model"] == "chat"
+    compacted = await runner.decide(
+        request(),
+        headers={"x-codex-turn-metadata": '{"request_kind":"compaction"}'},
+        required_labels=[],
+    )
+    assert compacted.request["is_compaction"]
     assert calls == []
 
 
