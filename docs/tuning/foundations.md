@@ -5,9 +5,8 @@ workload**: define the outcome you want, compare candidate settings on
 calibration tasks, and validate the selected configuration on held-out tasks
 before adopting it as your baseline.
 
-See [Examples of tuning](examples.md) for configuration and model-pair
-comparisons with concrete data. For the steps to run an experiment, use
-[Compare and Tune](index.md).
+See [Compare and Tune](examples.md) for configuration and model-pair comparisons
+with concrete data.
 
 ## 1. Define the objective
 

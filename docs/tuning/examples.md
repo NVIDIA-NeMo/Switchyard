@@ -1,4 +1,4 @@
-# Examples of tuning
+# Compare and Tune
 
 These two comparisons show how to choose routing settings or a model pair for
 a fixed objective. Start with [Tuning Foundations](foundations.md) to define
