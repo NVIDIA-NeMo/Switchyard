@@ -180,7 +180,15 @@ impl CapturedSpan {
             .into_iter()
             .flatten()
         {
-            *payload = redactor.value(std::mem::take(payload));
+            if !redactor.is_empty()
+                && let Some(body) = payload.get_mut("body")
+            {
+                *body = body
+                    .as_str()
+                    .and_then(|text| serde_json::from_str::<Json>(text).ok())
+                    .map(|decoded| Json::String(redactor.value(decoded).to_string()))
+                    .unwrap_or(Json::Null);
+            }
         }
         for child in &mut self.children {
             child.sanitize(redactor);
@@ -526,13 +534,22 @@ mod tests {
             ("judge/model", r#"{"target":"efficient"}"#),
             ("answer/model", "answer"),
         ] {
+            let response = serde_json::json!({
+                "id": "smoke", "model": model,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+                "debug_canary": "final-body-only", "final-body-only": "ordinary diagnostics"
+            })
+            .to_string()
+            .replace("final-body-only", r"\u0066inal-body-only");
             Mock::given(method("POST"))
                 .and(body_partial_json(serde_json::json!({"model": model})))
-                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "id": "smoke", "model": model,
-                    "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}]
-                })))
-                .mount(&server).await;
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "application/json")
+                        .set_body_string(response),
+                )
+                .mount(&server)
+                .await;
         }
         let config: SwitchyardConfig = serde_json::from_value(serde_json::json!({
             "switchyard_config": {
@@ -608,6 +625,16 @@ mod tests {
                 );
                 judge.sanitize(&ProviderKeyRedactor::new(&["final-body-only".into()]));
                 assert!(!format!("{judge:?}").contains("final-body-only"));
+                for payload in [
+                    &judge.children[0].payloads.request,
+                    &judge.children[0].payloads.response,
+                ] {
+                    let decoded: Value =
+                        serde_json::from_str(payload.as_ref().unwrap()["body"].as_str().unwrap())
+                            .unwrap();
+                    assert_eq!(decoded["debug_canary"], "[REDACTED]");
+                    assert!(!decoded.to_string().contains("final-body-only"));
+                }
             }
             let answer = spans
                 .iter()
@@ -618,6 +645,33 @@ mod tests {
                 assert!(attempt.payloads.response.is_none());
             }
         }
+    }
+
+    #[test]
+    fn payload_sanitization_omits_undecodable_json_when_keys_are_configured() {
+        let body = r#"invalid JSON with qa-\u0073ecret"#;
+        let mut span = CapturedSpan {
+            name: UPSTREAM_ATTEMPT,
+            fields: Map::new(),
+            payloads: Payloads {
+                request: Some(serde_json::json!({"body": body, "truncated": false})),
+                response: Some(serde_json::json!({"body": null, "truncated": true})),
+            },
+            started_at: SystemTime::now(),
+            ended_at: SystemTime::now(),
+            children: Vec::new(),
+        };
+        span.sanitize(&ProviderKeyRedactor::default());
+        assert_eq!(span.payloads.request.as_ref().unwrap()["body"], body);
+        span.sanitize(&ProviderKeyRedactor::new(&["qa-secret".into()]));
+        assert_eq!(
+            span.payloads.request,
+            Some(serde_json::json!({"body": null, "truncated": false}))
+        );
+        assert_eq!(
+            span.payloads.response,
+            Some(serde_json::json!({"body": null, "truncated": true}))
+        );
     }
 
     #[test]

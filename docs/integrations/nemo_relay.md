@@ -332,10 +332,12 @@ classification as `routing` or `answer`.
 
 ### Inspect Classifier and Judge Payloads
 
-Enable bounded capture when debugging a classifier's routing decision. It records
-the final request, including its system prompt, task context, output schema,
-resolved model, and target body settings. This helps distinguish a poor verdict
-from missing task context. Capture is disabled by default.
+Routing payload capture is available through the native NeMo Relay plugin and
+is disabled by default. It is not a standalone Switchyard configuration option.
+Use it to inspect the final classifier/judge request, including its system
+prompt, task context, output schema, resolved model, and target body settings,
+plus its successful buffered response. This helps distinguish a poor verdict
+from missing task context.
 
 Add these options to the existing `plugins.dynamic.config` table in your Relay
 `plugins.toml`, then restart the host:
@@ -347,8 +349,8 @@ capture_routing_payloads = true
 ```
 
 `max_routing_payload_bytes` defaults to 262144 encoded bytes (256 KiB) per
-request or response body, per attempt. It must be positive. Larger bodies are
-omitted entirely, not retained as a prefix:
+request or response body, per attempt, before sanitization. It must be positive.
+Larger bodies are omitted entirely, not retained as a prefix:
 
 ```json
 {"body": null, "truncated": true}
@@ -407,10 +409,12 @@ non-LLM decision-client payloads such as SystemOne. This option belongs to the
 native Relay plugin; enabling standalone Switchyard TRACE logging does not
 enable payload capture.
 
-Payloads can contain sensitive task data. The plugin masks configured provider
-keys and passes the captured data through Relay's normal event sanitizers and
-configured exporters. Personal data and other secrets require suitable
-sanitizers; see Relay's
+Payloads can contain sensitive task data. To mask configured provider keys,
+the plugin decodes the captured JSON, redacts it, and serializes the copy again.
+Whitespace and escape spellings may change. If decoding fails, the body is
+omitted (`body: null`). Captured data passes through Relay's normal event
+sanitizers and configured exporters. Personal data and other secrets require
+suitable sanitizers; see Relay's
 [PII redaction options](https://docs.nvidia.com/nemo/relay/configure-plugins/pii-redaction/about).
 
 ### How Routing Appears in Traces
@@ -522,9 +526,10 @@ Configure delivery through Relay's
 
 ## Data Handling
 
-Switchyard routing telemetry excludes request and response content. Its marks
-do not contain prompts, bodies, headers, credentials, raw provider responses,
-or free-form provider errors. Relay's LLM events can capture request and
-response data according to Relay's
+By default, Switchyard routing telemetry excludes request and response content.
+Enabling [routing payload capture](#inspect-classifier-and-judge-payloads) adds
+internal routing requests and successful buffered responses to
+`libsy.upstream_attempt` scopes. Routing marks remain payload-free.
+Relay's LLM events can capture request and response data according to Relay's
 [input and output event semantics](https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/events#input-and-output-payloads),
 independently of these Switchyard marks.
