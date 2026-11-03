@@ -41,11 +41,12 @@ nav:
           - Advisor-Gate Routing: routing_algorithms/advisor_gate_routing.md
           - Verification-Gated Routing: routing_algorithms/vgr_routing.md
       - Choose Models: routing_algorithms/model_selection.md
-  - Evaluate Routing:
+  - Evaluate and Tune:
       - Benchmarks: benchmarks.md
-      - Tuning: tuning/index.md
-      - Tuning Foundations: tuning/foundations.md
-      - Examples: tuning/examples.md
+      - Tuning:
+          - tuning/index.md
+          - Foundations: tuning/foundations.md
+          - Examples: tuning/examples.md
   - Local Demo:
       - Run the Reference Server: operations/local_evaluation.md
       - Local Agents:
@@ -100,6 +101,7 @@ theme:
   features:
     - navigation.top
     - navigation.sections
+    - navigation.indexes
     - search.suggest
     - search.highlight
     - content.code.copy
