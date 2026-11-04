@@ -454,3 +454,4 @@ the `stage router override` log line carries it for overrides:
 - [Mechanics of Libsy](../mechanics_of_libsy.md): the execution model and host responsibilities.
 - [TOML Schema](../reference/toml_schema.md#stage_router): the complete
   configuration reference.
+- [Tuning](../tuning/index.md): check your current route and compare candidate settings on your workload.

@@ -133,6 +133,8 @@ for the server merge behavior.
 | `max_output_tokens` | `4096` | Maximum completion tokens available to the classifier verdict. Must be at least `1`. |
 | `judge_deadline_ms` | unset | Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry the judge is treated as unavailable and follows `fail_open`: the route either falls back to the capable tier (default) or stops with a 504. Must be at least `1`. Unset leaves the consultation unbounded. |
 
+To compare candidate values on your workload, see [Tuning](../tuning/index.md).
+
 ### Override the classifier prompt
 
 Set `prompt` on the route when the packaged capability rubric does not describe

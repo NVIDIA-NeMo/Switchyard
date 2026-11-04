@@ -8,6 +8,47 @@ before adopting it as your baseline.
 See [Examples](examples.md) for configuration and model-pair comparisons
 with concrete data.
 
+## Before you start
+
+Most routes begin as `type = "auto"`. Auto is a stage-router preset:
+`efficient_first`, `confidence_threshold = 0.5`, `recent_turn_window = 3`,
+`capable_hold_turns = 2`, and no classifier. It accepts no tuning keys. To
+change a setting, rewrite the route as the equivalent `stage_router` route from
+the [TOML schema](../reference/toml_schema.md#auto). Record the starting values;
+they are the current-routing baseline in step 2. The overview's
+[Start here](../routing_algorithms/overview.md#start-here) list names the first
+dial to move for each strategy.
+
+Then read the decision counts, because three results mean no setting will help.
+The counters keep every request since the server started, so clear them first
+and run a sample of the workload you want to tune:
+
+```bash
+curl -s -X POST localhost:4000/v1/stats/reset
+# Run the workload sample, then read the counts.
+curl -s localhost:4000/v1/stats | jq '.algorithm_stats.stage_router.routing_decisions, (.models | map_values(.calls))'
+```
+
+- **`fall_open` is most of the total.** The tool-signal scorer abstained, which
+  happens on chat-only traffic and on the first request of a session. The
+  threshold and holds do not affect these turns. Add the
+  [classifier fallback](../routing_algorithms/stage_router_routing.md#optional-llm-classifier-fallback),
+  or use Task or Composite routing, which judge the request itself.
+- **`.models` lists one entry.** Every sampled request went to one model. Check
+  `capable_target` and `efficient_target` in the route. If they name the same
+  target, fix them, then run the
+  [inverted-pair check](../routing_algorithms/model_selection.md#check-for-an-inverted-pair).
+  If they differ, the decision counts show which decision sent every request to
+  that tier.
+- **Requests carry no session ID.** Holds and escalation state live in the
+  session. Send `x-switchyard-session-id` before tuning `capable_hold_turns` on
+  a stage-router route or `confirmations` on an escalation route.
+
+[Decision sources](../routing_algorithms/stage_router_routing.md#decision-sources)
+explains each count, and
+[When routing will not help](../routing_algorithms/overview.md#when-routing-will-not-help)
+lists the remaining cases.
+
 ## 1. Define the objective
 
 Define what the user wants to improve, on which workload, and what makes a result
@@ -43,6 +84,16 @@ a baseline and a small set of changes you expect to help:
 4. **Keep runs comparable.** Use the same tasks, evaluation procedure, and initial
    cache setup. Pin model and provider versions, and save each configuration.
 
+Collect these for every run:
+
+| Measure | Source |
+|---|---|
+| Routing split and decision reasons | `GET /v1/stats`: `.models` call counts and `routing_decisions`. `POST /v1/stats/reset` clears them between runs. |
+| Cost | The routing log (`--routing-log-file routing.jsonl`): the selected model and token usage per request, including `cached_tokens`. |
+| Served model per response | The `x-model-router-selected-model` response header. |
+| Metrics in your own host | [OpenTelemetry](../reference/opentelemetry.md#metrics) routing and client metrics. |
+| Task success | Your agent harness. For Terminal-Bench and DeepSWE, the [benchmark setup](../../benchmark/README.md#run-with-switchyard-routing) runs a profile and [inspects the result](../../benchmark/README.md#inspect-a-run). |
+
 Run the same tasks for every candidate. The following examples show how to use
 the results to choose between them.
 
@@ -54,6 +105,9 @@ Start with the comparison that matches what you want to change:
   keep the algorithm and model pair fixed, vary routing settings, and find the
   lowest-cost option that meets the task-success target. A Pareto chart shows
   the cost and success tradeoffs.
+- **[Check the efficient model when overrides dominate](examples.md#check-the-efficient-model-when-overrides-dominate):**
+  when `override` is most of the decision counts, the threshold and holds cannot
+  change those turns; measure the efficient model alone and change it if needed.
 - **[Select a model pair](examples.md#model-pair-selection-with-fixed-algorithm-settings):**
   keep algorithm settings fixed, swap the efficient/capable models, and compare
   execution cost plus a penalty for failed tasks.
