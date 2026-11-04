@@ -16,7 +16,6 @@ use switchyard_protocol::{
 use thiserror::Error;
 
 use crate::DecisionTarget;
-use crate::TargetRequirements;
 use crate::config::EligibleLanes;
 use crate::eligibility::{EligibilityPolicy, has_target_requirements};
 
@@ -146,11 +145,6 @@ struct EligibilityExecution {
     lanes: EligibleLanes,
 }
 
-struct LaneSelection {
-    lane: Arc<ExecutionLane>,
-    requirements: Option<TargetRequirements>,
-}
-
 /// A configured route with optional target eligibility checks.
 #[derive(Clone)]
 pub struct Route {
@@ -230,7 +224,7 @@ impl Route {
         self
     }
 
-    fn select_lane(&self, request: &Request) -> Result<LaneSelection, RunnerError> {
+    fn select_lane(&self, request: &Request) -> Result<Arc<ExecutionLane>, RunnerError> {
         if let Some(eligibility) = &self.eligibility {
             let required = eligibility.policy.admit(request)?;
             let lane = if required.required_labels().is_empty() {
@@ -240,16 +234,13 @@ impl Route {
                     .lanes
                     .select(required.required_labels(), &self.standard)?
             };
-            let requirements = Some(required);
             tracing::debug!(
                 switchyard.route = request.llm_request.model.as_deref().unwrap_or_default(),
                 switchyard.algorithm = self.algorithm_name(),
-                privacy.lane = requirements.as_ref().map(TargetRequirements::lane),
-                privacy.source = requirements.as_ref().map(TargetRequirements::source),
-                privacy.reason_code = requirements.as_ref().map(TargetRequirements::reason_code),
+                eligibility.required_label_count = required.required_labels().len(),
                 "eligible targets selected"
             );
-            return Ok(LaneSelection { lane, requirements });
+            return Ok(lane);
         }
         if has_target_requirements(request) {
             return Err(LlmClientError::InvalidRequest {
@@ -257,10 +248,7 @@ impl Route {
             }
             .into());
         }
-        Ok(LaneSelection {
-            lane: Arc::clone(&self.standard),
-            requirements: None,
-        })
+        Ok(Arc::clone(&self.standard))
     }
 
     /// Returns the configured libsy algorithm name.
@@ -318,22 +306,7 @@ impl Route {
         request: Request,
         observer: Option<RunObserver>,
     ) -> Result<RunOutput, RunnerError> {
-        self.execute_with_privacy_observer(request, observer, |_| {})
-            .await
-    }
-
-    /// Executes the route, reporting admission before dispatch when eligibility is enabled.
-    pub async fn execute_with_privacy_observer(
-        &self,
-        request: Request,
-        observer: Option<RunObserver>,
-        on_privacy_decision: impl FnOnce(&TargetRequirements) + Send,
-    ) -> Result<RunOutput, RunnerError> {
-        let selection = self.select_lane(&request)?;
-        if let Some(decision) = &selection.requirements {
-            on_privacy_decision(decision);
-        }
-        let lane = selection.lane;
+        let lane = self.select_lane(&request)?;
         let (selected_model, response) = switchyard_llm_client::run(
             Arc::clone(&lane.algorithm),
             lane.clients.clone(),
@@ -350,8 +323,7 @@ impl Route {
 
     /// Completes routing-time calls without serving a post-routing completion.
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
-        let selection = self.select_lane(&request)?;
-        let lane = selection.lane;
+        let lane = self.select_lane(&request)?;
         switchyard_llm_client::decide(
             Arc::clone(&lane.algorithm),
             lane.clients.clone(),
@@ -378,10 +350,9 @@ impl Route {
     ) -> Result<bool, RunnerError> {
         match &self.infra {
             Some(policy) => {
-                let selection = self.select_lane(&outcome.request)?;
+                let lane = self.select_lane(&outcome.request)?;
                 if outcome.selected_model_ids.iter().any(|model| {
-                    !selection
-                        .lane
+                    !lane
                         .models
                         .models_for(&switchyard_protocol::Category::Any)
                         .contains(model)
@@ -392,7 +363,7 @@ impl Route {
                     .into());
                 }
                 policy
-                    .apply(outcome, &selection.lane.models, signals)
+                    .apply(outcome, &lane.models, signals)
                     .map_err(Into::into)
             }
             None => Ok(false),
@@ -410,8 +381,7 @@ impl Route {
         request: Request,
         client: Arc<dyn RoutedLlmClient>,
     ) -> Result<RoutingOutcome, RunnerError> {
-        let selection = self.select_lane(&request)?;
-        let lane = selection.lane;
+        let lane = self.select_lane(&request)?;
         switchyard_llm_client::decide(
             Arc::clone(&lane.algorithm),
             ClientRouter::single(client),
@@ -428,8 +398,7 @@ impl Route {
         request: Request,
         operation: AuxiliaryOperation,
     ) -> Result<Value, RunnerError> {
-        let selection = self.select_lane(&request)?;
-        let lane = selection.lane;
+        let lane = self.select_lane(&request)?;
         let target = match operation {
             AuxiliaryOperation::AnthropicCountTokens => &lane.anthropic_auxiliary_target,
             AuxiliaryOperation::ResponsesInputTokens | AuxiliaryOperation::ResponsesCompact => {
@@ -452,7 +421,7 @@ mod tests {
     use switchyard_protocol::{InfraSignals, Message, ModelInfraSignals, PoolLoad, Role};
 
     use super::*;
-    use crate::{Runner, require_restricted_targets, require_target_labels};
+    use crate::{Runner, require_target_labels};
 
     const PASSTHROUGH: &str = "type = 'passthrough'\ntarget = 'fast'";
     const POOL: &str = "type = 'random'\ntargets = ['fast', 'approved_fast']";
@@ -493,17 +462,17 @@ mod tests {
         let both = route
             .select_lane(&request("two", &["private", "customer_data"]))
             .expect("both labels");
-        assert!(Arc::ptr_eq(&private.lane, &both.lane));
-        assert!(Arc::ptr_eq(&private.lane.algorithm, &both.lane.algorithm));
-        assert!(!Arc::ptr_eq(&private.lane, &route.standard));
+        assert!(Arc::ptr_eq(&private, &both));
+        assert!(Arc::ptr_eq(&private.algorithm, &both.algorithm));
+        assert!(!Arc::ptr_eq(&private, &route.standard));
         assert_eq!(
-            private.lane.models.provider_model(&"approved_fast".into()),
+            private.models.provider_model(&"approved_fast".into()),
             "approved/fast"
         );
         let shared = cloned
             .select_lane(&request("three", &["private"]))
             .expect("cloned route");
-        assert!(Arc::ptr_eq(&private.lane, &shared.lane));
+        assert!(Arc::ptr_eq(&private, &shared));
 
         let runner = Runner::from_toml(&source.replace("labels = []", "labels = ['private']"))
             .expect("standard models already approved");
@@ -511,7 +480,7 @@ mod tests {
         let approved = route
             .select_lane(&request("one", &["private"]))
             .expect("approved");
-        assert!(Arc::ptr_eq(&approved.lane, &route.standard));
+        assert!(Arc::ptr_eq(&approved, &route.standard));
     }
 
     #[test]
@@ -588,22 +557,5 @@ mod tests {
         assert_eq!(ordinary.selected_model_id().expect("model"), "fast");
         require_target_labels(&mut request, ["private"]).expect("trusted requirements");
         assert!(route.decide(request).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn binary_compatibility_maps_to_private_without_clearing_existing_requirements() {
-        let runner = Runner::from_toml(&config(POOL)).expect("eligible route");
-        let route = runner.route("route").expect("route");
-        let mut request = Request::default();
-        require_restricted_targets(&mut request, false).expect("explicit empty");
-        let ordinary = route.select_lane(&request).expect("ordinary");
-        assert!(Arc::ptr_eq(&ordinary.lane, &route.standard));
-        require_restricted_targets(&mut request, true).expect("private");
-        require_restricted_targets(&mut request, false).expect("cannot clear private");
-        let approved = route.decide(request).await.expect("approved request");
-        assert_eq!(
-            approved.selected_model_id().expect("model"),
-            "approved_fast"
-        );
     }
 }

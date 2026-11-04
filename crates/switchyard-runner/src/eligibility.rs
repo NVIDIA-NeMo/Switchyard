@@ -6,11 +6,9 @@
 use std::collections::BTreeSet;
 
 use serde_json::Value;
-use strum_macros::IntoStaticStr;
 use switchyard_protocol::{LlmClientError, Request, WireFormat};
 
 const REQUIREMENTS_KEY: &str = "switchyard.internal.required_target_labels";
-const LEGACY_RESTRICTION_KEY: &str = "switchyard.internal.local_only";
 const MAX_LABELS: usize = 64;
 const MAX_LABEL_BYTES: usize = 128;
 const MAX_REQUIREMENTS_BYTES: usize = MAX_LABELS * (MAX_LABEL_BYTES * 6 + 4) + 2;
@@ -32,19 +30,9 @@ impl EligibilityPolicy {
         if self.require_explicit_requirements && supplied.is_none() {
             return Err(invalid("route requires explicit target requirements"));
         }
-        let source = if supplied.as_ref().is_some_and(BTreeSet::is_empty) {
-            EligibilitySource::ExplicitEmpty
-        } else if supplied.is_some() {
-            EligibilitySource::ExternalSignal
-        } else {
-            EligibilitySource::Policy
-        };
         let required_labels = supplied.unwrap_or_default();
         validate_request_context(request)?;
-        Ok(TargetRequirements {
-            required_labels,
-            source,
-        })
+        Ok(TargetRequirements { required_labels })
     }
 }
 
@@ -79,9 +67,7 @@ pub(crate) fn has_target_requirements(request: &Request) -> bool {
         .metadata
         .as_ref()
         .and_then(|metadata| metadata.extra_metadata.as_ref())
-        .is_some_and(|metadata| {
-            metadata.contains_key(REQUIREMENTS_KEY) || metadata.contains_key(LEGACY_RESTRICTION_KEY)
-        })
+        .is_some_and(|metadata| metadata.contains_key(REQUIREMENTS_KEY))
 }
 
 pub(crate) fn validate_labels(labels: &BTreeSet<String>) -> Result<(), LlmClientError> {
@@ -108,7 +94,7 @@ fn target_requirements(request: &Request) -> Result<Option<BTreeSet<String>>, Ll
     else {
         return Ok(None);
     };
-    let mut labels: Option<BTreeSet<String>> = metadata
+    let labels: Option<BTreeSet<String>> = metadata
         .get(REQUIREMENTS_KEY)
         .map(|encoded| {
             if encoded.len() > MAX_REQUIREMENTS_BYTES {
@@ -117,63 +103,21 @@ fn target_requirements(request: &Request) -> Result<Option<BTreeSet<String>>, Ll
             serde_json::from_str(encoded).map_err(|_| invalid("invalid target requirement labels"))
         })
         .transpose()?;
-    match metadata.get(LEGACY_RESTRICTION_KEY).map(String::as_str) {
-        Some("true") => {
-            labels.get_or_insert_default().insert("private".into());
-        }
-        Some("false") => {
-            labels.get_or_insert_default();
-        }
-        Some(_) => return Err(invalid("invalid restricted signal")),
-        None => {}
-    }
     if let Some(labels) = &labels {
         validate_labels(labels)?;
     }
     Ok(labels)
 }
 
-#[derive(Clone, Copy, IntoStaticStr)]
-#[strum(serialize_all = "snake_case")]
-enum EligibilitySource {
-    Policy,
-    #[strum(serialize = "external_signal")]
-    ExplicitEmpty,
-    ExternalSignal,
-}
-
 /// Validated target requirements supplied by the caller.
-pub struct TargetRequirements {
+pub(crate) struct TargetRequirements {
     required_labels: BTreeSet<String>,
-    source: EligibilitySource,
 }
 
 impl TargetRequirements {
     /// Every returned label must be present on each target receiving the request.
-    pub fn required_labels(&self) -> &BTreeSet<String> {
+    pub(crate) fn required_labels(&self) -> &BTreeSet<String> {
         &self.required_labels
-    }
-
-    /// Returns `standard` for empty requirements and `restricted` otherwise.
-    pub fn lane(&self) -> &'static str {
-        if self.required_labels.is_empty() {
-            "standard"
-        } else {
-            "restricted"
-        }
-    }
-
-    /// Returns `policy` or `external_signal`.
-    pub fn source(&self) -> &'static str {
-        self.source.into()
-    }
-
-    /// Returns a bounded reason for the effective requirements.
-    pub const fn reason_code(&self) -> &'static str {
-        match self.source {
-            EligibilitySource::Policy | EligibilitySource::ExplicitEmpty => "all_clear",
-            EligibilitySource::ExternalSignal => "restricted",
-        }
     }
 }
 
@@ -251,14 +195,6 @@ mod tests {
         require_target_labels(&mut request, ["approved"]).expect("additional requirement");
         require_target_labels(&mut request, [] as [&str; 0]).expect("cannot clear requirements");
         assert_labels(&policy, &request, &["approved", "customer_data", "private"]);
-        let mut legacy = self::request(&[]);
-        metadata(&mut legacy).insert(LEGACY_RESTRICTION_KEY.into(), "true".into());
-        assert_labels(&policy, &legacy, &["private"]);
-        require_target_labels(&mut legacy, ["customer_data"]).expect("merge legacy restriction");
-        assert_eq!(
-            target_requirements(&legacy).unwrap(),
-            Some(labels(&["private", "customer_data"]))
-        );
     }
 
     #[test]
@@ -292,18 +228,7 @@ mod tests {
         let decision = policy
             .admit(&request(&[]))
             .expect("explicit empty requirements");
-        let legacy: &crate::EligibilityDecision = &decision;
-        let _: &crate::PrivacyDecision = legacy;
         assert!(decision.required_labels().is_empty());
-        assert_eq!(
-            (decision.lane(), decision.source(), decision.reason_code()),
-            ("standard", "external_signal", "all_clear")
-        );
-        let mut legacy = Request::default();
-        metadata(&mut legacy).insert(LEGACY_RESTRICTION_KEY.into(), "false".into());
-        assert!(policy.admit(&legacy).unwrap().required_labels().is_empty());
-        metadata(&mut legacy).insert(LEGACY_RESTRICTION_KEY.into(), "invalid".into());
-        assert!(policy.admit(&legacy).is_err());
     }
 
     #[test]

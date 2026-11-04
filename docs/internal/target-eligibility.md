@@ -88,10 +88,6 @@ targets. Each setup keeps its algorithm, clients, model groups and auxiliary
 targets together. Required judges, typed decisions, answer fallbacks and auxiliary
 calls must qualify. Provider codecs keep their existing translation role.
 
-`TargetRequirements` reports effective labels and their source. Earlier
-`EligibilityDecision` and `PrivacyDecision` names remain aliases. The binary
-helper remains compatible: `true` adds `private`, and `false` cannot clear labels.
-
 A route caches at most 128 additional model setups. Requirements contain at most
 64 labels of 128 bytes each. Limits fail closed; routing state is not evicted.
 Provider-held Responses continuation state and forwarded caller authentication

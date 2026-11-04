@@ -1628,30 +1628,30 @@ evidence = {{}}
     }
 
     #[test]
-    fn eligibility_rejects_retired_fields_and_invalid_scope() {
+    fn eligibility_rejects_unknown_fields_and_invalid_scope() {
         let configured = eligible_pool_config();
         for (invalid, expected) in [
             (
-                configured.replace("labels = ['private']", "local = true"),
-                "unknown field `local`",
+                configured.replace("labels = ['private']", "label = ['private']"),
+                "unknown field `label`",
             ),
             (
                 configured.replace(
                     "[routes.passthrough.eligibility]",
-                    "[routes.passthrough.local]",
+                    "[routes.passthrough.eligible]",
                 ),
-                "unknown field `local`",
+                "unknown field `eligible`",
             ),
             (
                 decision_eligibility_config().replace(
                     "[decision_targets.standard]",
-                    "[decision_targets.standard]\nrestricted = true",
+                    "[decision_targets.standard]\nlabel = ['private']",
                 ),
-                "unknown field `restricted`",
+                "unknown field `label`",
             ),
             (
-                format!("{configured}\naccepted_requirement_sets = {{ local = [] }}\n"),
-                "unknown field `accepted_requirement_sets`",
+                format!("{configured}\nrequire_explicit_requirement = true\n"),
+                "unknown field `require_explicit_requirement`",
             ),
             (
                 format!("{configured}\nscope = 'task'\n"),
