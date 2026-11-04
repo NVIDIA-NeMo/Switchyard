@@ -306,10 +306,13 @@ impl Classifier for AffinityRouter {
         }
         Ok((
             Classification::Scores(match assigned {
-                Some((target, category)) => vec![Score {
+                Some((target, _category)) => vec![Score {
                     confidence: 1.0,
-                    target: target.clone(),
-                    category: category.clone(),
+                    // Pinned by literal model id, not by category: the retained
+                    // model may have been chosen by an algorithm (e.g. a random
+                    // draw) whose pick is not itself expressible as a category.
+                    needs: Vec::new(),
+                    pin: Some(target.clone()),
                 }],
                 None => Vec::new(),
             }),
@@ -494,7 +497,7 @@ mod tests {
         let scores = scores(&router, &mut state, &mut second).await?;
         assert_eq!(scores.len(), 1);
         assert_eq!(scores[0].confidence, 1.0);
-        assert_eq!(scores[0].target, "model-a");
+        assert_eq!(scores[0].pin.as_ref().unwrap().as_str(), "model-a");
         Ok(())
     }
 
@@ -512,7 +515,9 @@ mod tests {
         let mut later_child_turn = request(subagent("child-1", "task-2"));
         let scores = scores(&router, &mut state, &mut later_child_turn).await?;
         assert_eq!(
-            scores.first().map(|score| score.target.as_str()),
+            scores
+                .first()
+                .map(|score| score.pin.as_ref().unwrap().as_str()),
             Some("model-b")
         );
         Ok(())
@@ -530,7 +535,9 @@ mod tests {
 
         let scores = scores(&router, &mut state, &mut req).await?;
         assert_eq!(
-            scores.first().map(|score| score.target.as_str()),
+            scores
+                .first()
+                .map(|score| score.pin.as_ref().unwrap().as_str()),
             Some("model-a")
         );
         Ok(())
@@ -548,7 +555,9 @@ mod tests {
         let mut second = request(subagent("child-1", "task-2"));
         let scores = scores(&router, &mut state, &mut second).await?;
         assert_eq!(
-            scores.first().map(|score| score.target.as_str()),
+            scores
+                .first()
+                .map(|score| score.pin.as_ref().unwrap().as_str()),
             Some("model-a")
         );
         Ok(())
@@ -626,7 +635,7 @@ mod tests {
             scores(&router, &mut state, &mut follow_up)
                 .await?
                 .first()
-                .map(|score| score.target.as_str()),
+                .map(|score| score.pin.as_ref().unwrap().as_str()),
             Some("weak")
         );
 
@@ -765,7 +774,9 @@ mod tests {
         let mut second = request(session("session-1", "agent-b"));
         let scores = scores(classifier.as_ref(), &mut state, &mut second).await?;
         assert_eq!(
-            scores.first().map(|score| score.target.as_str()),
+            scores
+                .first()
+                .map(|score| score.pin.as_ref().unwrap().as_str()),
             Some("model-a")
         );
         Ok(())
@@ -829,11 +840,15 @@ mod tests {
         let first_scores = scores(&router, &mut state, &mut first).await?;
         let second_scores = scores(&router, &mut state, &mut second).await?;
         assert_eq!(
-            first_scores.first().map(|score| score.target.as_str()),
+            first_scores
+                .first()
+                .map(|score| score.pin.as_ref().unwrap().as_str()),
             Some("model-a")
         );
         assert_eq!(
-            second_scores.first().map(|score| score.target.as_str()),
+            second_scores
+                .first()
+                .map(|score| score.pin.as_ref().unwrap().as_str()),
             Some("model-b")
         );
         Ok(())
@@ -872,11 +887,15 @@ mod tests {
         )
         .await?;
         assert_eq!(
-            first.first().map(|score| score.target.as_str()),
+            first
+                .first()
+                .map(|score| score.pin.as_ref().unwrap().as_str()),
             Some("model-a")
         );
         assert_eq!(
-            second.first().map(|score| score.target.as_str()),
+            second
+                .first()
+                .map(|score| score.pin.as_ref().unwrap().as_str()),
             Some("model-b")
         );
         Ok(())
@@ -948,7 +967,7 @@ mod tests {
             scores(&router, &mut state, &mut continued)
                 .await?
                 .first()
-                .map(|s| s.target.as_str()),
+                .map(|s| s.pin.as_ref().unwrap().as_str()),
             Some("weak")
         );
 
@@ -1014,7 +1033,7 @@ mod tests {
             scores(&router, &mut state, &mut req)
                 .await?
                 .first()
-                .map(|s| s.target.as_str()),
+                .map(|s| s.pin.as_ref().unwrap().as_str()),
             Some("strong")
         );
         Ok(())
@@ -1032,14 +1051,17 @@ mod tests {
         let Classification::Scores(retained) = classification else {
             return Err("affinity never returns ambiguous scores".into());
         };
-        assert_eq!(retained.first().map(|s| s.target.as_str()), Some("model-a"));
+        assert_eq!(
+            retained.first().map(|s| s.pin.as_ref().unwrap().as_str()),
+            Some("model-a")
+        );
 
         // The assignment survived, so a later turn with the group present still latches.
         assert_eq!(
             scores(&router, &mut state, &mut req)
                 .await?
                 .first()
-                .map(|s| s.target.as_str()),
+                .map(|s| s.pin.as_ref().unwrap().as_str()),
             Some("model-a")
         );
         Ok(())

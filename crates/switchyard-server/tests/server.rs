@@ -3006,9 +3006,9 @@ mutate = ["send_payment_request"]
     Ok(())
 }
 
-// Composite TOML must pass custom stage semantics through to the nested stage router.
+// `auto`'s tool_loop signal must pass custom stage semantics through to the stage scorer.
 #[tokio::test]
-async fn composite_router_uses_configured_tool_semantics() -> TestResult {
+async fn auto_tool_loop_uses_configured_tool_semantics() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
         r#"
@@ -3018,10 +3018,6 @@ schema_version = 1
 format = "openai_chat"
 base_url = "{base_url}"
 
-[targets.classifier]
-id = "model/classifier"
-llm_client = "upstream"
-
 [targets.strong]
 id = "model/strong"
 llm_client = "upstream"
@@ -3030,21 +3026,22 @@ llm_client = "upstream"
 id = "model/weak"
 llm_client = "upstream"
 
-[routes.composite]
-id = "switchyard/composite"
-type = "composite"
+[pool]
+models = [
+  {{ target = "strong", provides = ["capable"] }},
+  {{ target = "weak", provides = ["efficient"] }},
+]
+default = "efficient"
 
-[routes.composite.classifier]
-target = "classifier"
-base_threshold = 0.5
-classify_trigger = "user_turn"
+[routes.auto]
+id = "switchyard/auto"
+type = "capability_router"
 
-[routes.composite.stage]
-capable_target = "strong"
-efficient_target = "weak"
+[routes.auto.signals.tool_loop]
+picker = "efficient_first"
 confidence_threshold = 0.3
 
-[routes.composite.stage.tool_semantics]
+[routes.auto.signals.tool_loop.tool_semantics]
 new = ["send_message_to_user"]
 "#,
         base_url = upstream.base_url
@@ -3056,7 +3053,7 @@ new = ["send_message_to_user"]
         "POST",
         "/v1/chat/completions",
         Some(json!({
-            "model": "switchyard/composite",
+            "model": "switchyard/auto",
             "messages": [
                 {"role": "user", "content": "help the customer"},
                 {"role": "assistant", "content": "working"},
@@ -3090,6 +3087,116 @@ new = ["send_message_to_user"]
         upstream.models().await,
         ["model/weak"],
         "configured new activity must suppress the deep-turn stall without consulting the judge"
+    );
+    Ok(())
+}
+
+// `auto` composes task (a judge) and tool_loop (tool-result signals) side by side:
+// both run every turn, and when they disagree the pool resolves which one wins.
+#[tokio::test]
+async fn auto_route_composes_task_and_tool_loop_signals() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[pool]
+models = [
+  {{ target = "strong", provides = ["capable"] }},
+  {{ target = "weak", provides = ["efficient"] }},
+]
+default = "efficient"
+
+[routes.auto]
+id = "switchyard/auto"
+type = "capability_router"
+
+[routes.auto.signals.task]
+judge = "classifier"
+base_threshold = 0.5
+
+[routes.auto.signals.tool_loop]
+picker = "efficient_first"
+confidence_threshold = 0.5
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    // A critical tool-result error decides tool_loop at confidence 1.0 (capable); the
+    // judge (MockUpstream's default p_solve = 0.9) decides task at confidence 1.0
+    // (efficient) too. Both signals run regardless, and the tie is broken by the
+    // order they were pushed: tool_loop first, so its "capable" need wins.
+    let escalating = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/auto",
+            "messages": [
+                {"role": "user", "content": "fix the build"},
+                {"role": "assistant", "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "Bash", "arguments": "{\"command\": \"cargo test\"}"}
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "fatal runtime error: out of memory"},
+            ]
+        })),
+    )
+    .await?;
+    assert_eq!(escalating.status, StatusCode::OK);
+    assert_eq!(
+        escalating
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/strong")
+    );
+    assert!(
+        upstream
+            .models()
+            .await
+            .contains(&"model/classifier".to_string()),
+        "task's judge must run even though tool_loop already decided"
+    );
+
+    // A quiet turn (no tool activity): tool_loop abstains, so only task's "efficient"
+    // need reaches the pool.
+    upstream.calls.lock().await.clear();
+    let quiet = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/auto",
+            "messages": [{"role": "user", "content": "what does this function do?"}]
+        })),
+    )
+    .await?;
+    assert_eq!(quiet.status, StatusCode::OK);
+    assert_eq!(
+        quiet
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/weak")
     );
     Ok(())
 }
@@ -4571,6 +4678,94 @@ selector = "/decision/target"
     }
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
     assert_eq!(stats["classifier"]["total_requests"], 12);
+    Ok(())
+}
+
+// Composite TOML must pass custom stage semantics through to the nested stage router.
+#[tokio::test]
+async fn composite_router_uses_configured_tool_semantics() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.classifier]
+id = "model/classifier"
+llm_client = "upstream"
+
+[targets.strong]
+id = "model/strong"
+llm_client = "upstream"
+
+[targets.weak]
+id = "model/weak"
+llm_client = "upstream"
+
+[routes.composite]
+id = "switchyard/composite"
+type = "composite"
+
+[routes.composite.classifier]
+target = "classifier"
+base_threshold = 0.5
+classify_trigger = "user_turn"
+
+[routes.composite.stage]
+capable_target = "strong"
+efficient_target = "weak"
+confidence_threshold = 0.3
+
+[routes.composite.stage.tool_semantics]
+new = ["send_message_to_user"]
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let app = build_switchyard_router(state);
+
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": "switchyard/composite",
+            "messages": [
+                {"role": "user", "content": "help the customer"},
+                {"role": "assistant", "content": "working"},
+                {"role": "user", "content": "continue"},
+                {"role": "assistant", "content": "working"},
+                {"role": "user", "content": "continue"},
+                {"role": "assistant", "content": "working"},
+                {"role": "assistant", "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "send_message_to_user",
+                        "arguments": "{}"
+                    }
+                }]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "message sent"}
+            ]
+        })),
+    )
+    .await?;
+
+    assert_eq!(response.status, StatusCode::OK);
+    assert_eq!(
+        response
+            .headers
+            .get("x-model-router-selected-model")
+            .and_then(|value| value.to_str().ok()),
+        Some("model/weak")
+    );
+    assert_eq!(
+        upstream.models().await,
+        ["model/weak"],
+        "configured new activity must suppress the deep-turn stall without consulting the judge"
+    );
     Ok(())
 }
 

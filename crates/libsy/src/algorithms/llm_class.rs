@@ -283,13 +283,13 @@ impl JudgePolicy for TaskClassifierPolicy {
         };
         // The chosen category may have no models configured. That is ambiguous, not an
         // error, so the surrounding router applies its configured fallback.
-        let Some(target) = driver.models_for(&category).first().cloned() else {
+        if driver.models_for(&category).is_empty() {
             return Ok(Classification::Ambiguous(vec![]));
-        };
+        }
         Ok(Classification::Scores(vec![Score {
-            target,
+            needs: vec![category],
+            pin: None,
             confidence: 1.0,
-            category: Some(category),
         }]))
     }
 }
@@ -664,13 +664,15 @@ impl Classifier for DefaultCategoryClassifier {
         _request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
-        let target = driver.first_model_for(&self.0)?;
+        // Errors if the category has no runtime model — the fallback closing the
+        // cascade must have somewhere to land.
+        driver.first_model_for(&self.0)?;
         driver.set_evidence_if_empty(serde_json::json!({"source": "fall_open"}));
         Ok((
             Classification::Scores(vec![Score {
-                target: target.clone(),
+                needs: vec![self.0.clone()],
+                pin: None,
                 confidence: 0.0,
-                category: Some(self.0.clone()),
             }]),
             None,
         ))
@@ -994,13 +996,20 @@ mod tests {
         policy: &TaskClassifierPolicy,
         verdict: Option<&TaskClassifierVerdict>,
     ) -> Result<ModelId> {
-        policy
-            .to_classification(verdict, &policy_driver())?
+        let driver = policy_driver();
+        let score = policy
+            .to_classification(verdict, &driver)?
             .argmax(false)?
-            .map(|score| score.target)
             .ok_or_else(|| LibsyError::AlgorithmError {
                 message: "policy abstained".to_string(),
-            })
+            })?;
+        let category = score
+            .needs
+            .first()
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: "policy named no need".to_string(),
+            })?;
+        Ok(driver.first_model_for(category)?.clone())
     }
 
     /// Records what each target received; answers the judge with a supported verdict and

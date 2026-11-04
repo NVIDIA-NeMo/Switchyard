@@ -224,8 +224,8 @@ configuration loads. `models.judge` supplies the judge call's own candidates in
 order and is not a completion destination.
 
 `capable` and `efficient` are reserved names. Use them when you want a group to
-carry the tier meaning the stage and composite routers give it; otherwise any
-name works.
+carry the tier meaning the stage and composite routers give it, or that
+`capability_router`'s pool gives it; otherwise any name works.
 
 This separation applies to every classifier mode. Prompts containing the legacy
 `{{RESPONSE_SCHEMA}}` placeholder are rejected during configuration validation.
@@ -342,7 +342,8 @@ Switchyard handles state differently depending on the target API:
 
 A request with a recorded ID returns to the model that served it without a judge
 call or fallback to another provider. This applies to every `classify_trigger`
-and to `stage_router` and `composite` routes. Tracking covers buffered replies and
+and to `stage_router`, `composite`, and `capability_router` routes. Tracking
+covers buffered replies and
 completed streams, including answers returned by `/v1/decision`. Ordinary Chat
 Completions and Anthropic Messages requests do not create Responses history.
 

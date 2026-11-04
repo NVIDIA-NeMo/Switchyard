@@ -11,13 +11,15 @@ use std::sync::Arc;
 
 use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, BreakerConfig, CapabilityJudgeConfig,
-    ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeJudgeConfig,
-    CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    DEFAULT_UNMATCHED_STEPS, DecisionJudgeConfig, DirectClassifierConfig, EscalationJudgeConfig,
-    GateTrigger, HandoffNoteConfig, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback,
-    LlmTaskClassifier, Noop, Passthrough, PickerMode, PlanExecute, PlanExecuteConfig, Random,
-    RuntimeModels, StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig,
-    TaskClassifierConfig, ToolSemantics, Vgr, VgrConfig,
+    CapabilityRouter, CapabilityRouterConfig, ClassifierContractConfig, ClassifierResponseFormat,
+    ClassifyTrigger, CompositeJudgeConfig, CompositeRouter, CompositeRouterConfig,
+    CustomClassifierConfig, CustomClassifierPolicy, DEFAULT_UNMATCHED_STEPS, DecisionJudgeConfig,
+    DirectClassifierConfig, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
+    LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
+    PickerMode, PlanExecute, PlanExecuteConfig, PoolContext, PoolModel, Random,
+    RuleSignalConfig as LibsyRuleSignalConfig, RuntimeModels, StageRouter, StageRouterConfig,
+    SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolLoopSignalConfig,
+    ToolSemantics, Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -507,6 +509,16 @@ pub enum AlgorithmSpec {
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
     },
+    /// Composes named signals (`task`, `tool_loop`, `review`) into one decision,
+    /// resolved against the deployment's top-level `[pool]`.
+    CapabilityRouter {
+        /// The route's signal composition.
+        signals: Box<SignalsConfig>,
+        /// The deployment's `[pool]`, copied in by `DeploymentConfig::build` after
+        /// parsing. Never set directly in a route's own TOML.
+        #[serde(skip)]
+        pool: PoolSpec,
+    },
     /// Serves every turn from one target, and has a second model review some of
     /// those turns before the caller sees them.
     Advisor {
@@ -860,6 +872,163 @@ impl StageClassifierConfig {
     }
 }
 
+/// The deployment's `[pool]`: a model catalog shared by every `capability_router` route.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolSpec {
+    /// Models in the pool, in declared order.
+    #[serde(default)]
+    pub(crate) models: Vec<PoolModelSpec>,
+    /// Capability to fall back to when no signal names one.
+    #[serde(default)]
+    pub(crate) default: String,
+}
+
+/// One `[pool]` model and the capability tags it provides.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolModelSpec {
+    /// Target name, resolved against `[targets.*]`.
+    pub(crate) target: String,
+    /// Capability tags this model satisfies.
+    pub(crate) provides: Vec<String>,
+}
+
+/// A `capability_router` route's signal composition.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignalsConfig {
+    /// Judge-backed capability signal.
+    #[serde(default)]
+    pub task: Option<TaskSignalConfig>,
+    /// Deterministic first-task text rules.
+    #[serde(default)]
+    pub rules: Option<RuleSignalConfig>,
+    /// Tool-result signal.
+    #[serde(default)]
+    pub tool_loop: Option<ToolLoopSignalTomlConfig>,
+    /// Advisor review. Mutually exclusive with `task`, `rules`, and `tool_loop`.
+    #[serde(default)]
+    pub review: Option<ReviewSignalConfig>,
+    /// Retains the first model chosen for a session and replays it on later
+    /// turns, bypassing signal scoring, escalation retention, and the pool.
+    #[serde(default)]
+    pub affinity: bool,
+}
+
+/// Deterministic terms matched against the opening user task.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuleSignalConfig {
+    /// Terms that require the capable tier.
+    #[serde(default)]
+    pub capable: Vec<String>,
+    /// Terms that require the balanced tier.
+    #[serde(default)]
+    pub balanced: Vec<String>,
+    /// Deployment-defined capability names and the terms that require them.
+    #[serde(default)]
+    pub named: BTreeMap<String, Vec<String>>,
+}
+
+/// The `task` signal: a judge-backed capability classifier contributing a need
+/// to the pool instead of resolving a target itself.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskSignalConfig {
+    /// Target the judge is called through. Not a routing destination.
+    pub judge: String,
+    /// Lowest solve probability that still names the efficient tag, from 0 to 1.
+    pub base_threshold: f64,
+    /// How much to raise the threshold when the judge is uncertain.
+    #[serde(default)]
+    pub threshold_step: f64,
+    /// How many trailing turns the judge sees. Unset shows it the opening task
+    /// and the latest user follow-up only.
+    #[serde(default)]
+    pub recent_turn_window: Option<usize>,
+    /// Replaces the packaged judge prompt.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// How the judge is asked for structured output.
+    #[serde(default)]
+    pub response_format_type: ClassifierResponseFormat,
+    /// Most completion tokens the judge verdict may use.
+    #[serde(default = "default_classifier_max_output_tokens")]
+    pub max_output_tokens: u64,
+}
+
+/// The `tool_loop` signal: the stage-router scorer, without its own judge
+/// fallback or per-tier prompt injection.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolLoopSignalTomlConfig {
+    /// Tag a turn defaults to when the scorer is not confident.
+    pub picker: PickerMode,
+    /// How much corroboration a decisive pick needs, from 0 to 1.
+    pub confidence_threshold: f64,
+    /// Following requests that retain an elevated tier as a floor. Zero disables.
+    #[serde(default)]
+    pub escalation_hold_turns: u32,
+    /// Confidence that requires capable instead of the optional balanced tier.
+    #[serde(default)]
+    pub capable_score_threshold: Option<f64>,
+    /// How many trailing tool results the signal is computed over.
+    #[serde(default)]
+    pub recent_turn_window: Option<usize>,
+    /// Exact tool-name semantics added to the built-in stage vocabulary.
+    #[serde(default)]
+    pub tool_semantics: ToolSemantics,
+    /// Notes handed to a tier when the signal switches to it.
+    #[serde(default)]
+    pub handoff_notes: Option<HandoffNoteConfig>,
+}
+
+/// The `review` signal: wraps the whole turn in an advisor gate. The gate
+/// resolves its own executor and advisor targets before a pool decision would
+/// even exist, so it cannot compose with `task`/`tool_loop` in this release.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewSignalConfig {
+    /// Serves every client-visible turn.
+    pub executor_target: String,
+    /// Reviews gated turns. Never a routing destination.
+    pub advisor_target: String,
+    /// Replaces the built-in APPROVE/REDO reviewer prompt.
+    #[serde(default)]
+    pub reviewer_system_prompt: Option<String>,
+    /// Replaces the built-in text put in front of a REDO plan.
+    #[serde(default)]
+    pub redo_feedback_prefix: Option<String>,
+    /// What fires a review.
+    #[serde(default)]
+    pub gate_trigger: AdvisorTriggerConfig,
+    /// Regular expression for the `pattern` trigger. Required by it, and unused otherwise.
+    #[serde(default)]
+    pub gate_trigger_pattern: Option<String>,
+    /// How many reviews one session may spend.
+    #[serde(default = "default_max_reviews")]
+    pub max_reviews: u32,
+    /// Reviews a turn after this many assistant turns, as a mid-task checkpoint.
+    #[serde(default)]
+    pub gate_stall_turns: u32,
+    /// Tool results a turn needs before it can be reviewed.
+    #[serde(default)]
+    pub gate_min_tool_results: u32,
+    /// Most output tokens one review may use.
+    #[serde(default = "default_advisor_max_tokens")]
+    pub advisor_max_tokens: u64,
+    /// Sampling temperature for reviews. Left off the request when unset.
+    #[serde(default)]
+    pub advisor_temperature: Option<f64>,
+    /// Size cap on the transcript sent to the advisor.
+    #[serde(default = "default_transcript_max_chars")]
+    pub transcript_max_chars: usize,
+    /// Lets the turn through when the advisor fails, instead of erroring.
+    #[serde(default = "default_fail_open")]
+    pub fail_open: bool,
+}
+
 impl AlgorithmSpec {
     /// Filters configured pools without replacing required targets or changing their roles.
     pub(crate) fn restricted_to(&self, allowed: &BTreeSet<&str>) -> AlgorithmResult<Self> {
@@ -1045,6 +1214,21 @@ impl AlgorithmSpec {
                 }
                 names
             }
+            Self::CapabilityRouter { signals, pool } => {
+                let mut names: Vec<&str> = pool
+                    .models
+                    .iter()
+                    .map(|model| model.target.as_str())
+                    .collect();
+                // A capability group can select the review executor, so it serves turns
+                // and belongs here. The advisor stays out, as in the Advisor arm.
+                if let Some(review) = &signals.review {
+                    names.push(review.executor_target.as_str());
+                }
+                names
+            }
+            // The advisor is judge-only: reviews go through its own client,
+            // so it is not a completion (or count_tokens) destination.
             Self::Auto {
                 capable_target,
                 efficient_target,
@@ -1061,8 +1245,6 @@ impl AlgorithmSpec {
                 }
                 names
             }
-            // The advisor is judge-only: reviews go through its own client,
-            // so it is not a completion (or count_tokens) destination.
             Self::Advisor {
                 executor_target, ..
             } => vec![executor_target],
@@ -1118,6 +1300,15 @@ impl AlgorithmSpec {
             Self::Vgr { config } => {
                 names.extend(config.judge_target.as_deref());
                 names.extend(config.capable_judge_target.as_deref());
+            }
+            Self::CapabilityRouter { signals, .. } => {
+                if let Some(task) = &signals.task {
+                    names.push(&task.judge);
+                }
+                if let Some(review) = &signals.review {
+                    names.push(&review.executor_target);
+                    names.push(&review.advisor_target);
+                }
             }
             _ => {}
         }
@@ -1204,6 +1395,30 @@ impl AlgorithmSpec {
                     vec![stage.capable_target.clone(), stage.efficient_target.clone()],
                 ),
             ]),
+            Self::CapabilityRouter { signals, pool } => {
+                let mut models = pool_runtime_model_names(pool);
+                if let Some(task) = &signals.task {
+                    models
+                        .entry(Category::Judge)
+                        .or_default()
+                        .push(task.judge.clone());
+                }
+                if let Some(review) = &signals.review {
+                    models
+                        .entry(Category::Efficient)
+                        .or_default()
+                        .push(review.executor_target.clone());
+                    models
+                        .entry(Category::Any)
+                        .or_default()
+                        .push(review.executor_target.clone());
+                    models
+                        .entry(Category::Judge)
+                        .or_default()
+                        .push(review.advisor_target.clone());
+                }
+                models
+            }
             Self::Advisor {
                 executor_target,
                 advisor_target,
@@ -1282,6 +1497,7 @@ impl AlgorithmSpec {
             | Self::PlanExecute { .. }
             | Self::LlmClassifier { .. }
             | Self::StageRouter { .. }
+            | Self::CapabilityRouter { .. }
             | Self::Auto { .. }
             | Self::Composite { .. }
             | Self::PrefillRouter { .. } => None,
@@ -1326,6 +1542,28 @@ fn category_models(
     entries: impl IntoIterator<Item = (Category, Vec<String>)>,
 ) -> HashMap<Category, Vec<String>> {
     entries.into_iter().collect()
+}
+
+/// Groups a `[pool]`'s models by the capability tags they provide, plus
+/// `Category::Any` for every pool model. Unlike [`category_models`], this
+/// accumulates rather than overwrites: a tag provided by several models keeps
+/// every one of them, in declared order.
+fn pool_runtime_model_names(pool: &PoolSpec) -> HashMap<Category, Vec<String>> {
+    let mut groups: HashMap<Category, Vec<String>> = HashMap::new();
+    let mut any = Vec::with_capacity(pool.models.len());
+    for model in &pool.models {
+        any.push(model.target.clone());
+        for tag in &model.provides {
+            if let Ok(category) = tag.parse::<Category>() {
+                groups
+                    .entry(category)
+                    .or_default()
+                    .push(model.target.clone());
+            }
+        }
+    }
+    groups.insert(Category::Any, any);
+    groups
 }
 
 fn custom_runtime_model_names(config: &CategoryModelConfig) -> HashMap<Category, Vec<String>> {
@@ -2069,6 +2307,109 @@ fn build_algorithm(
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
+        AlgorithmSpec::CapabilityRouter { signals, pool } => {
+            // A pattern set under the default trigger would be silently ignored; the
+            // standalone Advisor arm rejects this, and `review` builds the same config.
+            if let Some(review) = &signals.review
+                && review.gate_trigger == AdvisorTriggerConfig::NoToolCall
+                && review.gate_trigger_pattern.is_some()
+            {
+                return Err(AlgorithmConfigError::new(format!(
+                    "capability_router route {route_name}: gate_trigger_pattern requires \
+                     gate_trigger = \"pattern\""
+                )));
+            }
+            let pool_context = build_pool_context(route_name, pool, targets)?;
+            let task = signals.task.as_ref().map(|task| TaskClassifierConfig {
+                judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                    base_threshold: task.base_threshold,
+                    threshold_step: task.threshold_step,
+                    contract: classifier_contract(task.prompt.as_deref())
+                        .with_response_format_type(task.response_format_type),
+                    max_output_tokens: task.max_output_tokens,
+                    ..LlmCapabilityConfig::default()
+                }),
+                classify_trigger: ClassifyTrigger::EveryRequest,
+                message_hash_fallback: false,
+                recent_turn_window: task.recent_turn_window,
+                ..TaskClassifierConfig::default()
+            });
+            let tool_loop = signals
+                .tool_loop
+                .as_ref()
+                .map(|tool_loop| ToolLoopSignalConfig {
+                    mode: tool_loop.picker,
+                    confidence_threshold: tool_loop.confidence_threshold,
+                    recent_window: tool_loop.recent_turn_window,
+                    tool_semantics: tool_loop.tool_semantics.clone(),
+                    handoff_notes: tool_loop.handoff_notes.clone(),
+                });
+            let rules = signals.rules.as_ref().map(|rules| LibsyRuleSignalConfig {
+                capable: rules.capable.clone(),
+                balanced: rules.balanced.clone(),
+                named: rules.named.clone(),
+            });
+            let review = signals.review.as_ref().map(|review| {
+                let mut config = AdvisorGateConfig::default();
+                if let Some(prompt) = &review.reviewer_system_prompt {
+                    config.reviewer_system_prompt = prompt.clone();
+                }
+                if let Some(prefix) = &review.redo_feedback_prefix {
+                    config.redo_feedback_prefix = prefix.clone();
+                }
+                config.gate_trigger = match review.gate_trigger {
+                    AdvisorTriggerConfig::NoToolCall => GateTrigger::NoToolCall,
+                    AdvisorTriggerConfig::Pattern => GateTrigger::Pattern(
+                        review.gate_trigger_pattern.clone().unwrap_or_default(),
+                    ),
+                };
+                config.max_reviews = review.max_reviews;
+                config.gate_stall_turns = review.gate_stall_turns;
+                config.gate_min_tool_results = review.gate_min_tool_results;
+                config.advisor_max_tokens = review.advisor_max_tokens;
+                config.advisor_temperature = review.advisor_temperature;
+                config.transcript_max_chars = review.transcript_max_chars;
+                config.fail_open = review.fail_open;
+                config
+            });
+            let algorithm = CapabilityRouter::new(CapabilityRouterConfig {
+                pool: pool_context,
+                task,
+                rules,
+                tool_loop,
+                review,
+                affinity: signals.affinity,
+            })
+            .map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("capability_router route {route_name}: {error}"),
+                    error,
+                )
+            })?
+            .with_escalation_hold_turns(
+                signals
+                    .tool_loop
+                    .as_ref()
+                    .map_or(0, |signal| signal.escalation_hold_turns),
+            );
+            let algorithm = if let Some(threshold) = signals
+                .tool_loop
+                .as_ref()
+                .and_then(|signal| signal.capable_score_threshold)
+            {
+                algorithm
+                    .with_capable_score_threshold(threshold)
+                    .map_err(|error| {
+                        AlgorithmConfigError::with_source(
+                            format!("capability_router route {route_name}: {error}"),
+                            error,
+                        )
+                    })?
+            } else {
+                algorithm
+            };
+            Ok(Arc::new(algorithm))
+        }
         AlgorithmSpec::Advisor {
             reviewer_system_prompt,
             redo_feedback_prefix,
@@ -2315,6 +2656,40 @@ fn resolve_runtime_models(
             Ok((category, models))
         })
         .collect()
+}
+
+fn build_pool_context(
+    route_name: &str,
+    pool: &PoolSpec,
+    targets: &BTreeMap<String, ModelId>,
+) -> AlgorithmResult<PoolContext> {
+    let models = pool
+        .models
+        .iter()
+        .map(|model| {
+            let target = resolve_target_model_id(route_name, &model.target, targets)?;
+            let provides = model
+                .provides
+                .iter()
+                .map(|tag| {
+                    tag.parse::<Category>().map_err(|error| {
+                        AlgorithmConfigError::new(format!(
+                            "capability_router route {route_name}: pool model {} has an invalid capability {tag:?}: {error}",
+                            model.target
+                        ))
+                    })
+                })
+                .collect::<AlgorithmResult<Vec<_>>>()?;
+            Ok(PoolModel { target, provides })
+        })
+        .collect::<AlgorithmResult<Vec<_>>>()?;
+    let default = pool.default.parse::<Category>().map_err(|error| {
+        AlgorithmConfigError::new(format!(
+            "capability_router route {route_name}: pool default {:?} is invalid: {error}",
+            pool.default
+        ))
+    })?;
+    Ok(PoolContext { models, default })
 }
 
 #[cfg(test)]

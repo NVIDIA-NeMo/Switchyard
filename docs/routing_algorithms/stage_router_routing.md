@@ -24,8 +24,10 @@ For each LLM call without an active hold, stage-router estimates the agent's sta
 conversation's **tool-result history**, scoring signals in two directions:
 
 - **RECOVERY → capable**: `severity` (windowed error severity), `spinning` (deep
-  churn with no reads or writes), and `exploring` (reading or planning without
-  producing) push toward the capable tier.
+  churn with no reads or writes), `exploring` (reading or planning without
+  producing), `severity_rising` (the window's errors are getting worse, not
+  recovering), and `repeated_test_failure` (at least two failed test runs in
+  the window) push toward the capable tier.
 - **PROGRESS → efficient**: `production_intensity` (the share of recent
   recognized operations that are writes or edits) pushes toward the efficient
   tier with 1.5 times the weight of one signal. Production with no error in the
@@ -403,9 +405,10 @@ providers that only support JSON Object mode; Switchyard then adds the schema to
 the judge prompt and validates the returned object locally. The verdict schema
 and routing thresholds remain unchanged.
 
-The nested stage table in [Composite Routing](composite_routing.md) does not
-accept a `classifier` block. Its outer classifier supplies the tier used when
-the stage signals are ambiguous.
+A `capability_router` route's `tool_loop` signal (see
+[Capability Router](capability_router_routing.md)) does not accept a
+`classifier` block either: use the `task` signal alongside it instead,
+composed through the shared [pool](pool.md).
 
 Give the classifier its own LLM client or quota bucket where possible. Sharing
 one provider bucket with the efficient tier adds a request per classified turn

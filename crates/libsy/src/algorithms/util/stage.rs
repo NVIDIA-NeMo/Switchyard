@@ -737,14 +737,15 @@ impl Classifier for StageClassifier {
             ),
         ] {
             if Self::consume_hold(state, &Self::agent_key(request, key)) {
-                let target = driver.first_model_for(&category)?.clone();
-                record_routing_decision(source, driver.provider_model(&target));
+                // Errors if the held category has no runtime model: the hold must land somewhere.
+                driver.first_model_for(&category)?;
+                record_routing_decision(source, category.as_str());
                 driver.set_evidence(serde_json::json!({"source": source.as_str()}));
                 return Ok((
                     Classification::Scores(vec![Score {
-                        target,
+                        needs: vec![category],
+                        pin: None,
                         confidence: 1.0,
-                        category: Some(category),
                     }]),
                     None,
                 ));
@@ -812,9 +813,9 @@ impl Classifier for StageClassifier {
                 let conf = confidence.unwrap_or_else(|| 2.0 * (probability - 0.5).abs());
                 Ok((
                     Classification::Scores(vec![Score {
-                        target: target.clone(),
+                        needs: vec![category],
+                        pin: None,
                         confidence: conf,
-                        category: Some(category),
                     }]),
                     None,
                 ))
@@ -1170,7 +1171,7 @@ mod tests {
             ..Default::default()
         });
         for (tier, threshold, expected) in [
-            (Tier::Capable, 0.0, Some(ModelId::from("weak"))),
+            (Tier::Capable, 0.0, Some(vec![Category::Efficient])),
             (Tier::Efficient, 0.0, None),
             (Tier::Capable, 0.5, None),
         ] {
@@ -1180,7 +1181,7 @@ mod tests {
                 .score(&mut state, &mut Request::default(), &driver())
                 .await?;
             assert_eq!(
-                classification.argmax(false)?.map(|score| score.target),
+                classification.argmax(false)?.map(|score| score.needs),
                 expected
             );
         }
@@ -1214,7 +1215,7 @@ mod tests {
         match classification.0 {
             Classification::Scores(scores) => {
                 assert_eq!(scores.len(), 1);
-                assert_eq!(scores[0].target, "strong");
+                assert_eq!(scores[0].needs, vec![Category::Capable]);
                 // An override is maximally certain, not `score.abs() == 0.0`.
                 assert_eq!(scores[0].confidence, 1.0);
             }
@@ -1238,7 +1239,9 @@ mod tests {
             .score(&mut state, &mut Request::default(), &driver)
             .await?;
         match classification.0 {
-            Classification::Scores(scores) => assert_eq!(scores[0].target, "weak"),
+            Classification::Scores(scores) => {
+                assert_eq!(scores[0].needs, vec![Category::Efficient])
+            }
             _ => panic!("expected a definite classification"),
         }
         Ok(())
@@ -1254,7 +1257,10 @@ mod tests {
             let classification = classifier
                 .score(&mut state, &mut Request::default(), &driver)
                 .await?;
-            assert_eq!(classification.0.argmax(false)?.unwrap().target, "strong");
+            assert_eq!(
+                classification.0.argmax(false)?.unwrap().needs,
+                vec![Category::Capable]
+            );
             state.tool_signals = Some(ToolSignals::default());
         }
 
@@ -1283,7 +1289,10 @@ mod tests {
         let classification = classifier
             .score(&mut state, &mut Request::default(), &driver)
             .await?;
-        assert_eq!(classification.0.argmax(false)?.unwrap().target, "strong");
+        assert_eq!(
+            classification.0.argmax(false)?.unwrap().needs,
+            vec![Category::Capable]
+        );
         assert_eq!(
             state.extra.get(CAPABLE_HOLD_KEY),
             Some(&StateValue::Count(1))
@@ -1344,9 +1353,9 @@ mod tests {
     /// Holds skip signal extraction and notes, then resolve at full confidence.
     #[tokio::test]
     async fn held_decisions_have_full_confidence_without_tool_signals() -> Result<()> {
-        for (key, target, category) in [
-            (CAPABLE_HOLD_KEY, "strong", Category::Capable),
-            (EFFICIENT_HOLD_KEY, "weak", Category::Efficient),
+        for (key, category) in [
+            (CAPABLE_HOLD_KEY, Category::Capable),
+            (EFFICIENT_HOLD_KEY, Category::Efficient),
         ] {
             for value in [StateValue::Count(1), StateValue::Bool(true)] {
                 let mut state = State::default();
@@ -1372,8 +1381,7 @@ mod tests {
                 let (classification, _) =
                     classifier.score(&mut state, &mut request, &driver).await?;
                 let winner = classification.argmax(false)?.expect("a hold must resolve");
-                assert_eq!(winner.target, target);
-                assert_eq!(winner.category, Some(category.clone()));
+                assert_eq!(winner.needs, vec![category.clone()]);
                 assert_eq!(winner.confidence, 1.0);
                 assert_eq!(
                     request.llm_request, original,

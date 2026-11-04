@@ -20,12 +20,13 @@ use switchyard_protocol::ModelId;
 
 use crate::core::classifier::{Classification, Score};
 
-/// A single full-confidence recommendation.
+/// A single full-confidence recommendation pinned to `target` by literal model id
+/// (rather than a configured category).
 pub(crate) fn decisive(target: &ModelId) -> Classification {
     Classification::Scores(vec![Score {
-        target: target.clone(),
+        needs: Vec::new(),
+        pin: Some(target.clone()),
         confidence: 1.0,
-        category: None,
     }])
 }
 

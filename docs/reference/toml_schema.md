@@ -617,6 +617,54 @@ instead. The outer `[routes.<name>.classifier]` table is required. The nested
 The outer classifier supplies the default tier. A turn the classifier cannot
 reach falls open to the efficient tier.
 
+### `capability_router`
+
+Composes named signals (`task`, `rules`, `tool_loop`, `review`) into one decision,
+resolved against the deployment's top-level `[pool]`. See
+[Capability Router](../routing_algorithms/capability_router_routing.md) and
+[The Model Pool](../routing_algorithms/pool.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `signals.task.judge` | Required with `task` | — | Target the capability judge is called through. |
+| `signals.task.base_threshold` | Required with `task` | — | `p_solve` floor that still names `efficient`. In `[0, 1]`. |
+| `signals.task.threshold_step` | No | `0` | Added per capability-boundary step the judge is uncertain about. |
+| `signals.task.recent_turn_window` | No | unset | Trailing conversation turns the judge sees. |
+| `signals.task.prompt` | No | packaged prompt | Replaces the packaged judge prompt. |
+| `signals.task.response_format_type` | No | `json_schema` | Use `json_object` when the judge provider cannot do JSON Schema. |
+| `signals.task.max_output_tokens` | No | `4096` | Completion cap for the judge's verdict. |
+| `signals.rules.capable` | No | `[]` | Case-insensitive substrings in the opening user task that require `capable`. Blank terms are ignored. |
+| `signals.rules.balanced` | No | `[]` | Case-insensitive substrings in the opening user task that require the custom `balanced` tag. |
+| `signals.rules.named.<tag>` | No | `[]` | Case-insensitive substrings that require a deployment-defined pool tag, allowing deterministic specialist routing without a judge call. |
+| `signals.tool_loop.picker` | Required with `tool_loop` | — | `efficient_first` or `capable_first`. Tag used when the signal is not confident. |
+| `signals.tool_loop.confidence_threshold` | Required with `tool_loop` | — | Lower confidence cutoff for a decisive pick. In `[0, 1]`. |
+| `signals.tool_loop.capable_score_threshold` | No | `0.55` | With a `balanced` provider, capable scores below this cutoff use that middle tier. In `[0, 1]`. Lower values select capable more often. |
+| `signals.tool_loop.recent_turn_window` | No | `3` | Trailing tool results the signal is computed over. |
+| `signals.tool_loop.escalation_hold_turns` | No | `0` | Following requests that keep an elevated tier as a floor. Requires an explicit session identity; stronger selections still take effect. |
+| `signals.tool_loop.tool_semantics.*` | No | `[]` | Same shape as `stage_router`'s `tool_semantics`. |
+| `signals.tool_loop.handoff_notes` | No | unset | Notes handed to a tag when the signal switches to it. |
+| `signals.review.*` | No | — | Same fields as the `advisor` route (`executor_target`, `advisor_target`, `gate_trigger`, `max_reviews`, ...). Cannot be combined with `task`, `rules`, or `tool_loop`. |
+| `signals.affinity` | No | `false` | Retains the first model chosen for a session and replays it on later turns, bypassing signal scoring and the pool. |
+
+A route needs at least one of `signals.task`, `signals.rules`, `signals.tool_loop`, or
+`signals.review`. `type = "capability_router"` requires a top-level `[pool]`:
+
+```toml
+[pool]
+models = [
+  { target = "sol",  provides = ["capable"] },
+  { target = "terra", provides = ["balanced"] },
+  { target = "luna", provides = ["efficient"] },
+]
+default = "efficient"
+```
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `pool.models[].target` | Yes | — | A name from `[targets.<name>]`. |
+| `pool.models[].provides` | Yes | — | Capability tags this model satisfies. A model may provide more than one. |
+| `pool.default` | Yes | — | The tag to resolve when no signal names one. Must be provided by at least one model. |
+
 ### `advisor`
 
 Serves every client-visible turn from the executor and has a stronger advisor
