@@ -548,7 +548,15 @@ impl TranslatingLlmClient {
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
 
-        let response = match builder.send().await {
+        let response = match async {
+            let request = builder.build()?;
+            if let Some(body) = request.body().and_then(reqwest::Body::as_bytes) {
+                crate::payload_capture::record("request", || String::from_utf8_lossy(body));
+            }
+            client.execute(request).await
+        }
+        .await
+        {
             Ok(response) => response,
             Err(error) => {
                 metrics::record_upstream_attempt(None);
@@ -594,6 +602,7 @@ impl TranslatingLlmClient {
                 }
             };
             metrics::record_upstream_attempt(Some(status.as_u16()));
+            crate::payload_capture::record("response", || String::from_utf8_lossy(&body));
             return Ok(EncodedResponse::Buffered {
                 status: status.as_u16(),
                 body: body.to_vec(),
@@ -1815,6 +1824,14 @@ mod tests {
             .expect_err("closed port");
 
         assert!(!convert_reqwest_error(error).to_string().contains("CANARY"));
+    }
+
+    #[tokio::test]
+    async fn captured_request_build_failure_remains_a_configuration_error() {
+        let client = TranslatingLlmClient::new(&chat_map("://invalid")).unwrap();
+        let result =
+            crate::with_payload_capture(client.call(request_for(Some("gpt"), false))).await;
+        assert!(matches!(result, Err(LlmClientError::Configuration { .. })));
     }
 
     #[test]

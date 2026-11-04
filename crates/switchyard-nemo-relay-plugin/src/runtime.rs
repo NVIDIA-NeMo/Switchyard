@@ -950,6 +950,8 @@ mod tests {
             }
         });
         SwitchyardRuntime::new(crate::config::SwitchyardConfig {
+            capture_routing_payloads: false,
+            max_routing_payload_bytes: crate::config::DEFAULT_ROUTING_PAYLOAD_BYTES,
             priority: 0,
             switchyard_config_path: None,
             switchyard_config: Some(deployment.as_object().unwrap().clone()),
@@ -1104,6 +1106,8 @@ mod tests {
             },
         });
         let runtime = SwitchyardRuntime::new(crate::config::SwitchyardConfig {
+            capture_routing_payloads: false,
+            max_routing_payload_bytes: crate::config::DEFAULT_ROUTING_PAYLOAD_BYTES,
             priority: 0,
             switchyard_config_path: None,
             switchyard_config: Some(
