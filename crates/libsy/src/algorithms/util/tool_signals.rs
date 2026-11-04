@@ -62,7 +62,7 @@ static ERROR_PATTERNS: &[(&str, f32, &[&str])] = &[
     (
         "cmd_not_found",
         HARD,
-        &["command not found", "not found\n", "/usr/bin/env: "],
+        &["command not found", "/usr/bin/env: "],
     ),
     ("assertion", HARD, &["assertionerror"]),
     ("value_error", HARD, &["valueerror:"]),
@@ -1506,6 +1506,7 @@ pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
         ("runtime_exception", has_runtime_exception(&lower)),
         ("runtime_panic", has_runtime_panic(&lower)),
         ("patch_error", has_patch_failure(&lower)),
+        ("cmd_not_found", ends_with_not_found(&lower)),
     ] {
         if matched && !patterns.iter().any(|pattern| pattern == name) {
             patterns.push(name.to_string());
@@ -1632,6 +1633,20 @@ fn has_patch_failure(lower: &str) -> bool {
             || line.contains(": patch does not apply")
             || line.starts_with("invalid context")
     })
+}
+
+/// Shell "not found" line (e.g. `git: not found`, `sh: 1: git: not found`)
+/// anchored to end-of-line so it still fires when the caller has trimmed the
+/// tool result's trailing newline, without matching prose that merely mentions
+/// "not found" mid-sentence.
+///
+/// The `: ` separator is required because `classify_text` lowercases its input,
+/// so a bare end-of-line match would also claim successful output such as
+/// `HTTP/1.1 404 Not Found`.
+fn ends_with_not_found(lower: &str) -> bool {
+    lower
+        .lines()
+        .any(|line| line.trim_end().ends_with(": not found"))
 }
 
 /// Detects `exit_nonzero` only when a supported exit phrase is followed by a
@@ -1958,6 +1973,46 @@ mod tests {
             let (severity, patterns) = classify_text(text);
             assert_eq!(severity, HARD, "expected hard severity for {text}");
             assert!(patterns.iter().any(|pattern| pattern == expected_pattern));
+        }
+    }
+
+    /// A harness that strips the trailing newline from captured output must not
+    /// silently drop a shell "not found" error to severity 0.0.
+    #[test]
+    fn trimmed_command_not_found_is_still_hard() {
+        let cases = [
+            "git: not found",
+            "sh: 1: git: not found",
+            "/bin/sh: 1: git: not found",
+        ];
+        for text in cases {
+            let (sev, patterns) = classify_text(text);
+            assert_eq!(sev, HARD, "expected hard severity for {text}");
+            assert!(patterns.contains(&"cmd_not_found".to_string()));
+        }
+    }
+
+    /// Precision guard: "not found" must end the line to count as a shell error,
+    /// so prose that merely mentions it does not trip a false error.
+    #[test]
+    fn not_found_mid_sentence_stays_clean() {
+        let (sev, _) =
+            classify_text("Looking for config key, not found in environment, using default.");
+        assert_eq!(sev, 0.0);
+    }
+
+    /// Precision guard: a line may end in "not found" and still report success.
+    /// Only the shell's `<name>: not found` shape counts.
+    #[test]
+    fn not_found_without_shell_separator_stays_clean() {
+        for text in [
+            "HTTP/1.1 404 Not Found",
+            "lookup finished, key not found",
+            "GET /healthz -> 404 Not Found",
+        ] {
+            let (sev, patterns) = classify_text(text);
+            assert_eq!(sev, 0.0, "expected clean classification for {text}");
+            assert!(!patterns.contains(&"cmd_not_found".to_string()));
         }
     }
 
