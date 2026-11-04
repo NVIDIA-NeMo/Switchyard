@@ -1628,30 +1628,30 @@
 <a href=#1628 id=1628 data-nosnippet>1628</a>    }
 <a href=#1629 id=1629 data-nosnippet>1629</a>
 <a href=#1630 id=1630 data-nosnippet>1630</a>    <span class="attr">#[test]
-<a href=#1631 id=1631 data-nosnippet>1631</a>    </span><span class="kw">fn </span>eligibility_rejects_retired_fields_and_invalid_scope() {
+<a href=#1631 id=1631 data-nosnippet>1631</a>    </span><span class="kw">fn </span>eligibility_rejects_unknown_fields_and_invalid_scope() {
 <a href=#1632 id=1632 data-nosnippet>1632</a>        <span class="kw">let </span>configured = eligible_pool_config();
 <a href=#1633 id=1633 data-nosnippet>1633</a>        <span class="kw">for </span>(invalid, expected) <span class="kw">in </span>[
 <a href=#1634 id=1634 data-nosnippet>1634</a>            (
-<a href=#1635 id=1635 data-nosnippet>1635</a>                configured.replace(<span class="string">"labels = ['private']"</span>, <span class="string">"local = true"</span>),
-<a href=#1636 id=1636 data-nosnippet>1636</a>                <span class="string">"unknown field `local`"</span>,
+<a href=#1635 id=1635 data-nosnippet>1635</a>                configured.replace(<span class="string">"labels = ['private']"</span>, <span class="string">"label = ['private']"</span>),
+<a href=#1636 id=1636 data-nosnippet>1636</a>                <span class="string">"unknown field `label`"</span>,
 <a href=#1637 id=1637 data-nosnippet>1637</a>            ),
 <a href=#1638 id=1638 data-nosnippet>1638</a>            (
 <a href=#1639 id=1639 data-nosnippet>1639</a>                configured.replace(
 <a href=#1640 id=1640 data-nosnippet>1640</a>                    <span class="string">"[routes.passthrough.eligibility]"</span>,
-<a href=#1641 id=1641 data-nosnippet>1641</a>                    <span class="string">"[routes.passthrough.local]"</span>,
+<a href=#1641 id=1641 data-nosnippet>1641</a>                    <span class="string">"[routes.passthrough.eligible]"</span>,
 <a href=#1642 id=1642 data-nosnippet>1642</a>                ),
-<a href=#1643 id=1643 data-nosnippet>1643</a>                <span class="string">"unknown field `local`"</span>,
+<a href=#1643 id=1643 data-nosnippet>1643</a>                <span class="string">"unknown field `eligible`"</span>,
 <a href=#1644 id=1644 data-nosnippet>1644</a>            ),
 <a href=#1645 id=1645 data-nosnippet>1645</a>            (
 <a href=#1646 id=1646 data-nosnippet>1646</a>                decision_eligibility_config().replace(
 <a href=#1647 id=1647 data-nosnippet>1647</a>                    <span class="string">"[decision_targets.standard]"</span>,
-<a href=#1648 id=1648 data-nosnippet>1648</a>                    <span class="string">"[decision_targets.standard]\nrestricted = true"</span>,
+<a href=#1648 id=1648 data-nosnippet>1648</a>                    <span class="string">"[decision_targets.standard]\nlabel = ['private']"</span>,
 <a href=#1649 id=1649 data-nosnippet>1649</a>                ),
-<a href=#1650 id=1650 data-nosnippet>1650</a>                <span class="string">"unknown field `restricted`"</span>,
+<a href=#1650 id=1650 data-nosnippet>1650</a>                <span class="string">"unknown field `label`"</span>,
 <a href=#1651 id=1651 data-nosnippet>1651</a>            ),
 <a href=#1652 id=1652 data-nosnippet>1652</a>            (
-<a href=#1653 id=1653 data-nosnippet>1653</a>                <span class="macro">format!</span>(<span class="string">"{configured}\naccepted_requirement_sets = {{ local = [] }}\n"</span>),
-<a href=#1654 id=1654 data-nosnippet>1654</a>                <span class="string">"unknown field `accepted_requirement_sets`"</span>,
+<a href=#1653 id=1653 data-nosnippet>1653</a>                <span class="macro">format!</span>(<span class="string">"{configured}\nrequire_explicit_requirement = true\n"</span>),
+<a href=#1654 id=1654 data-nosnippet>1654</a>                <span class="string">"unknown field `require_explicit_requirement`"</span>,
 <a href=#1655 id=1655 data-nosnippet>1655</a>            ),
 <a href=#1656 id=1656 data-nosnippet>1656</a>            (
 <a href=#1657 id=1657 data-nosnippet>1657</a>                <span class="macro">format!</span>(<span class="string">"{configured}\nscope = 'task'\n"</span>),
