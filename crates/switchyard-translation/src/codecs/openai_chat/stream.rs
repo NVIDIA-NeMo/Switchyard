@@ -22,6 +22,30 @@ impl StreamCodec for OpenAiChatStreamCodec {
         WireFormat::OpenAiChat.into()
     }
 
+    fn is_terminal_event(&self, event: &Value) -> bool {
+        event
+            .get("choices")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|choice| {
+                choice
+                    .get("finish_reason")
+                    .and_then(Value::as_str)
+                    .is_some()
+            })
+    }
+
+    fn sse_done_is_terminal(&self) -> bool {
+        true
+    }
+
+    fn stamp_streamed_response_model(&self, event: &mut Value, served_model: &str) {
+        if let Some(event) = event.as_object_mut() {
+            event.insert("model".to_string(), Value::String(served_model.to_string()));
+        }
+    }
+
     fn decode_event(
         &self,
         state: &mut StreamTranslationState,
@@ -442,5 +466,31 @@ fn openai_finish_reason(reason: Option<&str>) -> String {
         Some("tool_use") => "tool_calls".to_string(),
         Some("refusal") => "content_filter".to_string(),
         Some(other) => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_stream_completion() {
+        let codec = OpenAiChatStreamCodec;
+        assert!(codec.sse_done_is_terminal());
+        assert!(codec.is_terminal_event(&json!({"choices": [{"finish_reason": "stop"}]})));
+        assert!(!codec.is_terminal_event(&json!({"choices": [{"finish_reason": null}]})));
+    }
+
+    #[test]
+    fn openai_chat_replay_stamps_the_served_model_without_losing_extensions() {
+        let mut event = json!({
+            "choices": [{"delta": {"content": "Hello"}}],
+            "system_fingerprint": "fp_provider_specific",
+        });
+
+        OpenAiChatStreamCodec.stamp_streamed_response_model(&mut event, "served/model");
+
+        assert_eq!(event["model"], "served/model");
+        assert_eq!(event["system_fingerprint"], "fp_provider_specific");
     }
 }

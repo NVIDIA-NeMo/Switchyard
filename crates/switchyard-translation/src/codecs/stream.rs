@@ -169,6 +169,20 @@ pub trait StreamCodec: Send + Sync {
     /// Returns the stream format handled by this codec.
     fn format(&self) -> FormatId;
 
+    /// Returns whether a JSON event establishes stream completion.
+    fn is_terminal_event(&self, event: &Value) -> bool;
+
+    /// Returns whether the SSE `[DONE]` marker establishes stream completion.
+    ///
+    /// The marker ends consumption even when this returns `false`; a terminal JSON event
+    /// must then have been observed to avoid a premature-EOF error.
+    fn sse_done_is_terminal(&self) -> bool;
+
+    /// Overrides the model reported by an encoded or preserved event.
+    ///
+    /// Called only when a served model was supplied, including for events emitted by `finish`.
+    fn stamp_streamed_response_model(&self, event: &mut Value, served_model: &str);
+
     /// Decodes one provider event into zero or more neutral events.
     fn decode_event(
         &self,
