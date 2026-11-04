@@ -1064,11 +1064,10 @@ mod tests {
     }
 
     enum TargetProbe {
-        Model(Vec<ModelId>),
-        Decision(ModelId),
-        Completion(Vec<ModelId>),
+        Model(&'static [&'static str]),
+        Decision(&'static str),
+        Completion(&'static [&'static str]),
         MismatchedCompletion,
-        Subagent,
     }
 
     #[async_trait]
@@ -1084,9 +1083,11 @@ mod tests {
         ) -> Result<RoutingOutcome> {
             match &*self {
                 Self::Model(models) => {
-                    let response = driver.call_model(request.clone(), models.clone()).await?;
+                    let response = driver
+                        .call_model(request.clone(), target_set(models))
+                        .await?;
                     Ok(RoutingOutcome::answered(
-                        models[0].clone(),
+                        models[0].into(),
                         request,
                         response,
                     ))
@@ -1099,14 +1100,14 @@ mod tests {
                                 context: Value::Null,
                                 questions: Default::default(),
                             },
-                            model.clone(),
+                            (*model).into(),
                         )
                         .await?;
                     Ok(RoutingOutcome::route_to("allowed".into(), vec![], request))
                 }
                 Self::Completion(models) => Ok(RoutingOutcome::route_to(
-                    models[0].clone(),
-                    models[1..].to_vec(),
+                    models[0].into(),
+                    target_set(&models[1..]),
                     request,
                 )),
                 Self::MismatchedCompletion => {
@@ -1114,14 +1115,6 @@ mod tests {
                     outcome.request.llm_request.model = Some("outside".into());
                     Ok(outcome)
                 }
-                Self::Subagent => Ok(RoutingOutcome::route_to(
-                    driver
-                        .for_subagent()?
-                        .first_model_for(&Category::Any)?
-                        .clone(),
-                    vec![],
-                    request,
-                )),
             }
         }
     }
@@ -1170,15 +1163,14 @@ mod tests {
         .with_subagent(HashMap::from([(Category::Any, target_set(&["subagent"]))]))
     }
 
-    // Neither a default driver nor a stream override can dispatch undeclared work.
     #[tokio::test]
-    async fn target_restriction_blocks_undeclared_work() {
+    async fn target_restriction_checks_default_streams() {
         for probe in [
-            TargetProbe::Model(target_set(&["outside"])),
-            TargetProbe::Model(target_set(&["allowed", "outside"])),
-            TargetProbe::Decision("outside".into()),
-            TargetProbe::Completion(target_set(&["outside"])),
-            TargetProbe::Completion(target_set(&["allowed", "outside"])),
+            TargetProbe::Model(&["outside"]),
+            TargetProbe::Model(&["allowed", "outside"]),
+            TargetProbe::Decision("outside"),
+            TargetProbe::Completion(&["outside"]),
+            TargetProbe::Completion(&["allowed", "outside"]),
         ] {
             let mut stream = Arc::new(probe).run_stream(
                 request(),
@@ -1191,52 +1183,6 @@ mod tests {
             ));
             assert!(stream.next().await.is_none());
         }
-        for probe in [
-            TargetProbe::Model(target_set(&["allowed"])),
-            TargetProbe::Decision("judge".into()),
-            TargetProbe::Completion(target_set(&["allowed"])),
-        ] {
-            let result = drive(
-                Arc::new(RewrittenSteps(Arc::new(probe), |step| match step {
-                    Step::CallModel(call) => call.models.push("outside".into()),
-                    Step::CallDecision(call) => call.model = "outside".into(),
-                    Step::Done(outcome) => outcome.selected_model_ids.push("outside".into()),
-                })),
-                request(),
-                Arc::new(restricted_models()),
-                |_| async { panic!("undeclared work must not reach the host") },
-            )
-            .await;
-            assert!(
-                matches!(result, Err(LibsyError::TargetNotFound { target }) if target == "outside")
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn target_restriction_binds_payloads_to_selected_targets() {
-        for probe in [
-            TargetProbe::Model(target_set(&["allowed"])),
-            TargetProbe::Decision("judge".into()),
-            TargetProbe::Completion(target_set(&["allowed"])),
-        ] {
-            let result = drive(
-                Arc::new(RewrittenSteps(Arc::new(probe), |step| match step {
-                    Step::CallModel(call) => {
-                        call.request.llm_request.model = Some("outside".into());
-                    }
-                    Step::CallDecision(call) => call.request.model = Some("allowed".into()),
-                    Step::Done(outcome) => {
-                        outcome.request.llm_request.model = Some("outside".into());
-                    }
-                })),
-                request(),
-                Arc::new(restricted_models()),
-                |_| async { panic!("mismatched payload must not reach the host") },
-            )
-            .await;
-            assert!(matches!(result, Err(LibsyError::AlgorithmError { .. })));
-        }
         let mut stream = Arc::new(TargetProbe::MismatchedCompletion).run_stream(
             request(),
             Arc::new(restricted_models()),
@@ -1246,23 +1192,65 @@ mod tests {
             stream.next().await,
             Some(Err(LibsyError::AlgorithmError { .. }))
         ));
+
+        let mut stream = Arc::new(TargetProbe::Model(&["outside"])).run_stream(
+            request(),
+            Arc::new(RuntimeModels::default()),
+            State::default(),
+        );
+        assert!(matches!(stream.next().await, Some(Ok(Step::CallModel(_)))));
     }
 
-    // Judges, fallbacks, delegated targets and already-produced answers remain valid.
+    #[tokio::test]
+    async fn target_restriction_rechecks_rewritten_steps() {
+        for probe in [
+            TargetProbe::Model(&["allowed"]),
+            TargetProbe::Decision("judge"),
+            TargetProbe::Completion(&["allowed"]),
+        ] {
+            let probe = Arc::new(probe);
+            let run = |rewrite| {
+                drive(
+                    Arc::new(RewrittenSteps(Arc::clone(&probe), rewrite)),
+                    request(),
+                    Arc::new(restricted_models()),
+                    |_| async { panic!("invalid work must not reach the host") },
+                )
+            };
+            let result = run(|step| match step {
+                Step::CallModel(call) => call.models.push("outside".into()),
+                Step::CallDecision(call) => call.model = "outside".into(),
+                Step::Done(outcome) => outcome.selected_model_ids.push("outside".into()),
+            })
+            .await;
+            assert!(
+                matches!(result, Err(LibsyError::TargetNotFound { target }) if target == "outside")
+            );
+
+            let result = run(|step| match step {
+                Step::CallModel(call) => call.request.llm_request.model = Some("outside".into()),
+                Step::CallDecision(call) => call.request.model = Some("allowed".into()),
+                Step::Done(outcome) => outcome.request.llm_request.model = Some("outside".into()),
+            })
+            .await;
+            assert!(matches!(result, Err(LibsyError::AlgorithmError { .. })));
+        }
+    }
+
     #[tokio::test]
     async fn target_restriction_preserves_allowed_work() -> Result<()> {
         for (probe, expected) in [
             (
-                TargetProbe::Model(target_set(&["allowed", "fallback"])),
+                TargetProbe::Model(&["allowed", "fallback"]),
                 &["allowed"][..],
             ),
-            (TargetProbe::Model(target_set(&["judge"])), &["judge"][..]),
-            (TargetProbe::Decision("judge".into()), &["allowed"][..]),
+            (TargetProbe::Model(&["judge"]), &["judge"][..]),
+            (TargetProbe::Decision("judge"), &["allowed"][..]),
             (
-                TargetProbe::Completion(target_set(&["allowed", "fallback"])),
+                TargetProbe::Completion(&["allowed", "fallback"]),
                 &["allowed", "fallback"][..],
             ),
-            (TargetProbe::Subagent, &["subagent"][..]),
+            (TargetProbe::Completion(&["subagent"]), &["subagent"][..]),
         ] {
             let outcome = drive(
                 Arc::new(probe),
@@ -1289,16 +1277,6 @@ mod tests {
         .await?;
         assert!(outcome.response.is_some());
         Ok(())
-    }
-
-    #[tokio::test]
-    async fn target_restriction_is_opt_in() {
-        let mut stream = orch(target_set(&["outside"])).run_stream(
-            request(),
-            Arc::new(RuntimeModels::default()),
-            State::default(),
-        );
-        assert!(matches!(stream.next().await, Some(Ok(Step::CallModel(_)))));
     }
 
     #[tokio::test]
