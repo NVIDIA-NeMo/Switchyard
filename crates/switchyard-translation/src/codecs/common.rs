@@ -5,8 +5,11 @@
 
 use serde_json::{Map, Value};
 
+use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::llm::{ContentBlock, LlmRequest, Tool, ToolChoice};
+use crate::policy::TranslationPolicy;
+use crate::util::push_lossy;
 
 // Internal provenance survives mutations that invalidate exact request replay.
 pub(crate) const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
@@ -14,6 +17,61 @@ pub(crate) const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
 /// Returns true when the request was decoded from an Anthropic Messages body.
 pub(crate) fn is_anthropic_request(request: &LlmRequest) -> bool {
     request.extensions.fields.get(ANTHROPIC_REQUEST_KEY) == Some(&Value::Bool(true))
+}
+
+// Budget share of `max_tokens` at or above which each effort applies, in percent.
+const BUDGET_EFFORT_BANDS: [(u64, &str); 3] = [(95, "xhigh"), (80, "high"), (50, "medium")];
+
+/// Returns the OpenAI reasoning effort for an Anthropic request.
+///
+/// An explicit `output_config.effort` wins. Otherwise `thinking.type == "disabled"` maps to
+/// `none`, and a legacy `enabled` budget maps to an effort band by its share of `max_tokens`.
+/// The budget mapping is approximate, so it records a lossy-conversion diagnostic.
+pub(crate) fn openai_effort_for_request(
+    request: &LlmRequest,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Option<String>> {
+    if request.reasoning.effort.is_some() || !is_anthropic_request(request) {
+        return Ok(request.reasoning.effort.clone());
+    }
+    let Some(thinking) = request.reasoning.raw.as_ref() else {
+        return Ok(None);
+    };
+    match thinking.get("type").and_then(Value::as_str) {
+        Some("disabled") => Ok(Some("none".to_string())),
+        Some("enabled") => {
+            let budget = thinking.get("budget_tokens").and_then(Value::as_u64);
+            let (Some(budget), Some(max_tokens)) = (budget, request.output.max_output_tokens)
+            else {
+                return Ok(None);
+            };
+            if max_tokens == 0 {
+                return Ok(None);
+            }
+            let effort = budget_effort(budget, max_tokens);
+            push_lossy(
+                diagnostics,
+                policy,
+                format!(
+                    "Anthropic thinking budget_tokens {budget} of max_tokens {max_tokens} \
+                     approximated as reasoning effort {effort}"
+                ),
+            )?;
+            Ok(Some(effort.to_string()))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn budget_effort(budget: u64, max_tokens: u64) -> &'static str {
+    let budget = u128::from(budget) * 100;
+    for (percent, effort) in BUDGET_EFFORT_BANDS {
+        if budget >= u128::from(max_tokens) * u128::from(percent) {
+            return effort;
+        }
+    }
+    "low"
 }
 
 /// Converts an OpenAI allowed-tools policy to a restricted function list and mode.

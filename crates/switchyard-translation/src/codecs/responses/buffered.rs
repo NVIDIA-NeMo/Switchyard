@@ -9,8 +9,8 @@ use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
     collect_responses_reasoning_text, encrypted_reasoning_data, encrypted_reasoning_item_id,
-    is_anthropic_request, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
-    text_from_blocks,
+    is_anthropic_request, is_known_role_name, openai_effort_for_request, provider_extensions,
+    reasoning_text_from_blocks, text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::openai_media::{
@@ -264,20 +264,9 @@ impl FormatCodec for OpenAiResponsesCodec {
             );
         }
         // An Anthropic request's raw reasoning is its `thinking` object, which Responses
-        // does not accept. Keep only whether thinking is disabled.
+        // does not accept; only the effort derived from it is kept.
         let mut reasoning = if is_anthropic_request(request) {
-            let mut reasoning = Map::new();
-            if request
-                .reasoning
-                .raw
-                .as_ref()
-                .and_then(|thinking| thinking.get("type"))
-                .and_then(Value::as_str)
-                == Some("disabled")
-            {
-                reasoning.insert("effort".to_string(), json!("none"));
-            }
-            reasoning
+            Map::new()
         } else {
             request
                 .reasoning
@@ -287,7 +276,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                 .cloned()
                 .unwrap_or_default()
         };
-        if let Some(effort) = &request.reasoning.effort {
+        if let Some(effort) = openai_effort_for_request(request, &mut diagnostics, policy)? {
             reasoning.insert("effort".to_string(), json!(effort));
         }
         if !reasoning.is_empty() {

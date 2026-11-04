@@ -635,7 +635,7 @@ fn anthropic_thinking_to_responses_uses_normalized_effort() -> TestResult {
         (
             json!({"type": "enabled", "budget_tokens": 2048}),
             None,
-            None,
+            Some(json!({"effort": "medium"})),
         ),
         (
             json!({"type": "disabled"}),
@@ -720,6 +720,124 @@ fn anthropic_reconstruction_rejects_fallbacks_with_credit_token() {
             if path == "$.fallback_credit_token"
                 && message == "fallback_credit_token cannot be combined with fallbacks"
     ));
+}
+
+#[test]
+fn anthropic_thinking_budget_maps_to_openai_effort_bands() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    for (budget, effort) in [
+        (9500, "xhigh"),
+        (9499, "high"),
+        (8000, "high"),
+        (7999, "medium"),
+        (5000, "medium"),
+        (4999, "low"),
+        (1024, "low"),
+    ] {
+        let body = json!({
+            "model": "route",
+            "max_tokens": 10000,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": {"type": "enabled", "budget_tokens": budget}
+        });
+        let chat = engine.translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &policy,
+        )?;
+        assert_eq!(
+            chat.body["reasoning_effort"],
+            json!(effort),
+            "budget {budget}"
+        );
+        assert!(
+            chat.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == "lossy_conversion"),
+            "budget {budget} records the approximation"
+        );
+        let responses = engine.translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?;
+        assert_eq!(
+            responses.body["reasoning"],
+            json!({"effort": effort}),
+            "budget {budget}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn anthropic_thinking_controls_to_chat_effort() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    for (thinking, output_config, expected) in [
+        (json!({"type": "disabled"}), None, Some("none")),
+        (
+            json!({"type": "adaptive"}),
+            Some(json!({"effort": "low"})),
+            Some("low"),
+        ),
+        (json!({"type": "adaptive"}), None, None),
+        (
+            json!({"type": "enabled", "budget_tokens": 9000}),
+            Some(json!({"effort": "low"})),
+            Some("low"),
+        ),
+    ] {
+        let mut body = json!({
+            "model": "route",
+            "max_tokens": 10000,
+            "messages": [{"role": "user", "content": "hi"}],
+            "thinking": thinking
+        });
+        if let Some(output_config) = output_config {
+            body["output_config"] = output_config;
+        }
+        let output = engine.translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &policy,
+        )?;
+        assert_eq!(
+            output.body.get("reasoning_effort").and_then(Value::as_str),
+            expected,
+            "{body}"
+        );
+        assert!(output.diagnostics.is_empty(), "{body}");
+    }
+    Ok(())
+}
+
+#[test]
+fn anthropic_thinking_budget_is_rejected_under_strict_lossy_policy() {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..normalized_policy()
+    };
+    let body = json!({
+        "model": "route",
+        "max_tokens": 10000,
+        "messages": [{"role": "user", "content": "hi"}],
+        "thinking": {"type": "enabled", "budget_tokens": 4000}
+    });
+    let error = engine
+        .translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &body,
+            &policy,
+        )
+        .expect_err("approximating a thinking budget is lossy");
+    assert!(matches!(error, TranslationError::LossyConversion(_)));
 }
 
 #[test]
