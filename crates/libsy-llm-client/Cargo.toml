@@ -35,7 +35,6 @@ tracing.workspace = true
 tracing-opentelemetry.workspace = true
 
 [dev-dependencies]
-switchyard-costs.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 # SDK + in-memory exporter to assert what the observability layer records.
 opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing", "trace"] }
