@@ -12,7 +12,7 @@ use switchyard_protocol::ModelId;
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
-use crate::llm::{ContentBlock, InstructionBlock, LlmRequest, Message, PreservationMetadata, Role};
+use crate::llm::{ContentBlock, LlmRequest, Message, PreservationMetadata};
 use crate::policy::{
     LossyConversionPolicy, PreservationPolicy, TranslationPolicy, UnknownFieldPolicy,
 };
@@ -338,105 +338,24 @@ pub fn prepare_request_for_target(
     let target = target.to_string();
     request.model = Some(target.clone());
     if let Some(prompt) = prompt {
-        request.instructions.insert(
-            0,
-            InstructionBlock {
-                role: Role::System,
-                content: vec![ContentBlock::Text {
-                    text: prompt.to_string(),
-                }],
-            },
-        );
+        request.prepend_system_prompt(prompt);
     }
-    prepare_preserved_requests(&mut request.preservation, &target, prompt);
-}
-
-// Retains exact replay only where the built-in wire body can receive the target changes safely.
-fn prepare_preserved_requests(
-    preservation: &mut PreservationMetadata,
-    target: &str,
-    prompt: Option<&str>,
-) {
-    preservation.requests.retain(|format, body| {
-        let is_builtin = format.as_str() == WireFormat::OpenAiChat.as_str()
-            || format.as_str() == WireFormat::OpenAiResponses.as_str()
-            || format.as_str() == WireFormat::AnthropicMessages.as_str();
-        let Some(body) = is_builtin.then_some(body).and_then(Value::as_object_mut) else {
+    request.preservation.requests.retain(|format, body| {
+        if ![
+            WireFormat::OpenAiChat.as_str(),
+            WireFormat::OpenAiResponses.as_str(),
+            WireFormat::AnthropicMessages.as_str(),
+        ]
+        .contains(&format.as_str())
+        {
+            return false;
+        }
+        let Some(body) = body.as_object_mut() else {
             return false;
         };
-        body.insert("model".to_string(), Value::String(target.to_string()));
-        match prompt {
-            None => true,
-            Some(prompt) if format.as_str() == WireFormat::OpenAiChat.as_str() => {
-                prepend_openai_chat_system(body, prompt)
-            }
-            Some(prompt) if format.as_str() == WireFormat::OpenAiResponses.as_str() => {
-                prepend_openai_responses_instructions(body, prompt)
-            }
-            Some(prompt) if format.as_str() == WireFormat::AnthropicMessages.as_str() => {
-                body.remove(crate::codecs::common::ANTHROPIC_REQUEST_KEY);
-                prepend_anthropic_system(body, prompt)
-            }
-            Some(_) => false,
-        }
+        body.insert("model".to_string(), Value::String(target.clone()));
+        true
     });
-}
-
-// Prepends a target prompt without rebuilding or otherwise changing a Chat request.
-fn prepend_openai_chat_system(body: &mut Map<String, Value>, prompt: &str) -> bool {
-    let message = json!({"role": "system", "content": prompt});
-    match body.get_mut("messages") {
-        None | Some(Value::Null) => {
-            body.insert("messages".to_string(), Value::Array(vec![message]));
-        }
-        Some(Value::Array(messages)) => messages.insert(0, message),
-        Some(_) => return false,
-    }
-    true
-}
-
-// Prepends a target prompt without rebuilding or otherwise changing a Responses request.
-fn prepend_openai_responses_instructions(body: &mut Map<String, Value>, prompt: &str) -> bool {
-    match body.get_mut("instructions") {
-        None | Some(Value::Null) => {
-            body.insert(
-                "instructions".to_string(),
-                Value::String(prompt.to_string()),
-            );
-        }
-        Some(Value::String(instructions)) if instructions.is_empty() => {
-            *instructions = prompt.to_string();
-        }
-        Some(Value::String(instructions)) => {
-            instructions.insert_str(0, &format!("{prompt}\n\n"));
-        }
-        Some(_) => return false,
-    }
-    true
-}
-
-// Prepends a target prompt without rebuilding or otherwise changing an Anthropic request.
-fn prepend_anthropic_system(body: &mut Map<String, Value>, prompt: &str) -> bool {
-    match body.get_mut("system") {
-        None | Some(Value::Null) => {
-            body.insert("system".to_string(), Value::String(prompt.to_string()));
-        }
-        Some(Value::String(system)) if system.is_empty() => {
-            *system = prompt.to_string();
-        }
-        Some(Value::String(system)) => {
-            system.insert_str(0, &format!("{prompt}\n\n"));
-        }
-        Some(Value::Array(blocks)) => blocks.insert(
-            0,
-            json!({
-                "type": "text",
-                "text": prompt,
-            }),
-        ),
-        Some(_) => return false,
-    }
-    true
 }
 
 /// Embeds preservation metadata into a translated wire body when requested.

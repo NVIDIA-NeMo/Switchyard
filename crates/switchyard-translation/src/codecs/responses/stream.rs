@@ -304,17 +304,7 @@ fn decode_responses_stream(
                     }
                 }
             }
-            if let Some(usage) = event
-                .get("response")
-                .and_then(Value::as_object)
-                .and_then(|response| response.get("usage"))
-                .and_then(Value::as_object)
-            {
-                let usage = responses_usage(usage);
-                state.usage = usage.clone();
-                state.saw_backend_usage = true;
-                out.push(LlmResponseChunk::Usage(usage));
-            }
+            decode_terminal_usage(state, event, &mut out);
             // A completed response that produced a tool call ended the turn to run that
             // tool, not because the assistant was done. The buffered decoder reports tool
             // use for such output; the stream must too, or stop-reason-driven tool loops
@@ -325,9 +315,14 @@ fn decode_responses_stream(
             out
         }
         // Carries the Anthropic spelling because every encoder already maps it.
-        Some("response.incomplete") => vec![LlmResponseChunk::MessageStop {
-            reason: Some("max_tokens".to_string()),
-        }],
+        Some("response.incomplete") => {
+            let mut out = Vec::new();
+            decode_terminal_usage(state, event, &mut out);
+            out.push(LlmResponseChunk::MessageStop {
+                reason: Some("max_tokens".to_string()),
+            });
+            out
+        }
         Some("response.failed") => vec![LlmResponseChunk::StreamError {
             message: event
                 .get("response")
@@ -1165,6 +1160,25 @@ fn encode_responses_tool_delta(
         tool.pending_arguments.clear();
     }
     out
+}
+
+// Both completed and token-limited Responses events can carry final usage and provider cost.
+fn decode_terminal_usage(
+    state: &mut StreamTranslationState,
+    event: &Value,
+    out: &mut Vec<LlmResponseChunk>,
+) {
+    if let Some(usage) = event
+        .get("response")
+        .and_then(Value::as_object)
+        .and_then(|response| response.get("usage"))
+        .and_then(Value::as_object)
+    {
+        let usage = responses_usage(usage);
+        state.usage = usage.clone();
+        state.saw_backend_usage = true;
+        out.push(LlmResponseChunk::Usage(usage));
+    }
 }
 
 // Normalizes OpenAI Responses token usage fields.

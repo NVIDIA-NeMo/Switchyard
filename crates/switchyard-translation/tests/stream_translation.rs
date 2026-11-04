@@ -2525,12 +2525,14 @@ fn anthropic_max_tokens_stop_translates_to_responses_incomplete_event() -> TestR
 // Verifies a streamed response.incomplete from a Responses upstream reaches a Chat client.
 #[test]
 fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
+    // A token-limited response must retain final accounting as well as the length stop reason.
     let engine = TranslationEngine::default();
     let mut state =
         StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiChat);
     let incomplete = json!({
         "type": "response.incomplete",
-        "response": {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}}
+        "response": {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"},
+            "usage":{"input_tokens":12000,"input_tokens_details":{"cached_tokens":4000,"cache_write_tokens":7000},"output_tokens":16,"total_tokens":12016,"cost":0.01515}}
     });
 
     let mut events = engine.translate_event(
@@ -2541,10 +2543,21 @@ fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
     )?;
     events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiChat)?);
 
-    let Some(terminal) = events.last() else {
+    let Some(terminal) = events
+        .iter()
+        .find(|event| event["choices"][0]["finish_reason"] == "length")
+    else {
         return Err("finish should emit a terminal Chat chunk".into());
     };
     assert_eq!(terminal["choices"][0]["finish_reason"], "length");
+    let usage = events
+        .iter()
+        .find_map(|event| event.get("usage"))
+        .ok_or("missing terminal usage")?;
+    assert_eq!(usage["prompt_tokens"], 12000);
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 4000);
+    assert_eq!(usage["prompt_tokens_details"]["cache_write_tokens"], 7000);
+    assert_eq!(usage["cost"], 0.01515);
     Ok(())
 }
 

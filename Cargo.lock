@@ -2569,6 +2569,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "switchyard-costs",
  "switchyard-libsy",
  "switchyard-protocol",
  "switchyard-translation",
