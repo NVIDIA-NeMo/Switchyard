@@ -105,6 +105,9 @@ Start with the comparison that matches what you want to change:
   keep the algorithm and model pair fixed, vary routing settings, and find the
   lowest-cost option that meets the task-success target. A Pareto chart shows
   the cost and success tradeoffs.
+- **[Check the efficient model when overrides dominate](examples.md#check-the-efficient-model-when-overrides-dominate):**
+  when `override` is most of the decision counts, the threshold and holds cannot
+  change those turns; measure the efficient model alone and change it if needed.
 - **[Select a model pair](examples.md#model-pair-selection-with-fixed-algorithm-settings):**
   keep algorithm settings fixed, swap the efficient/capable models, and compare
   execution cost plus a penalty for failed tasks.
