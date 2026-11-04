@@ -29,8 +29,8 @@ conversation's **tool-result history**, scoring signals in two directions:
   recovering), and `repeated_test_failure` (at least two failed test runs in
   the window) push toward the capable tier.
 - **PROGRESS → efficient**: `production_intensity` (the share of recent
-  recognized operations that are writes or edits) pushes toward the efficient
-  tier with 1.5 times the weight of one signal. Production with no error in the
+  recognized operations that are writes, edits, or other new forward activity)
+  pushes toward the efficient tier with 1.5 times the weight of one signal. Production with no error in the
   recent window adds 1.2 more signals toward efficient, so clean production
   resolves a turn to the efficient tier on its own, even when writes are a small
   share of recent operations.
@@ -38,8 +38,9 @@ conversation's **tool-result history**, scoring signals in two directions:
 The axes are **corroborative**: the signed score is `tanh`-squashed to a
 confidence in `[0, 1]`. One maxed scoring dimension produces about `0.46`;
 corroborating evidence pushes confidence decisively past a `0.5` threshold.
-Repeated failures, critical-error severity, and context compaction are hard
-overrides to the capable tier. Active holds bypass signal extraction and scoring.
+Repeated failures, a repeated identical tool call (the agent calling the same
+tool the same way three times in a row -- a loop, not progress), critical-error
+severity, and context compaction are hard overrides to the capable tier. Active holds bypass signal extraction and scoring.
 Severity and test results come from tool output that ran something. The contents
 returned by the built-in read and search tools do not count, unless the tool
 reports a failure.
