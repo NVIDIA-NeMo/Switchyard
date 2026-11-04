@@ -60,7 +60,10 @@ def summarize(events, workflow_uuid):
         usage = codecs.AnthropicMessagesCodec().decode_response(event["data"]).usage or {}
         cost = usage.get("cost", {})
         amount = cost.get("total")
-        priced = isinstance(amount, (float, int)) and math.isfinite(amount) and amount >= 0
+        priced = (
+            cost.get("currency", "USD").upper() == "USD"
+            and isinstance(amount, (float, int)) and math.isfinite(amount) and amount >= 0
+        )
         complete = priced and (
             cost.get("source") == "provider_reported"
             or meta.get("switchyard.accounting.usage_status") == "complete"
