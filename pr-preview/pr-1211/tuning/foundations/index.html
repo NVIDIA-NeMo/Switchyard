@@ -11,7 +11,7 @@
       
       
       
-        <link rel="prev" href="../diagnose/">
+        <link rel="prev" href="../">
       
       
         <link rel="next" href="../examples/">
@@ -1278,8 +1278,6 @@
       
         
       
-        
-      
     
     
     
@@ -1329,34 +1327,6 @@
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../diagnose/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Diagnose
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
               
             
               
@@ -1426,6 +1396,17 @@
       On this page
     </label>
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#before-you-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Before you start
+      
+    </span>
+  </a>
+  
+</li>
       
         <li class="md-nav__item">
   <a href="#1-define-the-objective" class="md-nav__link">
@@ -2519,6 +2500,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#before-you-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Before you start
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#1-define-the-objective" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2589,6 +2581,35 @@ calibration tasks, and validate the selected configuration on held-out tasks
 before adopting it as your baseline.</p>
 <p>See <a href="../examples/">Examples</a> for configuration and model-pair comparisons
 with concrete data.</p>
+<h2 id="before-you-start">Before you start<a class="headerlink" href="#before-you-start" title="Permanent link">&para;</a></h2>
+<p>Most routes begin as <code>type = "auto"</code>. Auto is a stage-router preset:
+<code>efficient_first</code>, <code>confidence_threshold = 0.5</code>, <code>recent_turn_window = 3</code>,
+<code>capable_hold_turns = 2</code>, and no classifier. It accepts no tuning keys. To
+change a setting, rewrite the route as the equivalent <code>stage_router</code> route from
+the <a href="../../reference/toml_schema/#auto">TOML schema</a>. Record the starting values;
+they are the current-routing baseline in step 2. The overview's
+<a href="../../routing_algorithms/overview/#start-here">Start here</a> list names the first
+dial to move for each strategy.</p>
+<p>Then read the decision counts, because three results mean no setting will help:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>curl<span class="w"> </span>-s<span class="w"> </span>localhost:4000/v1/stats<span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">&#39;.algorithm_stats.stage_router.routing_decisions, (.models | map_values(.calls))&#39;</span>
+</span></code></pre></div>
+<ul>
+<li><strong><code>fall_open</code> is most of the total.</strong> The tool-signal scorer abstained, which
+  happens on chat-only traffic and on the first request of a session. The
+  threshold and holds do not affect these turns. Add the
+  <a href="../../routing_algorithms/stage_router_routing/#optional-llm-classifier-fallback">classifier fallback</a>,
+  or use Task or Composite routing, which judge the request itself.</li>
+<li><strong><code>.models</code> lists one entry.</strong> Both tiers name the same model, so every request
+  goes to it. Fix the targets, then run the
+  <a href="../../routing_algorithms/model_selection/#check-for-an-inverted-pair">inverted-pair check</a>.</li>
+<li><strong>Requests carry no session ID.</strong> Holds and escalation state live in the
+  session. Send <code>x-switchyard-session-id</code> before tuning <code>capable_hold_turns</code> or
+  <code>confirmations</code>.</li>
+</ul>
+<p><a href="../../routing_algorithms/stage_router_routing/#decision-sources">Decision sources</a>
+explains each count, and
+<a href="../../routing_algorithms/overview/#when-routing-will-not-help">When routing will not help</a>
+lists the remaining cases.</p>
 <h2 id="1-define-the-objective">1. Define the objective<a class="headerlink" href="#1-define-the-objective" title="Permanent link">&para;</a></h2>
 <p>Define what the user wants to improve, on which workload, and what makes a result
 acceptable. Keep this objective fixed throughout the comparison.</p>
@@ -2621,6 +2642,37 @@ a baseline and a small set of changes you expect to help:</p>
 <li><strong>Keep runs comparable.</strong> Use the same tasks, evaluation procedure, and initial
    cache setup. Pin model and provider versions, and save each configuration.</li>
 </ol>
+<p>Collect these for every run:</p>
+<table>
+<thead>
+<tr>
+<th>Measure</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Routing split and decision reasons</td>
+<td><code>GET /v1/stats</code>: <code>.models</code> call counts and <code>routing_decisions</code>. <code>POST /v1/stats/reset</code> clears them between runs.</td>
+</tr>
+<tr>
+<td>Cost</td>
+<td>The routing log (<code>--routing-log-file routing.jsonl</code>): the selected model and token usage per request, including <code>cached_tokens</code>.</td>
+</tr>
+<tr>
+<td>Served model per response</td>
+<td>The <code>x-model-router-selected-model</code> response header.</td>
+</tr>
+<tr>
+<td>Metrics in your own host</td>
+<td><a href="../../reference/opentelemetry/#metrics">OpenTelemetry</a> routing and client metrics.</td>
+</tr>
+<tr>
+<td>Task success</td>
+<td>Your agent harness. For Terminal-Bench and DeepSWE, the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e9f58d8cd4d1367fb93d762358be722c027777de/benchmark/README.md#run-with-switchyard-routing">benchmark setup</a> runs a profile and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e9f58d8cd4d1367fb93d762358be722c027777de/benchmark/README.md#inspect-a-run">inspects the result</a>.</td>
+</tr>
+</tbody>
+</table>
 <p>Run the same tasks for every candidate. The following examples show how to use
 the results to choose between them.</p>
 <h2 id="3-choose-an-example">3. Choose an example<a class="headerlink" href="#3-choose-an-example" title="Permanent link">&para;</a></h2>

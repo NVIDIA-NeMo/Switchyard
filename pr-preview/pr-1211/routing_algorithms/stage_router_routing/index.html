@@ -1532,8 +1532,6 @@
       
         
       
-        
-      
     
     
     
@@ -1583,34 +1581,6 @@
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../tuning/diagnose/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Diagnose
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
               
             
               
@@ -3085,7 +3055,7 @@ These are the ones that matter when you choose a threshold:</p>
 the capable side stays below 0.46. An error in the window removes the
 clean-production bonus, so with a hard error the efficient side reaches at most
 0.24. The unit test <code>scorer_ceilings_match_the_documented_values</code> in
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a2584986ebb61005f992ae479615d8f8db338676/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/e9f58d8cd4d1367fb93d762358be722c027777de/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
 pins these values, so a change to the scorer fails CI until this table is
 updated.</p>
 <h3 id="reachable-scores-per-picker">Reachable scores per picker<a class="headerlink" href="#reachable-scores-per-picker" title="Permanent link">&para;</a></h3>
@@ -3528,7 +3498,7 @@ the <code>stage router override</code> log line carries it for overrides:</p>
 <li><a href="../../mechanics_of_libsy/">Mechanics of Libsy</a>: the execution model and host responsibilities.</li>
 <li><a href="../../reference/toml_schema/#stage_router">TOML Schema</a>: the complete
   configuration reference.</li>
-<li><a href="../../tuning/">Tuning</a>: diagnose a route and compare candidate settings on your workload.</li>
+<li><a href="../../tuning/">Tuning</a>: check your current route and compare candidate settings on your workload.</li>
 </ul>
 
 

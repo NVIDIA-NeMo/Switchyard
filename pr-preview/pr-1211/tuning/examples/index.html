@@ -1278,8 +1278,6 @@
       
         
       
-        
-      
     
     
     
@@ -1329,34 +1327,6 @@
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../diagnose/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Diagnose
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
               
             
               
@@ -1472,6 +1442,17 @@
     <span class="md-ellipsis">
       
         Choose the stage-router controls to tune
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#match-a-symptom-to-a-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Match a symptom to a control
       
     </span>
   </a>
@@ -2570,6 +2551,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#match-a-symptom-to-a-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Match a symptom to a control
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#split-the-benchmark-and-collect-baselines" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2725,6 +2717,52 @@ request, so later requests can omit the note and break reuse of the cached
 continuation. A fix is planned for a future release. Leave <code>handoff_notes</code>
 unconfigured for this cost comparison; see
 <a href="../../routing_algorithms/stage_router_routing/#optional-handoff-notes">handoff notes</a>.</p>
+<h3 id="match-a-symptom-to-a-control">Match a symptom to a control<a class="headerlink" href="#match-a-symptom-to-a-control" title="Permanent link">&para;</a></h3>
+<p>Change one control at a time. The directions below are for <code>efficient_first</code>;
+<code>capable_first</code> reverses the threshold direction.</p>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>What to read</th>
+<th>Move first</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Cost is close to capable-only.</td>
+<td><code>dimensions</code> and <code>capable_hold</code> are most of the decision counts, and the capable model has most calls in <code>.models</code>.</td>
+<td>Raise <code>confidence_threshold</code> so fewer turns escalate on signals. Then shorten <code>capable_hold_turns</code>.</td>
+</tr>
+<tr>
+<td><code>override</code> is a large share of the decisions.</td>
+<td><code>override</code> in the decision counts; <code>override_reason</code> in the structured logs.</td>
+<td>Repeated failures and critical errors force the capable tier, and the threshold does not change them. <a href="../../routing_algorithms/model_selection/#check-the-efficient-model-before-you-route">Check the efficient model</a> against the tasks.</td>
+</tr>
+<tr>
+<td>Tasks fail on the efficient tier and the route rarely escalates.</td>
+<td>The efficient model has most calls in <code>.models</code>; <code>override</code> is low.</td>
+<td>Lower <code>confidence_threshold</code>, raise <code>capable_hold_turns</code>, or add the <a href="../../routing_algorithms/stage_router_routing/#optional-llm-classifier-fallback">classifier fallback</a>.</td>
+</tr>
+<tr>
+<td>The tiers switch often and the prompt cache is lost.</td>
+<td><code>cached_tokens</code> in the routing log drops on the turn after each model change.</td>
+<td>Raise <code>capable_hold_turns</code> and <code>efficient_hold_turns</code>. Measure total cost, not the number of switches.</td>
+</tr>
+<tr>
+<td>An escalation route never latches.</td>
+<td>The log line <code>stateful escalation has no session ID</code>.</td>
+<td>Send a session ID. Then adjust <a href="../../routing_algorithms/escalation_router_routing/#tuning-options"><code>confirmations</code></a>.</td>
+</tr>
+<tr>
+<td>The judge never changes the outcome.</td>
+<td><code>switchyard_classifier_fail_open_total</code> on <code>/metrics</code>; the log line <code>judge verdict unavailable</code>.</td>
+<td>This is a compatibility problem, not a threshold. See <a href="../../routing_algorithms/llm_classifier_routing/#judge-model-compatibility">judge model compatibility</a>.</td>
+</tr>
+</tbody>
+</table>
+<p>Other algorithms have their own controls; the
+<a href="../#controls-by-algorithm">tuning overview</a> lists them.</p>
 <h3 id="split-the-benchmark-and-collect-baselines">Split the benchmark and collect baselines<a class="headerlink" href="#split-the-benchmark-and-collect-baselines" title="Permanent link">&para;</a></h3>
 <p>Use <strong>20% for calibration and 80% for held-out validation</strong>, chosen before tuning.
 For this example's 500-task benchmark, tune on 100 tasks and reserve 400 for the

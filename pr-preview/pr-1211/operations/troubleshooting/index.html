@@ -1274,8 +1274,6 @@
       
         
       
-        
-      
     
     
     
@@ -1325,34 +1323,6 @@
           </label>
           <ul class="md-nav__list" data-md-scrollfix>
             
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../tuning/diagnose/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Diagnose
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
               
             
               
@@ -2624,7 +2594,7 @@ log field, a log line, or a <code>--dry-run</code> message.</p>
 <td>Tasks fail on the efficient model and the route rarely escalates</td>
 <td><code>.models</code> call counts and <code>routing_decisions</code> in <code>/v1/stats</code></td>
 <td>The threshold is too high for the signals this workload produces; the capable hold is short; the efficient model is too weak for the tasks.</td>
-<td><a href="../../tuning/diagnose/#3-match-the-symptom-to-a-control">Diagnose Before You Tune</a>.</td>
+<td><a href="../../tuning/examples/#match-a-symptom-to-a-control">Match a symptom to a control</a>.</td>
 </tr>
 <tr>
 <td>The judge never changes the outcome</td>
@@ -2684,7 +2654,7 @@ log field, a log line, or a <code>--dry-run</code> message.</p>
 <td>Cost per run is higher than the single capable model</td>
 <td><code>cached_tokens</code> in the routing log on the turn after a model change; cost per arm</td>
 <td>Each switch loses the prompt cache; the judge adds a call per turn; the efficient model is too weak and most turns escalate.</td>
-<td><a href="../../routing_algorithms/model_selection/#counter-examples">Counter-examples</a> and the <a href="../../routing_algorithms/model_selection/#check-for-an-inverted-pair">inverted-pair check</a>. For the threshold and hold controls, see <a href="../../tuning/diagnose/#3-match-the-symptom-to-a-control">Diagnose Before You Tune</a>.</td>
+<td><a href="../../routing_algorithms/model_selection/#counter-examples">Counter-examples</a> and the <a href="../../routing_algorithms/model_selection/#check-for-an-inverted-pair">inverted-pair check</a>. For the threshold and hold controls, see <a href="../../tuning/examples/#match-a-symptom-to-a-control">Match a symptom to a control</a>.</td>
 </tr>
 <tr>
 <td>The prompt cache is never read</td>
