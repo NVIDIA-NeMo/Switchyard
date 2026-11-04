@@ -23,6 +23,7 @@ use tracing_subscriber::registry::LookupSpan;
 const CLIENT_CALL: &str = "libsy.client_call";
 const UPSTREAM_ATTEMPT: &str = "libsy.upstream_attempt";
 const PAYLOAD_TARGET: &str = "switchyard.payload";
+const MAX_PAYLOAD_REDACTION_DEPTH: usize = 64;
 
 type SpanEmitter = Box<dyn Fn(CapturedSpan) + Send + Sync>;
 
@@ -186,7 +187,10 @@ impl CapturedSpan {
                 *body = body
                     .as_str()
                     .and_then(|text| serde_json::from_str::<Json>(text).ok())
-                    .map(|decoded| Json::String(redactor.value(decoded).to_string()))
+                    .and_then(|decoded| {
+                        redact_captured_json(decoded, redactor, MAX_PAYLOAD_REDACTION_DEPTH)
+                    })
+                    .map(|decoded| Json::String(decoded.to_string()))
                     .unwrap_or(Json::Null);
             }
         }
@@ -229,6 +233,50 @@ impl CapturedSpan {
         }
         let close_result = scope.close_at(output.as_ref(), Some(&metadata), self.ended_at);
         child_result.and(close_result)
+    }
+}
+
+fn redact_captured_json(value: Json, redactor: &ProviderKeyRedactor, depth: usize) -> Option<Json> {
+    let depth = depth.checked_sub(1)?;
+    Some(match value {
+        Json::String(text) => Json::String(redact_captured_text(text, redactor, depth)?),
+        Json::Array(values) => Json::Array(
+            values
+                .into_iter()
+                .map(|value| redact_captured_json(value, redactor, depth))
+                .collect::<Option<_>>()?,
+        ),
+        Json::Object(fields) => Json::Object(
+            fields
+                .into_iter()
+                .map(|(name, value)| {
+                    Some((
+                        redact_captured_text(name, redactor, depth)?,
+                        redact_captured_json(value, redactor, depth)?,
+                    ))
+                })
+                .collect::<Option<_>>()?,
+        ),
+        value => value,
+    })
+}
+
+fn redact_captured_text(
+    text: String,
+    redactor: &ProviderKeyRedactor,
+    depth: usize,
+) -> Option<String> {
+    // The existing redaction marker is plain text, not a JSON array.
+    if text.trim() != "[REDACTED]"
+        && matches!(
+            text.trim_start().as_bytes().first(),
+            Some(b'{' | b'[' | b'"')
+        )
+    {
+        let decoded = serde_json::from_str::<Json>(&text).ok()?;
+        Some(redact_captured_json(decoded, redactor, depth)?.to_string())
+    } else {
+        Some(redactor.text(text))
     }
 }
 
@@ -648,19 +696,92 @@ mod tests {
     }
 
     #[test]
+    fn captured_classifier_content_and_tool_arguments_redact_nested_json() {
+        let nested = r#"{"credential":"qa-\u0073ecret","qa-\u0073ecret":"ordinary"}"#;
+        let request = serde_json::json!({"messages": [{"role": "assistant", "tool_calls": [{
+            "function": {"name": "lookup", "arguments": nested}
+        }]}]});
+        let response = serde_json::json!({"choices": [{"message": {
+            "role": "assistant", "content": nested
+        }}], "ordinary": {"text": "Keep ordinary diagnostics", "number": 3, "flag": true, "missing": null}});
+        let mut span = span_with_payloads(Payloads {
+            request: Some(serde_json::json!({"body": request.to_string(), "truncated": false})),
+            response: Some(serde_json::json!({"body": response.to_string(), "truncated": false})),
+        });
+        span.sanitize(&ProviderKeyRedactor::new(&["qa-secret".into()]));
+        span.sanitize(&ProviderKeyRedactor::new(&["qa-secret".into()]));
+        for (payload, path) in [
+            (
+                &span.payloads.request,
+                "/messages/0/tool_calls/0/function/arguments",
+            ),
+            (&span.payloads.response, "/choices/0/message/content"),
+        ] {
+            let body: Json =
+                serde_json::from_str(payload.as_ref().unwrap()["body"].as_str().unwrap()).unwrap();
+            let decoded: Json =
+                serde_json::from_str(body.pointer(path).unwrap().as_str().unwrap()).unwrap();
+            assert_eq!(
+                decoded,
+                serde_json::json!({
+                    "credential": "[REDACTED]", "[REDACTED]": "ordinary"
+                })
+            );
+        }
+        let response_body: Json = serde_json::from_str(
+            span.payloads.response.as_ref().unwrap()["body"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response_body["ordinary"], response["ordinary"]);
+    }
+
+    #[test]
+    fn captured_payload_redaction_bounds_structural_and_encoded_depth() {
+        let redactor = ProviderKeyRedactor::new(&["qa-secret".into()]);
+        assert!(
+            redact_captured_json(
+                serde_json::json!({"content": r#"{"credential":"qa-\u0073ecret""#}),
+                &redactor,
+                MAX_PAYLOAD_REDACTION_DEPTH,
+            )
+            .is_none()
+        );
+        for (arrays, encoded_strings, omitted) in [
+            (MAX_PAYLOAD_REDACTION_DEPTH - 1, 0, false),
+            (MAX_PAYLOAD_REDACTION_DEPTH, 0, true),
+            (MAX_PAYLOAD_REDACTION_DEPTH - 8, 7, false),
+            (MAX_PAYLOAD_REDACTION_DEPTH - 8, 8, true),
+        ] {
+            let mut body = Json::String("qa-secret".into());
+            for _ in 0..encoded_strings {
+                body = Json::String(body.to_string());
+            }
+            for _ in 0..arrays {
+                body = Json::Array(vec![body]);
+            }
+            let mut span = span_with_payloads(Payloads {
+                request: Some(serde_json::json!({"body": body.to_string(), "truncated": false})),
+                response: None,
+            });
+            span.sanitize(&redactor);
+            let payload = span.payloads.request.unwrap();
+            assert_eq!(payload["body"].is_null(), omitted);
+            if !omitted {
+                assert!(payload["body"].as_str().unwrap().contains("[REDACTED]"));
+                assert!(!payload["body"].as_str().unwrap().contains("qa-secret"));
+            }
+        }
+    }
+
+    #[test]
     fn payload_sanitization_omits_undecodable_json_when_keys_are_configured() {
         let body = r#"invalid JSON with qa-\u0073ecret"#;
-        let mut span = CapturedSpan {
-            name: UPSTREAM_ATTEMPT,
-            fields: Map::new(),
-            payloads: Payloads {
-                request: Some(serde_json::json!({"body": body, "truncated": false})),
-                response: Some(serde_json::json!({"body": null, "truncated": true})),
-            },
-            started_at: SystemTime::now(),
-            ended_at: SystemTime::now(),
-            children: Vec::new(),
-        };
+        let mut span = span_with_payloads(Payloads {
+            request: Some(serde_json::json!({"body": body, "truncated": false})),
+            response: Some(serde_json::json!({"body": null, "truncated": true})),
+        });
         span.sanitize(&ProviderKeyRedactor::default());
         assert_eq!(span.payloads.request.as_ref().unwrap()["body"], body);
         span.sanitize(&ProviderKeyRedactor::new(&["qa-secret".into()]));
@@ -703,6 +824,17 @@ mod tests {
     impl fmt::Debug for PanicOnDebug {
         fn fmt(&self, _formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
             panic!("disallowed fields must not be formatted");
+        }
+    }
+
+    fn span_with_payloads(payloads: Payloads) -> CapturedSpan {
+        CapturedSpan {
+            name: UPSTREAM_ATTEMPT,
+            fields: Map::new(),
+            payloads,
+            started_at: SystemTime::now(),
+            ended_at: SystemTime::now(),
+            children: Vec::new(),
         }
     }
 

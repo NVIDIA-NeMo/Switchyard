@@ -411,8 +411,11 @@ enable payload capture.
 
 Payloads can contain sensitive task data. To mask configured provider keys,
 the plugin decodes the captured JSON, redacts it, and serializes the copy again.
-Whitespace and escape spellings may change. If decoding fails, the body is
-omitted (`body: null`). Captured data passes through Relay's normal event
+JSON strings, such as classifier content and tool arguments, are decoded too.
+Traversal is limited to 64 levels, including JSON encoded inside strings.
+Whitespace and escape spellings may change. If JSON-looking text cannot be
+decoded or the depth limit is exceeded, the body is omitted (`body: null`).
+Captured data passes through Relay's normal event
 sanitizers and configured exporters. Personal data and other secrets require
 suitable sanitizers; see Relay's
 [PII redaction options](https://docs.nvidia.com/nemo/relay/configure-plugins/pii-redaction/about).
