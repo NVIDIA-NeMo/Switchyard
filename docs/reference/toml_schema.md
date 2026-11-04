@@ -54,21 +54,37 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `api_key_env` | No | unset | Name of the environment variable holding the key. Omit to send no authentication. |
 | `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. A route's forwarding clients must use one credential family unless they all use the same scheme, host, and port, such as one LLM gateway. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
-| `responses_reasoning` | No | `"preserve_encrypted"` | Responses reasoning replay: `"preserve_encrypted"` or `"drop"`. Only valid for `openai_responses`. |
+| `responses_reasoning` | No | `"auto"` | Responses reasoning replay: `"auto"`, `"preserve_encrypted"`, `"preserve_plaintext"`, or `"drop"`. Only valid for `openai_responses`. |
 | `fallback_on_rate_limit` | No | `true` | Try another completion candidate after an upstream HTTP 429 exhausts retries. Set to `false` to return the 429 instead. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
 | `failure_cooldown_ms` | No | `5000` (5 seconds) | Skip a backend for this many milliseconds after an exhausted transient completion failure. Zero disables it. |
 | `timeout_ms` | No | unset | Deadline in milliseconds for all attempts, retry delays, and the complete response, including stream reads. Must be at least `1`. Unset leaves the wait unbounded. |
 
 For `openai_responses`, `responses_reasoning` controls replay of reasoning
-history. Every client defaults to `"preserve_encrypted"`: reasoning items with
-non-empty `encrypted_content` or a stored reasoning `id` are retained with empty
-`content`. ID-only reasoning is removed when the request sets `store: false`.
-Switchyard's translated Anthropic reasoning is always removed.
-Reasoning without either is removed. Set `responses_reasoning = "drop"` explicitly for a backend
-that cannot consume provider reasoning. Both modes keep messages, tool
-calls and tool results. The setting is rejected on other client formats, even
-when no target uses the client. It is not inferred from the model name or URL.
+history. Most configurations should leave it unset. The values are:
+
+- `"auto"` (default): choose per request from the target that serves it,
+  including fallback targets. Targets on `api.openai.com` or `*.openai.azure.com`
+  use `"preserve_encrypted"`. On other hosts, such as a shared gateway or proxy,
+  the choice comes from the last `/`-separated part of the target `id`. Names that
+  start with `gpt-` (except `gpt-oss`) or `codex-`, and o-series names such as
+  `o3` or `o4-mini`, use `"preserve_encrypted"`. All other targets use
+  `"preserve_plaintext"`.
+- `"preserve_encrypted"`: keep reasoning items with non-empty `encrypted_content`
+  or a stored reasoning `id`, and empty their `content`. ID-only reasoning is
+  removed when the request sets `store: false`. Switchyard's translated Anthropic
+  reasoning and plaintext-only reasoning are removed. OpenAI needs this.
+- `"preserve_plaintext"`: keep `summary` and `content` text unchanged and in place,
+  for any `store` value. Remove non-empty `encrypted_content`, because Switchyard
+  cannot tell which provider issued it. An item left with no text is removed. An
+  ID-only item is kept unless the request sets `store: false`.
+- `"drop"`: remove all reasoning items. Use it for a backend, such as llama.cpp,
+  that rejects reasoning from other providers.
+
+All modes keep messages, tool calls and tool results. Set an explicit value when
+`"auto"` picks the wrong mode, for example an Azure OpenAI deployment with a custom
+name behind a gateway. The setting is rejected on other client formats, even
+when no target uses the client.
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
 must exist and be non-empty when the server loads.

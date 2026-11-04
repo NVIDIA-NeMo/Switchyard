@@ -46,6 +46,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that selects escalation mode through its `escalation` table carries capability
   keys that mode ignores.
 
+### Fixed
+
+- **Responses reasoning history reaches non-OpenAI targets** - the default
+  `responses_reasoning` is now `"auto"`. Targets other than OpenAI keep plaintext
+  reasoning `summary` and `content` in place, for any `store` value. Before, it
+  was removed, so models such as GLM lost their earlier reasoning. These targets
+  lose opaque `encrypted_content`, because its issuer is unknown. OpenAI targets
+  keep the previous behavior. **Rust source-breaking change:** callers that match
+  exhaustively on `ResponsesReasoningPolicy` must handle `Auto` and
+  `PreservePlaintext`.
+
 ## [0.3.0]
 
 Switchyard 0.3.0 builds on the native server and Rust library introduced in
