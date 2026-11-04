@@ -1465,15 +1465,13 @@ fn count_cache_control_blocks(value: &Value) -> usize {
 
 // This helper marks the final caller content block before any temporary notes, if policy permits.
 fn enable_anthropic_prompt_caching(body: &mut Value, temporary_note_count: usize) {
-    // Top-level cache control already manages the final breakpoint when no notes are present.
-    if temporary_note_count == 0 && body.get("cache_control").is_some() {
-        return;
-    }
     // Anthropic rejects a fifth cache marker with HTTP 400.
     // This check preserves the caller's markers when the request has reached that limit.
     if count_cache_control_blocks(body) >= MAX_CACHE_CONTROL_BLOCKS {
         return;
     }
+    // Requests with only a top-level `1h` policy can return HTTP 400.
+    // New block markers match the caller's TTL on turns with or without notes.
     let marker = body
         .get("cache_control")
         .cloned()
@@ -1560,40 +1558,40 @@ fn enable_openai_guidance_caching(
     let Some(prefix_len) = items.len().checked_sub(suffix) else {
         return;
     };
-    let Some(item) = items[..prefix_len].iter_mut().rev().find(|item| {
-        item.get("type").and_then(Value::as_str) == Some("function_call_output")
-            || matches!(
-                item.get("role").and_then(Value::as_str),
-                Some("user" | "tool" | "developer" | "system")
-            )
-    }) else {
-        return;
-    };
-    let field = if item.get("type").and_then(Value::as_str) == Some("function_call_output") {
-        "output"
-    } else {
-        "content"
-    };
-    let Some(content) = item.get_mut(field) else {
-        return;
-    };
-    if let Value::String(text) = content {
-        let text = std::mem::take(text);
-        let kind = if format == WireFormat::OpenAiResponses {
-            "input_text"
+    for item in items[..prefix_len].iter_mut().rev() {
+        let field = if item.get("type").and_then(Value::as_str) == Some("function_call_output") {
+            "output"
+        } else if matches!(
+            item.get("role").and_then(Value::as_str),
+            Some("user" | "tool" | "developer" | "system")
+        ) {
+            "content"
         } else {
-            "text"
+            continue;
         };
-        *content = serde_json::json!([{"type":kind,"text":text}]);
-    }
-    if let Some(block) = content
-        .as_array_mut()
-        .and_then(|blocks| blocks.last_mut())
-        .and_then(Value::as_object_mut)
-    {
-        block
-            .entry("prompt_cache_breakpoint".to_string())
-            .or_insert_with(|| serde_json::json!({"mode":"explicit"}));
+        let Some(content) = item.get_mut(field) else {
+            continue;
+        };
+        if let Value::String(text) = content {
+            let text = std::mem::take(text);
+            let kind = if format == WireFormat::OpenAiResponses {
+                "input_text"
+            } else {
+                "text"
+            };
+            *content = serde_json::json!([{"type":kind,"text":text}]);
+        }
+        // Empty content arrays have no block to mark, so the search continues through earlier items.
+        if let Some(block) = content
+            .as_array_mut()
+            .and_then(|blocks| blocks.last_mut())
+            .and_then(Value::as_object_mut)
+        {
+            block
+                .entry("prompt_cache_breakpoint".to_string())
+                .or_insert_with(|| serde_json::json!({"mode":"explicit"}));
+            return;
+        }
     }
 }
 
@@ -1989,7 +1987,14 @@ mod tests {
         });
         let mut body = caller_managed.clone();
         enable_anthropic_prompt_caching(&mut body, 0);
-        assert_eq!(body, caller_managed);
+        assert_eq!(body["cache_control"], caller_managed["cache_control"]);
+        assert_eq!(
+            body["messages"][0]["content"],
+            json!([{
+                "type": "text", "text": "hello",
+                "cache_control": {"type": "ephemeral", "ttl": "1h"}
+            }])
+        );
 
         let mut body = json!({
             "messages": [{"role": "user", "content": "hello"}]
@@ -2003,10 +2008,10 @@ mod tests {
         );
     }
 
-    // Temporary guidance must not override the caller's TTL or exceed the marker limit.
+    // The caller's TTL and marker limit apply on turns with or without temporary guidance.
     #[test]
-    fn temporary_guidance_keeps_caller_cache_controls() {
-        for suffix in [1, 2] {
+    fn anthropic_prompt_caching_respects_caller_ttl_and_marker_limit() {
+        for suffix in [0, 1, 2] {
             let mut body = json!({
                 "cache_control":{"type":"ephemeral","ttl":"1h"},
                 "messages":[{"role":"user","content":[{"type":"text","text":"prefix"}]}]
@@ -2033,9 +2038,9 @@ mod tests {
         assert_eq!(at_limit, original);
     }
 
-    // Chat content and Responses function output use different fields for cacheable text.
+    // Decoding represents empty arrays as text blocks; cache selection must use the preserved body.
     #[test]
-    fn openai_guidance_breakpoints_cover_native_text_and_tool_outputs() {
+    fn openai_guidance_breakpoints_precede_empty_native_items_and_notes() {
         for (format, key, item) in [
             (
                 WireFormat::OpenAiChat,
@@ -2058,7 +2063,18 @@ mod tests {
                 json!({"role":"user","content":[{"type":"input_text","text":"result"}]}),
             ),
         ] {
-            let mut body = json!({key:[item,{"role":"user","content":"note"}]});
+            let empty = if item.get("output").is_some() {
+                json!({"type":"function_call_output","call_id":"c2","output":[]})
+            } else {
+                json!({"role":"user","content":[]})
+            };
+            let mut original = json!({key:[item,empty]});
+            if format == WireFormat::OpenAiResponses {
+                original["previous_response_id"] = json!("resp_previous");
+            }
+            let mut request = observed_translation::decode_request(format, &original).unwrap();
+            request.append_note("note");
+            let mut body = observed_translation::encode_request(&request, format).unwrap();
             enable_openai_guidance_caching(&mut body, format, &"azure/openai/gpt-6-luna".into(), 1);
             let field = if item.get("output").is_some() {
                 "output"
@@ -2070,7 +2086,13 @@ mod tests {
                 body[key][0][field][0]["prompt_cache_breakpoint"],
                 json!({"mode":"explicit"})
             );
-            assert_eq!(body[key][1], json!({"role":"user","content":"note"}));
+            assert_eq!(body[key][1], original[key][1]);
+            assert_eq!(body[key][2]["content"][0]["text"], "note");
+            assert!(
+                body[key][2]["content"][0]
+                    .get("prompt_cache_breakpoint")
+                    .is_none()
+            );
         }
     }
 
