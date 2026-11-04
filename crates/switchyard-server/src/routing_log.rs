@@ -376,7 +376,7 @@ impl SessionStatsSnapshot {
             model => model,
         };
         let stats = self.models.entry(ModelId::from(model)).or_default();
-        stats.add_record(record);
+        stats.add_record(&record);
         // Older logs have no target identity; keep them only in the model aggregate.
         if !record.target.is_empty() {
             self.targets
@@ -387,7 +387,7 @@ impl SessionStatsSnapshot {
                     stats: SessionModelStats::default(),
                 })
                 .stats
-                .add_record(record);
+                .add_record(&record);
         }
         self.cost.add(record.cost);
         if record.tier == "classifier" {

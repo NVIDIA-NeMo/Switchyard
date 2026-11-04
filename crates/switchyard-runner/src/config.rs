@@ -373,6 +373,17 @@ impl DeploymentConfig {
                 .algorithm
                 .build_with_runtime_models(route_name, &targets)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+            let models = models.with_provider_models(
+                config
+                    .callable_target_names()
+                    .into_iter()
+                    .filter_map(|name| {
+                        self.targets
+                            .get(name)
+                            .map(|target| (ModelId::from(name), target.id.clone()))
+                    })
+                    .collect(),
+            );
             if let Some(infra) = &config.infra {
                 if !matches!(&config.algorithm, AlgorithmSpec::LlmClassifier { config }
                     if matches!(config.mode, None | Some(crate::ClassifierMode::Capability))

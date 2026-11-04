@@ -62,19 +62,27 @@ fn full_deployment_builds_without_provider_credentials() {
     );
     assert_eq!(
         models.models_for(&Category::Capable),
-        [ModelId::from("upstream/capable")]
+        [ModelId::from("capable")]
     );
     assert_eq!(
         models.models_for(&Category::Efficient),
-        [ModelId::from("upstream/fast")]
+        [ModelId::from("fast")]
     );
     assert_eq!(
         models.models_for(&Category::Any),
-        [
-            ModelId::from("upstream/fast"),
-            ModelId::from("upstream/capable")
-        ]
+        [ModelId::from("fast"), ModelId::from("capable")]
     );
+
+    for (target, provider) in [
+        ("fast", "upstream/fast"),
+        ("capable", "upstream/capable"),
+        ("upstream/judge", "upstream/judge"),
+    ] {
+        assert_eq!(
+            models.provider_model(&ModelId::from(target)).as_str(),
+            provider
+        );
+    }
 
     let error = Runner::from_toml(DEPLOYMENT)
         .err()
@@ -89,16 +97,13 @@ async fn configured_parent_and_subagent_targets_stay_separate() {
         .build()
         .expect("algorithms should build");
     let (algorithm, models) = algorithms.remove("public/main").expect("public route id");
-    assert_eq!(
-        models.models_for(&Category::Any),
-        [ModelId::from("upstream/fast")]
-    );
+    assert_eq!(models.models_for(&Category::Any), [ModelId::from("fast")]);
     assert_eq!(
         models.subagent_models_for(&Category::Any),
-        [ModelId::from("upstream/capable")]
+        [ModelId::from("capable")]
     );
     let models = Arc::new(models);
-    for (delegated, selected) in [(false, "upstream/fast"), (true, "upstream/capable")] {
+    for (delegated, selected) in [(false, "fast"), (true, "capable")] {
         let request = Request {
             llm_request: text_request(Some("public/main".to_string()), "hello"),
             metadata: delegated.then(|| Metadata {

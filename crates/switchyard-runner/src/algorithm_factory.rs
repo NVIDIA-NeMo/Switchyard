@@ -30,7 +30,8 @@ impl AlgorithmFactory {
 
     /// Builds algorithms and their model groups, keyed by configured route `id`.
     ///
-    /// The host serves model calls and owns target prompts, provider settings and transport.
+    /// LLM calls and outcomes use target names; the host resolves their provider IDs and
+    /// owns target prompts, provider settings and transport. Decision calls use provider IDs.
     /// Reuse the returned algorithms across requests to retain algorithm-owned state.
     pub fn build(&self) -> Result<BTreeMap<String, AlgorithmAndModels>, RunnerError> {
         self.config.validate()?;

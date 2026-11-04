@@ -33,4 +33,4 @@ target = "fast"
     ]
     assert len(steps) == 1
     assert isinstance(steps[0], Step.Done)
-    assert steps[0].outcome.selected_model_ids == ["gateway/fast"]
+    assert steps[0].outcome.selected_model_ids == ["fast"]
