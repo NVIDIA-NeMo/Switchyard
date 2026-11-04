@@ -486,6 +486,7 @@ mod tests {
         let source = config(POOL);
         let runner = Runner::from_toml(&source).expect("eligible route");
         let route = runner.route("route").expect("route");
+        let cloned = route.clone();
         let private = route
             .select_lane(&request("one", &["private"]))
             .expect("private");
@@ -495,6 +496,14 @@ mod tests {
         assert!(Arc::ptr_eq(&private.lane, &both.lane));
         assert!(Arc::ptr_eq(&private.lane.algorithm, &both.lane.algorithm));
         assert!(!Arc::ptr_eq(&private.lane, &route.standard));
+        assert_eq!(
+            private.lane.models.provider_model(&"approved_fast".into()),
+            "approved/fast"
+        );
+        let shared = cloned
+            .select_lane(&request("three", &["private"]))
+            .expect("cloned route");
+        assert!(Arc::ptr_eq(&private.lane, &shared.lane));
 
         let runner = Runner::from_toml(&source.replace("labels = []", "labels = ['private']"))
             .expect("standard models already approved");

@@ -704,8 +704,8 @@ impl DeploymentConfig {
             built
         } else {
             let model_ids = targets
-                .iter()
-                .map(|(name, _)| ((*name).to_owned(), ModelId::from(*name)))
+                .keys()
+                .map(|name| ((*name).to_owned(), ModelId::from(*name)))
                 .chain(
                     decisions
                         .iter()

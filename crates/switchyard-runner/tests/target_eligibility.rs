@@ -142,6 +142,54 @@ async fn configured_stage_keeps_answer_fallbacks_approved() {
 }
 
 #[tokio::test]
+async fn filtered_targets_sharing_a_model_keep_their_own_settings() {
+    let server = MockServer::start().await;
+    for (target, effort) in [("both_fast", "low"), ("both_capable", "high")] {
+        let algorithm = format!("type = 'random'\ntargets = ['fast', '{target}']");
+        let source = config(&server.uri(), &algorithm, "")
+            .replace("id = \"approved/capable\"", "id = \"approved/fast\"")
+            .replace(
+                "[targets.both_fast]",
+                "[targets.both_fast]\nreasoning_effort = 'low'",
+            )
+            .replace(
+                "[targets.both_capable]",
+                "[targets.both_capable]\nreasoning_effort = 'high'",
+            );
+        let runner = Runner::from_toml(&source).expect("shared provider model");
+        let route = runner.route("chat").expect("route");
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_partial_json(
+                json!({"model": "approved/fast", "reasoning_effort": effort}),
+            ))
+            .respond_with(completion("approved/fast", "approved answer"))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let outcome = route
+            .execute(request("shared", Some(&["private", "customer_data"])), None)
+            .await
+            .expect("approved target settings");
+        assert_eq!(outcome.selected_model, target);
+        assert_eq!(
+            outcome.response.served_model().map(|id| id.as_str()),
+            Some(target)
+        );
+        assert_eq!(
+            route.provider_model(&outcome.selected_model),
+            "approved/fast"
+        );
+        let metadata = route
+            .target(&outcome.selected_model)
+            .expect("target metadata");
+        assert_eq!(metadata.reasoning_effort.as_deref(), Some(effort));
+        server.verify().await;
+        server.reset().await;
+    }
+}
+
+#[tokio::test]
 async fn every_label_is_required_and_subsets_need_no_catalogue() {
     let server = MockServer::start().await;
     let algorithm = "type = 'passthrough'\ntarget = 'both_fast'";
