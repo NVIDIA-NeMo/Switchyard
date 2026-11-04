@@ -932,34 +932,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../plan_execute_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Plan/Execute Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../subagent_routing/" class="md-nav__link">
         
   
@@ -1462,7 +1434,63 @@
   <span class="md-ellipsis">
     
   
-    Compare and Tune
+    Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tuning/foundations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tuning Foundations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tuning/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
   
 
     
@@ -2570,6 +2598,8 @@
 you put in each role change results more than any threshold does. This page says
 what each role needs, how to check a model before you route to it, which pairs
 have measured results, and the mistakes we have seen in real runs.</p>
+<p>For a worked comparison of cost and task success, see the
+<a href="../../tuning/examples/#model-pair-selection-with-fixed-algorithm-settings">model-pair selection example</a>.</p>
 <h2 id="roles">Roles<a class="headerlink" href="#roles" title="Permanent link">&para;</a></h2>
 <p>Each strategy names its models by role. The TOML keys differ by route type:</p>
 <table>
@@ -2589,7 +2619,7 @@ have measured results, and the mistakes we have seen in real runs.</p>
 <td>Tool-result signals. <code>composite</code> adds a classifier.</td>
 </tr>
 <tr>
-<td><code>stage_router</code>, <a href="../plan_execute_routing/">plan/execute settings</a></td>
+<td><code>stage_router</code>, <a href="../stage_router_routing/#plan-and-execute">plan/execute settings</a></td>
 <td><code>efficient_target</code> serves after handoff.</td>
 <td><code>capable_target</code> serves while planning.</td>
 <td>Stage uses tool results to select a tier, then holds efficient after a switch.</td>
@@ -2720,7 +2750,7 @@ serving stack.</p>
 <tr>
 <td>Qwen3.6-35B-A3B, also the judge</td>
 <td>Claude Opus 4.7</td>
-<td><code>llm_classifier</code> custom, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1987b34e06437b9e7fcc4a9bfede5371b99f1bff/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">balanced</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1987b34e06437b9e7fcc4a9bfede5371b99f1bff/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml">aggressive</a></td>
+<td><code>llm_classifier</code> custom, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/82b170c0446e2b7ee2724e583349c85eda833706/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">balanced</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/82b170c0446e2b7ee2724e583349c85eda833706/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml">aggressive</a></td>
 <td>tau2-bench telecom, 114 tasks</td>
 <td>0.903 ± 0.071 solve rate with 45% of turns on the weak tier. 0.891 ± 0.029 with about 85%.</td>
 <td>Within noise of the strong tier, per the profile headers</td>
@@ -2748,7 +2778,7 @@ serving stack.</p>
 </ul>
 <p>Other checked-in configurations:</p>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1987b34e06437b9e7fcc4a9bfede5371b99f1bff/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml"><code>tb-lite-llm-classifier-opus-kimi-gemini.toml</code></a>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/82b170c0446e2b7ee2724e583349c85eda833706/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml"><code>tb-lite-llm-classifier-opus-kimi-gemini.toml</code></a>
   (Claude Opus 4.7 strong, Kimi K2.7 code weak, Gemini 3.5 Flash judge) is a
   smoke test. It has no published result.</li>
 </ul>
@@ -2867,7 +2897,7 @@ endpoint. See the <a href="../../reference/toml_schema/#targetsname">target keys
 <li><a href="../../operations/local_evaluation/#verify-routing-is-active">Verify routing is active</a>: see the served model and the decision counts.</li>
 <li><a href="../stage_router_routing/#tuning-confidence_threshold">Stage Router</a>: tune the threshold once the pair is right.</li>
 <li><a href="../escalation_router_routing/#judge-model-compatibility">Escalation-Router Routing</a>: judge requirements for escalation routes.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/1987b34e06437b9e7fcc4a9bfede5371b99f1bff/benchmark/README.md">Benchmarks</a>: how the measured runs were made.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/82b170c0446e2b7ee2724e583349c85eda833706/benchmark/README.md">Benchmarks</a>: how the measured runs were made.</li>
 </ul>
 
 
