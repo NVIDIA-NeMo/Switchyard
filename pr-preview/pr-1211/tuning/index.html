@@ -2396,6 +2396,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#controls-by-algorithm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Controls by algorithm
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#related" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2433,6 +2444,18 @@ see how to evaluate candidates and choose a configuration.</p>
 <ul>
 <li><a href="foundations/">Tuning Foundations</a>: define your objective, candidates, and evaluation splits.</li>
 <li><a href="examples/">Examples</a>: compare routing settings and model pairs with worked examples.</li>
+</ul>
+<h2 id="controls-by-algorithm">Controls by algorithm<a class="headerlink" href="#controls-by-algorithm" title="Permanent link">&para;</a></h2>
+<p>Examples walks through the stage router. Each algorithm has its own controls:</p>
+<ul>
+<li><a href="../routing_algorithms/stage_router_routing/#knob-reference">Stage router</a>: every route key, <a href="../routing_algorithms/stage_router_routing/#tuning-confidence_threshold">how <code>confidence_threshold</code> works</a>, and <a href="../routing_algorithms/stage_router_routing/#calibrating-the-threshold-from-run-data">how to calibrate it from run data</a>.</li>
+<li><a href="../routing_algorithms/llm_classifier_routing/#tuning-options">LLM classifier</a>: thresholds, judge context, and when the judge runs.</li>
+<li><a href="../routing_algorithms/escalation_router_routing/#tuning-options">Escalation router</a>: confirmations and judge window.</li>
+<li><a href="../routing_algorithms/advisor_gate_routing/#tuning">Advisor gate</a>: review count and stall limits, with the benchmarked settings.</li>
+<li><a href="../routing_algorithms/composite_routing/#independent-stage-profiles">Composite</a>: separate stage-router settings per profile.</li>
+<li><a href="../routing_algorithms/plan_execute_routing/#optional-settings">Plan/Execute</a>: handoff triggers and prompts.</li>
+<li><a href="../routing_algorithms/vgr_routing/#serving-modes">Verification-gated</a>: serving mode and <a href="../routing_algorithms/vgr_routing/#execution-limits">execution limits</a>.</li>
+<li><a href="../routing_algorithms/random_routing/#control-the-traffic-split">Random</a>: target weights.</li>
 </ul>
 <h2 id="related">Related<a class="headerlink" href="#related" title="Permanent link">&para;</a></h2>
 <ul>
