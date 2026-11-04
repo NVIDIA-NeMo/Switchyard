@@ -11,6 +11,8 @@ mod algorithm_factory;
 #[cfg(not(target_os = "wasi"))]
 mod config;
 #[cfg(not(target_os = "wasi"))]
+mod eligibility;
+#[cfg(not(target_os = "wasi"))]
 mod failure;
 mod provider_key_redactor;
 #[cfg(not(target_os = "wasi"))]
@@ -20,6 +22,8 @@ mod runner;
 
 #[cfg(not(target_os = "wasi"))]
 pub use config::{ConfiguredTarget, RouteTargets, TargetModel, api_key_variables, route_targets};
+#[cfg(not(target_os = "wasi"))]
+pub use eligibility::require_target_labels;
 
 pub use algorithm::{
     AdvisorTriggerConfig, AlgorithmConfigError, AlgorithmSpec, CategoryModelConfig, ClassifierMode,

@@ -123,6 +123,45 @@ The frontier describes the calibration sample. Repeat promising runs, then
 freeze the selection. Run E and all three baselines on the untouched 400-task
 validation split to check whether the cost advantage and success target hold.
 
+## Check the efficient model when overrides dominate
+
+This example keeps the objective and the route from the cost comparison. The
+capable model has most of the calls in `.models`, and the first instinct is to
+raise `confidence_threshold`. Read `routing_decisions` in `/v1/stats` first,
+after a reset and a run of the calibration tasks, as in
+[Before you start](foundations.md#before-you-start).
+
+When `override` is a large share of the counts, the threshold is the wrong
+control. Each `override` means a repeated failure, a critical error, or a
+context-compaction marker in the recent tool results forced the capable tier.
+These decisions skip the score, so `confidence_threshold` and the holds do not
+change them. Raising the threshold moves only the `dimensions` decisions and
+leaves the `override` share where it is.
+
+The `stage router override` log line names the cause in `override_reason`:
+`repeated_failure`, `critical_error`, or `compaction`. Count them. `compaction`
+comes from a context-compaction marker in the history, so leave it out of this
+comparison. Repeated failures and critical errors point at the efficient model:
+
+1. **Measure the efficient model alone.** Add the `passthrough` route from
+   [Check the efficient model before you route](../routing_algorithms/model_selection.md#check-the-efficient-model-before-you-route)
+   and run the same calibration tasks. Compare it with the capable-only
+   baseline. When the efficient-only arm is far below the capable-only arm,
+   routing has to escalate a large share of turns to close the gap, and the
+   savings shrink.
+2. **Run the compatibility checks on that page.** Tool calling, structured
+   output, context window, reasoning, and wire format. A model that passes a
+   one-tool test can still produce malformed calls with the agent's full tool
+   list.
+3. **Change the efficient model.** Compare pairs as in
+   [Model-pair selection](#model-pair-selection-with-fixed-algorithm-settings).
+   If no cheaper model clears the tasks, the capable share reflects the tasks,
+   and the cost objective needs a new target.
+
+After a change, reset the counters, rerun the calibration tasks, and read the
+`override` share again before you compare cost. Then validate on the held-out
+split as in [final validation](foundations.md#4-check-the-final-choice).
+
 ## Model-pair selection with fixed algorithm settings
 
 This independent example fixes the algorithm settings and changes the

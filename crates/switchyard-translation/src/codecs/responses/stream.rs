@@ -27,6 +27,26 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
         WireFormat::OpenAiResponses.into()
     }
 
+    fn is_terminal_event(&self, event: &Value) -> bool {
+        matches!(
+            event
+                .get("type")
+                .or_else(|| event.get("event"))
+                .and_then(Value::as_str),
+            Some("response.completed" | "response.incomplete" | "response.failed")
+        )
+    }
+
+    fn sse_done_is_terminal(&self) -> bool {
+        true
+    }
+
+    fn stamp_streamed_response_model(&self, event: &mut Value, served_model: &str) {
+        if let Some(response) = event.get_mut("response").and_then(Value::as_object_mut) {
+            response.insert("model".to_string(), Value::String(served_model.to_string()));
+        }
+    }
+
     fn decode_event(
         &self,
         state: &mut StreamTranslationState,
@@ -1245,4 +1265,41 @@ fn responses_id(state: &StreamTranslationState) -> String {
     target_message_id_or_source_message_id(state)
         .unwrap_or("resp_switchyard")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_stream_completion() {
+        let codec = OpenAiResponsesStreamCodec;
+        assert!(codec.sse_done_is_terminal());
+        for kind in [
+            "response.completed",
+            "response.incomplete",
+            "response.failed",
+        ] {
+            assert!(codec.is_terminal_event(&json!({"type": kind})));
+            assert!(codec.is_terminal_event(&json!({"event": kind})));
+        }
+        assert!(!codec.is_terminal_event(&json!({"type": "response.created"})));
+    }
+
+    #[test]
+    fn responses_replay_stamps_the_served_model_inside_response() {
+        let mut event = json!({
+            "type": "response.created",
+            "response": {
+                "id": "resp_1",
+                "model": "provider/model",
+                "provider_extension": true,
+            },
+        });
+
+        OpenAiResponsesStreamCodec.stamp_streamed_response_model(&mut event, "served/model");
+
+        assert_eq!(event["response"]["model"], "served/model");
+        assert_eq!(event["response"]["provider_extension"], true);
+    }
 }

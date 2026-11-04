@@ -2447,3 +2447,142 @@ async fn retries_and_fallback_keep_separate_models_and_attempt_ordinals()
     }
     Ok(())
 }
+
+/// Routing keys remain distinct while both routing-time and answer metrics aggregate by provider.
+#[tokio::test]
+async fn target_aliases_preserve_provider_model_metric_labels() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, exporter, provider, span_exporter, _) = telemetry();
+    struct MappedClient {
+        model: ModelId,
+    }
+    #[async_trait]
+    impl RoutedLlmClient for MappedClient {
+        fn provider_model<'a>(&'a self, _: &'a ModelId) -> &'a ModelId {
+            &self.model
+        }
+        async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
+            UsageClient {
+                usage: Usage::default(),
+            }
+            .call(request)
+            .await
+        }
+    }
+    for routing_time in [false, true] {
+        let name = if routing_time {
+            "mapped-routing"
+        } else {
+            "mapped-answer"
+        };
+        let provider_model = ModelId::from(format!("provider/{name}"));
+        let client = Arc::new(MappedClient {
+            model: provider_model.clone(),
+        });
+        let models = Arc::new(
+            RuntimeModels::default().with_provider_models(
+                ["efficient", "capable"]
+                    .into_iter()
+                    .map(|target| (ModelId::from(target), provider_model.clone()))
+                    .chain([("fallback".into(), "provider/fallback".into())])
+                    .collect(),
+            ),
+        );
+        for target in ["efficient", "capable"] {
+            let algorithm = if routing_time {
+                Arc::new(RoutingCallAlgo {
+                    name: name.into(),
+                    target: target.into(),
+                }) as Arc<dyn Algorithm>
+            } else {
+                Arc::new(SingleCallAlgo {
+                    name: name.into(),
+                    target_set: vec![target.into(), "fallback".into(), "provider/direct".into()],
+                    metadata: None,
+                })
+            };
+            let (selected, _) = switchyard_llm_client::run(
+                algorithm,
+                ClientRouter::single(client.clone()),
+                Request {
+                    llm_request: text_request(None, "hello"),
+                    ..Request::default()
+                },
+                models.clone(),
+                None,
+            )
+            .await?;
+            assert_eq!(selected, target);
+            let spans = store
+                .spans()
+                .into_iter()
+                .rev()
+                .filter(|span| span.fields.get("algorithm").map(String::as_str) == Some(name))
+                .collect::<Vec<_>>();
+            let span = find_span(&spans, "libsy.client_call", "selected_target", target);
+            assert_eq!(span.fields["selected_model"], provider_model.as_str());
+            assert_eq!(span.fields["gen_ai.request.model"], provider_model.as_str());
+            assert_eq!(span.fields["otel.name"], format!("chat {provider_model}"));
+            let run_span = find_span(&spans, "libsy.run", "algorithm", name);
+            let exported = span_exporter.get_finished_spans().expect("exported spans");
+            let exported_run = exported
+                .iter()
+                .find(|span| {
+                    span.name == "libsy.run"
+                        && otel_attribute(span, "outcome_id")
+                            .is_some_and(|id| id.as_str() == run_span.fields["outcome_id"])
+                })
+                .expect("outcome span exported");
+            let mut expected_models = vec![provider_model.to_string().into()];
+            if !routing_time {
+                expected_models.extend(["provider/fallback".into(), "provider/direct".into()]);
+            }
+            assert_eq!(
+                otel_attribute(exported_run, "selected_model_ids"),
+                Some(&OtelValue::Array(OtelArray::String(expected_models)))
+            );
+        }
+        let exported = find_otel_span(
+            span_exporter,
+            &format!("chat {provider_model}"),
+            &provider_model,
+        );
+        assert_eq!(
+            otel_attribute(&exported, "selected_model"),
+            Some(&OtelValue::String(provider_model.to_string().into()))
+        );
+        let snapshots = flushed_metrics(exporter, provider);
+        for metric in ["switchyard.decisions", "switchyard.llm_calls"] {
+            assert_eq!(
+                u64_counter_value(
+                    &snapshots,
+                    metric,
+                    &[
+                        ("algorithm", name),
+                        ("selected_model", provider_model.as_str())
+                    ]
+                ),
+                Some(2)
+            );
+            for target in ["efficient", "capable"] {
+                assert_eq!(
+                    u64_counter_value(
+                        &snapshots,
+                        metric,
+                        &[("algorithm", name), ("selected_model", target)]
+                    ),
+                    None
+                );
+            }
+        }
+        assert_eq!(
+            u64_counter_value(
+                &snapshots,
+                "switchyard.requests",
+                &[("model", provider_model.as_str())]
+            ),
+            Some(2)
+        );
+    }
+    Ok(())
+}

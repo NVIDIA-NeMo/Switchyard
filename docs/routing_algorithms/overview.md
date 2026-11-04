@@ -160,7 +160,9 @@ stage router with these settings. It does not compare strategies at runtime.
 Auto accepts no tuning keys. To change a setting, write the equivalent
 `stage_router` route shown in the [TOML schema](../reference/toml_schema.md#auto)
 and edit it there. Choose the two models with the
-[model selection guide](model_selection.md).
+[model selection guide](model_selection.md). To tune the rewritten route, start
+with [Before you start](../tuning/foundations.md#before-you-start) in Tuning
+Foundations.
 
 Only the `efficient_first` picker has published results. The `capable_first`
 picker is [experimental](stage_router_routing.md#pickers).

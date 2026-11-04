@@ -86,6 +86,7 @@ async fn retry_usage_and_reported_charges_survive_failure_without_parent_charge(
         assert_eq!(metadata["switchyard.accounting.usage_status"], "complete");
         assert_eq!(input_data.unwrap()["model"], "test/model");
         let output = output.unwrap();
+        assert_eq!(output["model"], "test/model");
         assert_eq!(output["usage"]["input_tokens"], input);
         assert_eq!(output["usage"]["cost"]["total"], cost);
     }

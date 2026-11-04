@@ -28,6 +28,7 @@ toml = "1.1"
 tracing.workspace = true
 
 [target.'cfg(not(target_os = "wasi"))'.dependencies]
+parking_lot.workspace = true
 reqwest.workspace = true
 switchyard-llm-client.workspace = true
 

@@ -13,6 +13,7 @@ use serde::Serialize;
 use super::algorithms::{AlgorithmStats, AlgorithmStatsSnapshot};
 use super::cache_eligibility::PrefixProbe;
 use switchyard_protocol::ModelId;
+use switchyard_runner::{DecisionTarget, Route};
 
 const MAX_LATENCY_SAMPLES: usize = 10_000;
 
@@ -31,6 +32,7 @@ pub(crate) struct TokenUsage {
 #[derive(Clone)]
 pub(crate) struct StatsAccumulator {
     inner: Arc<Mutex<StatsAccumulatorInner>>,
+    route: Option<Route>,
 }
 
 impl Default for StatsAccumulator {
@@ -47,16 +49,34 @@ impl StatsAccumulator {
     ) -> Self {
         Self {
             inner: Arc::new(Mutex::new(StatsAccumulatorInner::new(registry, algorithms))),
+            route: None,
         }
+    }
+
+    /// Shares counters while resolving this route's target names to provider models.
+    pub(crate) fn for_route(&self, route: Route) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+            route: Some(route),
+        }
+    }
+
+    /// Resolves a stats key to the model used by existing metric labels.
+    pub(crate) fn provider_model(&self, target: &ModelId) -> ModelId {
+        self.route
+            .as_ref()
+            .map_or(target, |route| route.provider_model(target))
+            .clone()
     }
 
     /// Records one successful routed backend call.
     pub(crate) fn record_success(&self, model: impl Into<ModelId>, backend_latency_ms: f64) {
         let mut inner = self.lock();
         inner.total_requests = inner.total_requests.saturating_add(1);
-        let stats = inner.model_stats_mut(model.into());
-        stats.calls = stats.calls.saturating_add(1);
-        stats.model_call_latency.record(backend_latency_ms);
+        for stats in inner.model_stats_mut(model.into(), self.route.as_ref()) {
+            stats.calls = stats.calls.saturating_add(1);
+            stats.model_call_latency.record(backend_latency_ms);
+        }
     }
 
     /// Records one failed routed backend call.
@@ -64,8 +84,9 @@ impl StatsAccumulator {
         let mut inner = self.lock();
         inner.total_requests = inner.total_requests.saturating_add(1);
         inner.total_errors = inner.total_errors.saturating_add(1);
-        let stats = inner.model_stats_mut(model.into());
-        stats.errors = stats.errors.saturating_add(1);
+        for stats in inner.model_stats_mut(model.into(), self.route.as_ref()) {
+            stats.errors = stats.errors.saturating_add(1);
+        }
     }
 
     /// Record a failure while processing a buffered response or stream after its routed call
@@ -73,8 +94,9 @@ impl StatsAccumulator {
     pub(crate) fn record_response_error(&self, model: impl Into<ModelId>) {
         let mut inner = self.lock();
         inner.total_errors = inner.total_errors.saturating_add(1);
-        let stats = inner.model_stats_mut(model.into());
-        stats.errors = stats.errors.saturating_add(1);
+        for stats in inner.model_stats_mut(model.into(), self.route.as_ref()) {
+            stats.errors = stats.errors.saturating_add(1);
+        }
     }
 
     /// Records usage and terminal latency after a successful routed call.
@@ -85,9 +107,10 @@ impl StatsAccumulator {
         total_latency_ms: f64,
     ) {
         let mut inner = self.lock();
-        let stats = inner.model_stats_mut(model.into());
-        stats.add_usage(usage);
-        stats.total_latency.record(total_latency_ms);
+        for stats in inner.model_stats_mut(model.into(), self.route.as_ref()) {
+            stats.add_usage(usage);
+            stats.total_latency.record(total_latency_ms);
+        }
     }
 
     /// Records routing time for one completed algorithm run.
@@ -104,13 +127,14 @@ impl StatsAccumulator {
     ) {
         let mut inner = self.lock();
         inner.classifier_requests = inner.classifier_requests.saturating_add(1);
-        let stats = inner.classifier_stats_mut(model.into());
-        stats.calls = stats.calls.saturating_add(1);
-        if let Some(usage) = usage {
-            stats.add_usage(usage);
+        for stats in inner.classifier_stats_mut(model.into(), self.route.as_ref()) {
+            stats.calls = stats.calls.saturating_add(1);
+            if let Some(usage) = usage {
+                stats.add_usage(usage);
+            }
+            stats.model_call_latency.record(latency_ms);
+            stats.total_latency.record(latency_ms);
         }
-        stats.model_call_latency.record(latency_ms);
-        stats.total_latency.record(latency_ms);
     }
 
     /// Records one failed classifier or judge call.
@@ -118,19 +142,24 @@ impl StatsAccumulator {
         let mut inner = self.lock();
         inner.classifier_requests = inner.classifier_requests.saturating_add(1);
         inner.classifier_errors = inner.classifier_errors.saturating_add(1);
-        let stats = inner.classifier_stats_mut(model.into());
-        stats.errors = stats.errors.saturating_add(1);
+        for stats in inner.classifier_stats_mut(model.into(), self.route.as_ref()) {
+            stats.errors = stats.errors.saturating_add(1);
+        }
     }
 
     /// Returns the cache-eligible fraction for `model` and records the prefix as seen.
     pub(crate) fn prefix_eligibility(&self, model: &ModelId, probe: &PrefixProbe) -> f64 {
         let mut inner = self.lock();
-        let stats = inner.model_stats_mut(model.clone());
-        let fraction = probe.eligible_fraction(&stats.seen_prefixes);
-        if let Some(hash) = probe.full_hash() {
-            stats.seen_prefixes.insert(hash);
-        }
-        fraction
+        // Cache eligibility stays target-specific when prompts or clients differ.
+        inner
+            .model_stats_mut(model.clone(), self.route.as_ref())
+            .fold(0.0, |_, stats| {
+                let fraction = probe.eligible_fraction(&stats.seen_prefixes);
+                if let Some(hash) = probe.full_hash() {
+                    stats.seen_prefixes.insert(hash);
+                }
+                fraction
+            })
     }
 
     /// Returns a serializable point-in-time snapshot.
@@ -150,11 +179,13 @@ impl StatsAccumulator {
 
 struct StatsAccumulatorInner {
     by_model: BTreeMap<ModelId, ModelStats>,
+    by_target: BTreeMap<ModelId, TargetStats>,
     total_requests: u64,
     total_errors: u64,
     routing_overhead: LatencyHistogram,
     routing_fallbacks: RoutingFallbackStats,
     by_classifier: BTreeMap<ModelId, ModelStats>,
+    by_classifier_target: BTreeMap<ModelId, TargetStats>,
     classifier_requests: u64,
     classifier_errors: u64,
     algorithm_stats: AlgorithmStats,
@@ -164,33 +195,52 @@ impl StatsAccumulatorInner {
     fn new<'a>(registry: Registry, algorithms: impl IntoIterator<Item = &'a str>) -> Self {
         Self {
             by_model: BTreeMap::new(),
+            by_target: BTreeMap::new(),
             total_requests: 0,
             total_errors: 0,
             routing_overhead: LatencyHistogram::default(),
             routing_fallbacks: RoutingFallbackStats::default(),
             by_classifier: BTreeMap::new(),
+            by_classifier_target: BTreeMap::new(),
             classifier_requests: 0,
             classifier_errors: 0,
             algorithm_stats: AlgorithmStats::new(registry, algorithms),
         }
     }
 
-    fn model_stats_mut(&mut self, model: ModelId) -> &mut ModelStats {
-        self.by_model.entry(model).or_default()
+    fn model_stats_mut(
+        &mut self,
+        selected: ModelId,
+        route: Option<&Route>,
+    ) -> impl Iterator<Item = &mut ModelStats> {
+        stats_entries(&mut self.by_model, &mut self.by_target, selected, route)
     }
 
-    fn classifier_stats_mut(&mut self, model: ModelId) -> &mut ModelStats {
-        self.by_classifier.entry(model).or_default()
+    fn classifier_stats_mut(
+        &mut self,
+        selected: ModelId,
+        route: Option<&Route>,
+    ) -> impl Iterator<Item = &mut ModelStats> {
+        stats_entries(
+            &mut self.by_classifier,
+            &mut self.by_classifier_target,
+            selected,
+            route,
+        )
     }
 
     fn snapshot(&self) -> StatsSnapshot {
-        let (models, total_tokens) = build_model_snapshots(&self.by_model, self.total_requests);
-        let classifier = build_classifier_snapshot(
+        let (models, total_tokens) =
+            build_model_snapshots(self.by_model.iter(), self.total_requests);
+        let mut classifier = build_classifier_snapshot(
             &self.by_classifier,
             self.classifier_requests,
             self.classifier_errors,
         );
+        classifier.targets =
+            build_target_snapshots(&self.by_classifier_target, self.classifier_requests);
         StatsSnapshot {
+            targets: build_target_snapshots(&self.by_target, self.total_requests),
             total_requests: self.total_requests,
             total_errors: self.total_errors,
             total_tokens,
@@ -204,15 +254,79 @@ impl StatsAccumulatorInner {
 
     fn reset(&mut self) {
         self.by_model.clear();
+        self.by_target.clear();
         self.total_requests = 0;
         self.total_errors = 0;
         self.routing_overhead = LatencyHistogram::default();
         self.routing_fallbacks = RoutingFallbackStats::default();
         self.by_classifier.clear();
+        self.by_classifier_target.clear();
         self.classifier_requests = 0;
         self.classifier_errors = 0;
         self.algorithm_stats.reset();
     }
+}
+
+/// One configured target's counters and the provider settings that distinguish it.
+struct TargetStats {
+    model: ModelId,
+    reasoning_effort: Option<String>,
+    stats: ModelStats,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct TargetStatsSnapshot {
+    model: ModelId,
+    reasoning_effort: Option<String>,
+    #[serde(flatten)]
+    stats: ModelStatsSnapshot,
+}
+
+/// Updates the legacy model aggregate and the independent target breakdown together.
+fn stats_entries<'a>(
+    models: &'a mut BTreeMap<ModelId, ModelStats>,
+    targets: &'a mut BTreeMap<ModelId, TargetStats>,
+    selected: ModelId,
+    route: Option<&Route>,
+) -> impl Iterator<Item = &'a mut ModelStats> + use<'a> {
+    let target = route.and_then(|route| route.target(&selected));
+    let model = target.map_or(&selected, |target| &target.model).clone();
+    let model_stats = models.entry(model).or_default();
+    let target_stats = target.map(|target: &DecisionTarget| {
+        &mut targets
+            .entry(selected)
+            .or_insert_with(|| TargetStats {
+                model: target.model.clone(),
+                reasoning_effort: target.reasoning_effort.clone(),
+                stats: ModelStats::default(),
+            })
+            .stats
+    });
+    std::iter::once(model_stats).chain(target_stats)
+}
+
+fn build_target_snapshots(
+    targets: &BTreeMap<ModelId, TargetStats>,
+    requests: u64,
+) -> BTreeMap<ModelId, TargetStatsSnapshot> {
+    build_model_snapshots(
+        targets.iter().map(|(name, target)| (name, &target.stats)),
+        requests,
+    )
+    .0
+    .into_iter()
+    .map(|(name, stats)| {
+        let target = &targets[&name];
+        (
+            name,
+            TargetStatsSnapshot {
+                model: target.model.clone(),
+                reasoning_effort: target.reasoning_effort.clone(),
+                stats,
+            },
+        )
+    })
+    .collect()
 }
 
 #[derive(Clone, Debug, Default)]
@@ -318,6 +432,7 @@ pub(crate) struct StatsSnapshot {
     pub total_errors: u64,
     pub total_tokens: TokenTotals,
     pub models: BTreeMap<ModelId, ModelStatsSnapshot>,
+    pub targets: BTreeMap<ModelId, TargetStatsSnapshot>,
     pub routing_overhead: LatencyHistogramSnapshot,
     pub routing_fallbacks: RoutingFallbackStats,
     pub classifier: ClassifierStatsSnapshot,
@@ -339,6 +454,7 @@ pub(crate) struct ClassifierStatsSnapshot {
     pub total_errors: u64,
     pub total_tokens: TokenTotals,
     pub models: BTreeMap<ModelId, ModelStatsSnapshot>,
+    pub targets: BTreeMap<ModelId, TargetStatsSnapshot>,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize)]
@@ -383,12 +499,12 @@ pub(crate) struct LatencyHistogramSnapshot {
     pub p99_ms: f64,
 }
 
-fn build_model_snapshots(
-    by_model: &BTreeMap<ModelId, ModelStats>,
+fn build_model_snapshots<'a>(
+    by_model: impl Iterator<Item = (&'a ModelId, &'a ModelStats)> + Clone,
     total_requests: u64,
 ) -> (BTreeMap<ModelId, ModelStatsSnapshot>, TokenTotals) {
     let mut totals = TokenTotals::default();
-    for stats in by_model.values() {
+    for (_, stats) in by_model.clone() {
         totals.prompt = totals.prompt.saturating_add(stats.prompt_tokens);
         totals.completion = totals.completion.saturating_add(stats.completion_tokens);
         totals.cached = totals.cached.saturating_add(stats.cached_tokens);
@@ -400,7 +516,6 @@ fn build_model_snapshots(
     totals.total = totals.prompt.saturating_add(totals.completion);
 
     let models = by_model
-        .iter()
         .map(|(model, stats)| {
             let total_tokens = stats.prompt_tokens.saturating_add(stats.completion_tokens);
             let snapshot = ModelStatsSnapshot {
@@ -436,12 +551,13 @@ fn build_classifier_snapshot(
     total_requests: u64,
     total_errors: u64,
 ) -> ClassifierStatsSnapshot {
-    let (models, total_tokens) = build_model_snapshots(models, total_requests);
+    let (models, total_tokens) = build_model_snapshots(models.iter(), total_requests);
     ClassifierStatsSnapshot {
         total_requests,
         total_errors,
         total_tokens,
         models,
+        targets: BTreeMap::new(),
     }
 }
 
@@ -490,6 +606,67 @@ mod tests {
             completion_tokens: completion,
             ..TokenUsage::default()
         }
+    }
+
+    /// Shared-model targets contribute once to totals, with independent errors and cache state.
+    #[test]
+    fn shared_model_targets_keep_independent_counters_and_reset_together() {
+        let runner = switchyard_runner::Runner::from_toml(
+            r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "http://localhost:1/v1"
+[targets.efficient]
+id = "shared"
+llm_client = "upstream"
+reasoning_effort = "medium"
+[targets.capable]
+id = "shared"
+llm_client = "upstream"
+reasoning_effort = "max"
+[routes.test]
+id = "route"
+type = "random"
+targets = ["efficient", "capable"]
+"#,
+        )
+        .unwrap();
+        let root = StatsAccumulator::default();
+        let stats = root.for_route(runner.route("route").unwrap().clone());
+        for target in ["efficient", "capable"] {
+            stats.record_success(target, 10.0);
+            stats.record_usage(target, usage(10, 2), 15.0);
+            stats.record_classifier_success(target, Some(usage(5, 1)), 3.0);
+        }
+        stats.record_error("efficient");
+        stats.record_response_error("capable");
+        stats.record_classifier_error("capable");
+        let snapshot = root.snapshot();
+        assert_eq!(snapshot.total_requests, 3);
+        assert_eq!(snapshot.total_errors, 2);
+        assert_eq!(snapshot.total_tokens.prompt, 20);
+        assert_eq!(snapshot.models["shared"].calls, 2);
+        assert_eq!(snapshot.models["shared"].errors, 2);
+        assert_eq!(snapshot.models["shared"].model_call_latency.count, 2);
+        assert_eq!(snapshot.targets["efficient"].stats.calls, 1);
+        assert_eq!(snapshot.targets["efficient"].stats.errors, 1);
+        assert_eq!(snapshot.targets["capable"].stats.errors, 1);
+        assert_eq!(snapshot.classifier.total_requests, 3);
+        assert_eq!(snapshot.classifier.models["shared"].calls, 2);
+        assert_eq!(snapshot.classifier.total_tokens.prompt, 10);
+        assert_eq!(snapshot.classifier.targets["capable"].stats.errors, 1);
+        assert_eq!(
+            snapshot.targets["capable"].reasoning_effort.as_deref(),
+            Some("max")
+        );
+        let probe = prefix_probe(&json!({"messages": [{"role": "user", "content": "repeated"}]}));
+        assert_eq!(stats.prefix_eligibility(&"efficient".into(), &probe), 0.0);
+        assert_eq!(stats.prefix_eligibility(&"capable".into(), &probe), 0.0);
+        assert_eq!(stats.prefix_eligibility(&"efficient".into(), &probe), 1.0);
+        root.reset();
+        assert_eq!(root.snapshot(), StatsSnapshot::default());
+        assert_eq!(stats.prefix_eligibility(&"efficient".into(), &probe), 0.0);
     }
 
     #[test]

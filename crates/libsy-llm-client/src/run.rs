@@ -99,7 +99,7 @@ pub async fn run(
             .ok()
             .and_then(Response::served_model)
             .unwrap_or(&selected_model_id);
-        let served_model = served_model.clone();
+        let served_model = clients.provider_model(served_model).clone();
         metrics::observe_routed_request(&algorithm_name, &served_model, None, result)
     } else {
         let observe = |observation| {
@@ -397,12 +397,13 @@ impl CallPhase {
         switchyard.candidate = index + 1,
         switchyard.candidate_count = count,
         switchyard.call_phase = phase.as_str(),
-        selected_model = %model_id,
+        selected_model = %clients.provider_model(model_id),
+        selected_target = %model_id,
         otel.kind = "client",
-        otel.name = %format_args!("chat {model_id}"),
+        otel.name = %format_args!("chat {}", clients.provider_model(model_id)),
         openinference.span.kind = "LLM",
         gen_ai.operation.name = "chat",
-        gen_ai.request.model = %model_id,
+        gen_ai.request.model = %clients.provider_model(model_id),
         gen_ai.request.stream = tracing::field::Empty,
         gen_ai.request.temperature = tracing::field::Empty,
         gen_ai.request.top_p = tracing::field::Empty,
@@ -484,7 +485,12 @@ async fn call_one(
     let result = if is_routing {
         result
     } else {
-        metrics::observe_routed_request(algorithm, model_id, Some(duration), result)
+        metrics::observe_routed_request(
+            algorithm,
+            clients.provider_model(model_id),
+            Some(duration),
+            result,
+        )
     };
     observe(ModelCallObservation {
         selected_model: model_id.clone(),
@@ -846,6 +852,12 @@ impl ClientRouter {
     pub fn without_rate_limit_fallback(mut self, models: HashSet<ModelId>) -> Self {
         self.rate_limit_fallback_disabled = Arc::new(models);
         self
+    }
+
+    /// Resolves a target for model telemetry, including calls that fail before a response.
+    fn provider_model<'a>(&'a self, target: &'a ModelId) -> &'a ModelId {
+        self.route(target)
+            .map_or(target, |client| client.provider_model(target))
     }
 
     /// The client that serves `model`.

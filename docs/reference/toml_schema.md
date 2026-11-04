@@ -54,21 +54,37 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `api_key_env` | No | unset | Name of the environment variable holding the key. Omit to send no authentication. |
 | `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. A route's forwarding clients must use one credential family unless they all use the same scheme, host, and port, such as one LLM gateway. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
-| `responses_reasoning` | No | `"preserve_encrypted"` | Responses reasoning replay: `"preserve_encrypted"` or `"drop"`. Only valid for `openai_responses`. |
+| `responses_reasoning` | No | `"auto"` | Responses reasoning replay: `"auto"`, `"preserve_encrypted"`, `"preserve_plaintext"`, or `"drop"`. Only valid for `openai_responses`. |
 | `fallback_on_rate_limit` | No | `true` | Try another completion candidate after an upstream HTTP 429 exhausts retries. Set to `false` to return the 429 instead. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
 | `failure_cooldown_ms` | No | `5000` (5 seconds) | Skip a backend for this many milliseconds after an exhausted transient completion failure. Zero disables it. |
 | `timeout_ms` | No | unset | Deadline in milliseconds for all attempts, retry delays, and the complete response, including stream reads. Must be at least `1`. Unset leaves the wait unbounded. |
 
 For `openai_responses`, `responses_reasoning` controls replay of reasoning
-history. Every client defaults to `"preserve_encrypted"`: reasoning items with
-non-empty `encrypted_content` or a stored reasoning `id` are retained with empty
-`content`. ID-only reasoning is removed when the request sets `store: false`.
-Switchyard's translated Anthropic reasoning is always removed.
-Reasoning without either is removed. Set `responses_reasoning = "drop"` explicitly for a backend
-that cannot consume provider reasoning. Both modes keep messages, tool
-calls and tool results. The setting is rejected on other client formats, even
-when no target uses the client. It is not inferred from the model name or URL.
+history. Most configurations should leave it unset. The values are:
+
+- `"auto"` (default): choose per request from the target that serves it,
+  including fallback targets. Targets on `api.openai.com` or `*.openai.azure.com`
+  use `"preserve_encrypted"`. On other hosts, such as a shared gateway or proxy,
+  the choice comes from the last `/`-separated part of the target `id`. Names that
+  start with `gpt-` (except `gpt-oss`) or `codex-`, and o-series names such as
+  `o3` or `o4-mini`, use `"preserve_encrypted"`. All other targets use
+  `"preserve_plaintext"`.
+- `"preserve_encrypted"`: keep reasoning items with non-empty `encrypted_content`
+  or a stored reasoning `id`, and empty their `content`. ID-only reasoning is
+  removed when the request sets `store: false`. Switchyard's translated Anthropic
+  reasoning and plaintext-only reasoning are removed. OpenAI needs this.
+- `"preserve_plaintext"`: keep `summary` and `content` text unchanged and in place,
+  for any `store` value. Remove non-empty `encrypted_content`, because Switchyard
+  cannot tell which provider issued it. An item left with no text is removed. An
+  ID-only item is kept unless the request sets `store: false`.
+- `"drop"`: remove all reasoning items. Use it for a backend, such as llama.cpp,
+  that rejects reasoning from other providers.
+
+All modes keep messages, tool calls and tool results. Set an explicit value when
+`"auto"` picks the wrong mode, for example an Azure OpenAI deployment with a custom
+name behind a gateway. The setting is rejected on other client formats, even
+when no target uses the client.
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
 must exist and be non-empty when the server loads.
@@ -170,12 +186,35 @@ such clients.
 | `system_prompt` | No | unset | System prompt prepended when this target serves a completion. |
 | `extra_body` | No | `{}` | Values merged into the upstream request when the request does not already set that key. |
 | `omit_body_fields` | No | `[]` | Top-level fields removed from every request body that Switchyard sends to this target. Switchyard removes them after it translates the request to the LLM client's `format`, so use that format's field names, for example `reasoning_effort` on `openai_chat` or `reasoning` on `openai_responses`. Switchyard applies `extra_body` and `reasoning_effort` after the removal, so either can set a removed field again. |
-| `reasoning_effort` | No | unset | Reasoning effort forced on every request to this target, replacing the value the caller sent (`reasoning.effort` on `openai_responses`, `reasoning_effort` on `openai_chat`). Rejected on `anthropic_messages` clients. Use it to run one target at a different effort than the client asked for, for example a strong tier at `max` behind a client that sends `high`. Targets with different effort settings need distinct model IDs when used within one route. Separate routes may use the same model ID with separate `llm_clients` entries (same endpoint, different name). |
+| `reasoning_effort` | No | unset | Reasoning effort forced on every request to this target, replacing the value the caller sent (`reasoning.effort` on `openai_responses`, `reasoning_effort` on `openai_chat`, `output_config.effort` on `anthropic_messages`, which accepts `low`, `medium`, `high`, `xhigh`, or `max`). Use it to run one target at a different effort than the client asked for, for example a strong tier at `max` behind a client that sends `high`. |
 
-Within one route, callable targets with the same model ID must use the same `llm_client`.
-This includes completion targets and targets used for judging or classification. Switchyard rejects
-same-model targets on different clients within a route because execution is keyed by model ID.
-Separate routes may use the same model ID on different clients.
+Switchyard routes on target names, so several targets may share one `id`. Each target keeps its
+own `llm_client`, `system_prompt`, `extra_body`, `omit_body_fields`, and `reasoning_effort`. For
+example, one route can run the same model at two efforts:
+
+```toml
+[targets.capable]
+id = "gpt"
+llm_client = "openai"
+reasoning_effort = "max"
+
+[targets.efficient]
+id = "gpt"
+llm_client = "openai"
+reasoning_effort = "medium"
+```
+
+Responses, the `x-model-router-selected-model` header, and the routing log `model` field name the
+target's `id`. Existing model metric labels and the `models` keys in `/v1/stats` and
+`/v1/routing/session-stats` also use provider IDs. Targets sharing a provider model contribute
+to one model aggregate.
+
+Both stats endpoints add a separate `targets` breakdown keyed by TOML target name. Each entry
+includes `model`, configured `reasoning_effort` (or `null`), and that target's counters. The
+process stats also include `classifier.targets` for routing-time calls. Totals count each call
+once; the model and target breakdowns are two views of those calls. Routing log rows retain
+`model` and `target`, and include `reasoning_effort` when configured. Older rows without a
+target still contribute to model totals.
 
 Each selected or fallback target is prepared from the routed request independently. A prompt
 configured for one target is therefore not carried into another target's fallback request.
@@ -183,9 +222,8 @@ Judge-only, classifier-only, and reviewer-only targets are not completion destin
 receive this prompt.
 
 Escalation's weak target and Advisor's executor produce a candidate response while routing, so
-their target prompt is applied to that call. A prompted target in either role cannot use the same
-model ID as that route's judge or reviewer because those calls would otherwise be indistinguishable
-at the client boundary; Switchyard rejects that configuration when it loads.
+their target prompt is applied to that call. A prompted target in either role cannot also be that
+route's judge or reviewer; Switchyard rejects that configuration when it loads.
 Token-count requests do not apply target system prompts.
 
 ## `[decision_clients.<name>]`
