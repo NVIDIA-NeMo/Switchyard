@@ -132,6 +132,12 @@ async fn configured_parent_and_subagent_targets_stay_separate() {
 fn invalid_routing_configuration_is_rejected() {
     for (source, expected) in [
         (
+            format!(
+                "{DEPLOYMENT}\n[routes.parent.eligibility]\nrequire_explicit_requirements = true\n"
+            ),
+            "target eligibility requires Runner admission",
+        ),
+        (
             DEPLOYMENT.replacen("target = \"fast\"", "target = \"missing\"", 1),
             "unknown target missing",
         ),
