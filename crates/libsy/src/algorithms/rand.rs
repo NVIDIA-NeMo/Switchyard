@@ -110,8 +110,10 @@ impl Classifier for RandomClassifier {
         Ok((
             Classification::Scores(vec![Score {
                 confidence: 1.0,
-                target,
-                category: Some(Category::Any),
+                // The draw chose one specific model, so it is pinned rather than
+                // asking the pool for "any" of a category.
+                needs: Vec::new(),
+                pin: Some(target.clone()),
             }]),
             None,
         ))
@@ -323,7 +325,7 @@ mod tests {
             .0
             .argmax(false)?;
         assert_eq!(
-            retained.map(|score| score.target),
+            retained.and_then(|score| score.pin),
             Some(ModelId::from(selected.clone()))
         );
 

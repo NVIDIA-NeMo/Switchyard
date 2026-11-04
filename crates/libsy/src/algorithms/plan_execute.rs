@@ -220,7 +220,7 @@ impl Algorithm for PlanExecute {
                         .await?
                         .0
                         .argmax(false)?
-                        .is_some_and(|score| score.category == Some(Category::Efficient))
+                        .is_some_and(|score| score.needs.contains(&Category::Efficient))
                 }
             } else {
                 let signals = ToolSignals::from_request_with_semantics(

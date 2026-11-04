@@ -181,7 +181,7 @@ impl EscalationClassifier {
             .await?;
         let best = classification.argmax(false)?;
         let release_streak = match &best {
-            Some(score) if score.target == *efficient => {
+            Some(score) if score.needs.contains(&Category::Efficient) => {
                 count(state, RELEASE_STREAK_KEY).saturating_add(1)
             }
             _ => 0,

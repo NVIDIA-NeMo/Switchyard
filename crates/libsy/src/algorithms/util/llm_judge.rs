@@ -528,11 +528,10 @@ mod tests {
             } else {
                 "no-verdict"
             };
-            Ok(Classification::Scores(vec![Score {
-                target: ModelId::from(target),
-                confidence: 1.0,
-                category: None,
-            }]))
+            Ok(Classification::Scores(vec![Score::pinned(
+                ModelId::from(target),
+                1.0,
+            )]))
         }
     }
 
@@ -647,7 +646,7 @@ mod tests {
     fn selected(classification: Classification) -> Result<ModelId> {
         classification
             .argmax(false)?
-            .map(|score| score.target)
+            .and_then(|score| score.pin)
             .ok_or_else(|| LibsyError::AlgorithmError {
                 message: "policy abstained".to_string(),
             })

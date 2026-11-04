@@ -16,8 +16,9 @@ use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
     OpenAiDecisionClient, ResponsesReasoningPolicy, SystemOneClient, TranslatingLlmClient,
 };
-use switchyard_protocol::{ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
+use switchyard_protocol::{Category, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
+use crate::algorithm::PoolSpec;
 use crate::algorithm_factory::AlgorithmAndModels;
 use crate::runner::ModelPropertiesProbe;
 use crate::{
@@ -148,6 +149,9 @@ pub(crate) struct DeploymentConfig {
     #[serde(default)]
     decision_targets: BTreeMap<String, DecisionTargetConfig>,
     routes: BTreeMap<String, RouteConfig>,
+    /// Shared model catalog for `auto` routes' `[routes.*.signals]`.
+    #[serde(default)]
+    pool: Option<PoolSpec>,
 }
 
 #[derive(Debug)]
@@ -279,6 +283,58 @@ impl DeploymentConfig {
         })
     }
 
+    /// Validates `[pool]`: every model names a configured target, every
+    /// capability tag parses, and `default` is actually provided by a model.
+    fn validate_pool(&self, pool: &PoolSpec) -> RunnerResult<PoolSpec> {
+        if pool.models.is_empty() {
+            return Err(RunnerError::configuration(
+                "[pool] must declare at least one model".to_string(),
+            ));
+        }
+        for model in &pool.models {
+            validate_value("pool model target", &model.target)?;
+            self.targets.get(&model.target).ok_or_else(|| {
+                RunnerError::configuration(format!(
+                    "[pool] references unknown target {}",
+                    model.target
+                ))
+            })?;
+            if model.provides.is_empty() {
+                return Err(RunnerError::configuration(format!(
+                    "[pool] model {} must provide at least one capability",
+                    model.target
+                )));
+            }
+            for tag in &model.provides {
+                tag.parse::<Category>().map_err(|error| {
+                    RunnerError::configuration(format!(
+                        "[pool] model {} has an invalid capability {tag:?}: {error}",
+                        model.target
+                    ))
+                })?;
+            }
+        }
+        let default_category = pool.default.parse::<Category>().map_err(|error| {
+            RunnerError::configuration(format!(
+                "[pool] default {:?} is invalid: {error}",
+                pool.default
+            ))
+        })?;
+        let has_default_provider = pool.models.iter().any(|model| {
+            model
+                .provides
+                .iter()
+                .any(|tag| tag.parse::<Category>().as_ref() == Ok(&default_category))
+        });
+        if !has_default_provider {
+            return Err(RunnerError::configuration(format!(
+                "[pool] default {:?} is not provided by any pool model",
+                pool.default
+            )));
+        }
+        Ok(pool.clone())
+    }
+
     /// Checks route identity and target references without constructing clients.
     pub(crate) fn validate(&self) -> RunnerResult<()> {
         self.check_schema_version()?;
@@ -401,8 +457,27 @@ impl DeploymentConfig {
         })
     }
 
-    fn build(self) -> RunnerResult<Runner> {
+    fn build(mut self) -> RunnerResult<Runner> {
         self.validate()?;
+
+        let pool = self
+            .pool
+            .as_ref()
+            .map(|pool| self.validate_pool(pool))
+            .transpose()?;
+        for (route_name, config) in self.routes.iter_mut() {
+            if let AlgorithmSpec::CapabilityRouter {
+                pool: route_pool, ..
+            } = &mut config.algorithm
+            {
+                let Some(pool) = &pool else {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} requires a top-level [pool] because it uses type = \"capability_router\""
+                    )));
+                };
+                *route_pool = pool.clone();
+            }
+        }
 
         let mut provider_api_keys = Vec::new();
         let clients = self.build_clients(&mut provider_api_keys)?;
@@ -1452,6 +1527,57 @@ new = ["send_message"]
         )
     }
 
+    fn auto_signals_config() -> String {
+        format!(
+            r#"{VALID_CONFIG}
+[targets.tier_judge]
+id = "tier-judge/model"
+llm_client = "primary"
+
+[targets.balanced]
+id = "balanced/model"
+llm_client = "primary"
+
+[targets.compatibility]
+id = "compatibility/model"
+llm_client = "primary"
+
+[pool]
+models = [
+  {{ target = "strong", provides = ["capable"] }},
+  {{ target = "balanced", provides = ["balanced"] }},
+  {{ target = "compatibility", provides = ["compatibility"] }},
+  {{ target = "weak", provides = ["efficient"] }},
+]
+default = "efficient"
+
+[routes.composed]
+id = "switchyard/hier"
+type = "capability_router"
+
+[routes.composed.signals.task]
+judge = "tier_judge"
+base_threshold = 0.5
+
+[routes.composed.signals.tool_loop]
+picker = "efficient_first"
+confidence_threshold = 0.5
+
+[routes.composed.signals.tool_loop.tool_semantics]
+new = ["send_message"]
+"#
+        )
+    }
+
+    #[test]
+    fn composite_stage_block_rejects_an_unknown_field() {
+        let config = composite_config().replace(
+            "confidence_threshold = 0.5",
+            "confidence_threshold = 0.5\nmagic = true",
+        );
+        assert!(error_message(&config).contains("unknown field"));
+    }
+
     #[test]
     fn stage_and_composite_validate_hold_turns() {
         let composite =
@@ -1552,6 +1678,65 @@ classify_trigger"#,
     }
 
     #[test]
+    fn auto_route_rejects_an_out_of_range_capable_score_threshold() {
+        let config = auto_signals_config().replace(
+            "[routes.composed.signals.tool_loop]",
+            "[routes.composed.signals.tool_loop]\ncapable_score_threshold = 1.1",
+        );
+        assert!(error_message(&config).contains("capable_score_threshold must be between 0 and 1"));
+    }
+
+    #[test]
+    fn auto_route_accepts_capable_score_threshold() -> RunnerResult<()> {
+        let config = auto_signals_config().replace(
+            "[routes.composed.signals.tool_loop]",
+            "[routes.composed.signals.tool_loop]\ncapable_score_threshold = 0.35",
+        );
+        runner_from_toml(&config)?;
+        Ok(())
+    }
+
+    /// `review` builds the same AdvisorGateConfig as an `advisor` route, so a pattern
+    /// under the default trigger has to be rejected here too instead of being ignored.
+    #[test]
+    fn auto_route_rejects_a_gate_trigger_pattern_without_the_pattern_trigger() {
+        let config = format!(
+            r#"{VALID_CONFIG}
+[pool]
+models = [
+  {{ target = "strong", provides = ["capable"] }},
+  {{ target = "weak", provides = ["efficient"] }},
+]
+default = "efficient"
+
+[routes.reviewed]
+id = "switchyard/reviewed"
+type = "capability_router"
+
+[routes.reviewed.signals.review]
+executor_target = "weak"
+advisor_target = "strong"
+gate_trigger_pattern = "DONE"
+"#
+        );
+        let message = error_message(&config);
+        assert!(
+            message.contains("gate_trigger_pattern requires"),
+            "unexpected error: {message}"
+        );
+    }
+
+    #[test]
+    fn auto_route_accepts_escalation_hold() -> RunnerResult<()> {
+        let config = auto_signals_config().replace(
+            "[routes.composed.signals.tool_loop]",
+            "[routes.composed.signals.tool_loop]\nescalation_hold_turns = 3",
+        );
+        runner_from_toml(&config)?;
+        Ok(())
+    }
+
+    #[test]
     fn composite_route_builds_and_claims_both_tiers_and_its_judge() -> RunnerResult<()> {
         let runner = runner_from_toml(&composite_config())?;
         assert!(
@@ -1559,6 +1744,30 @@ classify_trigger"#,
                 .models()
                 .any(|model| model.id.as_str() == "switchyard/hier")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn auto_route_builds_and_claims_both_tiers_and_its_judge() -> RunnerResult<()> {
+        let runner = runner_from_toml(&auto_signals_config())?;
+        assert!(
+            runner
+                .models()
+                .any(|model| model.id.as_str() == "switchyard/hier")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn auto_route_accepts_deterministic_task_rules() -> RunnerResult<()> {
+        let config = format!(
+            "{}\n[routes.composed.signals.rules]\ncapable = [\"historical\", \"tie-break\"]\nbalanced = [\"multi-step\"]\n[routes.composed.signals.rules.named]\ncompatibility = [\"legacy behavior\"]\n",
+            auto_signals_config()
+        );
+
+        let runner = runner_from_toml(&config)?;
+
+        assert!(runner.route("switchyard/hier").is_some());
         Ok(())
     }
 
@@ -1841,14 +2050,26 @@ classify_trigger"#,
     }
 
     #[test]
-    fn auto_route_builds_a_stage_router_with_no_extra_fields() -> RunnerResult<()> {
+    fn auto_route_builds_from_pool_and_signals() -> RunnerResult<()> {
         let config = format!(
             r#"{VALID_CONFIG}
+[pool]
+models = [
+  {{ target = "strong", provides = ["capable"] }},
+  {{ target = "weak", provides = ["efficient"] }},
+]
+default = "efficient"
+
 [routes.auto]
 id = "switchyard/auto"
-type = "auto"
-capable_target = "strong"
-efficient_target = "weak"
+type = "capability_router"
+
+[routes.auto.signals]
+affinity = true
+
+[routes.auto.signals.task]
+judge = "classifier"
+base_threshold = 0.5
 "#
         );
         let runner = runner_from_toml(&config)?;
@@ -1857,8 +2078,24 @@ efficient_target = "weak"
     }
 
     #[test]
-    fn composite_stage_block_rejects_an_unknown_field() {
-        let config = composite_config().replace(
+    fn auto_route_without_a_pool_is_rejected() {
+        let config = format!(
+            r#"{VALID_CONFIG}
+[routes.auto]
+id = "switchyard/auto"
+type = "capability_router"
+
+[routes.auto.signals.task]
+judge = "classifier"
+base_threshold = 0.5
+"#
+        );
+        assert!(error_message(&config).contains("requires a top-level [pool]"));
+    }
+
+    #[test]
+    fn auto_tool_loop_signal_rejects_an_unknown_field() {
+        let config = auto_signals_config().replace(
             "confidence_threshold = 0.5",
             "confidence_threshold = 0.5\nmagic = true",
         );
