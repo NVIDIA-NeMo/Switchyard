@@ -18,13 +18,13 @@ use super::llm_class::{
 };
 use super::stage::{StageRouterConfig, build_stage_route};
 use super::util::affinity::{ClassifyTrigger, evict_if_full, has_new_user_turn, retention_key};
-use super::util::stage::{Tier, fall_open_tier, set_fall_open};
+use super::util::stage::{PickerMode, Tier, fall_open_tier, set_fall_open};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
-use crate::core::classifier::Classifier;
+use crate::core::classifier::{Classification, Classifier};
 use crate::core::processor::{Event, Processor};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Category, Request};
+use switchyard_protocol::{Category, Request, Response};
 
 const COMPOSITE: &str = "composite";
 
@@ -54,7 +54,10 @@ impl TierSetter {
     /// judge call sits between here and [`retain`](Self::retain). The later wins.
     fn is_due(&self, identity: Option<&RoutingIdentity>, state: &State, request: &Request) -> bool {
         match self.trigger {
-            ClassifyTrigger::UserTurn => has_new_user_turn(&request.llm_request.messages),
+            ClassifyTrigger::UserTurn => {
+                !request.llm_request.is_compaction
+                    && has_new_user_turn(&request.llm_request.messages)
+            }
             // Unkeyed requests with no carried tier cannot be told apart, so every one
             // is a new session.
             ClassifyTrigger::NewSession => {
@@ -145,7 +148,39 @@ impl CompositeRouter {
     /// A stage router carrying its own judge is allowed, but that judge sits ahead
     /// of the fall-open tier and so answers most of the turns this one set a tier for.
     pub fn new(config: CompositeRouterConfig) -> Result<Self> {
-        let (trigger, message_hash_fallback) = match &config.judge {
+        let setter = Self::tier_setter(config.judge, config.stage.mode.default_tier())?;
+        let route = build_stage_route(config.stage, setter.trigger == ClassifyTrigger::UserTurn)?
+            .with_name(COMPOSITE)
+            .with_processor(Arc::new(setter));
+        Ok(Self { route })
+    }
+
+    /// Builds two independent stage profiles selected by the judge.
+    pub fn new_with_profiles(
+        judge: CompositeJudgeConfig,
+        mut profile_0: StageRouterConfig,
+        mut profile_1: StageRouterConfig,
+    ) -> Result<Self> {
+        for profile in [&mut profile_0, &mut profile_1] {
+            if profile.mode == PickerMode::CapableFirst {
+                profile.efficient_hold_turns.get_or_insert(-1);
+            }
+        }
+        let setter = Self::tier_setter(judge, Tier::Efficient)?;
+        let reset_on_user_turn = setter.trigger == ClassifyTrigger::UserTurn;
+        let profiles = StageProfiles([
+            build_stage_route(profile_0, reset_on_user_turn)?,
+            build_stage_route(profile_1, reset_on_user_turn)?,
+        ]);
+        let route = FallThrough::new_with_state()
+            .with_name(COMPOSITE)
+            .with_processor(Arc::new(setter))
+            .with_classifier(Arc::new(profiles));
+        Ok(Self { route })
+    }
+
+    fn tier_setter(judge: CompositeJudgeConfig, default_tier: Tier) -> Result<TierSetter> {
+        let (trigger, message_hash_fallback) = match &judge {
             CompositeJudgeConfig::Capability(judge) => {
                 (judge.classify_trigger, judge.message_hash_fallback)
             }
@@ -158,9 +193,9 @@ impl CompositeRouter {
                 message: "composite: classify_trigger must be user_turn or new_session".to_string(),
             });
         }
-        let judge: Arc<dyn Classifier> = match config.judge {
+        let judge: Arc<dyn Classifier> = match judge {
             CompositeJudgeConfig::Capability(judge) => {
-                // Composite owns the trigger and retention; standalone affinity never runs.
+                // Composite owns the trigger and retained verdict.
                 Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                     config: TaskClassifierConfig {
                         classify_trigger: ClassifyTrigger::EveryRequest,
@@ -173,17 +208,54 @@ impl CompositeRouter {
                 LlmTaskClassifier::custom_classifier(&config, true)?
             }
         };
-        let setter = TierSetter {
+        Ok(TierSetter {
             judge,
             trigger,
             message_hash_fallback,
-            default_tier: config.stage.mode.default_tier(),
+            default_tier,
             tiers: Mutex::new(HashMap::new()),
+        })
+    }
+}
+
+struct StageProfiles([FallThrough; 2]);
+
+#[async_trait]
+impl Classifier for StageProfiles {
+    async fn score(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: &Driver,
+    ) -> Result<(Classification, Option<Response>)> {
+        let (profile, prefix) = match fall_open_tier(state) {
+            Some(Tier::Capable) => (&self.0[1], "composite.profile_1."),
+            _ => (&self.0[0], "composite.profile_0."),
         };
-        let route = build_stage_route(config.stage)?
-            .with_name(COMPOSITE)
-            .with_processor(Arc::new(setter));
-        Ok(Self { route })
+        // Each profile retains its own holds, including in caller-carried state.
+        let mut profile_state = State {
+            extra: state
+                .extra
+                .iter()
+                .filter_map(|(key, value)| {
+                    key.strip_prefix(prefix)
+                        .map(|key| (key.to_string(), value.clone()))
+                })
+                .collect(),
+            ..State::default()
+        };
+        let result = profile.route(&mut profile_state, driver, request).await;
+        state.extra.retain(|key, _| !key.starts_with(prefix));
+        state.extra.extend(
+            profile_state
+                .extra
+                .into_iter()
+                .map(|(key, value)| (format!("{prefix}{key}"), value)),
+        );
+        state.tool_signals = profile_state.tool_signals;
+        state.target_prompts = profile_state.target_prompts;
+        let (score, response) = result?;
+        Ok((Classification::Scores(vec![score]), response))
     }
 }
 
@@ -211,7 +283,6 @@ mod tests {
     use switchyard_protocol::{Category, LlmClientError, Message, ModelId, Role};
 
     use super::*;
-    use crate::algorithms::util::stage::PickerMode;
     use crate::algorithms::util::tier_fixtures::{JUDGE, Recorder, turn_request};
     use crate::core::testing::test_drive_with_models;
 
@@ -262,6 +333,27 @@ mod tests {
 
     fn router() -> Result<Arc<CompositeRouter>> {
         router_with_trigger(ClassifyTrigger::UserTurn)
+    }
+
+    #[tokio::test]
+    async fn compaction_retains_the_profile_until_a_real_user_turn() -> Result<()> {
+        let router = router()?;
+        let recorder = Arc::new(Recorder::default());
+        let mut compacted = user_turn_request();
+        compacted.llm_request.is_compaction = true;
+        for (request, verdict, calls, target) in [
+            (user_turn_request(), 1.0, 1, "weak"),
+            (compacted, 0.0, 1, "weak"),
+            (user_turn_request(), 0.0, 2, "strong"),
+        ] {
+            *recorder.judge_p_solve.lock() = verdict;
+            let (model, _) =
+                test_drive_with_models(router.clone(), request, runtime_models(), recorder.serve())
+                    .await?;
+            assert_eq!(recorder.judge_calls(), calls);
+            assert_eq!(model.as_str(), target);
+        }
+        Ok(())
     }
 
     #[tokio::test]
@@ -346,6 +438,90 @@ mod tests {
             }),
             stage,
         })?))
+    }
+
+    #[tokio::test]
+    async fn profiles_reset_holds_and_keep_prompts_when_the_judge_switches() -> Result<()> {
+        for (has_session_id, picker, first_target, first_prompt) in [
+            (false, PickerMode::EfficientFirst, "weak", "EF efficient"),
+            (true, PickerMode::EfficientFirst, "weak", "EF efficient"),
+            (true, PickerMode::CapableFirst, "strong", "EF capable"),
+        ] {
+            let mut efficient = StageRouterConfig::new(picker, 0.5);
+            efficient.capable_hold_turns = -1;
+            efficient.capable_system_prompt = Some("EF capable".into());
+            efficient.efficient_system_prompt = Some("EF efficient".into());
+            let mut capable = StageRouterConfig::new(PickerMode::CapableFirst, 0.0);
+            capable.capable_hold_turns = 0;
+            capable.capable_system_prompt = Some("CF capable".into());
+            capable.efficient_system_prompt = Some("CF efficient".into());
+            for stage in [&mut efficient, &mut capable] {
+                stage.llm_fallback = Some(crate::algorithms::stage::LlmFallback {
+                    target: None,
+                    config: Default::default(),
+                });
+            }
+            let router = Arc::new(CompositeRouter::new_with_profiles(
+                CompositeJudgeConfig::Capability(TaskClassifierConfig {
+                    judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                        base_threshold: 0.5,
+                        ..Default::default()
+                    }),
+                    classify_trigger: ClassifyTrigger::UserTurn,
+                    ..Default::default()
+                }),
+                efficient,
+                capable,
+            )?);
+            let recorder = Arc::new(Recorder::default());
+            let mut write = turn_request(false);
+            if let switchyard_protocol::ContentBlock::ToolCall(call) =
+                &mut write.llm_request.messages[1].content[0]
+            {
+                call.name = "Write".into();
+            }
+            let mut context_update = write.clone();
+            context_update.llm_request.messages.push(Message::text(
+                Role::User,
+                "<environment_context><current_date>2026-10-31</current_date></environment_context>",
+            ));
+            let mut state = State::default();
+            for (p_solve, request, target, prompt) in [
+                (1.0, user_turn_request(), first_target, first_prompt),
+                (1.0, turn_request(true), "strong", "EF capable"),
+                (0.0, user_turn_request(), "strong", "CF capable"),
+                (0.0, write, "weak", "CF efficient"),
+                (1.0, context_update, "weak", "CF efficient"),
+                (1.0, user_turn_request(), first_target, first_prompt),
+                (0.0, user_turn_request(), "strong", "CF capable"),
+            ] {
+                *recorder.judge_p_solve.lock() = p_solve;
+                let request = if has_session_id {
+                    request
+                } else {
+                    unkeyed(request)
+                };
+                let outcome = crate::core::testing::test_drive_with_state(
+                    router.clone(),
+                    request,
+                    runtime_models(),
+                    state,
+                    recorder.serve(),
+                )
+                .await?;
+                assert_eq!(outcome.selected_model_id()?.as_str(), target);
+                assert_eq!(outcome.request.llm_request.instructions.len(), 1);
+                assert_eq!(
+                    outcome.request.llm_request.instructions[0].content,
+                    vec![switchyard_protocol::ContentBlock::Text {
+                        text: prompt.into()
+                    }]
+                );
+                state = outcome.state;
+            }
+            assert_eq!(recorder.judge_calls(), 4);
+        }
+        Ok(())
     }
 
     #[test]

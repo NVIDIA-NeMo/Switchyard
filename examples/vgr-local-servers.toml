@@ -46,3 +46,9 @@ mode = "shadow"
 # Explicit context_window takes precedence and skips discovery.
 # Set this for Ollama/vLLM, or to set a deliberate limit with llama.cpp.
 # context_window = 32768
+
+# Hermes titles and approval checks bypass VGR verification.
+[routes.auxiliary]
+id = "switchyard/only-efficient"
+type = "passthrough"
+target = "efficient"

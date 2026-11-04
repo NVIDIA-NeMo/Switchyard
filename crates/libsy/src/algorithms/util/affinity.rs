@@ -48,18 +48,33 @@ pub enum ClassifyTrigger {
     NewSession,
 }
 
-/// Anthropic carries tool results as a `Role::User` message, so role alone cannot tell a
-/// human turn from a tool continuation.
+/// Tool results and standalone Codex environment updates do not start a user turn.
 pub(crate) fn is_user_turn(message: &Message) -> bool {
     message.role == Role::User
-        && !message
-            .content
-            .iter()
-            .all(|block| matches!(block, ContentBlock::ToolResult(_)))
+        && message.content.iter().any(|block| {
+            !matches!(block, ContentBlock::ToolResult(_)) && !is_environment_context(block)
+        })
+}
+
+fn is_environment_context(block: &ContentBlock) -> bool {
+    matches!(block, ContentBlock::Text { text } if text.trim()
+        .strip_prefix("<environment_context>")
+        .and_then(|context| context.split_once("</environment_context>"))
+        .is_some_and(|(_, rest)| rest.trim().is_empty()))
+}
+
+pub(crate) fn is_environment_update(message: &Message) -> bool {
+    message.role == Role::User
+        && !message.content.is_empty()
+        && message.content.iter().all(is_environment_context)
 }
 
 pub(crate) fn has_new_user_turn(messages: &[Message]) -> bool {
-    messages.last().is_some_and(is_user_turn)
+    messages
+        .iter()
+        .rev()
+        .find(|message| !is_environment_update(message))
+        .is_some_and(is_user_turn)
 }
 
 /// Who started the request, `user` or `agent` (GitHub Copilot's convention).
@@ -89,7 +104,7 @@ pub(crate) fn initiated_by_user(request: &Request) -> Option<bool> {
 
 /// Whether `request` opens a user turn: the `x-initiator` header says so, or else
 /// its newest message is the user's.
-fn starts_user_turn(request: &Request) -> bool {
+pub(crate) fn starts_user_turn(request: &Request) -> bool {
     initiated_by_user(request).unwrap_or_else(|| has_new_user_turn(&request.llm_request.messages))
 }
 
@@ -324,6 +339,42 @@ mod tests {
 
     /// Boxed, thread-safe error type keeping the test helpers ergonomic.
     type BoxErr = Box<dyn std::error::Error + Send + Sync>;
+
+    #[test]
+    fn environment_updates_preserve_real_user_content() {
+        let context =
+            "<environment_context><current_date>2026-10-31</current_date></environment_context>";
+        assert!(!is_user_turn(&Message::text(
+            Role::User,
+            format!(" {context}\n")
+        )));
+        assert!(is_user_turn(&Message::text(
+            Role::User,
+            format!("{context}\nfix the parser")
+        )));
+        assert!(is_user_turn(&Message::text(
+            Role::User,
+            format!("explain this: {context}")
+        )));
+        let mut mixed = Message::text(Role::User, context);
+        mixed.content.push(ContentBlock::Text {
+            text: "fix the parser".into(),
+        });
+        assert!(is_user_turn(&mixed));
+        for (role, expected) in [
+            (Role::User, true),
+            (Role::Assistant, false),
+            (Role::Tool, false),
+        ] {
+            assert_eq!(
+                has_new_user_turn(&[
+                    Message::text(role, "follow-up"),
+                    Message::text(Role::User, context),
+                ]),
+                expected
+            );
+        }
+    }
 
     fn fixed_model(target: &str) -> ModelId {
         ModelId::from(target)

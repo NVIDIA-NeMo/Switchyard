@@ -30,6 +30,7 @@ mod observed_translation;
 mod openai_decisions;
 mod payload_capture;
 pub mod raw;
+mod responses_reasoning;
 pub mod run;
 mod system_one;
 
@@ -40,6 +41,7 @@ pub use observation::{ModelCallObservation, RunObservation, RunObserver};
 pub use openai_decisions::OpenAiDecisionClient;
 pub use payload_capture::with_payload_capture;
 pub use raw::RawResponse;
+pub use responses_reasoning::ResponsesReasoningPolicy;
 pub use run::{ClientRouter, decide, run};
 pub use switchyard_translation::RawEventStream;
 pub use system_one::SystemOneClient;

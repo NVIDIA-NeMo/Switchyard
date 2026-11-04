@@ -4,8 +4,9 @@
 an efficient model can handle the task or a capable model is needed. Configure
 it with `type = "llm_classifier"` and `mode = "capability"`.
 
-The same classifier also supports [escalation](escalation_router_routing.md)
-and [custom routing](#custom-multi-target-routing) across two or more targets.
+The same classifier also supports [escalation](escalation_router_routing.md),
+[custom routing](#custom-multi-target-routing) across two or more targets, and
+[direct selection](#direct-selection) by an external decision service.
 
 For a task-level decision-model example with structured instructions, see the
 [Jev routing profile](../../benchmark/routing-profiles/tb21-jev-opus-glm.toml).
@@ -71,7 +72,8 @@ greater than or equal to the applicable threshold. Otherwise it routes to
 `strong_target`:
 
 - `supported` uses `base_threshold`.
-- `uncertain` and `unmatched` use `base_threshold + threshold_step`.
+- `uncertain` uses `base_threshold + threshold_step`.
+- `unmatched` uses `base_threshold + unmatched_steps * threshold_step` (`unmatched_steps` defaults to `1`).
 - `unsupported` uses `base_threshold + 2 * threshold_step`.
 
 An invalid, inconsistent, or unparseable verdict routes to
@@ -122,12 +124,14 @@ for the server merge behavior.
 |---|---|---|
 | `base_threshold` | required | Lowest `p_solve` that routes a supported task to `weak_target`. Must be between `0` and `1`. |
 | `threshold_step` | `0.0` | Amount added for each boundary step. Must be finite and non-negative, and `base_threshold + 2 * threshold_step` must not exceed `1`. |
+| `unmatched_steps` | `1` | Boundary steps applied to an `unmatched` verdict. `0`, `1`, or `2`; `2` requires the same confidence as an `unsupported` verdict. |
 | `recent_turn_window` | unset | When unset, the judge sees the opening user task and the latest user message when they differ. When set to `N`, it sees the opening user task and the last `N` conversation messages after that task. `0` keeps only the opening task. Client system and developer instructions are not shown to the judge. |
 | `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every request, tool continuations included. `user_turn` judges each new user message and holds that target across the tool calls between. `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | `false` | When session metadata is absent, keys affinity from the first user-message text. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 | `prompt` | packaged capability prompt | Replaces the classifier's system prompt. The packaged verdict schema and routing policy remain active. |
 | `response_format_type` | `json_schema` | Structured-output mode for capability and escalation judges. Use `json_object` for providers without JSON Schema support. |
 | `max_output_tokens` | `4096` | Maximum completion tokens available to the classifier verdict. Must be at least `1`. |
+| `judge_deadline_ms` | unset | Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry the judge is treated as unavailable and follows `fail_open`: the route either falls back to the capable tier (default) or stops with a 504. Must be at least `1`. Unset leaves the consultation unbounded. |
 
 ### Override the classifier prompt
 
@@ -239,6 +243,53 @@ context affects the forecast.
 If a client sends only a follow-up fragment without the opening task, enable
 affinity or include the task history. Threshold tuning changes routing policy;
 it cannot recover missing task context.
+
+## Direct selection
+
+Direct mode asks a decision target to select one of the route's model groups,
+then serves the first model in that group. The decision service owns the
+routing policy.
+
+```toml
+[decision_clients.router]
+format = "openai_decisions"
+endpoint = "https://router.example.com/v1/decisions"
+api_key_env = "ROUTER_API_KEY"
+timeout_ms = 10000
+
+[decision_targets.router]
+id = "router-model"
+decision_client = "router"
+
+[routes.direct]
+id = "direct"
+type = "llm_classifier"
+mode = "direct"
+default_target = "balanced"
+
+[routes.direct.models]
+judge = ["router"]
+fast = ["fast"]
+balanced = ["balanced"]
+premium = ["premium"]
+any = ["balanced", "fast", "premium"]
+```
+
+Every non-empty group except `judge` and `any` is an option, and its name is the
+option ID, so name each group with an ID the decision service returns. Options
+are sent in group-name order. A route needs at least two options. `models.judge`
+must name a decision target.
+
+The request context holds the conversation as `task` and the caller's session ID
+as `session` (or null). `recent_turn_window` sets how many trailing turns `task`
+carries after the opening task. The default is 10.
+
+Switchyard routes on the selected option and ignores the probabilities. When
+the decision call fails, times out, or returns a choice that is not an option,
+the route uses `default_target`. Set `fail_open = false` to stop the request
+instead. The decision client's `timeout_ms` sets how long the call may take.
+
+Direct mode is available only on standalone `llm_classifier` routes.
 
 ## When the judge runs
 

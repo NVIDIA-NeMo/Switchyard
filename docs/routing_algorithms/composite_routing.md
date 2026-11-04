@@ -8,9 +8,9 @@ fit the same route type.
 ## What exists today
 
 One pairing: a classifier selects the stage router's starting policy.
-An efficient classification selects efficient-first with `efficient_first_threshold`
+By default, an efficient classification selects efficient-first with `efficient_first_threshold`
 (default `0.5`).
-A capable classification selects capable-first with `capable_first_threshold`
+A capable classification defaults to capable-first with `capable_first_threshold`
 (default `0.0`). Both thresholds are configurable from `0.0` to `1.0`.
 Tool signals can still change the tier
 during execution. Both algorithms and the
@@ -18,8 +18,8 @@ relationship between them are fixed, and the configuration below names them
 directly rather than composing arbitrary algorithms.
 
 Under capable-first, `stage.efficient_hold_turns` defaults to `-1`: after switching
-to efficient, it stays there until session state is cleared. Efficient-first
-defaults to `0`. Set this field explicitly to override either default; `0`
+to efficient, it stays there until the next user-turn reset or session reset. Efficient-first
+defaults to `0`. Set this field explicitly to override either default. `0`
 disables the hold, and a positive value holds that many subsequent requests.
 
 The classifier can use an LLM judge or a decision model. A decision
@@ -58,11 +58,49 @@ new = ["send_message"]
 `[routes.switchyard.classifier]` is required and takes the `stage_router` classifier fields.
 `classify_trigger` sets how often the judge runs: `user_turn` re-picks the tier
 whenever the user speaks, `new_session` picks once and holds it.
+Compaction continuations keep the selected profile. Translation recognizes native
+signals and known summary wrappers, then sets `is_compaction` in the IR. Stage reads
+`has_compaction` for its existing history check. Direct IR callers can set these flags.
 `[routes.switchyard.stage]` takes the stage settings, but accepts neither `picker`
 nor a second `classifier`. The outer classifier supplies the default tier.
 `confidence_threshold` remains an alias for `efficient_first_threshold`.
 Custom `tool_semantics` remain stage-local and have the same additive behavior as
 on a standalone stage route.
+
+### Independent stage profiles
+
+Add these tables beside `stage` to configure each profile over the shared target pair:
+
+```toml
+[routes.switchyard.efficient]
+picker = "efficient_first"
+confidence_threshold = 0.5
+efficient_hold_turns = 0
+capable_system_prompt = "Resolve the difficult step."
+efficient_system_prompt = "Carry out the next concrete step."
+
+[routes.switchyard.capable]
+picker = "capable_first"
+confidence_threshold = 0.2
+efficient_hold_turns = -1
+capable_system_prompt = "Plan the work and resolve uncertain steps."
+efficient_system_prompt = "Continue implementing the plan."
+```
+
+Both profiles use the [stage tuning and prompt settings](stage_router_routing.md#knob-reference).
+The judge's verdict selects `efficient` or `capable`. Their pickers default to
+efficient-first and capable-first respectively. Override `picker` to use either
+mode in either profile, including capable-first in both.
+Targets stay in `stage` and the profile selector stays in `classifier`.
+Each profile can also define its own `classifier` table, using the standalone
+stage classifier settings and target. It runs only when stage signals abstain.
+On model fallback, each candidate receives the active profile's prompt for its tier.
+Omitted settings inherit from `stage`, including the corresponding threshold.
+A supplied `tool_semantics` or `handoff_notes` table replaces the shared table.
+
+With `user_turn`, each new user message resets holds and tool signals and starts
+on the selected profile's initial tier. Its classifier runs only on tool continuations.
+Signals use only the current user turn. `new_session` retains session-wide state.
 
 ## Custom LLM classifier
 
@@ -119,11 +157,25 @@ Both candidates must be completion targets. The judge must be a decision target.
 See the [decision client reference](../reference/toml_schema.md#decision_clientsname)
 for OpenAI Decisions configuration.
 
-The classifier selects capable when `probabilities.advantage` exceeds `cutoff`.
+By default, the classifier selects capable when `probabilities.advantage` exceeds `cutoff`.
 Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
 `base_threshold`, `threshold_step` and `prompt` when using a decision model.
 On judge failure, the default is to retain the last classified tier or use
 efficient for a new session. Set `classifier.fail_open = false` to return the error.
+
+To ask a custom two-choice question, set `instructions` and `criteria` in the
+decision block. Criteria keys must exactly match the two candidate labels.
+The probability for the label mapped to the capable target must exceed `cutoff`
+to select that tier. This also works in standalone and Stage decision judges.
+
+```toml
+[routes.switchyard.classifier.decision]
+cutoff = 0.92
+candidates = { capable_first = "strong", efficient_first = "weak" }
+instructions = "Choose the Stage profile best suited to the task."
+criteria = { capable_first = "Start capable", efficient_first = "Start efficient" }
+evidence = {}
+```
 
 ## Sessions
 

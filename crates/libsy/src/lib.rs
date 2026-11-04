@@ -6,11 +6,11 @@
 
 mod core;
 pub use core::algorithm::{
-    Algorithm, Call, CallDecision, CallModel, Driver, RoutingOutcome, RuntimeModels, Step,
-    StepStream, drive,
+    Algorithm, AnswerSummary, Call, CallDecision, CallModel, Driver, RoutingOutcome, RuntimeModels,
+    Step, StepStream, drive,
 };
 pub use core::classifier::{Classification, Classifier, Score};
-pub use core::outcome_metadata::OutcomeMetadata;
+pub use core::outcome_metadata::{JudgeDecision, OutcomeMetadata};
 pub use core::processor::{Event, Processor};
 pub use core::state::{State, StateValue};
 
@@ -22,8 +22,9 @@ pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
 pub use algorithms::composite::{CompositeJudgeConfig, CompositeRouter, CompositeRouterConfig};
 pub use algorithms::infra::InfraPolicy;
 pub use algorithms::llm_class::{
-    CapabilityJudgeConfig, CustomClassifierConfig, CustomClassifierPolicy, DecisionJudgeConfig,
-    LlmCapabilityConfig, LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
+    CapabilityJudgeConfig, CustomClassifierConfig, CustomClassifierPolicy, DEFAULT_UNMATCHED_STEPS,
+    DecisionJudgeConfig, DirectClassifierConfig, LlmCapabilityConfig, LlmClassifierConfig,
+    LlmTaskClassifier, TaskClassifierConfig,
 };
 pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::Passthrough;

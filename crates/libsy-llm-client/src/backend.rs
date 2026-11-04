@@ -79,7 +79,8 @@ pub struct HttpBackendConfig {
     /// sent. Responses carries it as `reasoning.effort`, Chat Completions as `reasoning_effort`;
     /// Anthropic has no equivalent and rejects the setting at configuration time.
     pub reasoning_effort: Option<String>,
-    /// Additional attempts after the initial upstream request.
+    /// Additional attempts for transient upstream failures.
+    /// One template-compatibility retry may also run within the same timeout.
     pub max_retries: u32,
     /// Cooldown after an exhausted transient completion failure. Zero disables it.
     pub failure_cooldown: Duration,

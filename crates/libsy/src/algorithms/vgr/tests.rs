@@ -107,6 +107,26 @@ fn router_typing_selects_the_verification_regime() {
     );
     assert_eq!(branch(&session, "done", Some(TaskType::Chat)), Branch::Chat);
     assert_eq!(branch(&single, "```\nx\n```", None), Branch::Coding);
+
+    // A typed answer keeps its branch after earlier turns, unless this turn used tools.
+    let mut follow_up = session.llm_request.messages.clone();
+    follow_up.extend([
+        Message::text(Role::Assistant, "The build passes."),
+        Message::text(
+            Role::User,
+            "<environment_context>update</environment_context>",
+        ),
+        Message::text(Role::User, "What is 1+1?"),
+    ]);
+    let follow_up = request(follow_up);
+    assert_eq!(
+        branch(&follow_up, "2", Some(TaskType::Answer)),
+        Branch::Answer
+    );
+    assert_eq!(
+        branch(&session, "done", Some(TaskType::Answer)),
+        Branch::Chat
+    );
 }
 
 #[test]
@@ -369,6 +389,30 @@ mod decide {
     }
 
     #[test]
+    fn default_verification_requires_both_capable_verdicts_and_a_clean_record() {
+        let mut caps = agentic(0, 0, 0);
+        caps.branch = Branch::DefaultVerified;
+        for first in [None, Some(Tri::Unknown), Some(Tri::No), Some(Tri::Yes)] {
+            for second in [None, Some(Tri::Unknown), Some(Tri::No), Some(Tri::Yes)] {
+                let signals = Signals {
+                    capable_judge: first,
+                    evidence_confirm: second,
+                    ..Signals::default()
+                };
+                let expected = if first == Some(Tri::Yes) && second == Some(Tri::Yes) {
+                    Route::Efficient
+                } else {
+                    Route::Capable
+                };
+                assert_eq!(decide(&caps, &signals, None), expected);
+                caps.tools.as_mut().unwrap().errors = 1;
+                assert_eq!(decide(&caps, &signals, None), Route::Capable);
+                caps.tools.as_mut().unwrap().errors = 0;
+            }
+        }
+    }
+
+    #[test]
     fn deliberation_commits_only_on_an_affirmative_score() {
         for branch in [Branch::Chat, Branch::Agentic, Branch::DefaultVerified] {
             let mut caps = agentic(0, 1, 1);
@@ -405,5 +449,19 @@ mod decide {
         assert_eq!(decide(&coding, &signals, None), Route::Capable);
         assert_eq!(decide(&coding, &readout(0.6), None), Route::Efficient);
         assert_eq!(decide(&coding, &readout(0.59), None), Route::Capable);
+    }
+
+    #[test]
+    fn answers_commit_on_a_confident_readout_or_a_capable_tier_verdict() {
+        let answer = Capabilities {
+            branch: Branch::Answer,
+            transcript: Some("view".into()),
+            tools: None,
+        };
+        assert_eq!(decide(&answer, &readout(0.9), None), Route::Efficient);
+        let mut signals = readout(0.89);
+        assert_eq!(decide(&answer, &signals, None), Route::Capable);
+        signals.answer_verifier = Some(Tri::Yes);
+        assert_eq!(decide(&answer, &signals, None), Route::Efficient);
     }
 }

@@ -153,6 +153,7 @@ async fn upstream_chat(
             } else {
                 StatusCode::TOO_MANY_REQUESTS
             },
+            [("retry-after", "0")],
             Json(json!({"error": {"message": "quota exhausted", "code": "usage_limit"}})),
         )
             .into_response();
@@ -1695,7 +1696,8 @@ impl Response {
 async fn models_probes_routes_concurrently_and_caches_failed_discovery() -> TestResult {
     for stalled in [false, true] {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let barrier = Arc::new(tokio::sync::Barrier::new(4));
+        let probe_barrier = Arc::clone(&barrier);
         let captured = Arc::clone(&calls);
         let upstream_app = Router::new().route(
             "/props",
@@ -1752,13 +1754,23 @@ llm_client = "efficient"
             upstream.base_url
         ))?);
 
-        let (first, concurrent) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            tokio::join!(
-                send(&app, "GET", "/v1/models", None),
-                send(&app, "GET", "/v1/models", None)
-            )
-        })
-        .await?;
+        let (first, concurrent, ()) =
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                tokio::join!(
+                    send(&app, "GET", "/v1/models", None),
+                    send(&app, "GET", "/v1/models", None),
+                    async {
+                        probe_barrier.wait().await;
+                        if stalled {
+                            // All probes have reached the server and started their deadlines.
+                            tokio::time::pause();
+                            tokio::time::advance(std::time::Duration::from_secs(2)).await;
+                            tokio::time::resume();
+                        }
+                    }
+                )
+            })
+            .await?;
         let models = first?.json()?;
         assert_eq!(concurrent?.json()?, models);
         assert_eq!(models["data"].as_array().unwrap().len(), 3);
@@ -2432,8 +2444,13 @@ escalation = {{ confirmations = 1 }}
     .await?;
 
     assert_eq!(response.status, StatusCode::OK);
+    let mut body = response.json()?;
+    let outcome_id = body["metadata"]
+        .as_object_mut()
+        .and_then(|metadata| metadata.remove("outcome_id"));
+    assert!(outcome_id.is_some_and(|id| id.as_str().is_some_and(|id| !id.is_empty())));
     assert_eq!(
-        response.json()?,
+        body,
         json!({
             "selected": {
                 "target": "economy",
@@ -2453,6 +2470,15 @@ escalation = {{ confirmations = 1 }}
                 },
                 "extra_body": {},
             }],
+            "metadata": {
+                "algorithm": "llm_task_classifier",
+                "evidence": {"source": "llm-classifier", "score": 0.9, "threshold": 0.5},
+                "judgments": [{
+                    "target": "model/weak",
+                    "category": "efficient",
+                    "evidence": {"source": "llm-classifier", "score": 0.9, "threshold": 0.5},
+                }],
+            },
         })
     );
     assert_eq!(
@@ -5905,6 +5931,56 @@ async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
 }
 
 #[tokio::test]
+async fn configured_responses_reasoning_policy_reaches_upstream() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let base_url = upstream.base_url.replace("/v1", "/buffered");
+    for (setting, expected_reasoning) in [("", 2), ("responses_reasoning = \"drop\"", 0)] {
+        let config = format!(
+            r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_responses"
+base_url = "{base_url}"
+{setting}
+[targets]
+answer = {{ id = "model/efficient", llm_client = "upstream" }}
+[routes.route]
+id = "route"
+type = "passthrough"
+target = "answer"
+"#
+        );
+        let app = build_switchyard_router(load_test_config(&config)?);
+        let response = send(&app, "POST", "/v1/responses", Some(json!({
+            "model": "route", "input": [
+                {"type": "message", "role": "user", "content": "continue"},
+                {"type": "reasoning", "encrypted_content": "opaque", "summary": []},
+                {"type": "reasoning", "id": "rs_stored", "summary": []},
+                {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "local"}], "summary": []}
+            ]
+        }))).await?;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.json()?);
+        let calls = upstream.calls.lock().await;
+        let input = calls.last().expect("upstream request")["input"]
+            .as_array()
+            .expect("input array");
+        assert_eq!(
+            input
+                .iter()
+                .filter(|item| item["type"] == "reasoning")
+                .count(),
+            expected_reasoning
+        );
+        assert!(
+            input
+                .iter()
+                .any(|item| item["type"] == "message" && item["role"] == "user")
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn rate_limit_fallback_policy() -> TestResult {
     for (policy, forward_auth, prompt, is_terminal) in [
         ("", false, "hello", false),
@@ -5973,6 +6049,58 @@ seed = 17
                 upstream.models().await,
                 expected_calls,
                 "{policy}, forward_auth={forward_auth}, {prompt}, stream={stream}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_time_limits_can_be_disabled_from_toml() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    for limit in ["deadline_seconds", "efficient_turn_budget_seconds"] {
+        for (configured, served) in [
+            ("", "model/vgr-capable"),
+            ("bounded_efficient = false", "model/vgr-efficient"),
+        ] {
+            let app = build_switchyard_router(load_test_config(&format!(
+                r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{}"
+[targets]
+efficient = {{ id = "model/vgr-efficient", llm_client = "primary" }}
+capable = {{ id = "model/vgr-capable", llm_client = "primary" }}
+judge = {{ id = "model/vgr-judge", llm_client = "primary" }}
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+efficient_target = "efficient"
+capable_target = "capable"
+judge_target = "judge"
+mode = "evaluate"
+task_typing = false
+{configured}
+{limit} = 0.000000001
+"#,
+                upstream.base_url
+            ))?);
+            let response = send(
+                &app,
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({
+                    "model": "switchyard/vgr",
+                    "messages": [{"role": "user", "content": "answer the question"}]
+                })),
+            )
+            .await?;
+            assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+            assert_eq!(
+                response.headers.get("x-model-router-selected-model"),
+                Some(&HeaderValue::from_str(served)?),
+                "{limit}, {configured}"
             );
         }
     }

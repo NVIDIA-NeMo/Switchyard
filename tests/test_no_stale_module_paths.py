@@ -16,7 +16,6 @@ _STALE_PATH_PATTERNS = (
     "switchyard.server.",
     "switchyard_rust.components",
     "switchyard_rust.core",
-    "switchyard_rust.translation",
     "nemo_switchyard.",
     "SwitchyardV2",
     "switchyard_v2",

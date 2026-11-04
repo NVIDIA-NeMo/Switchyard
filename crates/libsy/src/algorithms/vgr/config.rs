@@ -50,6 +50,8 @@ pub struct VgrConfig {
     pub mode: ServingMode,
     /// Budget for one turn's attempt and verification.
     pub deadline: Duration,
+    /// Enforces the decision deadline and efficient turn budget. Defaults to true.
+    pub bounded_efficient: bool,
     /// Optional live stop controlled by the operator.
     pub kill_switch: Option<KillSwitch>,
     /// Efficient endpoint breaker tuning.
@@ -86,6 +88,7 @@ impl VgrConfig {
             },
             mode: ServingMode::Off,
             deadline: Duration::from_secs(30),
+            bounded_efficient: true,
             kill_switch: None,
             breaker: BreakerConfig::default(),
             task_typing: true,

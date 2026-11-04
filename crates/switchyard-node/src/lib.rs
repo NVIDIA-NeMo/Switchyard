@@ -66,6 +66,7 @@ struct DecisionOptions {
     candidates: BTreeMap<String, Candidate>,
     evidence: Value,
     instructions: Option<Value>,
+    criteria: Option<BTreeMap<String, Value>>,
 }
 
 #[derive(Deserialize)]
@@ -127,6 +128,7 @@ impl NativeComposite {
                     candidates,
                     evidence: decision.evidence,
                     instructions: decision.instructions,
+                    criteria: decision.criteria,
                 }),
                 classify_trigger: classifier.classify_trigger,
                 fail_open: classifier.fail_open,
@@ -156,7 +158,7 @@ impl NativeComposite {
         messages_json: String,
         state_json: Option<String>,
     ) -> napi::Result<NativeRun> {
-        let request = Request {
+        let mut request = Request {
             llm_request: LlmRequest {
                 model: Some("switchyard/auto".into()),
                 messages: parse(&messages_json)?,
@@ -164,6 +166,7 @@ impl NativeComposite {
             },
             ..Default::default()
         };
+        switchyard_translation::normalize_compaction(&mut request.llm_request, None);
         let initial_state: State = state_json
             .as_deref()
             .map(parse)

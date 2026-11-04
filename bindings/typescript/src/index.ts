@@ -16,6 +16,7 @@ export interface CompositeOptions {
       candidates: Record<string, "capable" | "efficient">;
       evidence: unknown;
       instructions?: unknown;
+      criteria?: Record<string, unknown>;
     };
   };
   stage: {

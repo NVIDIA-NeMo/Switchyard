@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::core::algorithm::{self, Algorithm, Driver};
+use crate::core::algorithm::{self, Algorithm, AnswerSummary, Driver};
 use crate::core::classifier::{Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::core::state::State;
@@ -133,18 +133,22 @@ impl FallThrough {
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
         let session_state = self.session_state(&request);
-        let (score, served) = match session_state {
+        let (score, served, prompts) = match session_state {
             Some(state) => {
                 let mut state = state.lock().await;
-                self.route(&mut state, &driver, &mut request).await?
+                let (score, served) = self.route(&mut state, &driver, &mut request).await?;
+                (score, served, std::mem::take(&mut state.target_prompts))
             }
             None => {
                 let mut state = driver.take_state();
-                let routed = self.route(&mut state, &driver, &mut request).await?;
+                let (score, served) = self.route(&mut state, &driver, &mut request).await?;
+                let prompts = std::mem::take(&mut state.target_prompts);
                 driver.set_state(state);
-                routed
+                (score, served, prompts)
             }
         };
+
+        tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, "Model selected");
 
         // A classifier that already called a model — because deciding required one, and that
         // call also answers the turn — hands its response back here, so the turn is not paid
@@ -166,7 +170,21 @@ impl FallThrough {
                         fallback_models.push(candidate.clone());
                     }
                 }
-                Ok(RoutingOutcome::route_to(target, fallback_models, request))
+                let mut outcome = RoutingOutcome::route_to(target, fallback_models, request);
+                if !prompts.is_empty() {
+                    for target in outcome.selected_model_ids.iter().skip(1) {
+                        let mut request = outcome.request.clone();
+                        request.llm_request.model = Some(target.to_string());
+                        if let Some(prompt) = prompts.get(target) {
+                            super::util::prompts::prepend_system_prompt(&mut request, prompt);
+                        }
+                        outcome.candidate_requests.insert(target.clone(), request);
+                    }
+                    if let Some(prompt) = prompts.get(&outcome.selected_model_ids[0]) {
+                        super::util::prompts::prepend_system_prompt(&mut outcome.request, prompt);
+                    }
+                }
+                Ok(outcome)
             }
         }
     }
@@ -192,7 +210,7 @@ impl FallThrough {
         Some(Arc::clone(&session.state))
     }
 
-    async fn route(
+    pub(crate) async fn route(
         &self,
         state: &mut State,
         driver: &Driver,
@@ -223,10 +241,9 @@ impl FallThrough {
             });
         };
 
-        // 3. Resolve the target and log the choice.
+        // 3. Resolve the target.
         algorithm::ensure_model_is_target(driver.models_for(&Category::Any), &score.target)?;
         let target = score.target.clone();
-        tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, "Model selected");
 
         // 4. Post-decision replay: every processor sees the selection so stateful ones
         //    can bind it, and may rewrite the outbound request (e.g. add a target prompt).
@@ -284,6 +301,31 @@ impl Algorithm for FallThrough {
 
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         self.execute(driver, request).await
+    }
+
+    fn tracks_answers(&self) -> bool {
+        self.session_states.is_some()
+            && self
+                .classifiers
+                .iter()
+                .any(|classifier| classifier.tracks_answers())
+    }
+
+    async fn observe_answer(&self, session_id: &str, answer: AnswerSummary) {
+        let Some(states) = &self.session_states else {
+            return;
+        };
+        let Some(state) = states
+            .lock()
+            .get(session_id)
+            .map(|session| Arc::clone(&session.state))
+        else {
+            return;
+        };
+        let mut state = state.lock().await;
+        for classifier in &self.classifiers {
+            classifier.observe_answer(&mut state, answer);
+        }
     }
 }
 #[cfg(test)]
@@ -407,6 +449,61 @@ mod tests {
     /// Drives a fresh router through one turn with a specific `serve`.
     async fn run_with(router: FallThrough, serve: impl Serve) -> Result<(String, ModelId)> {
         run_turn(&Arc::new(router), serve).await
+    }
+
+    #[tokio::test]
+    async fn a_served_answer_reaches_only_its_existing_session() -> Result<()> {
+        struct AnswerAware;
+        #[async_trait]
+        impl Classifier for AnswerAware {
+            async fn score(
+                &self,
+                state: &mut State,
+                _request: &mut Request,
+                _driver: &Driver,
+            ) -> Result<(Classification, Option<Response>)> {
+                let target = if state.extra.get("answered") == Some(&crate::StateValue::Bool(true))
+                {
+                    "strong"
+                } else {
+                    "weak"
+                };
+                Ok((Classification::Scores(vec![score(target, 1.0)]), None))
+            }
+            fn tracks_answers(&self) -> bool {
+                true
+            }
+
+            fn observe_answer(&self, state: &mut State, answer: AnswerSummary) {
+                state.extra.insert(
+                    "answered".into(),
+                    crate::StateValue::Bool(answer.final_reply),
+                );
+            }
+        }
+        assert!(!FallThrough::new_with_state().tracks_answers());
+        assert!(
+            !FallThrough::new()
+                .with_classifier(Arc::new(AnswerAware))
+                .tracks_answers()
+        );
+        let router = Arc::new(FallThrough::new_with_state().with_classifier(Arc::new(AnswerAware)));
+        assert!(router.tracks_answers());
+        let (before, _) = run_turn(&router, echo()).await?;
+        router
+            .observe_answer("unknown", AnswerSummary { final_reply: true })
+            .await;
+        let (unknown, _) = run_turn(&router, echo()).await?;
+        router
+            .observe_answer("session-1", AnswerSummary { final_reply: true })
+            .await;
+        let (after, _) = run_turn(&router, echo()).await?;
+        assert_eq!(
+            (before.as_str(), unknown.as_str(), after.as_str()),
+            ("weak", "weak", "strong")
+        );
+        assert_eq!(router.session_states.as_ref().unwrap().lock().len(), 1);
+        Ok(())
     }
 
     // --- tests -------------------------------------------------------------------------

@@ -38,6 +38,7 @@ jobs:
               - "!.github/ISSUE_TEMPLATE/**"
               - "!.github/PULL_REQUEST_TEMPLATE.md"
               - "!.agents/skills/**/*.md"
+              - "!experimental/switchyard-desktop/**"
 
   # ruff is a hard gate — the codebase passes today, keep it that way.
   lint:
@@ -130,6 +131,12 @@ jobs:
         run: cargo test --workspace --locked
       - name: cargo test (prefill-router)
         run: cargo test -p switchyard-runner --features prefill-router --locked
+
+  go:
+    name: Go bindings
+    needs: changes
+    if: needs.changes.outputs.full_ci == 'true'
+    uses: ./.github/workflows/go-bindings.yml
 
   node:
     name: TypeScript bindings and Pi example
@@ -284,7 +291,7 @@ jobs:
   ci-success:
     name: CI Success
     if: always()
-    needs: [changes, lint, spdx-headers, rust, node, typecheck, test, litellm, slim-install-smoke]
+    needs: [changes, lint, spdx-headers, rust, go, node, typecheck, test, litellm, slim-install-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Verify all jobs succeeded

@@ -158,7 +158,10 @@ at startup, and saved costs do not change when prices change. An unreadable or i
 `--pricing-file` stops startup; the server does not use bundled rates instead.
 
 The [pi guide](../../docs/integrations/pi.md#estimate-the-cost) explains how to supply
-rates for your own models.
+rates for your own models. The desktop app uses the same bundled rates by default.
+For custom rates, point its `pricing_file` setting at the same TOML or JSON file as
+the server's `--pricing-file`. The desktop app totals these recorded costs, so its totals
+can differ from what your provider bills.
 
 Clients can send `x-switchyard-origin: codex-cli` (or another client label) to include an
 `origin` field in each routing record. Missing, empty, or non-text header values produce
@@ -178,7 +181,8 @@ routes to `weak_target` or `strong_target`. Beyond the three targets it accepts 
 | Key | Default | Meaning |
 |---|---|---|
 | `base_threshold` | *required* | Lowest solve probability that routes a task to `weak_target`. Raise it to send less traffic to the weak model. |
-| `threshold_step` | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
+| `threshold_step` | `0.0` | Finite, non-negative amount added once for uncertain verdicts, `unmatched_steps` times for unmatched verdicts, and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
+| `unmatched_steps` | `1` | Threshold steps for an unmatched verdict. `0`, `1`, or `2`; `2` treats it like unsupported. |
 | `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every request including tool continuations, `user_turn` judges each new user message and holds that target across the tool calls between, `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | `false` | Extends affinity to clients that send no session header, keying on the first user message. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 
@@ -301,7 +305,8 @@ rule to `~/.codex/rules/default.rules`. See Codex's
 [Agent approvals & security](https://learn.chatgpt.com/docs/agent-approvals-security)
 page.
 
-The installer, `scripts/linux/install.sh`, does not overwrite an existing
+The experimental desktop installer, `cargo desktop install`, which you run from
+`experimental/switchyard-desktop`, does not overwrite an existing
 `~/.switchyard/composite.toml`.
 If you installed Switchyard before this route was added, add the
 `[targets.reviewer]` and `[routes.codex_auto_review]` blocks to that file by
@@ -326,8 +331,8 @@ hand, then restart the server.
 | `GET` | `/health` | Liveness |
 
 Requests name a route by its `id`, so `POST /v1/chat/completions` with `"model": "switchyard/general"`
-routes through the `[routes.general]` entry above. Any of the three request formats can address any
-route, and the server translates between them.
+routes through the `[routes.general]` entry above. The server translates between request formats
+supported by the selected route and its forwarding clients.
 
 Set the top-level `fallback_client` to an entry under `[llm_clients]` to proxy any otherwise
 unmatched method and path through that client. The fallback client does not need a target. Requests
@@ -345,7 +350,9 @@ returns the selected target and ordered fallbacks with their model, format, base
 `extra_body`. It does not make a post-routing answer call. Routing-time calls still execute, and
 response-dependent algorithms such as escalation and advisor routing may produce an answer while
 deciding. When they do, the endpoint includes the buffered answer as `response`, encoded in
-`input_format`; otherwise the field is omitted.
+`input_format`; otherwise the field is omitted. When the algorithm attaches outcome metadata, the
+endpoint returns it as `metadata`, with the outcome ID, the algorithm name and the algorithm's
+evidence.
 
 For `stage_router`, `algorithm_stats.stage_router` groups routing decisions by source and semantic
 target and summarizes its score, confidence, and input-dimension histograms. These values reset

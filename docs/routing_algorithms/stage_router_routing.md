@@ -250,6 +250,8 @@ required columns.
 | `picker` | required | `efficient_first` or `capable_first` (experimental). Tier used when the signals are not confident. |
 | `confidence_threshold` | required | Corroboration a decisive pick needs, `0` to `1`. Alias `efficient_first_threshold`. |
 | `capable_first_threshold` | `0.0` | Used only after an outer `composite` classifier selects the capable tier. No effect on a standalone route. |
+| `capable_system_prompt` | unset | System prompt prepended for capable requests. |
+| `efficient_system_prompt` | unset | System prompt prepended for efficient requests. |
 | `recent_turn_window` | `3` | Trailing tool results the signals are computed over. |
 | `capable_hold_turns` | `2` | Requests kept on capable after switching to it; signal-driven capable decisions also start finite holds. `0` disables; `-1` pins after a switch. |
 | `efficient_hold_turns` | `0` | Requests kept on efficient after switching to it. `0` disables; `-1` pins after a switch. |
@@ -271,6 +273,7 @@ required columns.
 | `classifier.prompt` | packaged | Replaces the judge prompt. |
 | `classifier.response_format_type` | `json_schema` | `json_object` for providers without JSON Schema. |
 | `classifier.max_output_tokens` | `4096` | Token budget for the verdict. |
+| `classifier.judge_deadline_ms` | unset | Whole-consultation bound in milliseconds on the judge call, response drain included. On expiry the judge counts as failed and `classifier.fail_open` applies. Must be at least `1`. |
 | `subagents` | unset | Separate policy for delegated sub-agent work. |
 
 `classifier.response_schema`, `classifier.policy`, and any `classifier.mode`

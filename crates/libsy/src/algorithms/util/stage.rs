@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use opentelemetry::KeyValue;
 use serde::Deserialize;
 
+use super::affinity::has_new_user_turn;
 use super::prompts;
 use super::tool_signals::{ToolSignalProcessor, ToolSignals};
 use crate::Result;
@@ -530,6 +531,7 @@ pub struct StageClassifier {
     capable_first_threshold: f64,
     capable_hold_turns: i64,
     efficient_hold_turns: Option<i64>,
+    pub(crate) reset_on_user_turn: bool,
     signals: ToolSignalProcessor,
     handoff_notes: Option<HandoffNoteConfig>,
 }
@@ -544,6 +546,7 @@ impl StageClassifier {
             capable_first_threshold: 0.0,
             capable_hold_turns: 2,
             efficient_hold_turns: None,
+            reset_on_user_turn: false,
             signals: ToolSignalProcessor::default(),
             handoff_notes: None,
         }
@@ -646,6 +649,13 @@ impl StageClassifier {
 impl Processor for StageClassifier {
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
         if let Event::Request { request, driver } = event {
+            if self.reset_on_user_turn && has_new_user_turn(&request.llm_request.messages) {
+                for key in [CAPABLE_HOLD_KEY, EFFICIENT_HOLD_KEY, PREVIOUS_TIER_KEY] {
+                    state.extra.remove(&Self::agent_key(request, key));
+                }
+                state.tool_signals = None;
+                return Ok(());
+            }
             let held = [CAPABLE_HOLD_KEY, EFFICIENT_HOLD_KEY].iter().any(|key| {
                 match state.extra.get(&Self::agent_key(request, key)) {
                     Some(StateValue::Bool(true)) => true,
@@ -655,6 +665,10 @@ impl Processor for StageClassifier {
             });
             if held {
                 state.tool_signals = None;
+                return Ok(());
+            }
+            if self.reset_on_user_turn {
+                state.tool_signals = Some(self.signals.for_user_turn(request));
                 return Ok(());
             }
             return self

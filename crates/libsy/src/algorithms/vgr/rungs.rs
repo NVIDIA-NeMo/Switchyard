@@ -121,7 +121,7 @@ pub(super) fn build_typing_request(task_text: &str, metadata: Option<Metadata>) 
         TYPING_MAX_OUTPUT_TOKENS,
         metadata,
     );
-    request.llm_request.reasoning.effort = Some("none".to_string());
+    super::readout::disable_thinking(&mut request);
     request
 }
 
@@ -418,13 +418,31 @@ mod tests {
                  out\n[analysis cut off at its token budget]"
             )
         );
-        assert_eq!(
-            verdict.llm_request.reasoning.effort.as_deref(),
-            Some("none")
-        );
         let typing = build_typing_request(&"x".repeat(5000), None);
         assert_eq!(typing.llm_request.sampling.temperature, Some(0.0));
-        assert_eq!(typing.llm_request.reasoning.effort.as_deref(), Some("none"));
+        for request in [&verdict, &typing] {
+            assert_eq!(
+                request.llm_request.reasoning.effort.as_deref(),
+                Some("none")
+            );
+            assert_eq!(
+                request
+                    .llm_request
+                    .extensions
+                    .fields
+                    .get("chat_template_kwargs"),
+                Some(&serde_json::json!({"enable_thinking": false}))
+            );
+        }
+        let deliberation = build_deliberation_request("record", None);
+        assert_eq!(deliberation.llm_request.reasoning.effort, None);
+        assert!(
+            !deliberation
+                .llm_request
+                .extensions
+                .fields
+                .contains_key("chat_template_kwargs")
+        );
         assert_eq!(
             typing.llm_request.messages[0]
                 .text_content("")

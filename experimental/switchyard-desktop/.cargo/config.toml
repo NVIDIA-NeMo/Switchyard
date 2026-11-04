@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[alias]
+desktop = "run --package switchyard-desktop --bin switchyard-desktop-install --"
+desktop-icons = "run --package switchyard-desktop --example desktop-icons --"

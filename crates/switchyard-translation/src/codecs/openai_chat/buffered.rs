@@ -1031,6 +1031,8 @@ fn copy_openai_chat_request_extensions(
     extensions: &Map<String, Value>,
 ) {
     for field in [
+        // Template switches for llama.cpp, vLLM and SGLang, such as `enable_thinking`.
+        "chat_template_kwargs",
         "metadata",
         "parallel_tool_calls",
         "prompt_cache_key",
@@ -1088,6 +1090,11 @@ pub(crate) fn encode_openai_content(
         return Ok(Value::String(text_from_blocks(content, "\n")));
     }
     if role != Role::User {
+        for block in content {
+            if let ContentBlock::Unknown { provider, raw } = block {
+                reject_responses_builtin_tool_item(provider, raw, WireFormat::OpenAiChat)?;
+            }
+        }
         push_lossy(
             diagnostics,
             policy,
@@ -1292,7 +1299,7 @@ pub(crate) fn encode_openai_usage(usage: &Usage) -> Value {
     if usage.cached_input_tokens().is_some() || usage.cache_creation_input_tokens().is_some() {
         value["prompt_tokens_details"] = json!({
             "cached_tokens": usage.cached_input_tokens().unwrap_or(0),
-            "cache_creation_tokens": usage.cache_creation_input_tokens().unwrap_or(0),
+            "cache_write_tokens": usage.cache_creation_input_tokens().unwrap_or(0),
         });
     }
     if let Some(reasoning_tokens) = usage.reasoning_tokens {

@@ -110,6 +110,7 @@ pub(crate) fn is_responses_builtin_tool_item(item: &Value) -> bool {
                 | "shell_call_output"
                 | "computer_call"
                 | "computer_call_output"
+                | "image_generation_call"
         )
     )
 }

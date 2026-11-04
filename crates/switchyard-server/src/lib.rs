@@ -140,6 +140,8 @@ struct DecisionResponse {
     selected: DecisionTargetResponse,
     fallbacks: Vec<DecisionTargetResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<libsy::OutcomeMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     response: Option<Value>,
 }
 
@@ -203,6 +205,19 @@ impl SharedRoutingLog {
         session_id: &str,
     ) -> std::io::Result<Option<routing_log::SessionStatsSnapshot>> {
         routing_log::snapshot(&self.path, session_id)
+    }
+
+    fn append_outcome(
+        &self,
+        context: &routing_log::RoutingLogContext,
+        metadata: libsy::OutcomeMetadata,
+    ) {
+        if metadata.judgments.is_empty() {
+            return;
+        }
+        if let Err(error) = self.writer.lock().append_outcome(context, metadata) {
+            tracing::warn!(path = %self.path.display(), %error, "routing outcome append failed");
+        }
     }
 }
 
@@ -284,6 +299,7 @@ impl ServerState {
         Some(DecisionResponse {
             selected: convert(description.selected),
             fallbacks: description.fallbacks.into_iter().map(convert).collect(),
+            metadata: description.metadata,
             response,
         })
     }
@@ -450,7 +466,11 @@ fn stats_observer(
     classifier_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
 ) -> RunObserver {
     Arc::new(move |observation| match observation {
-        RunObservation::Outcome(_) => {}
+        RunObservation::Outcome(metadata) => {
+            if let Some((log, context)) = classifier_log.as_ref() {
+                log.append_outcome(context, metadata);
+            }
+        }
         RunObservation::AnswerCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
             if call.is_success {
@@ -1003,8 +1023,9 @@ fn resolve_route(
     if let Some(metadata) = body.get_mut("metadata").and_then(Value::as_object_mut) {
         metadata.remove(switchyard_translation::util::SWITCHYARD_METADATA_KEY);
     }
-    let llm_request = observed_translation::decode_request(wire_format, &body)
+    let mut llm_request = observed_translation::decode_request(wire_format, &body)
         .map_err(|error| invalid_body_error(StatusCode::BAD_REQUEST, error.to_string()))?;
+    switchyard_translation::normalize_compaction(&mut llm_request, metadata.http_headers.as_ref());
     let requested_model = llm_request
         .model
         .clone()
@@ -1215,8 +1236,8 @@ impl RequestLogContext {
                     requested_model = self.requested_model.as_deref().unwrap_or(""),
                     selected_model,
                     streaming = self.streaming,
-                    session_id = self.session_id.as_deref().unwrap_or(""),
-                    correlation_id = self.correlation_id.as_deref().unwrap_or(""),
+                    session_id = self.session_id.as_deref(),
+                    correlation_id = self.correlation_id.as_deref(),
                     handling_duration_ms = duration_ms,
                     error,
                     $message
@@ -1243,8 +1264,8 @@ impl RequestLogContext {
             requested_model = self.requested_model.as_deref().unwrap_or(""),
             selected_model = "",
             streaming = self.streaming,
-            session_id = self.session_id.as_deref().unwrap_or(""),
-            correlation_id = self.correlation_id.as_deref().unwrap_or(""),
+            session_id = self.session_id.as_deref(),
+            correlation_id = self.correlation_id.as_deref(),
             handling_duration_ms = self.started.elapsed().as_secs_f64() * 1_000.0,
             error = "client disconnected before a response was written",
             "LLM request cancelled"
@@ -1858,6 +1879,25 @@ targets = ["only"]
         };
         observer(call("judge-model", false));
         observer(call("routed-model", true));
+        observer(RunObservation::Outcome(libsy::OutcomeMetadata::new(
+            "stage".into(),
+            None,
+        )));
+        for (target, category) in [
+            ("strong", switchyard_protocol::Category::Capable),
+            ("weak", switchyard_protocol::Category::Efficient),
+        ] {
+            let mut outcome = libsy::OutcomeMetadata::new(
+                "composite".into(),
+                Some(serde_json::json!({"source": "stage"})),
+            );
+            outcome.judgments.push(libsy::JudgeDecision {
+                target: Some(target.into()),
+                category: Some(category.as_str().to_string()),
+                evidence: None,
+            });
+            observer(RunObservation::Outcome(outcome));
+        }
 
         let snapshot = log
             .snapshot_session("session-1")
@@ -1868,7 +1908,19 @@ targets = ["only"]
         assert_eq!(snapshot["models"]["judge-model"]["prompt_tokens"], 100);
         assert_eq!(snapshot["models"]["judge-model"]["completion_tokens"], 7);
         assert!(snapshot["models"].get("routed-model").is_none());
-        let record: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&log.path)?)?;
+        assert_eq!(snapshot["total_calls"], 1);
+        assert_eq!(snapshot["outcomes"].as_array().expect("outcomes").len(), 2);
+        assert_eq!(snapshot["outcomes"][0]["judgments"][0]["target"], "strong");
+        assert_eq!(
+            snapshot["outcomes"][1]["judgments"][0]["category"],
+            "efficient"
+        );
+        assert_eq!(snapshot["outcomes"][1]["turn_id"], "turn-1");
+        assert!(log.snapshot_session("another-session")?.is_none());
+        let contents = std::fs::read_to_string(&log.path)?;
+        assert_eq!(contents.lines().count(), 3);
+        let record: serde_json::Value =
+            serde_json::from_str(contents.lines().next().expect("call record"))?;
         assert_eq!(record["session_id"], "session-1");
         assert_eq!(record["turn_id"], "turn-1");
         Ok(())
@@ -2044,7 +2096,12 @@ targets = ["only"]
 
     // Collects the terminal request events emitted while it is the active subscriber.
     #[derive(Clone, Default)]
-    struct CapturedEvents(Arc<Mutex<Vec<(Level, String)>>>);
+    struct CapturedEvents(Arc<Mutex<Vec<CapturedEvent>>>);
+
+    struct CapturedEvent {
+        level: Level,
+        message: String,
+    }
 
     impl tracing_subscriber::Layer<tracing_subscriber::Registry> for CapturedEvents {
         fn on_event(
@@ -2061,7 +2118,10 @@ targets = ["only"]
                     message.push_str(&format!("{}={value:?} ", field.name()));
                 },
             );
-            self.0.lock().push((*event.metadata().level(), message));
+            self.0.lock().push(CapturedEvent {
+                level: *event.metadata().level(),
+                message,
+            });
         }
     }
 
@@ -2076,13 +2136,13 @@ targets = ["only"]
         }
     }
 
-    fn captured_events(run: impl FnOnce()) -> Vec<(Level, String)> {
+    fn captured_events(run: impl FnOnce()) -> Vec<CapturedEvent> {
         use tracing_subscriber::layer::SubscriberExt;
 
         let captured = CapturedEvents::default();
         let subscriber = tracing_subscriber::registry().with(captured.clone());
         crate::testing::with_subscriber(subscriber, run);
-        captured.0.lock().clone()
+        std::mem::take(&mut *captured.0.lock())
     }
 
     // A dropped handler future is the only trace an abandoned buffered request leaves,
@@ -2094,8 +2154,12 @@ targets = ["only"]
         });
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, Level::WARN);
-        assert!(events[0].1.contains("cancelled"), "{:?}", events[0].1);
+        assert_eq!(events[0].level, Level::WARN);
+        assert!(
+            events[0].message.contains("cancelled"),
+            "{:?}",
+            events[0].message
+        );
     }
 
     // A request that reached a response is not a cancellation, even though the guard
@@ -2108,8 +2172,49 @@ targets = ["only"]
         });
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, Level::INFO);
-        assert!(events[0].1.contains("handled"), "{:?}", events[0].1);
+        assert_eq!(events[0].level, Level::INFO);
+        assert!(
+            events[0].message.contains("handled"),
+            "{:?}",
+            events[0].message
+        );
+    }
+
+    // An operator has to be able to tell "no session was sent" from "a blank one was
+    // sent": an absent id omits the field, an empty one records an empty value.
+    #[test]
+    fn request_log_distinguishes_absent_ids_from_empty_ones() {
+        let rows = [
+            (None, None),
+            (Some(String::new()), Some("\"\"")),
+            (Some("abc".to_string()), Some("\"abc\"")),
+        ];
+
+        for (id, expected) in rows {
+            let context = || {
+                let mut context = request_log_context();
+                context.session_id = id.clone();
+                context.correlation_id = id.clone();
+                context
+            };
+
+            let answered = captured_events(|| {
+                let mut guard = RequestLogGuard(Some(context()));
+                guard.emit(&StatusCode::OK.into_response());
+            });
+            let cancelled = captured_events(|| drop(RequestLogGuard(Some(context()))));
+
+            for events in [answered, cancelled] {
+                assert_eq!(events.len(), 1);
+                for field in ["session_id", "correlation_id"] {
+                    let rendered = events[0]
+                        .message
+                        .split_whitespace()
+                        .find_map(|part| part.strip_prefix(&format!("{field}=")));
+                    assert_eq!(rendered, expected, "{field} {id:?}: {}", events[0].message);
+                }
+            }
+        }
     }
 
     // Terminal request severity follows HTTP status instead of error-path bookkeeping.
@@ -2161,8 +2266,12 @@ targets = ["only"]
             let response = render_error_response(client_error(&error), wire_format);
             let events = captured_events(|| request_log_context().emit(&response));
             assert_eq!(events.len(), 1);
-            assert!(!events[0].1.contains(LEAKED), "{}", events[0].1);
-            assert!(events[0].1.contains("upstream_error"), "{}", events[0].1);
+            assert!(!events[0].message.contains(LEAKED), "{}", events[0].message);
+            assert!(
+                events[0].message.contains("upstream_error"),
+                "{}",
+                events[0].message
+            );
             let api_error = response
                 .extensions()
                 .get::<ApiError>()
