@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Configured route execution and the clients that serve its targets.
+//! One configured algorithm and the clients that serve its targets.
 
 use std::collections::HashMap;
 use std::error::Error;
@@ -111,7 +111,7 @@ impl RunnerError {
     }
 }
 
-// Configured algorithm and targets for one execution lane.
+/// A configured algorithm and the per-target clients its calls resolve through.
 pub(crate) struct ExecutionLane {
     algorithm: Arc<dyn Algorithm>,
     // Resolves each offloaded call to the client configured for the target the algorithm
@@ -151,7 +151,7 @@ struct LaneSelection {
     requirements: Option<TargetRequirements>,
 }
 
-/// One or more execution lanes behind a configured route.
+/// A configured route with optional target eligibility checks.
 #[derive(Clone)]
 pub struct Route {
     standard: Arc<ExecutionLane>,
@@ -322,7 +322,7 @@ impl Route {
             .await
     }
 
-    /// Executes the route and reports standard or restricted admission before dispatch.
+    /// Executes the route, reporting admission before dispatch when eligibility is enabled.
     pub async fn execute_with_privacy_observer(
         &self,
         request: Request,
@@ -403,8 +403,8 @@ impl Route {
     ///
     /// The host owns transport, credentials, and target request settings. Configured
     /// HTTP clients, target prompts, and decision clients are not used on this path.
-    /// The same algorithm instance retains its state across calls. No post-routing
-    /// completion is dispatched. Target eligibility still applies to the host-owned path.
+    /// Algorithm state is retained for each target setup. No post-routing completion
+    /// is dispatched. Target eligibility still applies to the host-owned path.
     pub async fn decide_with_client(
         &self,
         request: Request,
@@ -481,7 +481,6 @@ mod tests {
         request
     }
 
-    // Different requirements that resolve to the same bindings share algorithm state.
     #[test]
     fn resolved_bindings_reuse_the_algorithm_and_standard_setup() {
         let source = config(POOL);
@@ -506,7 +505,6 @@ mod tests {
         assert!(Arc::ptr_eq(&approved.lane, &route.standard));
     }
 
-    // Queue spillover cannot introduce targets outside this request's approved pool.
     #[test]
     fn infra_spillover_stays_within_request_requirements() {
         let algorithm = "type = 'llm_classifier'\nclassifier_target = 'judge'\n\
@@ -561,7 +559,6 @@ mod tests {
         }
     }
 
-    // Payload content and provider-body metadata cannot supply trusted requirements.
     #[tokio::test]
     async fn content_and_provider_metadata_do_not_classify_the_request() {
         let runner = Runner::from_toml(&config(PASSTHROUGH)).expect("eligible route");

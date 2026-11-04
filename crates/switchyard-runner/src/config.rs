@@ -340,7 +340,6 @@ impl RouteConfig {
 }
 
 impl DeploymentConfig {
-    /// Whether any route needs Runner to admit target requirements before execution.
     pub(crate) fn requires_target_admission(&self) -> bool {
         self.routes
             .values()

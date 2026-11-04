@@ -5,7 +5,7 @@
 
 use switchyard_protocol::{LlmClientError, Request};
 
-/// Maps the earlier binary signal to `private` requirements or an explicitly empty requirement set.
+/// Adds `private` when restricted; otherwise explicitly supplies no new requirements.
 /// Prefer [`crate::require_target_labels`] for deployment-defined labels.
 pub fn require_restricted_targets(
     request: &mut Request,

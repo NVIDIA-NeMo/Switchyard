@@ -931,7 +931,6 @@ impl AlgorithmSpec {
         Ok(restricted)
     }
 
-    /// Whether the algorithm supports a restricted set of configured targets.
     pub(crate) const fn supports_target_restrictions(&self) -> bool {
         !matches!(self, Self::PrefillRouter { .. })
     }
