@@ -56,10 +56,7 @@ unconfigured for this cost comparison; see
 
 ### Match a symptom to a control
 
-Change one control at a time. The directions below are for `efficient_first`;
-`capable_first` reverses the threshold direction.
-
-| Symptom | What to read | Move first |
+| Symptom | What to read | Move first with `efficient_first` |
 |---|---|---|
 | Cost is close to capable-only. | `dimensions` and `capable_hold` are most of the decision counts, and the capable model has most calls in `.models`. | Raise `confidence_threshold` so fewer turns escalate on signals. Then shorten `capable_hold_turns`. |
 | `override` is a large share of the decisions. | `override` in the decision counts; `override_reason` in the structured logs. | Repeated failures and critical errors force the capable tier, and the threshold does not change them. [Check the efficient model](../routing_algorithms/model_selection.md#check-the-efficient-model-before-you-route) against the tasks. |
