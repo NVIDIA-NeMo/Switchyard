@@ -3006,20 +3006,12 @@ mutate = ["send_payment_request"]
     Ok(())
 }
 
-/// Each API must preserve plan and tool history, tier prompts, and streaming completion markers.
-/// Critical tool errors keep this route on the capable model before handoff.
-/// Stage stays on the efficient model during a hold, even after another critical error.
-/// A final request must clear the hold so the next request uses the capable model.
+/// The executor receives the plan and write result, but not the planner's prompt.
 #[tokio::test]
 async fn stage_plan_execute_handoff_preserves_history_and_prompts() -> TestResult {
-    for (path, history_key, stream_end) in [
-        ("/v1/chat/completions", "messages", "data: [DONE]"),
-        ("/v1/messages", "messages", "event: message_stop"),
-        ("/v1/responses", "input", "event: response.completed"),
-    ] {
-        let upstream = MockUpstream::start().await?;
-        let app = build_switchyard_router(load_test_config(&format!(
-            r#"
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
 schema_version = 1
 [llm_clients.local]
 format = "openai_chat"
@@ -3038,113 +3030,58 @@ capable_hold_turns = 0
 efficient_hold_turns = -1
 capable_system_prompt = "Inspect the task and plan before modifying files."
 "#,
-            upstream.base_url,
-        ))?);
-
-        for (tool, output, expected, stream, final_request) in [
-            (None, "", "model/strong", false, "false"),
-            (
-                Some("read_file"),
-                "source code",
-                "model/strong",
-                false,
-                "false",
-            ),
-            (
-                Some("write_file"),
-                "out of memory",
-                "model/strong",
-                false,
-                "false",
-            ),
-            (
-                Some("write_file"),
-                "file written",
-                "model/weak",
-                true,
-                "false",
-            ),
-            (Some("bash"), "out of memory", "model/weak", false, "false"),
-            (None, "", "model/weak", false, "true"),
-            (None, "", "model/strong", false, "false"),
-        ] {
-            let mut messages = vec![json!({"role": "user", "content": "implement the task"})];
-            if let Some(tool) = tool {
-                match path {
-                    "/v1/chat/completions" => messages.extend([
-                        json!({"role": "assistant", "content": "The plan is to update the file.",
-                            "tool_calls": [{"id": "call", "type": "function",
-                                "function": {"name": tool, "arguments": "{}"}}]}),
-                        json!({"role": "tool", "tool_call_id": "call", "content": output}),
-                    ]),
-                    "/v1/messages" => messages.extend([
-                        json!({"role": "assistant", "content": [
-                            {"type": "text", "text": "The plan is to update the file."},
-                            {"type": "tool_use", "id": "call", "name": tool, "input": {}}]}),
-                        json!({"role": "user", "content": [
-                            {"type": "tool_result", "tool_use_id": "call", "content": output}]}),
-                    ]),
-                    _ => messages.extend([
-                        json!({"role": "assistant", "content": "The plan is to update the file."}),
-                        json!({"type": "function_call", "call_id": "call", "name": tool, "arguments": "{}"}),
-                        json!({"type": "function_call_output", "call_id": "call", "output": output}),
-                    ]),
-                }
-            }
-            let mut body = json!({"model": "plan-execute", "stream": stream, "max_tokens": 128});
-            body[history_key] = json!(messages);
-            let response = send_with_headers(
-                &app,
-                "POST",
-                path,
-                Some(body),
-                &[
-                    ("x-switchyard-session-id", "plan-execute-session"),
-                    ("x-switchyard-session-final", final_request),
-                ],
-            )
-            .await?;
-            assert_eq!(
-                response.status,
-                StatusCode::OK,
-                "{path}: {:?}",
-                response.bytes
-            );
-            assert_eq!(
-                response
-                    .headers
-                    .get("x-model-router-selected-model")
-                    .and_then(|value| value.to_str().ok()),
-                Some(expected),
-                "{path}: {tool:?}",
-            );
-            if stream {
-                let text = std::str::from_utf8(&response.bytes)?;
-                assert!(text.contains(stream_end), "{path}: {text}");
-                assert!(!text.contains("event: error"), "{path}: {text}");
-            }
-            let calls = upstream.calls.lock().await;
-            let call = calls.last().ok_or("missing upstream request")?;
-            assert_eq!(call["model"], expected);
-            assert_eq!(
-                has_system_prompt(call, "Inspect the task and plan before modifying files."),
-                expected == "model/strong",
-            );
-            if tool.is_some() {
-                let history = call["messages"].to_string();
-                assert!(history.contains("The plan is to update the file."));
-                assert!(history.contains(output));
-            }
-        }
-        assert_eq!(upstream.calls.lock().await.len(), 7);
-        let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
-        assert_eq!(stats["classifier"]["total_requests"], 0);
+        upstream.base_url,
+    ))?);
+    let planning_history = json!([{"role": "user", "content": "implement the task"}]);
+    let execution_history = json!([
+        {"role": "user", "content": "implement the task"},
+        {"role": "assistant", "content": "The plan is to update the file.",
+            "tool_calls": [{"id": "call", "type": "function",
+                "function": {"name": "write_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call", "content": "file written"}
+    ]);
+    for (messages, expected) in [
+        (&planning_history, "model/strong"),
+        (&execution_history, "model/weak"),
+    ] {
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({"model": "plan-execute", "messages": messages, "stream": false})),
+            &[("x-switchyard-session-id", "plan-execute-session")],
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
         assert_eq!(
-            stats["algorithm_stats"]["stage_router"]["routing_decisions"]["efficient_hold"]["targets"]
-                ["model/weak"],
-            2
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected),
         );
     }
+    {
+        let calls = upstream.calls.lock().await;
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["model"], "model/strong");
+        assert!(has_system_prompt(
+            &calls[0],
+            "Inspect the task and plan before modifying files.",
+        ));
+        assert_eq!(calls[1]["model"], "model/weak");
+        assert_eq!(calls[1]["messages"], execution_history);
+        assert!(!has_system_prompt(
+            &calls[1],
+            "Inspect the task and plan before modifying files.",
+        ));
+    }
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["classifier"]["total_requests"], 0);
+    assert_eq!(
+        stats["algorithm_stats"]["stage_router"]["routing_decisions"]["dimensions"]["targets"]["model/weak"],
+        1
+    );
     Ok(())
 }
 

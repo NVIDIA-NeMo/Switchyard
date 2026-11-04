@@ -37,7 +37,7 @@ Luna: one run; others: three-run means. [Evaluation settings](../benchmark/DEEPS
 
 The Plan/Execute result used the removed standalone implementation. Its archived
 config requires an older Switchyard version. The current
-[Plan/Execute configuration for Stage](routing_algorithms/plan_execute_routing.md)
+[Plan/Execute configuration for Stage](routing_algorithms/stage_router_routing.md#plan-and-execute)
 has no published results.
 
 ## Run a benchmark

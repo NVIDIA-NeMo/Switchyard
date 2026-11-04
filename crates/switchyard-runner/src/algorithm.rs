@@ -965,15 +965,20 @@ impl AlgorithmSpec {
         names
     }
 
-    /// The list keeps the parent's completion target order, then appends subagent targets.
-    /// It preserves duplicate names and excludes targets used only as judges.
+    /// Completion targets in algorithm order; judge-only targets are excluded.
     pub fn routing_target_names(&self) -> Vec<&str> {
-        let mut names: Vec<&str> = match self {
+        match self {
             Self::Noop { .. } => Vec::new(),
-            Self::Random { targets, .. } | Self::PrefillRouter { targets, .. } => {
-                targets.iter().map(String::as_str).collect()
+            Self::Random { targets, .. } => targets.iter().map(String::as_str).collect(),
+            Self::Passthrough {
+                target, subagents, ..
+            } => {
+                let mut names = vec![target.as_str()];
+                if let Some(subagents) = subagents {
+                    names.extend(subagents.routing_target_names());
+                }
+                names
             }
-            Self::Passthrough { target, .. } => vec![target.as_str()],
             Self::LlmClassifier { config, .. } => match config.classifier_mode() {
                 ClassifierMode::Capability => config
                     .weak_target
@@ -996,16 +1001,31 @@ impl AlgorithmSpec {
             Self::StageRouter {
                 capable_target,
                 efficient_target,
+                subagents,
                 ..
+            } => {
+                let mut names = vec![capable_target.as_str(), efficient_target.as_str()];
+                if let Some(subagents) = subagents {
+                    names.extend(subagents.routing_target_names());
+                }
+                names
             }
-            | Self::Auto {
+            Self::Auto {
                 capable_target,
                 efficient_target,
             } => vec![capable_target.as_str(), efficient_target.as_str()],
-            Self::Composite { stage, .. } => vec![
-                stage.capable_target.as_str(),
-                stage.efficient_target.as_str(),
-            ],
+            Self::Composite {
+                stage, subagents, ..
+            } => {
+                let mut names = vec![
+                    stage.capable_target.as_str(),
+                    stage.efficient_target.as_str(),
+                ];
+                if let Some(subagents) = subagents {
+                    names.extend(subagents.routing_target_names());
+                }
+                names
+            }
             // The advisor is judge-only: reviews go through its own client,
             // so it is not a completion (or count_tokens) destination.
             Self::Advisor {
@@ -1017,23 +1037,8 @@ impl AlgorithmSpec {
                     config.capable_target.as_str(),
                 ]
             }
-        };
-        if let Self::Passthrough {
-            subagents: Some(subagents),
-            ..
+            Self::PrefillRouter { targets, .. } => targets.iter().map(String::as_str).collect(),
         }
-        | Self::StageRouter {
-            subagents: Some(subagents),
-            ..
-        }
-        | Self::Composite {
-            subagents: Some(subagents),
-            ..
-        } = self
-        {
-            names.extend(subagents.routing_target_names());
-        }
-        names
     }
 
     /// Every target the algorithm may call, including judge-only targets.

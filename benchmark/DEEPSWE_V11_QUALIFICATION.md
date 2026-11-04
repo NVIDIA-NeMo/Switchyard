@@ -50,5 +50,5 @@ records the settings measured at revision
 `08136d7d2ed4f862e5b3dd83488b3f120457d0ac`. The TOML file was published in a
 later revision. It requires a version that still supports the removed
 `plan_execute` route. These results belong to the standalone implementation;
-the current [Plan/Execute configuration for Stage](../docs/routing_algorithms/plan_execute_routing.md)
+the current [Plan/Execute configuration for Stage](../docs/routing_algorithms/stage_router_routing.md#plan-and-execute)
 has no published benchmark results.

@@ -330,8 +330,8 @@ Splits traffic across targets. See
 This route type has been removed. Use `stage_router` with
 `picker = "capable_first"`, `confidence_threshold = 0.0`,
 `capable_hold_turns = 0`, `efficient_hold_turns = -1`, and a
-`capable_system_prompt`. See the complete configuration and migration steps in
-[Plan/Execute with Stage](../routing_algorithms/plan_execute_routing.md).
+`capable_system_prompt`. See the recipe in
+[Plan/Execute with Stage](../routing_algorithms/stage_router_routing.md#plan-and-execute).
 
 ### `prefill_router`
 

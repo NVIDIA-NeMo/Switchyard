@@ -399,7 +399,7 @@ pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
 The historical Plan/Execute result used the removed standalone implementation.
 See [qualification settings](DEEPSWE_V11_QUALIFICATION.md) for its archived
 configuration. For new runs, use the
-[Plan/Execute configuration for Stage](../docs/routing_algorithms/plan_execute_routing.md).
+[Plan/Execute configuration for Stage](../docs/routing_algorithms/stage_router_routing.md#plan-and-execute).
 
 Run the Stage profile. Its public route ID is `gpt-5.6-luna`:
 

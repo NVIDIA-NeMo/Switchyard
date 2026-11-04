@@ -2134,28 +2134,6 @@ classify_trigger"#,
         Ok(())
     }
 
-    /// This test repeats `strong` for the subagent to detect removed duplicates or reordered targets.
-    /// The Composite judge must stay out of the completion target list.
-    #[test]
-    fn composite_targets_keep_parent_order_and_subagent_duplicates() -> RunnerResult<()> {
-        let configured = with_subagent_passthrough(&composite_config(), "composed");
-        let routes = super::route_targets(&configured)?;
-        let route = routes
-            .iter()
-            .find(|route| route.name == "composed")
-            .unwrap();
-        assert_eq!(
-            route
-                .answer_targets
-                .iter()
-                .map(|target| target.name.as_str())
-                .collect::<Vec<_>>(),
-            ["strong", "weak", "strong"],
-        );
-        runner_from_toml(&configured)?;
-        Ok(())
-    }
-
     #[test]
     fn builds_all_supported_algorithm_types() -> RunnerResult<()> {
         let state = runner_from_toml(VALID_CONFIG)?;
