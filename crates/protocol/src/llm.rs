@@ -536,9 +536,13 @@ pub struct LlmRequest {
     pub instructions: Vec<InstructionBlock>,
     /// Ordered conversation messages.
     pub messages: Vec<Message>,
-    /// This count tracks temporary notes appended after the caller's conversation.
+    /// This request-local count tracks temporary notes appended after the caller's conversation.
     /// The HTTP client uses it to choose a cache breakpoint before the notes, subject to
     /// provider support, caller policy, marker limits, and an eligible prefix.
+    /// Rust moves and clones retain the count.
+    /// Serialization omits the count, and deserialization resets it to zero.
+    /// Note text and preserved provider bodies remain serialized.
+    #[serde(skip)]
     pub temporary_note_count: usize,
     /// Whether this request performs compaction or resumes from a summary.
     #[serde(skip_serializing_if = "std::ops::Not::not")]

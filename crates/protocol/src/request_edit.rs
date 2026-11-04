@@ -125,3 +125,35 @@ fn prepend_anthropic_system(body: &mut Map<String, Value>, prompt: &str) -> bool
         prepend_text_field(body, "system", prompt)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::{LlmRequest, WireFormat, text_request};
+    use serde_json::json;
+
+    #[test]
+    fn temporary_note_bookkeeping_does_not_change_the_public_request_schema()
+    -> Result<(), serde_json::Error> {
+        let mut request = text_request(Some("model".into()), "task");
+        request.preservation.requests.insert(
+            WireFormat::OpenAiChat.into(),
+            json!({
+                "model":"model", "messages":[{"role":"user", "content":"task"}],
+                "metadata":{"caller":"keep"}
+            }),
+        );
+        let without_note = request.clone();
+        request.append_note("reassess the failure");
+        assert_eq!(request.temporary_note_count, 1);
+        // LiteLLM would still reject requests with notes if serialization omitted only zero counts.
+        for request in [without_note, request] {
+            let encoded = serde_json::to_value(&request)?;
+            assert!(encoded.get("temporary_note_count").is_none());
+            let decoded: LlmRequest = serde_json::from_value(encoded)?;
+            assert_eq!(decoded.messages, request.messages);
+            assert_eq!(decoded.preservation.requests, request.preservation.requests);
+            assert_eq!(decoded.temporary_note_count, 0);
+        }
+        Ok(())
+    }
+}
