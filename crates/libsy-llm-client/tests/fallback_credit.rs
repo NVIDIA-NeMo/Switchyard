@@ -8,7 +8,8 @@ use std::process::Command;
 
 use serde_json::{Value, json};
 use switchyard_llm_client::{
-    Backend, HttpBackendConfig, ModelConfig, RawResponse, TranslatingLlmClient,
+    Backend, DEFAULT_MAX_RESPONSE_BYTES, HttpBackendConfig, ModelConfig, RawResponse,
+    TranslatingLlmClient,
 };
 use switchyard_protocol::WireFormat;
 use tracing_subscriber::fmt::format::FmtSpan;
@@ -149,6 +150,7 @@ async fn fallback_credit_retry_child() -> TestResult {
                 max_retries: 0,
                 failure_cooldown: std::time::Duration::ZERO,
                 timeout: None,
+                max_response_bytes: DEFAULT_MAX_RESPONSE_BYTES,
             }),
             None,
         )

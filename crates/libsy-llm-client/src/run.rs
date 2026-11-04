@@ -1805,6 +1805,7 @@ mod tests {
                         max_retries: 0,
                         failure_cooldown: std::time::Duration::ZERO,
                         timeout: None,
+                        max_response_bytes: crate::DEFAULT_MAX_RESPONSE_BYTES,
                     };
                     let backend = if responses {
                         Backend::OpenAiResponses(config)
@@ -1952,6 +1953,7 @@ mod tests {
                     max_retries: 0,
                     failure_cooldown: std::time::Duration::ZERO,
                     timeout: None,
+                    max_response_bytes: crate::DEFAULT_MAX_RESPONSE_BYTES,
                 }),
                 None,
             )])
@@ -2712,6 +2714,7 @@ mod tests {
                     max_retries: 2,
                     failure_cooldown: cooldown,
                     timeout: None,
+                    max_response_bytes: crate::DEFAULT_MAX_RESPONSE_BYTES,
                 })
             };
             TranslatingLlmClient::new(&[
@@ -2785,6 +2788,7 @@ mod tests {
                 max_retries: 0,
                 failure_cooldown: std::time::Duration::ZERO,
                 timeout: None,
+                max_response_bytes: crate::DEFAULT_MAX_RESPONSE_BYTES,
             })
         };
         let client = Arc::new(
@@ -2885,6 +2889,7 @@ mod tests {
                 max_retries: 0,
                 failure_cooldown: std::time::Duration::ZERO,
                 timeout: None,
+                max_response_bytes: crate::DEFAULT_MAX_RESPONSE_BYTES,
             })
         };
         let client = Arc::new(
