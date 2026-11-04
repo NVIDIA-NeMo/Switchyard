@@ -1,13 +1,11 @@
 # Tuning
 
 Tuning helps you find a configuration that meets your goals on your workload.
-If a route runs but does not perform as you want, start with Diagnose. Then use
-Foundations to plan the comparison and Examples to see how to evaluate
-candidates and choose a configuration.
+Start with Foundations to check your current route and plan the comparison, then
+use Examples to see how to evaluate candidates and choose a configuration.
 
-- [Diagnose Before You Tune](diagnose.md): find your current settings, check that tuning can help, and match the symptom to a control.
-- [Tuning Foundations](foundations.md): define your objective, candidates, and evaluation splits.
-- [Examples](examples.md): compare routing settings and model pairs with worked examples.
+- [Tuning Foundations](foundations.md): check your current route, then define your objective, candidates, and evaluation splits.
+- [Examples](examples.md): match a symptom to a control, then compare routing settings and model pairs with worked examples.
 
 ## Controls by algorithm
 

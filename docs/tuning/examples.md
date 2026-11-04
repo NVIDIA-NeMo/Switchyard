@@ -54,6 +54,23 @@ continuation. A fix is planned for a future release. Leave `handoff_notes`
 unconfigured for this cost comparison; see
 [handoff notes](../routing_algorithms/stage_router_routing.md#optional-handoff-notes).
 
+### Match a symptom to a control
+
+Change one control at a time. The directions below are for `efficient_first`;
+`capable_first` reverses the threshold direction.
+
+| Symptom | What to read | Move first |
+|---|---|---|
+| Cost is close to capable-only. | `dimensions` and `capable_hold` are most of the decision counts, and the capable model has most calls in `.models`. | Raise `confidence_threshold` so fewer turns escalate on signals. Then shorten `capable_hold_turns`. |
+| `override` is a large share of the decisions. | `override` in the decision counts; `override_reason` in the structured logs. | Repeated failures and critical errors force the capable tier, and the threshold does not change them. [Check the efficient model](../routing_algorithms/model_selection.md#check-the-efficient-model-before-you-route) against the tasks. |
+| Tasks fail on the efficient tier and the route rarely escalates. | The efficient model has most calls in `.models`; `override` is low. | Lower `confidence_threshold`, raise `capable_hold_turns`, or add the [classifier fallback](../routing_algorithms/stage_router_routing.md#optional-llm-classifier-fallback). |
+| The tiers switch often and the prompt cache is lost. | `cached_tokens` in the routing log drops on the turn after each model change. | Raise `capable_hold_turns` and `efficient_hold_turns`. Measure total cost, not the number of switches. |
+| An escalation route never latches. | The log line `stateful escalation has no session ID`. | Send a session ID. Then adjust [`confirmations`](../routing_algorithms/escalation_router_routing.md#tuning-options). |
+| The judge never changes the outcome. | `switchyard_classifier_fail_open_total` on `/metrics`; the log line `judge verdict unavailable`. | This is a compatibility problem, not a threshold. See [judge model compatibility](../routing_algorithms/llm_classifier_routing.md#judge-model-compatibility). |
+
+Other algorithms have their own controls; the
+[tuning overview](index.md#controls-by-algorithm) lists them.
+
 ### Split the benchmark and collect baselines
 
 Use **20% for calibration and 80% for held-out validation**, chosen before tuning.

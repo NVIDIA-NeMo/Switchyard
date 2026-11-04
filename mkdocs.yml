@@ -45,7 +45,6 @@ nav:
       - Benchmarks: benchmarks.md
       - Tuning:
           - tuning/index.md
-          - Diagnose: tuning/diagnose.md
           - Foundations: tuning/foundations.md
           - Examples: tuning/examples.md
   - Local Demo:
