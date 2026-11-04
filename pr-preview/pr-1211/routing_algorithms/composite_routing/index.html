@@ -2680,6 +2680,9 @@ route's configuration to change as more pairings are added.</p>
 <p><code>[routes.switchyard.classifier]</code> is required and takes the <code>stage_router</code> classifier fields.
 <code>classify_trigger</code> sets how often the judge runs: <code>user_turn</code> re-picks the tier
 whenever the user speaks, <code>new_session</code> picks once and holds it.
+Compaction continuations keep the selected profile. Translation recognizes native
+signals and known summary wrappers, then sets <code>is_compaction</code> in the IR. Stage reads
+<code>has_compaction</code> for its existing history check. Direct IR callers can set these flags.
 <code>[routes.switchyard.stage]</code> takes the stage settings, but accepts neither <code>picker</code>
 nor a second <code>classifier</code>. The outer classifier supplies the default tier.
 <code>confidence_threshold</code> remains an alias for <code>efficient_first_threshold</code>.
