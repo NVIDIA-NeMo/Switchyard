@@ -5,7 +5,7 @@ Start with Foundations to check your current route and plan the comparison, then
 use Examples to see how to evaluate candidates and choose a configuration.
 
 - [Tuning Foundations](foundations.md): check your current route, then define your objective, candidates, and evaluation splits.
-- [Examples](examples.md): match a symptom to a control, then compare routing settings and model pairs with worked examples.
+- [Examples](examples.md): compare routing settings and model pairs with worked examples, and check the efficient model when overrides dominate.
 
 ## Controls by algorithm
 

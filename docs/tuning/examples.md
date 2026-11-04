@@ -54,20 +54,6 @@ continuation. A fix is planned for a future release. Leave `handoff_notes`
 unconfigured for this cost comparison; see
 [handoff notes](../routing_algorithms/stage_router_routing.md#optional-handoff-notes).
 
-### Match a symptom to a control
-
-| Symptom | What to read | Move first with `efficient_first` |
-|---|---|---|
-| Cost is close to capable-only. | `dimensions` and `capable_hold` are most of the decision counts, and the capable model has most calls in `.models`. | Raise `confidence_threshold` so fewer turns escalate on signals. Then shorten `capable_hold_turns`. |
-| `override` is a large share of the decisions. | `override` in the decision counts; `override_reason` in the structured logs. | Repeated failures and critical errors force the capable tier, and the threshold does not change them. [Check the efficient model](../routing_algorithms/model_selection.md#check-the-efficient-model-before-you-route) against the tasks. |
-| Tasks fail on the efficient tier and the route rarely escalates. | The efficient model has most calls in `.models`; `override` is low. | Lower `confidence_threshold`, raise `capable_hold_turns`, or add the [classifier fallback](../routing_algorithms/stage_router_routing.md#optional-llm-classifier-fallback). |
-| The tiers switch often and the prompt cache is lost. | `cached_tokens` in the routing log drops on the turn after each model change. | Raise `capable_hold_turns` and `efficient_hold_turns`. Measure total cost, not the number of switches. |
-| An escalation route never latches. | The log line `stateful escalation has no session ID`. | Send a session ID. Then adjust [`confirmations`](../routing_algorithms/escalation_router_routing.md#tuning-options). |
-| The judge never changes the outcome. | `switchyard_classifier_fail_open_total` on `/metrics`; the log line `judge verdict unavailable`. | This is a compatibility problem, not a threshold. See [judge model compatibility](../routing_algorithms/llm_classifier_routing.md#judge-model-compatibility). |
-
-Other algorithms have their own controls; the
-[tuning overview](index.md#controls-by-algorithm) lists them.
-
 ### Split the benchmark and collect baselines
 
 Use **20% for calibration and 80% for held-out validation**, chosen before tuning.
@@ -136,6 +122,45 @@ still meeting the 85% target. F buys a higher success rate at a higher cost.
 The frontier describes the calibration sample. Repeat promising runs, then
 freeze the selection. Run E and all three baselines on the untouched 400-task
 validation split to check whether the cost advantage and success target hold.
+
+## Check the efficient model when overrides dominate
+
+This example keeps the objective and the route from the cost comparison. The
+capable model has most of the calls in `.models`, and the first instinct is to
+raise `confidence_threshold`. Read `routing_decisions` in `/v1/stats` first,
+after a reset and a run of the calibration tasks, as in
+[Before you start](foundations.md#before-you-start).
+
+When `override` is a large share of the counts, the threshold is the wrong
+control. Each `override` means a repeated failure, a critical error, or a
+context-compaction marker in the recent tool results forced the capable tier.
+These decisions skip the score, so `confidence_threshold` and the holds do not
+change them. Raising the threshold moves only the `dimensions` decisions and
+leaves the `override` share where it is.
+
+The `stage router override` log line names the cause in `override_reason`:
+`repeated_failure`, `critical_error`, or `compaction`. Count them. `compaction`
+comes from a context-compaction marker in the history, so leave it out of this
+comparison. Repeated failures and critical errors point at the efficient model:
+
+1. **Measure the efficient model alone.** Add the `passthrough` route from
+   [Check the efficient model before you route](../routing_algorithms/model_selection.md#check-the-efficient-model-before-you-route)
+   and run the same calibration tasks. Compare it with the capable-only
+   baseline. When the efficient-only arm is far below the capable-only arm,
+   routing has to escalate a large share of turns to close the gap, and the
+   savings shrink.
+2. **Run the compatibility checks on that page.** Tool calling, structured
+   output, context window, reasoning, and wire format. A model that passes a
+   one-tool test can still produce malformed calls with the agent's full tool
+   list.
+3. **Change the efficient model.** Compare pairs as in
+   [Model-pair selection](#model-pair-selection-with-fixed-algorithm-settings).
+   If no cheaper model clears the tasks, the capable share reflects the tasks,
+   and the cost objective needs a new target.
+
+After a change, reset the counters, rerun the calibration tasks, and read the
+`override` share again before you compare cost. Then validate on the held-out
+split as in [final validation](foundations.md#4-check-the-final-choice).
 
 ## Model-pair selection with fixed algorithm settings
 
