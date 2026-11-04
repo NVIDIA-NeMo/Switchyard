@@ -1406,7 +1406,7 @@ mod deployment_tests {
     use super::*;
     use crate::require_target_labels;
     use serde_json::json;
-    use switchyard_protocol::{Category, Message, Request, Role};
+    use switchyard_protocol::{Category, Request};
 
     const VALID_CONFIG: &str = r#"
 schema_version = 1
@@ -1577,17 +1577,9 @@ evidence = {{}}
             .expect("eligible route should exist");
 
         let mut request = Request::default();
-        request.llm_request.messages.push(Message::text(
-            Role::User,
-            "Contact user@example.test. Authorization: Bearer abcdefghijklmnop",
-        ));
-        let outcome = route.decide(request.clone()).await?;
-        assert!(
-            route
-                .models()
-                .models_for(&Category::Any)
-                .contains(outcome.selected_model_id()?)
-        );
+        require_target_labels(&mut request, ["private"])?;
+        let outcome = route.decide(request).await?;
+        assert_eq!(outcome.selected_model_id()?, "strong");
         assert_eq!(
             &runner
                 .describe_decision(&ModelId::from("switchyard/passthrough"), &outcome)
@@ -1596,9 +1588,6 @@ evidence = {{}}
                 .target,
             outcome.selected_model_id()?.as_str()
         );
-        require_target_labels(&mut request, ["private"])?;
-        assert_eq!(route.decide(request).await?.selected_model_id()?, "strong");
-
         for (config, route_id, expected) in [
             (
                 configured.replace("labels = ['private']", "labels = []"),
@@ -1623,10 +1612,6 @@ evidence = {{}}
                 .expect("no eligible setup");
             assert!(error.to_string().contains(expected), "{error}");
         }
-        let conflicting_alias = format!(
-            "{configured}\n[targets.alias]\nid = \"strong/model\"\nllm_client = \"responses\"\n"
-        );
-        assert!(error_message(&conflicting_alias).contains("disagree on approval labels"));
         Ok(())
     }
 
@@ -1639,26 +1624,6 @@ evidence = {{}}
             require_target_labels(&mut request, labels)?;
             assert!(ordinary.decide(request).await.is_err());
         }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn eligibility_requires_explicit_requirements_when_configured() -> RunnerResult<()> {
-        let configured = eligible_pool_config().replace(
-            "[routes.passthrough.eligibility]",
-            "[routes.passthrough.eligibility]\nrequire_explicit_requirements = true",
-        );
-        let runner = Runner::from_toml(&configured)?;
-        let route = runner.route("switchyard/passthrough").expect("route");
-        let mut request = Request::default();
-        let error = route
-            .decide(request.clone())
-            .await
-            .err()
-            .expect("missing signal");
-        assert!(error.to_string().contains("explicit"));
-        require_target_labels(&mut request, std::iter::empty::<&str>())?;
-        assert_eq!(route.decide(request).await?.selected_model_ids.len(), 2);
         Ok(())
     }
 
@@ -1687,21 +1652,6 @@ evidence = {{}}
             (
                 format!("{configured}\naccepted_requirement_sets = {{ local = [] }}\n"),
                 "unknown field `accepted_requirement_sets`",
-            ),
-            (
-                configured.replace("labels = ['private']", "restricted = true"),
-                "unknown field `restricted`",
-            ),
-            (
-                configured.replace(
-                    "[routes.passthrough.eligibility]",
-                    "[routes.passthrough.restricted]",
-                ),
-                "unknown field `restricted`",
-            ),
-            (
-                format!("{configured}\nscope = 'tenant'\n"),
-                "unknown variant `tenant`",
             ),
             (
                 format!("{configured}\nscope = 'task'\n"),

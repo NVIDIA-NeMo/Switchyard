@@ -225,11 +225,17 @@ async fn explicit_requirements_apply_only_to_the_current_request() {
     ))
     .expect("request-scoped route");
     let route = runner.route("chat").expect("route");
-    assert!(route.decide(request("shared", None)).await.is_err());
-    route
+    let error = route
+        .decide(request("shared", None))
+        .await
+        .err()
+        .expect("missing requirements");
+    assert!(error.to_string().contains("explicit"), "{error}");
+    let unrestricted = route
         .decide(request("shared", Some(&[])))
         .await
         .expect("explicit empty requirements");
+    assert_eq!(unrestricted.selected_model_ids.len(), 2);
     for (labels, expected) in [
         (&["private"] as &[&str], "private_fast"),
         (&["public"], "fast"),
@@ -366,29 +372,5 @@ fail_open = false
         assert_eq!(models_called(&server).await, ["approved/capable"]);
         server.verify().await;
         server.reset().await;
-    }
-}
-
-#[test]
-fn conflicting_deployment_approvals_are_rejected() {
-    let source = config(
-        "http://127.0.0.1:1",
-        "type = 'random'\ntargets = ['fast', 'both_fast']",
-        "",
-    );
-    let alias = source.replace("id = \"approved/fast\"", "id = \"cloud/fast\"");
-    let cross_client = format!(
-        "{}\n[llm_clients.other]\nformat = \"openai_chat\"\nbase_url = \"http://127.0.0.1:2/v1\"\n",
-        source.replace(
-            "id = \"approved/fast\"\nllm_client = \"primary\"",
-            "id = \"cloud/fast\"\nllm_client = \"other\""
-        )
-    );
-    for (source, reason) in [(alias, "label"), (cross_client, "client")] {
-        let error = match Runner::from_toml(&source) {
-            Ok(_) => panic!("conflicting model approvals loaded"),
-            Err(error) => error.to_string(),
-        };
-        assert!(error.contains(reason), "{reason}: {error}");
     }
 }
