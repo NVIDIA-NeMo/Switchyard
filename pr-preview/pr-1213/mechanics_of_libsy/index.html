@@ -2727,7 +2727,7 @@ Only calls requested concurrently by the algorithm can overlap. The returned
 <code>outcome</code> is handled as shown in <a href="#stepdone"><code>Step::Done</code></a>.</p>
 <p>For a ready-made version, see
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/fn.drive.html"><code>libsy::drive</code></a>
-and its <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/88d60062ad845bad840438422e8e4e2f795b6f92/crates/libsy/src/core/algorithm.rs#L593">reference execution loop</a>.</p>
+and its <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f2eb0c76abd72d41a1864375296b4a84036e616f/crates/libsy/src/core/algorithm.rs#L593">reference execution loop</a>.</p>
 <p>If the algorithm stops waiting, <code>respond</code> drops that call's work future. The
 explicit drops stop the remaining handlers and abort the algorithm task. Returning
 an error or cancelling the enclosing future also drops these local values. Your

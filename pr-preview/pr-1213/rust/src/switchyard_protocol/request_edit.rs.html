@@ -125,4 +125,36 @@
 <a href=#125 id=125 data-nosnippet>125</a>        prepend_text_field(body, <span class="string">"system"</span>, prompt)
 <a href=#126 id=126 data-nosnippet>126</a>    }
 <a href=#127 id=127 data-nosnippet>127</a>}
+<a href=#128 id=128 data-nosnippet>128</a>
+<a href=#129 id=129 data-nosnippet>129</a><span class="attr">#[cfg(test)]
+<a href=#130 id=130 data-nosnippet>130</a></span><span class="kw">mod </span>tests {
+<a href=#131 id=131 data-nosnippet>131</a>    <span class="kw">use crate</span>::{LlmRequest, WireFormat, text_request};
+<a href=#132 id=132 data-nosnippet>132</a>    <span class="kw">use </span>serde_json::json;
+<a href=#133 id=133 data-nosnippet>133</a>
+<a href=#134 id=134 data-nosnippet>134</a>    <span class="attr">#[test]
+<a href=#135 id=135 data-nosnippet>135</a>    </span><span class="kw">fn </span>temporary_note_bookkeeping_does_not_change_the_public_request_schema()
+<a href=#136 id=136 data-nosnippet>136</a>    -&gt; <span class="prelude-ty">Result</span>&lt;(), serde_json::Error&gt; {
+<a href=#137 id=137 data-nosnippet>137</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = text_request(<span class="prelude-val">Some</span>(<span class="string">"model"</span>.into()), <span class="string">"task"</span>);
+<a href=#138 id=138 data-nosnippet>138</a>        request.preservation.requests.insert(
+<a href=#139 id=139 data-nosnippet>139</a>            WireFormat::OpenAiChat.into(),
+<a href=#140 id=140 data-nosnippet>140</a>            <span class="macro">json!</span>({
+<a href=#141 id=141 data-nosnippet>141</a>                <span class="string">"model"</span>:<span class="string">"model"</span>, <span class="string">"messages"</span>:[{<span class="string">"role"</span>:<span class="string">"user"</span>, <span class="string">"content"</span>:<span class="string">"task"</span>}],
+<a href=#142 id=142 data-nosnippet>142</a>                <span class="string">"metadata"</span>:{<span class="string">"caller"</span>:<span class="string">"keep"</span>}
+<a href=#143 id=143 data-nosnippet>143</a>            }),
+<a href=#144 id=144 data-nosnippet>144</a>        );
+<a href=#145 id=145 data-nosnippet>145</a>        <span class="kw">let </span>without_note = request.clone();
+<a href=#146 id=146 data-nosnippet>146</a>        request.append_note(<span class="string">"reassess the failure"</span>);
+<a href=#147 id=147 data-nosnippet>147</a>        <span class="macro">assert_eq!</span>(request.temporary_note_count, <span class="number">1</span>);
+<a href=#148 id=148 data-nosnippet>148</a>        <span class="comment">// LiteLLM would still reject requests with notes if serialization omitted only zero counts.
+<a href=#149 id=149 data-nosnippet>149</a>        </span><span class="kw">for </span>request <span class="kw">in </span>[without_note, request] {
+<a href=#150 id=150 data-nosnippet>150</a>            <span class="kw">let </span>encoded = serde_json::to_value(<span class="kw-2">&amp;</span>request)<span class="question-mark">?</span>;
+<a href=#151 id=151 data-nosnippet>151</a>            <span class="macro">assert!</span>(encoded.get(<span class="string">"temporary_note_count"</span>).is_none());
+<a href=#152 id=152 data-nosnippet>152</a>            <span class="kw">let </span>decoded: LlmRequest = serde_json::from_value(encoded)<span class="question-mark">?</span>;
+<a href=#153 id=153 data-nosnippet>153</a>            <span class="macro">assert_eq!</span>(decoded.messages, request.messages);
+<a href=#154 id=154 data-nosnippet>154</a>            <span class="macro">assert_eq!</span>(decoded.preservation.requests, request.preservation.requests);
+<a href=#155 id=155 data-nosnippet>155</a>            <span class="macro">assert_eq!</span>(decoded.temporary_note_count, <span class="number">0</span>);
+<a href=#156 id=156 data-nosnippet>156</a>        }
+<a href=#157 id=157 data-nosnippet>157</a>        <span class="prelude-val">Ok</span>(())
+<a href=#158 id=158 data-nosnippet>158</a>    }
+<a href=#159 id=159 data-nosnippet>159</a>}
 </code></pre></div></section></main></body></html>
