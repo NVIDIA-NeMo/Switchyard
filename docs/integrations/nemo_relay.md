@@ -313,8 +313,9 @@ The plugin captures two existing Switchyard spans. Each routing or answer LLM
 call becomes a `libsy.client_call` scope. Physical HTTP attempts and retries
 become `libsy.upstream_attempt` child scopes. Buffered calls close with the response;
 streaming calls close when the stream finishes, fails, or is dropped. The
-projection contains allowlisted, payload-free routing metadata only and does not
-copy prompts, responses, provider error bodies, or credentials into Relay.
+projection contains allowlisted routing metadata by default. Optional
+[routing payload capture](#inspect-classifier-and-judge-payloads) adds the final
+classifier/judge request and successful buffered response.
 
 `switchyard.call_phase` records when Switchyard issued a client call:
 `routing` while the algorithm was still deciding, or `completion` after a
@@ -328,6 +329,96 @@ classification as `routing` or `answer`.
 | Routing or answer model call | `libsy.client_call` scope | Relay's managed request scope | Starts with the Switchyard call and closes with the buffered response or terminal stream event. |
 | Physical provider request or retry | `libsy.upstream_attempt` scope | Its `libsy.client_call` scope | Starts before the HTTP attempt and closes on response, error, or cancellation. |
 | Routing request, decision, overhead, or failure | Existing `switchyard.routing.*` mark | Active Relay scope at emission | Point-in-time mark using the existing outcome fields. |
+
+### Inspect Classifier and Judge Payloads
+
+Routing payload capture is available through the native NeMo Relay plugin and
+is disabled by default. It is not a standalone Switchyard configuration option.
+Use it to inspect the final classifier/judge request, including its system
+prompt, task context, output schema, resolved model, and target body settings,
+plus its successful buffered response. This helps distinguish a poor verdict
+from missing task context.
+
+Add these options to the existing `plugins.dynamic.config` table in your Relay
+`plugins.toml`, then restart the host:
+
+```toml
+[plugins.dynamic.config]
+switchyard_config_path = "/etc/switchyard/routes.toml"
+capture_routing_payloads = true
+```
+
+`max_routing_payload_bytes` defaults to 262144 encoded bytes (256 KiB) per
+request or response body, per attempt, before sanitization. It must be positive.
+Larger bodies are omitted entirely, not retained as a prefix:
+
+```json
+{"body": null, "truncated": true}
+```
+
+The full request still reaches the model. The capture limit does not change
+which messages the classifier receives; see
+[classifier context selection](../routing_algorithms/llm_classifier_routing.md#tuning-options).
+
+For a debugging session that needs larger bodies, set an override in the same
+`plugins.dynamic.config` table and restart the host. For example, allow up to
+2 MiB per body:
+
+```toml
+max_routing_payload_bytes = 2097152
+```
+
+This is a per-body limit, not a total memory budget. Larger limits increase
+memory use and export volume, especially with concurrent calls or retries.
+Exporters and their backends can impose smaller limits. After debugging, set
+`capture_routing_payloads = false` and restart the host; remove the size override
+to restore the default for later sessions.
+
+Within the routed request's trace:
+
+1. Find the `libsy.client_call` scope for the classifier/judge model, with
+   `switchyard.call_phase = routing`.
+2. Open its `libsy.upstream_attempt` child. The request is the scope input;
+   its successful buffered response is the scope output. Retries have separate
+   attempt scopes. Retained payloads have a JSON string in `body` and
+   `truncated = false`.
+3. Inspect the `switchyard.routing.decision` mark on the same routed request
+   for the selected and served model. The judge response contains the returned
+   verdict; the decision mark records what Switchyard did with it.
+
+For an [ATOF export](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/atof),
+the request appears directly in the attempt start event's `data`, and the
+response in the matching end event's `data`. Their `uuid` values match;
+`parent_uuid` identifies the classifier call. For example, inspect complete
+captured requests with:
+
+```bash
+jq 'select(.name == "libsy.upstream_attempt" and .scope_category == "start" and .data.body != null) | .data.body | fromjson' events.jsonl
+```
+
+Find omitted request or response bodies with:
+
+```bash
+jq 'select(.name == "libsy.upstream_attempt" and .data.truncated == true) | {uuid, scope_category}' events.jsonl
+```
+
+Capture follows routing-phase HTTP calls, which include LLM classifier/judge
+calls and may include other model calls used while deciding a route. It excludes
+completion-phase payloads, streamed response bodies, HTTP error bodies, and
+non-LLM decision-client payloads such as SystemOne. This option belongs to the
+native Relay plugin; enabling standalone Switchyard TRACE logging does not
+enable payload capture.
+
+Payloads can contain sensitive task data. To mask configured provider keys,
+the plugin decodes the captured JSON, redacts it, and serializes the copy again.
+JSON strings, such as classifier content and tool arguments, are decoded too.
+Traversal is limited to 64 levels, including JSON encoded inside strings.
+Whitespace and escape spellings may change. If JSON-looking text cannot be
+decoded or the depth limit is exceeded, the body is omitted (`body: null`).
+Captured data passes through Relay's normal event
+sanitizers and configured exporters. Personal data and other secrets require
+suitable sanitizers; see Relay's
+[PII redaction options](https://docs.nvidia.com/nemo/relay/configure-plugins/pii-redaction/about).
 
 ### How Routing Appears in Traces
 
@@ -438,9 +529,10 @@ Configure delivery through Relay's
 
 ## Data Handling
 
-Switchyard routing telemetry excludes request and response content. Its marks
-do not contain prompts, bodies, headers, credentials, raw provider responses,
-or free-form provider errors. Relay's LLM events can capture request and
-response data according to Relay's
+By default, Switchyard routing telemetry excludes request and response content.
+Enabling [routing payload capture](#inspect-classifier-and-judge-payloads) adds
+internal routing requests and successful buffered responses to
+`libsy.upstream_attempt` scopes. Routing marks remain payload-free.
+Relay's LLM events can capture request and response data according to Relay's
 [input and output event semantics](https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/events#input-and-output-payloads),
 independently of these Switchyard marks.

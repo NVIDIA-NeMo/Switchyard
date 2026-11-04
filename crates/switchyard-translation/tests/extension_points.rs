@@ -3,8 +3,11 @@
 
 //! Tests for custom translation and stream codec extension points.
 
+use futures::executor::block_on;
+use futures::{StreamExt, TryStreamExt, stream};
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
+use switchyard_protocol::LlmClientError;
 use switchyard_translation::codecs::{
     DecodedRequest, DecodedResponse, EncodedRequest, EncodedResponse, FormatCodec,
 };
@@ -104,6 +107,126 @@ fn custom_stream_codec_replays_preserved_same_format_event() -> TestResult {
 
     assert_eq!(replayed, vec![event]);
     Ok(())
+}
+
+#[test]
+fn custom_whole_streams_use_registered_codecs_and_outlive_the_engine() -> TestResult {
+    let mut registry = StreamCodecRegistry::new();
+    registry.register(CustomStreamCodec);
+    let engine = TranslationEngine::with_registries(FormatRegistry::new(), registry);
+    let format = FormatId::new("custom_stream");
+    let bytes = stream::iter([Ok(
+        b"data: {\"kind\":\"delta\",\"text\":\"hello\",\"vendor_only\":true}\n\ndata: {\"kind\":\"done\"}\n\n"
+            .to_vec(),
+    )]);
+    let decoded = engine.decode_stream(format.clone(), bytes)?;
+    let replayed = engine.encode_stream_with_extensions(
+        format.clone(),
+        decoded,
+        Some("replayed-model".into()),
+        &Default::default(),
+    )?;
+    let generated = engine.encode_stream(
+        format,
+        stream::iter([Ok(LlmResponseChunk::TextDelta {
+            index: 0,
+            text: "generated".into(),
+        }
+        .into())])
+        .boxed(),
+        Some("generated-model".into()),
+    )?;
+    drop(engine);
+
+    assert_eq!(
+        block_on(replayed.try_collect::<Vec<_>>())?,
+        vec![
+            json!({"kind": "delta", "text": "hello", "vendor_only": true, "backend": "replayed-model"}),
+            json!({"kind": "done", "backend": "replayed-model"}),
+        ]
+    );
+    assert_eq!(
+        block_on(generated.try_collect::<Vec<_>>())?,
+        vec![
+            json!({"kind": "delta", "text": "generated", "backend": "generated-model"}),
+            json!({"kind": "done", "backend": "generated-model"}),
+        ]
+    );
+    Ok(())
+}
+
+#[test]
+fn custom_stream_completion_uses_the_codec_rules() -> TestResult {
+    let mut registry = StreamCodecRegistry::new();
+    registry.register(CustomStreamCodec);
+    let engine = TranslationEngine::with_registries(FormatRegistry::new(), registry);
+    let cases = [
+        ("EOF after text", "", false),
+        ("EOF after an empty frame", "\n\n", false),
+        ("SSE marker alone", "data: [DONE]\n\n", false),
+        ("trailing SSE marker alone", "data: [DONE]", false),
+        ("terminal JSON event", "data: {\"kind\":\"done\"}\n\n", true),
+        (
+            "trailing terminal JSON event",
+            "data: {\"kind\":\"done\"}",
+            true,
+        ),
+        (
+            "terminal JSON event then SSE marker",
+            "data: {\"kind\":\"done\"}\n\ndata: [DONE]\n\n",
+            true,
+        ),
+        (
+            "terminal JSON event then trailing SSE marker",
+            "data: {\"kind\":\"done\"}\n\ndata: [DONE]",
+            true,
+        ),
+    ];
+    for (name, tail, is_complete) in cases {
+        let bytes =
+            format!("data: {{\"kind\":\"delta\",\"text\":\"hello\"}}\n\n{tail}").into_bytes();
+        let decoded = engine.decode_stream("custom_stream", stream::iter([Ok(bytes)]))?;
+        let mut events = block_on(decoded.collect::<Vec<_>>()).into_iter();
+        let first = events.next().expect(name)?;
+        assert_eq!(
+            first.normalized(),
+            &[LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "hello".into(),
+            }],
+            "{name}"
+        );
+        let remaining = events.collect::<Result<Vec<_>, _>>();
+        if is_complete {
+            assert!(remaining.is_ok(), "{name}: {remaining:?}");
+        } else {
+            assert!(
+                matches!(
+                    &remaining,
+                    Err(LlmClientError::ResponseTranslation(message))
+                        if message == "custom_stream stream ended before a terminal event"
+                ),
+                "{name}: {remaining:?}"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn whole_stream_methods_report_missing_codecs_at_setup() {
+    let engine =
+        TranslationEngine::with_registries(FormatRegistry::new(), StreamCodecRegistry::new());
+    assert!(matches!(
+        engine.decode_stream("missing", stream::empty()),
+        Err(LlmClientError::ResponseTranslation(message))
+            if message == "no stream codec registered for missing"
+    ));
+    assert!(matches!(
+        engine.encode_stream("missing", stream::empty().boxed(), None),
+        Err(LlmClientError::Configuration { message })
+            if message == "no stream codec registered for missing"
+    ));
 }
 
 // Verifies target capability policy can reject unsupported request features.
@@ -273,6 +396,18 @@ impl StreamCodec for CustomStreamCodec {
         FormatId::new("custom_stream")
     }
 
+    fn is_terminal_event(&self, event: &Value) -> bool {
+        event.get("kind").and_then(Value::as_str) == Some("done")
+    }
+
+    fn sse_done_is_terminal(&self) -> bool {
+        false
+    }
+
+    fn stamp_streamed_response_model(&self, event: &mut Value, served_model: &str) {
+        event["backend"] = Value::String(served_model.to_string());
+    }
+
     fn decode_event(
         &self,
         _state: &mut StreamTranslationState,
@@ -299,24 +434,31 @@ impl StreamCodec for CustomStreamCodec {
                     }]
                 })
                 .unwrap_or_default(),
+            Some("done") => vec![LlmResponseChunk::MessageStop { reason: None }],
             _ => Vec::new(),
         }
     }
 
     fn encode_event(
         &self,
-        _state: &mut StreamTranslationState,
+        state: &mut StreamTranslationState,
         event: LlmResponseChunk,
     ) -> Vec<Value> {
         match event {
             LlmResponseChunk::TextDelta { text, .. } => {
                 vec![json!({"kind": "delta", "text": text})]
             }
+            LlmResponseChunk::MessageStop { .. } => self.finish(state),
             _ => Vec::new(),
         }
     }
 
-    fn finish(&self, _state: &mut StreamTranslationState) -> Vec<Value> {
-        Vec::new()
+    fn finish(&self, state: &mut StreamTranslationState) -> Vec<Value> {
+        if state.finished {
+            Vec::new()
+        } else {
+            state.finished = true;
+            vec![json!({"kind": "done"})]
+        }
     }
 }

@@ -44,7 +44,9 @@ nav:
       - Choose Models: routing_algorithms/model_selection.md
   - Evaluate Routing:
       - Benchmarks: benchmarks.md
-      - Compare and Tune: tuning/index.md
+      - Tuning: tuning/index.md
+      - Tuning Foundations: tuning/foundations.md
+      - Examples: tuning/examples.md
   - Local Demo:
       - Run the Reference Server: operations/local_evaluation.md
       - Local Agents:
