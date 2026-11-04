@@ -11,19 +11,22 @@ request and response data.
 
 ## Choose a strategy
 
-Start with **Auto**. Choose Task or Execution when you want more control over
-how requests move between an efficient model and a capable one.
+Start with **Capability Router**. Choose Task or Execution when you want more
+control over how requests move between an efficient model and a capable one.
 
 | Choice | Use it when | Route `type` |
 |---|---|---|
-| **[Auto](#auto)** | You want Switchyard's recommended preset. | `auto` |
-| **[Task](llm_classifier_routing.md)** | You want an LLM to judge which model can handle the task. | `llm_classifier` |
-| **[Execution](stage_router_routing.md)** | You want tool results and agent progress to guide each request. | `stage_router` |
+| **[Capability Router](capability_router_routing.md)** | You want to compose signals (a judge, tool-result history, or both) against a shared model [pool](pool.md). | `capability_router` |
+| **[Task](llm_classifier_routing.md)** | You want an LLM to judge which model can handle the task, on its own. | `llm_classifier` |
+| **[Execution](stage_router_routing.md)** | You want tool results and agent progress to guide each request, on its own. | `stage_router` |
 
 Task uses the LLM classifier's `capability` mode. Its `classify_trigger` setting
 controls whether the judge runs for each request, each user turn, or once per
 session. Execution uses the stage router, which reads tool-result history and
-can optionally call an LLM judge. The TOML configuration keys are unchanged.
+can optionally call an LLM judge. Capability Router composes either (or both)
+as named signals that score a shared capability tag instead of resolving a
+model themselves. The TOML configuration keys for Task and Execution as
+standalone routes are unchanged.
 
 Whichever strategy you choose, the two models you put behind it matter more than
 any threshold. See [Model Selection](model_selection.md). To tune cost against
@@ -33,6 +36,7 @@ quality, see [Examples](../tuning/examples.md).
 
 | Name | Route `type` | What it does |
 |---|---|---|
+| [Capability Router](capability_router_routing.md) | `capability_router` | Named signals score a capability tag, and a shared [pool](pool.md) resolves it to a model. |
 | [Auto](#auto) | `auto` | The Execution preset with fixed settings. |
 | [Task](llm_classifier_routing.md) | `llm_classifier`, `mode = "capability"` | A judge reads the task before the turn is served and picks the strong or weak model. |
 | [Execution](stage_router_routing.md) | `stage_router` | Tool results from the last few turns pick the capable or efficient model for each turn. |
@@ -51,6 +55,7 @@ quality, see [Examples](../tuning/examples.md).
 
 | Route `type` | Decides from | Extra model calls | Switches | Session ID | When it cannot decide | Measured | Start from |
 |---|---|---|---|---|---|---|---|
+| `capability_router` | Named signals (a judge, tool results, or both) scored against the [pool](pool.md) | One judge call per request when `task` is configured | Every request, unless `signals.affinity` pins the session to its first model | Optional. Required for `signals.affinity` and for `escalation_hold_turns`. | The pool's `default` tag | Not benchmarked | [Capability Router](capability_router_routing.md) |
 | `auto` | Tool results in the request | None | Every request | Optional. Keeps the capable hold. | Efficient tier | The preset of the measured `stage_router` settings, with a shorter window. See [Auto](#auto). | The [local evaluation](../operations/local_evaluation.md#configure-your-model-pool) route file |
 | `stage_router` | Tool results in the request | Optional judge on ambiguous turns | Every request | Optional. Keeps the capable hold. | Picker default | [Terminal-Bench 2.1 and DeepSWE results](../benchmarks.md) with the [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml) | That profile |
 | `llm_classifier`, capability | A judge's view of the task | One judge call per request, user turn, or session | Per trigger | Optional. Needed to retain a verdict. | Strong target | [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21) for an LLM judge and for Jev as a decision judge. The LLM-judge config is not published; a [smoke-test config](../../benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml) is checked in. | That config |
@@ -124,11 +129,12 @@ These cases apply across strategies:
 Three starting points. Each names a strategy, a file in this repository to copy,
 and the one dial to move first.
 
-1. **A coding agent, and cost comes first.** Start with `auto`. When you need to
-   tune, copy the
-   [DeepSWE stage profile](../../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml)
-   and move `confidence_threshold` as described in
-   [Tuning `confidence_threshold`](stage_router_routing.md#tuning-confidence_threshold).
+1. **A coding agent, and cost comes first.** Start with `capability_router`: one
+   `[pool]` and a `tool_loop` signal cover it. To tune, move
+   `signals.tool_loop.confidence_threshold` as described in
+   [Tuning `confidence_threshold`](stage_router_routing.md#tuning-confidence_threshold),
+   starting from the measured values in the
+   [DeepSWE stage profile](../../benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml).
 2. **Long sessions where the cheap model should run until a judge reports that it is failing.**
    Use escalation. Copy the
    [escalation profile](../../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml),
@@ -143,6 +149,17 @@ and the one dial to move first.
 For multi-turn support traffic with few tool results, the
 [tau2 custom-classifier profiles](../../benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml)
 are the measured starting point. Their dial is the judge rubric in `prompt`.
+### Capability Router
+
+Capability Router declares a model [pool](pool.md) once and composes
+`task`/`tool_loop` signals against it, instead of each algorithm holding its
+own copy of the model list. See
+[Capability Router](capability_router_routing.md) for the full configuration
+and how it differs from running Task or Execution standalone.
+
+See the
+[Capability Router configuration reference](../reference/toml_schema.md#capability_router)
+for every field.
 
 ### Auto
 

@@ -261,6 +261,10 @@ static NUMERIC_FAILURE_KEYWORDS: &[&str] = &["failed", "failure", "failures", "e
 /// passing a window to [`ToolSignals::from_request`].
 pub const DEFAULT_RECENT_WINDOW: usize = 3;
 
+/// Trailing identical tool calls (same name and command/arguments) that mark
+/// the agent as looping rather than making progress.
+const REPEATED_CALL_THRESHOLD: usize = 3;
+
 /// Exact tool-name semantics added to the built-in vocabulary.
 ///
 /// Matching is ASCII case-insensitive. An MCP or Codex namespaced tool also
@@ -275,7 +279,9 @@ pub struct ToolSemantics {
     pub mutate: Vec<String>,
     /// Explicit planning or task-decomposition tools.
     pub plan: Vec<String>,
-    /// Tools that demonstrate new forward activity without favoring either tier.
+    /// Tools that demonstrate new forward activity. Counted as production
+    /// alongside writes and edits — it suppresses the stall dimensions and
+    /// pushes the scorer toward the efficient tier, same as a write or edit.
     pub new: Vec<String>,
 }
 
@@ -380,6 +386,15 @@ pub struct ToolSignals {
     pub new_count: u32,
     /// Configured `new` tool calls within the recent window.
     pub recent_new_count: u32,
+    /// The same tool call (name and command/arguments) repeated at least
+    /// [`REPEATED_CALL_THRESHOLD`] times in a row at the end of the request —
+    /// a loop signal, independent of whether the calls succeeded.
+    pub repeated_tool_call: bool,
+    /// Tool results in the recent window that read as a failed test run.
+    pub test_failure_count: u32,
+    /// The recent window's last tool result is more severe than its first —
+    /// the error is getting worse, not recovering.
+    pub severity_rising: bool,
     /// Consecutive trailing tool calls in the `Unknown` category (no Write/Edit/Read/
     /// Plan match). Surfaced in the classifier state summary; not scored directly.
     pub pure_bash_streak: u32,
@@ -430,6 +445,7 @@ impl ToolSignals {
 // `command` is the lowercased Bash command line; None for non-Bash tools.
 // `bare_name` is the tool's own name when `name` joins it to a namespace or MCP server.
 // `is_retrieval` marks a call that only reads; it counts as an observation.
+// Full arguments retain file paths, offsets and case for exact repeat detection.
 #[derive(Debug, Clone)]
 struct ObservedToolCall<'a> {
     name: String,
@@ -437,6 +453,7 @@ struct ObservedToolCall<'a> {
     command: Option<String>,
     is_retrieval: bool,
     code_semantic: Option<ToolSemantic>,
+    arguments: &'a serde_json::Value,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1136,6 +1153,7 @@ fn extract_tool_signals_with_window_and_semantics(
                         command,
                         is_retrieval,
                         code_semantic,
+                        arguments: &call.arguments,
                     });
                 }
                 ContentBlock::ToolResult(result) => {
@@ -1340,6 +1358,9 @@ fn build_signal(
     }
 
     let no_error_streak = compute_no_error_streak(&tool_texts);
+    let test_failure_count = count_test_failures(&tool_texts, recent_window);
+    let severity_rising = severity_trend_is_rising(&tool_texts, recent_window);
+    let repeated_tool_call = trailing_identical_call_streak(&tool_calls) >= REPEATED_CALL_THRESHOLD;
 
     // Single pass: cumulative + sliding-window counters together. Also tracks
     // the trailing pure-bash streak (consecutive `Unknown` calls back
@@ -1432,6 +1453,9 @@ fn build_signal(
         recent_todowrite_count,
         new_count,
         recent_new_count,
+        repeated_tool_call,
+        test_failure_count,
+        severity_rising,
         pure_bash_streak,
         tests_passed,
         turn_depth,
@@ -1670,6 +1694,57 @@ fn compute_no_error_streak(tool_texts: &[(String, bool)]) -> u32 {
             break;
         }
         streak += 1;
+    }
+    streak
+}
+
+/// Count of recent-window tool results that read as a failed test run, so a
+/// caller can tell one bad run from a string of them instead of only the
+/// boolean [`ToolSignals::tests_passed`].
+fn count_test_failures(tool_texts: &[(String, bool)], recent_window: usize) -> u32 {
+    let start = tool_texts.len().saturating_sub(recent_window.max(1));
+    tool_texts[start..]
+        .iter()
+        .filter(|(text, _)| {
+            let lower = text.to_lowercase();
+            has_nonzero_failure_count(&lower)
+                || TEST_FAILURE_LITERAL
+                    .iter()
+                    .any(|pattern| lower.contains(pattern))
+        })
+        .count() as u32
+}
+
+/// Whether the recent window's last tool result is more severe than its
+/// first — distinguishes a worsening error from one that is recovering, which
+/// the windowed max `severity` alone cannot tell apart.
+fn severity_trend_is_rising(tool_texts: &[(String, bool)], recent_window: usize) -> bool {
+    let start = tool_texts.len().saturating_sub(recent_window.max(1));
+    let window = &tool_texts[start..];
+    if window.len() < 2 {
+        return false;
+    }
+    let severity_of = |(text, is_error): &(String, bool)| {
+        let (sev, _) = classify_text(text);
+        if *is_error { sev.max(HARD) } else { sev }
+    };
+    severity_of(&window[window.len() - 1]) > severity_of(&window[0])
+}
+
+/// Length of the run of identical trailing tool calls (same name and
+/// command/arguments), `0` when there are none.
+fn trailing_identical_call_streak(tool_calls: &[ObservedToolCall]) -> usize {
+    let mut calls = tool_calls.iter().rev();
+    let Some(last) = calls.next() else {
+        return 0;
+    };
+    let mut streak = 1usize;
+    for call in calls {
+        if call.name.eq_ignore_ascii_case(&last.name) && call.arguments == last.arguments {
+            streak += 1;
+        } else {
+            break;
+        }
     }
     streak
 }
@@ -3224,6 +3299,126 @@ mod tests {
                 "configured tool {configured:?} must score exactly like {builtin:?}"
             );
         }
+    }
+
+    #[test]
+    fn repeated_identical_tool_call_is_flagged() {
+        let request = with_messages(vec![
+            bash("pytest"),
+            tr("1 failed, 4 passed"),
+            bash("pytest"),
+            tr("1 failed, 4 passed"),
+            bash("pytest"),
+            tr("1 failed, 4 passed"),
+        ]);
+        assert!(ToolSignals::from_request(&request, None).repeated_tool_call);
+    }
+
+    #[test]
+    fn two_identical_calls_do_not_yet_count_as_looping() {
+        let request = with_messages(vec![
+            bash("pytest"),
+            tr("1 failed, 4 passed"),
+            bash("pytest"),
+            tr("1 failed, 4 passed"),
+        ]);
+        assert!(!ToolSignals::from_request(&request, None).repeated_tool_call);
+    }
+
+    #[test]
+    fn differing_arguments_do_not_count_as_repeated() {
+        let request = with_messages(vec![
+            bash("pytest tests/a.py"),
+            tr("ok"),
+            bash("pytest tests/b.py"),
+            tr("ok"),
+            bash("pytest tests/c.py"),
+            tr("ok"),
+        ]);
+        assert!(!ToolSignals::from_request(&request, None).repeated_tool_call);
+    }
+
+    #[test]
+    fn reading_different_files_is_not_a_repeated_call() {
+        let calls = ["src/a.rs", "src/b.rs", "src/c.rs"]
+            .into_iter()
+            .map(|path| Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolCall(ToolCall {
+                    id: String::new(),
+                    name: "Read".to_string(),
+                    arguments: json!({"file_path": path}),
+                })],
+            })
+            .collect();
+        assert!(!ToolSignals::from_request(&with_messages(calls), None).repeated_tool_call);
+    }
+
+    #[test]
+    fn reading_different_offsets_is_not_a_repeated_call() {
+        let calls = [1, 100, 200]
+            .into_iter()
+            .map(|offset| Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolCall(ToolCall {
+                    id: String::new(),
+                    name: "Read".to_string(),
+                    arguments: json!({"file_path": "src/main.rs", "offset": offset}),
+                })],
+            })
+            .collect();
+        assert!(!ToolSignals::from_request(&with_messages(calls), None).repeated_tool_call);
+    }
+
+    #[test]
+    fn case_sensitive_command_arguments_are_not_a_repeated_call() {
+        let request = with_messages(vec![bash("cat a.rs"), bash("cat A.rs"), bash("cat a.RS")]);
+        assert!(!ToolSignals::from_request(&request, None).repeated_tool_call);
+    }
+
+    #[test]
+    fn identical_non_shell_arguments_still_count_as_repeated() {
+        let call = Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: String::new(),
+                name: "Read".to_string(),
+                arguments: json!({"file_path": "src/main.rs", "offset": 1}),
+            })],
+        };
+        let request = with_messages(vec![call.clone(), call.clone(), call]);
+        assert!(ToolSignals::from_request(&request, None).repeated_tool_call);
+    }
+
+    #[test]
+    fn test_failure_count_tallies_the_recent_window() {
+        let request = with_messages(vec![
+            tr("1 failed, 4 passed"),
+            tr("2 failed, 3 passed"),
+            tr("5 passed"),
+        ]);
+        assert_eq!(
+            ToolSignals::from_request(&request, Some(3)).test_failure_count,
+            2
+        );
+    }
+
+    #[test]
+    fn severity_rising_detects_a_worsening_window() {
+        let request = with_messages(vec![
+            tr("Process exited with code 1"),
+            tr("Traceback (most recent call last):\n  ValueError"),
+        ]);
+        assert!(ToolSignals::from_request(&request, Some(2)).severity_rising);
+    }
+
+    #[test]
+    fn severity_rising_is_false_when_recovering() {
+        let request = with_messages(vec![
+            tr("Traceback (most recent call last):\n  ValueError"),
+            tr("Process exited with code 1"),
+        ]);
+        assert!(!ToolSignals::from_request(&request, Some(2)).severity_rising);
     }
 
     #[test]

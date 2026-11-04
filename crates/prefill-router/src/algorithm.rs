@@ -156,7 +156,9 @@ impl Algorithm for PrefillRouterAlgo {
             .await?
             .0
             .argmax(false)
-            .map(|score| score.map(|score| score.target))?
+            // Affinity names the model it retained, so read the pin rather than
+            // reading a capability tag as if it were a model id.
+            .map(|score| score.and_then(|score| score.pin))?
         {
             tracing::info!(target = %target, "prefill affinity selected target");
             return Ok(RoutingOutcome::route_to(

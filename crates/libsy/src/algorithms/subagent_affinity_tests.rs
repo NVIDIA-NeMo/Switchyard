@@ -39,8 +39,8 @@ impl Classifier for AlwaysOrchestrator {
         Ok((
             Classification::Scores(vec![Score {
                 confidence: 0.5,
-                target: ModelId::from("orchestrator"),
-                category: None,
+                needs: Vec::new(),
+                pin: Some(ModelId::from("orchestrator")),
             }]),
             None,
         ))

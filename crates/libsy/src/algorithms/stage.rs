@@ -98,7 +98,20 @@ impl Classifier for SourceStamp {
         let (classification, served) = self.inner.score(state, request, driver).await?;
         // An abstaining classifier passes the turn on, so it is not its to claim.
         if let Some(winner) = classification.argmax(false)? {
-            record_routing_decision(self.source, driver.provider_model(&winner.target));
+            // Resolve through the scoped driver: `target_name` on this metric is the
+            // provider model in the resolved and override branches, so it stays one here.
+            let selected = winner.pin.clone().or_else(|| {
+                winner
+                    .needs
+                    .iter()
+                    .find_map(|need| driver.models_for(need).first().cloned())
+            });
+            record_routing_decision(
+                self.source,
+                selected
+                    .as_ref()
+                    .map_or("unknown", |model| driver.provider_model(model).as_str()),
+            );
             driver.set_evidence_if_empty(serde_json::json!({
                 "source": self.source.as_str(),
             }));
@@ -125,12 +138,13 @@ impl Classifier for FallOpen {
             Tier::Capable => Category::Capable,
             Tier::Efficient => Category::Efficient,
         };
-        let target = driver.first_model_for(&category)?.clone();
+        // Validate the category actually has a runtime model before falling open to it.
+        driver.first_model_for(&category)?;
         Ok((
             Classification::Scores(vec![Score {
-                target,
+                needs: vec![category],
+                pin: None,
                 confidence: 0.0,
-                category: Some(category),
             }]),
             None,
         ))
@@ -356,9 +370,9 @@ mod tests {
         ) -> Result<(Classification, Option<Response>)> {
             Ok((
                 Classification::Scores(vec![Score {
-                    target: ModelId::from(self.0),
+                    needs: vec![Category::Named(self.0.into())],
+                    pin: None,
                     confidence: 1.0,
-                    category: None,
                 }]),
                 None,
             ))

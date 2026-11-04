@@ -31,6 +31,8 @@ nav:
   - Routing:
       - Algorithms:
           - Overview: routing_algorithms/overview.md
+          - Capability Router: routing_algorithms/capability_router_routing.md
+          - The Model Pool: routing_algorithms/pool.md
           - Task (LLM Classifier): routing_algorithms/llm_classifier_routing.md
           - Execution (Stage Router): routing_algorithms/stage_router_routing.md
           - Plan/Execute Routing: routing_algorithms/plan_execute_routing.md

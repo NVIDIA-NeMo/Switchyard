@@ -53,6 +53,9 @@ const PRODUCTION_WEIGHT: f64 = 1.5;
 const CLEAN_PRODUCTION_WEIGHT: f64 = 1.2;
 /// Critical severity forces the capable tier regardless of the scorer.
 const SEVERITY_CRITICAL: f32 = 1.0;
+/// Recent-window test failures before they count as a scorer signal — one
+/// failure can be a retry already in progress.
+const REPEATED_TEST_FAILURE_THRESHOLD: u32 = 2;
 /// Session-state key for the remaining capable-tier recovery turns.
 const CAPABLE_HOLD_KEY: &str = "capable_hold_turns";
 const EFFICIENT_HOLD_KEY: &str = "efficient_hold_turns";
@@ -214,8 +217,13 @@ pub struct CodingAgentDimensions {
     pub spinning: f64,
     /// `1.0` when a deep turn observes/plans but does not mutate or show new activity.
     pub exploring: f64,
-    /// Fraction of recent tool ops that produced code (writes + edits).
+    /// Fraction of recent tool ops that produced code (writes + edits + new activity).
     pub production_intensity: f64,
+    /// `1.0` when the recent window's severity is rising rather than recovering.
+    pub severity_rising: f64,
+    /// `1.0` when the recent window has at least [`REPEATED_TEST_FAILURE_THRESHOLD`]
+    /// failed test runs.
+    pub repeated_test_failure: f64,
 }
 
 /// Outcome of [`pick_tier`]: either a resolved decision, or a signal that the
@@ -251,7 +259,8 @@ pub fn dimensions_from_signal(signal: &ToolSignals) -> CodingAgentDimensions {
     let recent_ops = signal.recent_write_count
         + signal.recent_edit_count
         + signal.recent_read_count
-        + signal.recent_todowrite_count;
+        + signal.recent_todowrite_count
+        + signal.recent_new_count;
     let deep_enough = signal.turn_depth >= STALL_MIN_TURN_DEPTH;
     let no_production = signal.recent_write_count == 0 && signal.recent_edit_count == 0;
     let investigating = signal.recent_read_count >= 1 || signal.recent_todowrite_count >= 1;
@@ -266,9 +275,15 @@ pub fn dimensions_from_signal(signal: &ToolSignals) -> CodingAgentDimensions {
         spinning: if spinning { 1.0 } else { 0.0 },
         exploring: if exploring { 1.0 } else { 0.0 },
         production_intensity: ratio(
-            signal.recent_write_count + signal.recent_edit_count,
+            signal.recent_write_count + signal.recent_edit_count + signal.recent_new_count,
             recent_ops,
         ),
+        severity_rising: if signal.severity_rising { 1.0 } else { 0.0 },
+        repeated_test_failure: if signal.test_failure_count >= REPEATED_TEST_FAILURE_THRESHOLD {
+            1.0
+        } else {
+            0.0
+        },
     }
 }
 
@@ -342,11 +357,16 @@ pub fn score_signal(signal: &ToolSignals) -> ScoreResult {
     } else {
         0.0
     };
-    // Error axis (severity, spinning, exploring → +capable) minus the production
-    // axis (→ −efficient). Each maxed signal is one SIGNAL_UNIT; severity is
+    // Error axis (severity, spinning, exploring, severity_rising,
+    // repeated_test_failure → +capable) minus the production axis (→
+    // −efficient). Each maxed signal is one SIGNAL_UNIT; severity is
     // normalised by its hard cap so it lands there too.
     let raw = SIGNAL_UNIT
-        * (d.severity / HARD_SEVERITY + d.spinning + d.exploring
+        * (d.severity / HARD_SEVERITY
+            + d.spinning
+            + d.exploring
+            + d.severity_rising
+            + d.repeated_test_failure
             - PRODUCTION_WEIGHT * d.production_intensity
             - clean_production);
     let score = (SCORE_GAIN * raw).tanh();
@@ -359,6 +379,7 @@ pub fn score_signal(signal: &ToolSignals) -> ScoreResult {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OverrideReason {
     RepeatedFailure,
+    RepeatedToolCall,
     CriticalError,
     Compaction,
 }
@@ -367,6 +388,7 @@ impl OverrideReason {
     fn as_str(self) -> &'static str {
         match self {
             Self::RepeatedFailure => "repeated_failure",
+            Self::RepeatedToolCall => "repeated_tool_call",
             Self::CriticalError => "critical_error",
             Self::Compaction => "compaction",
         }
@@ -384,9 +406,14 @@ fn override_reason(signal: &ToolSignals) -> Option<OverrideReason> {
     if signal.severity >= SEVERITY_CRITICAL {
         return Some(OverrideReason::CriticalError);
     }
+    if signal.repeated_failure {
+        return Some(OverrideReason::RepeatedFailure);
+    }
+    // The agent is calling the exact same tool the exact same way without
+    // anything changing — a loop, not progress.
     signal
-        .repeated_failure
-        .then_some(OverrideReason::RepeatedFailure)
+        .repeated_tool_call
+        .then_some(OverrideReason::RepeatedToolCall)
 }
 
 /// Decide a turn's tier from its signal.
@@ -737,14 +764,16 @@ impl Classifier for StageClassifier {
             ),
         ] {
             if Self::consume_hold(state, &Self::agent_key(request, key)) {
+                // Errors if the held category has no runtime model: the hold must land
+                // somewhere. The provider model is what this metric records elsewhere.
                 let target = driver.first_model_for(&category)?.clone();
                 record_routing_decision(source, driver.provider_model(&target));
                 driver.set_evidence(serde_json::json!({"source": source.as_str()}));
                 return Ok((
                     Classification::Scores(vec![Score {
-                        target,
+                        needs: vec![category],
+                        pin: None,
                         confidence: 1.0,
-                        category: Some(category),
                     }]),
                     None,
                 ));
@@ -812,9 +841,9 @@ impl Classifier for StageClassifier {
                 let conf = confidence.unwrap_or_else(|| 2.0 * (probability - 0.5).abs());
                 Ok((
                     Classification::Scores(vec![Score {
-                        target: target.clone(),
+                        needs: vec![category],
+                        pin: None,
                         confidence: conf,
-                        category: Some(category),
                     }]),
                     None,
                 ))
@@ -926,6 +955,61 @@ mod tests {
             }),
             Some(OverrideReason::Compaction)
         );
+        assert_eq!(
+            override_reason(&ToolSignals {
+                repeated_tool_call: true,
+                ..Default::default()
+            }),
+            Some(OverrideReason::RepeatedToolCall)
+        );
+    }
+
+    #[test]
+    fn repeated_tool_call_overrides_to_capable() {
+        let signal = ToolSignals {
+            repeated_tool_call: true,
+            ..Default::default()
+        };
+        assert!(matches!(
+            pick_tier(&signal, PickerMode::EfficientFirst, 0.5),
+            PickOutcome::Resolved {
+                tier: Tier::Capable,
+                source: DecisionSource::Override,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn severity_rising_pushes_the_score_toward_capable() {
+        let flat = ToolSignals {
+            severity: HARD_SEVERITY as f32,
+            ..Default::default()
+        };
+        let rising = ToolSignals {
+            severity_rising: true,
+            ..flat.clone()
+        };
+        assert!(score_signal(&rising).score > score_signal(&flat).score);
+    }
+
+    #[test]
+    fn repeated_test_failures_push_the_score_toward_capable() {
+        let quiet = ToolSignals::default();
+        let failing = ToolSignals {
+            test_failure_count: REPEATED_TEST_FAILURE_THRESHOLD,
+            ..Default::default()
+        };
+        assert!(score_signal(&failing).score > score_signal(&quiet).score);
+    }
+
+    #[test]
+    fn one_test_failure_does_not_yet_move_the_score() {
+        let signal = ToolSignals {
+            test_failure_count: 1,
+            ..Default::default()
+        };
+        assert_eq!(score_signal(&signal).score, 0.0);
     }
 
     #[test]
@@ -1026,7 +1110,7 @@ mod tests {
     }
 
     #[test]
-    fn new_activity_suppresses_stall_dimensions_without_biasing_the_score() {
+    fn new_activity_suppresses_stall_and_counts_as_production() {
         let signal = ToolSignals {
             turn_depth: STALL_MIN_TURN_DEPTH,
             recent_new_count: 1,
@@ -1037,7 +1121,9 @@ mod tests {
 
         assert_eq!(dimensions.spinning, 0.0);
         assert_eq!(dimensions.exploring, 0.0);
-        assert_eq!(score_signal(&signal).score, 0.0);
+        // New activity now counts as production, same as a write or edit, so a
+        // turn that is only creating new things pushes toward efficient.
+        assert!(score_signal(&signal).score < 0.0);
     }
 
     #[test]
@@ -1170,7 +1256,7 @@ mod tests {
             ..Default::default()
         });
         for (tier, threshold, expected) in [
-            (Tier::Capable, 0.0, Some(ModelId::from("weak"))),
+            (Tier::Capable, 0.0, Some(vec![Category::Efficient])),
             (Tier::Efficient, 0.0, None),
             (Tier::Capable, 0.5, None),
         ] {
@@ -1180,7 +1266,7 @@ mod tests {
                 .score(&mut state, &mut Request::default(), &driver())
                 .await?;
             assert_eq!(
-                classification.argmax(false)?.map(|score| score.target),
+                classification.argmax(false)?.map(|score| score.needs),
                 expected
             );
         }
@@ -1214,7 +1300,7 @@ mod tests {
         match classification.0 {
             Classification::Scores(scores) => {
                 assert_eq!(scores.len(), 1);
-                assert_eq!(scores[0].target, "strong");
+                assert_eq!(scores[0].needs, vec![Category::Capable]);
                 // An override is maximally certain, not `score.abs() == 0.0`.
                 assert_eq!(scores[0].confidence, 1.0);
             }
@@ -1238,7 +1324,9 @@ mod tests {
             .score(&mut state, &mut Request::default(), &driver)
             .await?;
         match classification.0 {
-            Classification::Scores(scores) => assert_eq!(scores[0].target, "weak"),
+            Classification::Scores(scores) => {
+                assert_eq!(scores[0].needs, vec![Category::Efficient])
+            }
             _ => panic!("expected a definite classification"),
         }
         Ok(())
@@ -1254,7 +1342,10 @@ mod tests {
             let classification = classifier
                 .score(&mut state, &mut Request::default(), &driver)
                 .await?;
-            assert_eq!(classification.0.argmax(false)?.unwrap().target, "strong");
+            assert_eq!(
+                classification.0.argmax(false)?.unwrap().needs,
+                vec![Category::Capable]
+            );
             state.tool_signals = Some(ToolSignals::default());
         }
 
@@ -1283,7 +1374,10 @@ mod tests {
         let classification = classifier
             .score(&mut state, &mut Request::default(), &driver)
             .await?;
-        assert_eq!(classification.0.argmax(false)?.unwrap().target, "strong");
+        assert_eq!(
+            classification.0.argmax(false)?.unwrap().needs,
+            vec![Category::Capable]
+        );
         assert_eq!(
             state.extra.get(CAPABLE_HOLD_KEY),
             Some(&StateValue::Count(1))
@@ -1344,9 +1438,9 @@ mod tests {
     /// Holds skip signal extraction and notes, then resolve at full confidence.
     #[tokio::test]
     async fn held_decisions_have_full_confidence_without_tool_signals() -> Result<()> {
-        for (key, target, category) in [
-            (CAPABLE_HOLD_KEY, "strong", Category::Capable),
-            (EFFICIENT_HOLD_KEY, "weak", Category::Efficient),
+        for (key, category) in [
+            (CAPABLE_HOLD_KEY, Category::Capable),
+            (EFFICIENT_HOLD_KEY, Category::Efficient),
         ] {
             for value in [StateValue::Count(1), StateValue::Bool(true)] {
                 let mut state = State::default();
@@ -1372,8 +1466,7 @@ mod tests {
                 let (classification, _) =
                     classifier.score(&mut state, &mut request, &driver).await?;
                 let winner = classification.argmax(false)?.expect("a hold must resolve");
-                assert_eq!(winner.target, target);
-                assert_eq!(winner.category, Some(category.clone()));
+                assert_eq!(winner.needs, vec![category.clone()]);
                 assert_eq!(winner.confidence, 1.0);
                 assert_eq!(
                     request.llm_request, original,
