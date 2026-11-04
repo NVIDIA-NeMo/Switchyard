@@ -358,7 +358,7 @@ impl TranslatingLlmClient {
                 .get(model)
                 .map(|config| config.responses_reasoning)
                 .unwrap_or_default()
-                .normalize(&mut body);
+                .normalize(&mut body, backend.base_url(), model);
         }
         // After the merge on purpose: the effort override must win over both the caller's
         // value and any `reasoning` default a target set through `extra_body`.
@@ -1689,13 +1689,6 @@ mod tests {
         )]
     }
 
-    fn responses_map_with_drop_policy(base_url: &str) -> Vec<ModelConfig> {
-        vec![
-            ModelConfig::new("gpt", Backend::OpenAiResponses(config(base_url)), None)
-                .with_responses_reasoning(crate::ResponsesReasoningPolicy::Drop),
-        ]
-    }
-
     #[tokio::test]
     async fn model_properties_uses_configured_auth_and_backend_path()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
@@ -2661,18 +2654,32 @@ mod tests {
     #[tokio::test]
     async fn responses_reasoning_policy_preserves_replay_history()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        use crate::ResponsesReasoningPolicy::{Auto, Drop, PreserveEncrypted, PreservePlaintext};
+        let summary = json!([{"type": "summary_text", "text": "Check the parser."}]);
         let history = json!([
             {"type": "message", "role": "user", "content": "continue"},
             {"type": "reasoning", "encrypted_content": "opaque", "content": [{"type": "reasoning_text", "text": "private"}]},
             {"type": "reasoning", "id": "rs_stored", "status": "completed", "summary": []},
-            {"type": "reasoning", "encrypted_content": null},
-            {"type": "reasoning", "encrypted_content": ""},
+            // GLM's plaintext forms, as Codex replays them.
+            {"type": "reasoning", "id": "rs_glm", "summary": summary, "encrypted_content": null},
+            {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "Run the tests."}], "encrypted_content": ""},
             {"type": "reasoning"},
             {"type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{}"},
             {"type": "function_call_output", "call_id": "call_1", "output": "ok"}
         ]);
+        // An explicit policy wins over the target. `Auto` follows the target.
+        let cases = [
+            (Auto, "openai/gpt-5", PreserveEncrypted),
+            (Auto, "nvidia/zai-org/glm-5.3-flash", PreservePlaintext),
+            (
+                PreserveEncrypted,
+                "nvidia/zai-org/glm-5.3-flash",
+                PreserveEncrypted,
+            ),
+            (Drop, "openai/gpt-5", Drop),
+        ];
         for store in [Some(true), Some(false), None] {
-            for is_drop in [false, true] {
+            for (policy, model, behavior) in cases {
                 for has_input_override in [false, true] {
                     let server = MockServer::start().await;
                     Mock::given(method("POST"))
@@ -2685,24 +2692,20 @@ mod tests {
                         .expect(1)
                         .mount(&server)
                         .await;
-                    let base_url = format!("{}/v1", server.uri());
-                    let mut models = if is_drop {
-                        responses_map_with_drop_policy(&base_url)
-                    } else {
-                        responses_map(&base_url)
-                    };
+                    let mut backend = config(&format!("{}/v1", server.uri()));
                     if has_input_override {
-                        let Backend::OpenAiResponses(backend) = &mut models[0].default_backend
-                        else {
-                            return Err("expected Responses backend".into());
-                        };
                         backend.omit_body_fields.insert("input".to_string());
                         backend
                             .extra_body
                             .insert("input".to_string(), history.clone());
                     }
-                    let client = TranslatingLlmClient::new(&models)?;
-                    let mut request = json!({"model": "gpt", "input": history});
+                    let client = TranslatingLlmClient::new(&[ModelConfig::new(
+                        model,
+                        Backend::OpenAiResponses(backend),
+                        None,
+                    )
+                    .with_responses_reasoning(policy)])?;
+                    let mut request = json!({"model": "switchyard", "input": history});
                     if let Some(store) = store {
                         request["store"] = json!(store);
                     }
@@ -2710,28 +2713,43 @@ mod tests {
                         .call_rewrite_model_raw(
                             request,
                             None,
-                            Some(&ModelId::from("gpt")),
+                            Some(&ModelId::from(model)),
                             WireFormat::OpenAiResponses,
                         )
                         .await?;
                     let requests = server.received_requests().await.ok_or("missing requests")?;
                     let body: Value = serde_json::from_slice(&requests[0].body)?;
+                    let stored = store != Some(false);
                     let mut expected = vec![history[0].clone()];
-                    if !is_drop {
-                        let mut encrypted = history[1].clone();
-                        encrypted["content"] = json!([]);
-                        expected.push(encrypted);
-                        if store != Some(false) {
-                            let mut stored = history[2].clone();
-                            stored["content"] = json!([]);
-                            expected.push(stored);
+                    match behavior {
+                        // OpenAI reads its own payload and stored IDs, but rejects plaintext.
+                        PreserveEncrypted => {
+                            let indexes: &[usize] = if stored { &[1, 2, 3] } else { &[1] };
+                            for &index in indexes {
+                                let mut item = history[index].clone();
+                                item["content"] = json!([]);
+                                expected.push(item);
+                            }
                         }
+                        // Other targets keep plaintext and lose payloads of unknown origin.
+                        PreservePlaintext => {
+                            let mut item = history[1].clone();
+                            item.as_object_mut()
+                                .ok_or("object")?
+                                .remove("encrypted_content");
+                            expected.push(item);
+                            if stored {
+                                expected.push(history[2].clone());
+                            }
+                            expected.extend([history[3].clone(), history[4].clone()]);
+                        }
+                        _ => {}
                     }
                     expected.extend([history[6].clone(), history[7].clone()]);
                     assert_eq!(
                         body["input"],
                         json!(expected),
-                        "store={store:?}, drop={is_drop}, replace={has_input_override}"
+                        "store={store:?}, policy={policy:?}, model={model}, replace={has_input_override}"
                     );
                 }
             }
@@ -3825,6 +3843,7 @@ mod tests {
     // kinds: items with an ID but no `encrypted_content` when the request sets `store: false`,
     // and items whose `encrypted_content` holds Anthropic thinking that Switchyard packed for
     // the client. The Responses leg must drop both and keep GPT's own encrypted reasoning.
+    // A non-OpenAI target instead keeps the plaintext and drops both payloads.
     #[tokio::test]
     async fn openai_responses_backend_drops_reasoning_the_provider_cannot_read()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
@@ -3905,25 +3924,22 @@ mod tests {
             empty_reasoning
         ]);
 
-        for has_input_override in [false, true] {
-            let mut models = responses_map(&format!("{}/v1", server.uri()));
-            if has_input_override {
-                let Backend::OpenAiResponses(backend) = &mut models[0].default_backend else {
-                    return Err("expected Responses backend".into());
-                };
-                backend.omit_body_fields.insert("input".to_string());
-                backend
-                    .extra_body
-                    .insert("input".to_string(), input.clone());
-            }
-            let client = TranslatingLlmClient::new(&models)?;
+        let models = ["openai/gpt-5", "nvidia/zai-org/glm-5.3-flash"].map(|model| {
+            ModelConfig::new(
+                model,
+                Backend::OpenAiResponses(config(&format!("{}/v1", server.uri()))),
+                None,
+            )
+        });
+        let client = TranslatingLlmClient::new(&models)?;
+        for model in ["openai/gpt-5", "nvidia/zai-org/glm-5.3-flash"] {
             for store in [json!(false), json!(true)] {
                 let raw = json!({"model": "client-facing", "store": store, "input": input.clone()});
                 client
                     .call_rewrite_model_raw(
                         raw,
                         None,
-                        Some(&ModelId::from("gpt")),
+                        Some(&ModelId::from(model)),
                         WireFormat::OpenAiResponses,
                     )
                     .await?;
@@ -3951,6 +3967,29 @@ mod tests {
                 "provider cannot read translated Anthropic reasoning"
             );
         }
+
+        // GLM keeps the plaintext beside the Anthropic envelope and drops GPT's payload.
+        let mut switchyard_plaintext = switchyard_reasoning.clone();
+        switchyard_plaintext
+            .as_object_mut()
+            .ok_or("object")?
+            .remove("encrypted_content");
+        assert_eq!(
+            sent[2]["input"],
+            json!([user, claude_reasoning, switchyard_plaintext, call, output])
+        );
+        assert_eq!(
+            sent[3]["input"],
+            json!([
+                user,
+                claude_reasoning,
+                switchyard_plaintext,
+                call,
+                output,
+                empty_reasoning
+            ])
+        );
+
         for item in [
             &mut claude_reasoning,
             &mut gpt_reasoning,
@@ -3958,26 +3997,21 @@ mod tests {
         ] {
             item["content"] = json!([]);
         }
-        for requests in sent.as_chunks::<2>().0 {
-            // With `store: false`, only GPT's own encrypted reasoning survives.
-            assert_eq!(
-                requests[0]["input"],
-                json!([user, call, output, gpt_reasoning])
-            );
-            // With `store: true`, IDs can refer to stored reasoning, but OpenAI still cannot
-            // decrypt the Switchyard item.
-            assert_eq!(
-                requests[1]["input"],
-                json!([
-                    user,
-                    claude_reasoning,
-                    call,
-                    output,
-                    gpt_reasoning,
-                    empty_reasoning
-                ])
-            );
-        }
+        // With `store: false`, only GPT's own encrypted reasoning survives.
+        assert_eq!(sent[0]["input"], json!([user, call, output, gpt_reasoning]));
+        // With `store: true`, IDs can refer to stored reasoning, but OpenAI still cannot
+        // decrypt the Switchyard item.
+        assert_eq!(
+            sent[1]["input"],
+            json!([
+                user,
+                claude_reasoning,
+                call,
+                output,
+                gpt_reasoning,
+                empty_reasoning
+            ])
+        );
         Ok(())
     }
 

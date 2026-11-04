@@ -5930,11 +5930,25 @@ async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
     Ok(())
 }
 
+// Mirrors the GLM baseline: passthrough to a Responses target with a reasoning effort
+// default, called by Codex with `store: false`.
 #[tokio::test]
 async fn configured_responses_reasoning_policy_reaches_upstream() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let base_url = upstream.base_url.replace("/v1", "/buffered");
-    for (setting, expected_reasoning) in [("", 2), ("responses_reasoning = \"drop\"", 0)] {
+    let plaintext = json!({"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "plan"}], "encrypted_content": null});
+    let foreign =
+        json!({"type": "reasoning", "id": "rs_2", "summary": [], "encrypted_content": "opaque"});
+    let mut kept_foreign = foreign.clone();
+    kept_foreign["content"] = json!([]);
+    for (setting, expected_reasoning) in [
+        ("", vec![plaintext.clone()]),
+        (
+            "responses_reasoning = \"preserve_encrypted\"",
+            vec![kept_foreign],
+        ),
+        ("responses_reasoning = \"drop\"", vec![]),
+    ] {
         let config = format!(
             r#"
 schema_version = 1
@@ -5942,40 +5956,42 @@ schema_version = 1
 format = "openai_responses"
 base_url = "{base_url}"
 {setting}
-[targets]
-answer = {{ id = "model/efficient", llm_client = "upstream" }}
-[routes.route]
-id = "route"
+[targets.glm]
+id = "model/efficient"
+llm_client = "upstream"
+extra_body = {{ reasoning = {{ effort = "high" }} }}
+[routes.switchyard]
+id = "switchyard"
 type = "passthrough"
-target = "answer"
+target = "glm"
 "#
         );
         let app = build_switchyard_router(load_test_config(&config)?);
-        let response = send(&app, "POST", "/v1/responses", Some(json!({
-            "model": "route", "input": [
-                {"type": "message", "role": "user", "content": "continue"},
-                {"type": "reasoning", "encrypted_content": "opaque", "summary": []},
-                {"type": "reasoning", "id": "rs_stored", "summary": []},
-                {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "local"}], "summary": []}
-            ]
-        }))).await?;
+        let response = send(
+            &app,
+            "POST",
+            "/v1/responses",
+            Some(json!({
+                "model": "switchyard", "store": false, "input": [
+                    {"type": "message", "role": "user", "content": "continue"},
+                    plaintext,
+                    foreign
+                ]
+            })),
+        )
+        .await?;
         assert_eq!(response.status, StatusCode::OK, "{}", response.json()?);
         let calls = upstream.calls.lock().await;
-        let input = calls.last().expect("upstream request")["input"]
+        let body = calls.last().expect("upstream request");
+        let reasoning: Vec<_> = body["input"]
             .as_array()
-            .expect("input array");
-        assert_eq!(
-            input
-                .iter()
-                .filter(|item| item["type"] == "reasoning")
-                .count(),
-            expected_reasoning
-        );
-        assert!(
-            input
-                .iter()
-                .any(|item| item["type"] == "message" && item["role"] == "user")
-        );
+            .expect("input array")
+            .iter()
+            .filter(|item| item["type"] == "reasoning")
+            .cloned()
+            .collect();
+        assert_eq!(reasoning, expected_reasoning, "{setting}");
+        assert_eq!(body["reasoning"], json!({"effort": "high"}));
     }
     Ok(())
 }
