@@ -22,7 +22,6 @@ pub(crate) enum SseFrame {
 /// The optional terminal SSE marker accepted for all supported wire formats.
 /// Native Anthropic streams can end at `message_stop`, while compatible
 /// providers may additionally send `[DONE]`.
-#[inline]
 pub(crate) const fn done_marker() -> &'static str {
     "[DONE]"
 }

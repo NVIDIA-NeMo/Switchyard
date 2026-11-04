@@ -160,34 +160,54 @@ fn custom_stream_completion_uses_the_codec_rules() -> TestResult {
     let mut registry = StreamCodecRegistry::new();
     registry.register(CustomStreamCodec);
     let engine = TranslationEngine::with_registries(FormatRegistry::new(), registry);
-    for ending in ["\n\n", ""] {
-        for (tail, is_complete) in [
-            ("", false),
-            ("data: [DONE]", false),
-            ("data: {\"kind\":\"done\"}", true),
-            ("data: {\"kind\":\"done\"}\n\ndata: [DONE]", true),
-        ] {
-            let bytes =
-                format!("data: {{\"kind\":\"delta\",\"text\":\"hello\"}}\n\n{tail}{ending}")
-                    .into_bytes();
-            let decoded = engine.decode_stream("custom_stream", stream::iter([Ok(bytes)]))?;
-            let mut events = block_on(decoded.collect::<Vec<_>>());
-            assert!(matches!(
-                events.first(),
-                Some(Ok(event)) if matches!(
-                    event.normalized(),
-                    [LlmResponseChunk::TextDelta { text, .. }] if text == "hello"
-                )
-            ));
-            if is_complete {
-                assert!(events.iter().all(Result::is_ok));
-            } else {
-                assert!(matches!(
-                    events.pop(),
-                    Some(Err(LlmClientError::ResponseTranslation(message)))
+    let cases = [
+        ("EOF after text", "", false),
+        ("EOF after an empty frame", "\n\n", false),
+        ("SSE marker alone", "data: [DONE]\n\n", false),
+        ("trailing SSE marker alone", "data: [DONE]", false),
+        ("terminal JSON event", "data: {\"kind\":\"done\"}\n\n", true),
+        (
+            "trailing terminal JSON event",
+            "data: {\"kind\":\"done\"}",
+            true,
+        ),
+        (
+            "terminal JSON event then SSE marker",
+            "data: {\"kind\":\"done\"}\n\ndata: [DONE]\n\n",
+            true,
+        ),
+        (
+            "terminal JSON event then trailing SSE marker",
+            "data: {\"kind\":\"done\"}\n\ndata: [DONE]",
+            true,
+        ),
+    ];
+    for (name, tail, is_complete) in cases {
+        let bytes =
+            format!("data: {{\"kind\":\"delta\",\"text\":\"hello\"}}\n\n{tail}").into_bytes();
+        let decoded = engine.decode_stream("custom_stream", stream::iter([Ok(bytes)]))?;
+        let mut events = block_on(decoded.collect::<Vec<_>>()).into_iter();
+        let first = events.next().expect(name)?;
+        assert_eq!(
+            first.normalized(),
+            &[LlmResponseChunk::TextDelta {
+                index: 0,
+                text: "hello".into(),
+            }],
+            "{name}"
+        );
+        let remaining = events.collect::<Result<Vec<_>, _>>();
+        if is_complete {
+            assert!(remaining.is_ok(), "{name}: {remaining:?}");
+        } else {
+            assert!(
+                matches!(
+                    &remaining,
+                    Err(LlmClientError::ResponseTranslation(message))
                         if message == "custom_stream stream ended before a terminal event"
-                ));
-            }
+                ),
+                "{name}: {remaining:?}"
+            );
         }
     }
     Ok(())
