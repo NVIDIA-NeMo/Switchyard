@@ -27,7 +27,7 @@ can optionally call an LLM judge. The TOML configuration keys are unchanged.
 
 Whichever strategy you choose, the two models you put behind it matter more than
 any threshold. See [Model Selection](model_selection.md). To tune cost against
-quality, follow the [tuning loop](../tuning/index.md).
+quality, see [Examples](../tuning/examples.md).
 
 ### What the names mean
 

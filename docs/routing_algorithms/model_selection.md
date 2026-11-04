@@ -5,6 +5,9 @@ you put in each role change results more than any threshold does. This page says
 what each role needs, how to check a model before you route to it, which pairs
 have measured results, and the mistakes we have seen in real runs.
 
+For a worked comparison of cost and task success, see the
+[model-pair selection example](../tuning/examples.md#model-pair-selection-with-fixed-algorithm-settings).
+
 ## Roles
 
 Each strategy names its models by role. The TOML keys differ by route type:

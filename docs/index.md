@@ -32,7 +32,7 @@ Use it with [Claude Code or Codex](recipes/single_provider_coding_agents.md),
 - [Host Integration](reference/host_integration.md): connect your clients and application lifecycle
 - [Rust API](reference/rust_api.md): browse the core library, protocols, translation, clients, and runner
 - [Context-Window Handling](operations/context_window.md): configure eviction and retry behavior
-- [Tuning](tuning/index.md): the loop from verifying routing to recording a result
+- [Tuning](tuning/index.md): foundations and worked configuration comparisons
 - [Troubleshooting](operations/troubleshooting.md): symptoms, silent misconfigurations, and fixes
 
 ## Reference
