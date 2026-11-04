@@ -737,9 +737,10 @@ impl Classifier for StageClassifier {
             ),
         ] {
             if Self::consume_hold(state, &Self::agent_key(request, key)) {
-                // Errors if the held category has no runtime model: the hold must land somewhere.
-                driver.first_model_for(&category)?;
-                record_routing_decision(source, category.as_str());
+                // Errors if the held category has no runtime model: the hold must land
+                // somewhere. The provider model is what this metric records elsewhere.
+                let target = driver.first_model_for(&category)?.clone();
+                record_routing_decision(source, driver.provider_model(&target));
                 driver.set_evidence(serde_json::json!({"source": source.as_str()}));
                 return Ok((
                     Classification::Scores(vec![Score {

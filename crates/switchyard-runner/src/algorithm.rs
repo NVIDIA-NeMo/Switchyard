@@ -1215,17 +1215,15 @@ impl AlgorithmSpec {
                 names
             }
             Self::CapabilityRouter { signals, pool } => {
-                let mut names: Vec<&str> = pool
-                    .models
+                // A review route serves every turn from its executor and never consults
+                // the pool. The advisor stays out: reviews go through its own client.
+                if let Some(review) = &signals.review {
+                    return vec![review.executor_target.as_str()];
+                }
+                pool.models
                     .iter()
                     .map(|model| model.target.as_str())
-                    .collect();
-                // A capability group can select the review executor, so it serves turns
-                // and belongs here. The advisor stays out, as in the Advisor arm.
-                if let Some(review) = &signals.review {
-                    names.push(review.executor_target.as_str());
-                }
-                names
+                    .collect()
             }
             // The advisor is judge-only: reviews go through its own client,
             // so it is not a completion (or count_tokens) destination.
@@ -1396,28 +1394,25 @@ impl AlgorithmSpec {
                 ),
             ]),
             Self::CapabilityRouter { signals, pool } => {
-                let mut models = pool_runtime_model_names(pool);
-                if let Some(task) = &signals.task {
-                    models
-                        .entry(Category::Judge)
-                        .or_default()
-                        .push(task.judge.clone());
-                }
+                // The advisor gate reads its executor as the first Efficient model and
+                // never consults the pool, and `review` cannot be combined with a pool
+                // signal, so a review route gets the same groups as an `advisor` route.
                 if let Some(review) = &signals.review {
+                    category_models([
+                        (Category::Efficient, vec![review.executor_target.clone()]),
+                        (Category::Any, vec![review.executor_target.clone()]),
+                        (Category::Judge, vec![review.advisor_target.clone()]),
+                    ])
+                } else {
+                    let mut models = pool_runtime_model_names(pool);
+                    if let Some(task) = &signals.task {
+                        models
+                            .entry(Category::Judge)
+                            .or_default()
+                            .push(task.judge.clone());
+                    }
                     models
-                        .entry(Category::Efficient)
-                        .or_default()
-                        .push(review.executor_target.clone());
-                    models
-                        .entry(Category::Any)
-                        .or_default()
-                        .push(review.executor_target.clone());
-                    models
-                        .entry(Category::Judge)
-                        .or_default()
-                        .push(review.advisor_target.clone());
                 }
-                models
             }
             Self::Advisor {
                 executor_target,

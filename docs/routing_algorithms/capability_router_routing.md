@@ -17,6 +17,7 @@ models = [
   { target = "sol",  provides = ["capable"] },
   { target = "terra", provides = ["balanced"] },
   { target = "luna", provides = ["efficient"] },
+  { target = "vega", provides = ["compatibility"] },
 ]
 default = "efficient"
 
@@ -96,7 +97,7 @@ or `efficient` from them.
 | `recent_turn_window` | No | `3` | Trailing tool results the signal is computed over. |
 | `escalation_hold_turns` | No | `0` | Following requests that keep an elevated tier as a minimum. Requires an explicit session identity. |
 | `tool_semantics.observe` / `.mutate` / `.plan` / `.new` | No | `[]` | Additional exact ASCII case-insensitive tool names, same shape as `stage_router`. |
-| `handoff_notes` | No | unset | Notes handed to a tag when the signal switches to it. |
+| `handoff_notes` | No | unset | Rejected at load in this release: the note is written while the signal scores, before the pool has chosen a model, so it could describe a handoff that did not happen. |
 
 Set `escalation_hold_turns = 3` to keep a selected `balanced` or `capable`
 tier for three following requests. Stronger evidence takes effect immediately.

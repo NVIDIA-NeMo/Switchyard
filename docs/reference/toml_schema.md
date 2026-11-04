@@ -642,7 +642,7 @@ resolved against the deployment's top-level `[pool]`. See
 | `signals.tool_loop.recent_turn_window` | No | `3` | Trailing tool results the signal is computed over. |
 | `signals.tool_loop.escalation_hold_turns` | No | `0` | Following requests that keep an elevated tier as a floor. Requires an explicit session identity; stronger selections still take effect. |
 | `signals.tool_loop.tool_semantics.*` | No | `[]` | Same shape as `stage_router`'s `tool_semantics`. |
-| `signals.tool_loop.handoff_notes` | No | unset | Notes handed to a tag when the signal switches to it. |
+| `signals.tool_loop.handoff_notes` | No | unset | Rejected at load in this release: the note is written while the signal scores, before the pool has chosen a model, so it could describe a handoff that did not happen. |
 | `signals.review.*` | No | — | Same fields as the `advisor` route (`executor_target`, `advisor_target`, `gate_trigger`, `max_reviews`, ...). Cannot be combined with `task`, `rules`, or `tool_loop`. |
 | `signals.affinity` | No | `false` | Retains the first model chosen for a session and replays it on later turns, bypassing signal scoring and the pool. |
 
