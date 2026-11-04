@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Direct-API judge wrapper over `litellm.acompletion` through the NVIDIA gateway.
+"""The judge calls `litellm.acompletion` through the configured gateway.
 
 Pattern-matches `search/synthesize.py::_llm_call` (proven in production):
 completion → strip markdown fences → `json.loads` → `jsonschema.validate`. On
@@ -9,10 +9,9 @@ parse or schema error, one retry with the error appended as a system message.
 On transient gateway errors (timeout / 5xx / rate-limit), exponential-backoff
 retry up to 5 times (mirrors `claude_cli.run_claude_async`).
 
-All models route through the OpenAI-compatible gateway endpoint — CRAFT's
-NVIDIA gateway accepts Opus, GPT, Gemini, Codex via a single route with the
-`openai/` prefix. `_normalize_model` prepends the prefix when a caller passes
-a bare name so configs can stay concise.
+All models use the configured OpenAI-compatible endpoint. The endpoint must
+serve each model selected in the profile. `_normalize_model` adds LiteLLM's
+`openai/` prefix when it is missing so LiteLLM uses Chat Completions.
 
 Phase A note: this module does not use structured-output forcing (tool-use with
 `strict: true`, OpenAI `response_format`). The manual-parse-plus-validate path
@@ -20,8 +19,6 @@ is what `search/synthesize.py` runs in production; we match it. Switching to
 structured-output enforcement is a Phase B follow-up gated on parse-error rate
 in bulk runs.
 """
-
-from __future__ import annotations
 
 import asyncio
 import json
@@ -66,7 +63,6 @@ class JudgeResult:
 
 
 async def judge(
-    *,
     prompt: str,
     schema: dict,
     model: str,
@@ -74,7 +70,7 @@ async def judge(
     max_tokens: int = _DEFAULT_MAX_TOKENS,
     timeout_s: int = _DEFAULT_TIMEOUT_S,
 ) -> JudgeResult:
-    """Dispatch a judge call through the NVIDIA gateway with schema validation.
+    """The judge calls the configured gateway and validates the response against the schema.
 
     Parameters
     ----------
@@ -84,9 +80,8 @@ async def judge(
     schema
         JSON Schema dict; response `result` is validated against it.
     model
-        Gateway model identifier (e.g. `aws/anthropic/bedrock-claude-opus-4-6`
-        or `us/azure/openai/gpt-5.4`). `openai/` prefix added automatically
-        if missing — all gateway routes go through litellm's OpenAI transport.
+        The endpoint must serve this model ID (e.g. `claude-opus-4-6` or `gpt-5.4`).
+        The wrapper adds `openai/` if it is missing so LiteLLM uses Chat Completions.
     system_prompt
         Optional system-role content placed ahead of the user turn.
     max_tokens, timeout_s
@@ -176,7 +171,6 @@ def _normalize_model(model: str) -> str:
 def _build_messages(
     prompt: str,
     system_prompt: str | None,
-    *,
     extra_system: str | None = None,
 ) -> list[dict[str, str]]:
     # Merge system_prompt and extra_system into a single system message.

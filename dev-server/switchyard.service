@@ -18,7 +18,7 @@ ExecStart=/usr/local/bin/switchyard-server \
     --tls-cert %d/tls-cert.pem
 
 Restart=on-failure
-Environment="NVIDIA_API_KEY=<PUT-THE-KEY-HERE>"
+EnvironmentFile=/etc/switchyard/environment
 
 PrivateDevices=yes
 ProtectHome=yes

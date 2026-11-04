@@ -3,8 +3,6 @@
 
 """Tests for task generation pipeline — run_claude helper, state persistence, step logic."""
 
-from __future__ import annotations
-
 import json
 import os
 import subprocess
@@ -62,8 +60,9 @@ def test_run_claude_with_json_schema():
 
 
 def test_run_claude_sets_gateway_env_instead_of_model_flag():
-    """Gateway-only: `--model` is never on the CLI. Model is passed via
-    ANTHROPIC_MODEL env so the NVIDIA gateway (not OAuth) routes the call.
+    """The helper passes the configured model through ANTHROPIC_MODEL.
+
+    The same model must apply to sub-agent aliases without a --model CLI override.
     """
     from craft_taskgen.claude_cli import run_claude
 
@@ -73,12 +72,12 @@ def test_run_claude_sets_gateway_env_instead_of_model_flag():
     fake_result.stderr = ""
 
     with patch("subprocess.run", return_value=fake_result) as mock_run:
-        run_claude("test", model="aws/anthropic/bedrock-claude-opus-4-6")
+        run_claude("test", model="claude-opus-4-6")
 
     cmd = mock_run.call_args[0][0]
     assert "--model" not in cmd
     env = mock_run.call_args.kwargs["env"]
-    assert env["ANTHROPIC_MODEL"] == "aws/anthropic/bedrock-claude-opus-4-6"
+    assert env["ANTHROPIC_MODEL"] == "claude-opus-4-6"
     # All sub-agent aliases pinned to the same gateway model.
     for alias in (
         "ANTHROPIC_DEFAULT_SONNET_MODEL",
@@ -86,7 +85,7 @@ def test_run_claude_sets_gateway_env_instead_of_model_flag():
         "ANTHROPIC_DEFAULT_HAIKU_MODEL",
         "CLAUDE_CODE_SUBAGENT_MODEL",
     ):
-        assert env[alias] == "aws/anthropic/bedrock-claude-opus-4-6"
+        assert env[alias] == "claude-opus-4-6"
 
 
 def test_run_claude_raises_without_gateway_env(monkeypatch):
@@ -98,7 +97,7 @@ def test_run_claude_raises_without_gateway_env(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
     with pytest.raises(RuntimeError, match="Gateway-only policy"):
-        run_claude("hi", model="aws/anthropic/bedrock-claude-opus-4-6")
+        run_claude("hi", model="claude-opus-4-6")
 
 
 def test_run_claude_raises_without_model(monkeypatch):
@@ -210,7 +209,7 @@ def _make_judge_result(result_dict: dict):
     return JudgeResult(
         result=result_dict,
         usage={"input_tokens": 100, "output_tokens": 50, "cached_tokens": 0},
-        model="openai/aws/anthropic/bedrock-claude-opus-4-6",
+        model="openai/claude-opus-4-6",
         latency_s=0.01,
     )
 
@@ -287,8 +286,7 @@ def _make_triage_dispatcher(
         "evidence_test": "",
     }
 
-    async def dispatcher(**kwargs):
-        schema = kwargs.get("schema")
+    async def dispatcher(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         if schema is DEEP_DIVE_SCHEMA:
             return _make_judge_result(deep_dive_output)
         if schema is FAIRNESS_REVIEW_SCHEMA:
@@ -381,7 +379,7 @@ def test_step_evaluate_accept():
         stage=Stage.CANDIDATE,
     )
 
-    async def fake_judge(**kwargs):
+    async def fake_judge(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         return _make_judge_result(
             {
                 "verdict": "accept",
@@ -418,7 +416,7 @@ def test_step_evaluate_reject():
         stage=Stage.CANDIDATE,
     )
 
-    async def fake_judge(**kwargs):
+    async def fake_judge(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         return _make_judge_result(
             {
                 "verdict": "reject",
@@ -464,7 +462,7 @@ def test_step_alignment_ok_first_attempt():
         task_dir="harbor-tasks/t2v3-AR-test",
     )
 
-    async def fake_judge(**kwargs):
+    async def fake_judge(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         return _make_judge_result(
             {"verdict": "ok", "reason": "instruction and tests align; no V4 violations"}
         )
@@ -517,7 +515,7 @@ def test_step_alignment_retention_retry_accepts():
             ]
         )
 
-        async def fake_judge(**kwargs):
+        async def fake_judge(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
             return next(results_iter)
 
         with (
@@ -562,7 +560,7 @@ def test_step_alignment_first_rejection_post_triage_rejects():
         task_dir="harbor-tasks/t2v3-AR-test",
     )
 
-    async def fake_judge(**kwargs):
+    async def fake_judge(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         return _make_judge_result(
             {"verdict": "leaked", "reason": "names private method", "leakage_evidence": ["_helper"]}
         )
@@ -601,7 +599,7 @@ def test_step_alignment_vague_rejects_without_regen():
         task_dir="harbor-tasks/t2v3-AR-test",
     )
 
-    async def fake_judge(**kwargs):
+    async def fake_judge(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         return _make_judge_result({"verdict": "vague", "reason": "instruction too under-specified"})
 
     with (
@@ -669,13 +667,13 @@ def test_one_candidate_loop_happy_path(tmp_path):
 
     task = _make_candidate_test_task()
 
-    async def fake_judge(**kwargs):
+    async def fake_judge(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         # Pre-determined ok verdict on alignment (build is mocked separately)
         return _make_judge_result(
             {"verdict": "ok", "reason": "aligned", "v4_audit": {}, "leakage_evidence": []}
         )
 
-    async def fake_build_instruction(t, run_dir, *, feedback, cand_id, log_prefix="build"):
+    async def fake_build_instruction(t, run_dir, feedback, cand_id, log_prefix="build"):
         out = _fake_build_outcome_ok()
         # Use the actual cand-dir path so cleanup works
         out.task_dir = str(tmp_path / f"t2v3-FAKEID-cand{cand_id}")
@@ -716,7 +714,7 @@ def test_one_candidate_loop_regen_path(tmp_path):
     task = _make_candidate_test_task()
     judge_call_count = [0]
 
-    async def fake_judge(**kwargs):
+    async def fake_judge(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         # 1st call (initial alignment): leaked. 2nd call (post-rebuild): ok.
         judge_call_count[0] += 1
         if judge_call_count[0] == 1:
@@ -734,7 +732,7 @@ def test_one_candidate_loop_regen_path(tmp_path):
 
     build_call_count = [0]
 
-    async def fake_build_instruction(t, run_dir, *, feedback, cand_id, log_prefix="build"):
+    async def fake_build_instruction(t, run_dir, feedback, cand_id, log_prefix="build"):
         build_call_count[0] += 1
         out = _fake_build_outcome_ok()
         out.task_dir = str(tmp_path / f"t2v3-FAKEID-cand{cand_id}")
@@ -779,7 +777,7 @@ def test_one_candidate_loop_final_reject_after_regen(tmp_path):
 
     task = _make_candidate_test_task()
 
-    async def fake_judge(**kwargs):
+    async def fake_judge(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         # Always leaked, both pre- and post-regen
         return _make_judge_result(
             {
@@ -790,7 +788,7 @@ def test_one_candidate_loop_final_reject_after_regen(tmp_path):
             }
         )
 
-    async def fake_build_instruction(t, run_dir, *, feedback, cand_id, log_prefix="build"):
+    async def fake_build_instruction(t, run_dir, feedback, cand_id, log_prefix="build"):
         out = _fake_build_outcome_ok()
         out.task_dir = str(tmp_path / f"t2v3-FAKEID-cand{cand_id}")
         os.makedirs(out.task_dir, exist_ok=True)
@@ -822,12 +820,12 @@ def test_one_candidate_loop_vague_no_regen(tmp_path):
 
     task = _make_candidate_test_task()
 
-    async def fake_judge(**kwargs):
+    async def fake_judge(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         return _make_judge_result(
             {"verdict": "vague", "reason": "underspec", "v4_audit": {}, "leakage_evidence": []}
         )
 
-    async def fake_build_instruction(t, run_dir, *, feedback, cand_id, log_prefix="build"):
+    async def fake_build_instruction(t, run_dir, feedback, cand_id, log_prefix="build"):
         out = _fake_build_outcome_ok()
         out.task_dir = str(tmp_path / f"t2v3-FAKEID-cand{cand_id}")
         os.makedirs(out.task_dir, exist_ok=True)
@@ -859,10 +857,10 @@ def test_one_candidate_loop_build_failure_returns_needs_fix(tmp_path):
     task = _make_candidate_test_task()
     align_calls = [0]
 
-    async def fake_build_instruction(t, run_dir, *, feedback, cand_id, log_prefix="build"):
+    async def fake_build_instruction(t, run_dir, feedback, cand_id, log_prefix="build"):
         return _BuildOutcome(outcome="context_fail", error_message="fake context failure")
 
-    async def fake_judge(**kwargs):
+    async def fake_judge(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         align_calls[0] += 1
         return _make_judge_result({"verdict": "ok", "v4_audit": {}})
 
@@ -1142,7 +1140,7 @@ def test_orchestrator_stage_built_runs_alignment_only(tmp_path):
     state = MagicMock()
     state.run_dir = str(tmp_path)
 
-    async def fake_judge(**kwargs):
+    async def fake_judge(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         return _make_judge_result({"verdict": "ok", "reason": "fine", "v4_audit": {}})
 
     sems = {
@@ -1262,7 +1260,7 @@ def test_one_candidate_loop_two_rebuilds_then_pass(tmp_path):
     task = _make_candidate_test_task()
     judge_call_count = [0]
 
-    async def fake_judge(**kwargs):
+    async def fake_judge(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         # Sequence: leaked, leaked, ok (3 alignment evaluations × 1 attempt each)
         judge_call_count[0] += 1
         if judge_call_count[0] <= 2:
@@ -1280,7 +1278,7 @@ def test_one_candidate_loop_two_rebuilds_then_pass(tmp_path):
 
     build_call_count = [0]
 
-    async def fake_build_instruction(t, run_dir, *, feedback, cand_id, log_prefix="build"):
+    async def fake_build_instruction(t, run_dir, feedback, cand_id, log_prefix="build"):
         build_call_count[0] += 1
         out = _fake_build_outcome_ok()
         out.task_dir = str(tmp_path / f"t2v3-FAKEID-cand{cand_id}")
@@ -1327,7 +1325,7 @@ def test_step_evaluate_parallel():
 
     call_count = 0
 
-    async def fake_judge(**kwargs):
+    async def fake_judge(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         nonlocal call_count
         call_count += 1
         await asyncio.sleep(0.01)
@@ -1364,7 +1362,7 @@ def test_async_main_stop_after_select_persists_state_and_skips_evaluate(tmp_path
         }
     ]
 
-    async def fail_evaluate(*args, **kwargs):
+    async def fail_evaluate(state, state_file, concurrency=4):
         raise AssertionError("step_evaluate should not be called")
 
     monkeypatch.chdir(tmp_path)
@@ -1379,7 +1377,10 @@ def test_async_main_stop_after_select_persists_state_and_skips_evaluate(tmp_path
         ],
     )
     monkeypatch.setattr("craft_taskgen.pipeline._load_env", lambda: None)
-    monkeypatch.setattr("craft_taskgen.pipeline.select_candidates", lambda *args, **kwargs: selected)
+    monkeypatch.setattr(
+        "craft_taskgen.pipeline.select_candidates",
+        lambda candidate_files, top_per_repo=5, skip_per_repo=0, max_total=30: selected,
+    )
     monkeypatch.setattr("craft_taskgen.pipeline.step_evaluate", fail_evaluate)
 
     asyncio.run(async_main())
@@ -1542,8 +1543,7 @@ def test_run_claude_async_constructs_correct_command():
         mock_proc.communicate = fake_communicate
         mock_proc.returncode = 0
 
-        async def fake_create(*args, **kwargs):
-            return mock_proc
+        fake_create = AsyncMock(return_value=mock_proc)
 
         with patch("asyncio.create_subprocess_exec", side_effect=fake_create) as mock_exec:
             result = await run_claude_async("test prompt", max_turns=10)
@@ -1582,8 +1582,7 @@ def test_run_claude_async_timeout():
 
         mock_proc.communicate = fake_communicate
 
-        async def fake_create(*args, **kwargs):
-            return mock_proc
+        fake_create = AsyncMock(return_value=mock_proc)
 
         async def fake_sleep(seconds):
             pass
@@ -1610,19 +1609,18 @@ def test_run_claude_async_retry_logs_stdout_when_stderr_empty(capsys):
         async def fake_sleep(seconds):
             pass
 
-        async def fake_create(*args, **kwargs):
+        mock_proc = MagicMock()
+
+        async def fake_communicate():
             nonlocal attempts
             attempts += 1
-            mock_proc = MagicMock()
             mock_proc.returncode = 1 if attempts == 1 else 0
+            if attempts == 1:
+                return (b'{"subtype":"gateway_busy","message":"try again"}', b"")
+            return (json.dumps({"result": "ok"}).encode(), b"")
 
-            async def fake_communicate():
-                if attempts == 1:
-                    return (b'{"subtype":"gateway_busy","message":"try again"}', b"")
-                return (json.dumps({"result": "ok"}).encode(), b"")
-
-            mock_proc.communicate = fake_communicate
-            return mock_proc
+        mock_proc.communicate = fake_communicate
+        fake_create = AsyncMock(return_value=mock_proc)
 
         with (
             patch("asyncio.create_subprocess_exec", side_effect=fake_create),
@@ -1648,28 +1646,26 @@ def test_run_claude_async_structured_400_is_not_retried():
     async def run():
         attempts = 0
 
-        async def fake_create(*args, **kwargs):
+        mock_proc = MagicMock()
+
+        async def fake_communicate():
             nonlocal attempts
             attempts += 1
-            mock_proc = MagicMock()
             mock_proc.returncode = 1
+            stdout = {
+                "type": "result",
+                "subtype": "success",
+                "is_error": True,
+                "api_error_status": 400,
+                "num_turns": 1,
+                "result": (
+                    'API Error: 400 {"error":{"message":"{\\"message\\":\\"bad request from gateway\\"}"}}'
+                ),
+            }
+            return (json.dumps(stdout).encode(), b"")
 
-            async def fake_communicate():
-                stdout = {
-                    "type": "result",
-                    "subtype": "success",
-                    "is_error": True,
-                    "api_error_status": 400,
-                    "num_turns": 1,
-                    "result": (
-                        "API Error: 400 "
-                        '{"error":{"message":"{\\"message\\":\\"bad request from gateway\\"}"}}'
-                    ),
-                }
-                return (json.dumps(stdout).encode(), b"")
-
-            mock_proc.communicate = fake_communicate
-            return mock_proc
+        mock_proc.communicate = fake_communicate
+        fake_create = AsyncMock(return_value=mock_proc)
 
         with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
             result = await run_claude_async("bad request")
@@ -1774,7 +1770,7 @@ def test_step_smoke_retries_infra_failure():
     )
     call_count = 0
 
-    async def fake_smoke(*args, **kwargs):
+    async def fake_smoke(task, model, label, agent="claude-code", reasoning_effort=""):
         nonlocal call_count
         call_count += 1
         if call_count == 1:
@@ -1813,7 +1809,7 @@ def test_step_smoke_gives_up_after_max_retries():
         task_dir="harbor-tasks/craft-tools-v4/t2v3-FA3-streaming",
     )
 
-    async def always_fail(*args, **kwargs):
+    async def always_fail(task, model, label, agent="claude-code", reasoning_effort=""):
         return {"infra_failure": True, "exception": "apiKeySource=none"}
 
     async def fake_sleep(seconds):
@@ -2500,15 +2496,17 @@ def test_run_task_pipeline_flows_to_accepted():
         step_calls.append("oracle")
         t.stage = Stage.ORACLE_CHECKED
 
-    async def fake_smoke(t, s, sf, **kw):
-        step_calls.append(f"smoke_{kw['label']}")
-        setattr(t, kw["score_attr"], "3/5")
-        setattr(t, kw["trial_attr"], "jobs/test")
-        t.stage = kw["next_stage"]
+    async def fake_smoke(
+        t, s, sf, model, label, score_attr, trial_attr, next_stage, agent="claude-code", reasoning_effort=""
+    ):
+        step_calls.append(f"smoke_{label}")
+        setattr(t, score_attr, "3/5")
+        setattr(t, trial_attr, "jobs/test")
+        t.stage = next_stage
 
-    async def fake_triage(t, s, sf, **kw):
-        step_calls.append(f"triage_{kw['label']}")
-        t.stage = kw["accept_stage"]
+    async def fake_triage(t, s, sf, label, score_attr, trial_attr, accept_stage, reset_fix_budget=False):
+        step_calls.append(f"triage_{label}")
+        t.stage = accept_stage
 
     sems = {
         "llm": asyncio.Semaphore(4),
@@ -2601,20 +2599,22 @@ def test_run_task_pipeline_handles_triage_reset_instruction():
         oracle_count += 1
         t.stage = Stage.ORACLE_CHECKED
 
-    async def fake_smoke(t, s, sf, **kw):
-        setattr(t, kw["score_attr"], "3/5")
-        setattr(t, kw["trial_attr"], "jobs/test")
-        t.stage = kw["next_stage"]
+    async def fake_smoke(
+        t, s, sf, model, label, score_attr, trial_attr, next_stage, agent="claude-code", reasoning_effort=""
+    ):
+        setattr(t, score_attr, "3/5")
+        setattr(t, trial_attr, "jobs/test")
+        t.stage = next_stage
 
-    async def fake_triage(t, s, sf, **kw):
+    async def fake_triage(t, s, sf, label, score_attr, trial_attr, accept_stage, reset_fix_budget=False):
         nonlocal triage_count
         triage_count += 1
-        if triage_count == 1 and kw["label"] == "Opus":
+        if triage_count == 1 and label == "Opus":
             # instruction fix: set pending_fix_type so pipeline takes the fast-path
             t.pending_fix_type = "instruction"
             t.stage = Stage.BUILT
         else:
-            t.stage = kw["accept_stage"]
+            t.stage = accept_stage
 
     sems = {
         "llm": asyncio.Semaphore(4),
@@ -2697,18 +2697,20 @@ def test_run_task_pipeline_handles_triage_reset_docker():
     async def fake_oracle(t, s, sf):
         t.stage = Stage.ORACLE_CHECKED
 
-    async def fake_smoke(t, s, sf, **kw):
-        setattr(t, kw["score_attr"], "3/5")
-        setattr(t, kw["trial_attr"], "jobs/test")
-        t.stage = kw["next_stage"]
+    async def fake_smoke(
+        t, s, sf, model, label, score_attr, trial_attr, next_stage, agent="claude-code", reasoning_effort=""
+    ):
+        setattr(t, score_attr, "3/5")
+        setattr(t, trial_attr, "jobs/test")
+        t.stage = next_stage
 
-    async def fake_triage(t, s, sf, **kw):
+    async def fake_triage(t, s, sf, label, score_attr, trial_attr, accept_stage, reset_fix_budget=False):
         nonlocal triage_count
         triage_count += 1
-        if triage_count == 1 and kw["label"] == "Opus":
+        if triage_count == 1 and label == "Opus":
             t.stage = Stage.ORACLE_CHECKED  # docker fix -> triage sets ORACLE_CHECKED directly
         else:
-            t.stage = kw["accept_stage"]
+            t.stage = accept_stage
 
     sems = {
         "llm": asyncio.Semaphore(4),
@@ -2783,7 +2785,7 @@ def _make_task_dir(tmp_path, task_id="TE1"):
     return task_dir
 
 
-def _canned_claude_dispatcher(**overrides):
+def _canned_claude_dispatcher():
     """Return a fake run_claude_async that dispatches canned responses based on prompt content.
 
     Handles the remaining claude -p call sites: build_dockerfile and the
@@ -2791,10 +2793,16 @@ def _canned_claude_dispatcher(**overrides):
     moved to llm_judge — patch those separately via `llm_judge.judge`.
     """
 
-    defaults: dict = {}
-    defaults.update(overrides)
-
-    async def dispatcher(prompt, **kwargs):
+    async def dispatcher(
+        prompt,
+        max_turns=None,
+        timeout=None,
+        cwd=None,
+        json_schema=None,
+        system_prompt=None,
+        allowed_tools=None,
+        model=None,
+    ):
         p = prompt.lower() if isinstance(prompt, str) else ""
         if "fix this" in p:
             return {"result": "Fixed verify script"}
@@ -2804,19 +2812,16 @@ def _canned_claude_dispatcher(**overrides):
     return dispatcher
 
 
-def _canned_triage_dispatcher(**overrides):
-    """Return an async callable patching llm_judge.judge for triage tests.
+def _canned_triage_dispatcher(deep_dive=None):
+    """The helper replaces llm_judge.judge with responses selected by schema.
 
-    Covers the schemas triage routes through: DEEP_DIVE_SCHEMA,
-    FAIRNESS_REVIEW_SCHEMA, and anything else (returns empty dict).
-    Override with `deep_dive=` or `fairness=` kwargs. Legacy `reviewer=`
-    is accepted but ignored (the skeptical reviewer stage was removed).
+    DEEP_DIVE_SCHEMA receives the supplied deep_dive verdict or the default verdict.
+    FAIRNESS_REVIEW_SCHEMA receives a fair verdict; other schemas receive an empty dict.
     """
     from craft_taskgen.prompts import DEEP_DIVE_SCHEMA, FAIRNESS_REVIEW_SCHEMA
 
-    deep_dive = overrides.pop(
-        "deep_dive",
-        {
+    if deep_dive is None:
+        deep_dive = {
             "reward": 0.6,
             "ref_tests_passed": 2,
             "ref_tests_total": 3,
@@ -2824,21 +2829,15 @@ def _canned_triage_dispatcher(**overrides):
                 {"test_name": "test_c", "classification": "keep", "evidence": "Agent missed it"},
             ],
             "overall_assessment": "One genuine capability gap — agent missed test_c",
-        },
-    )
-    fairness = overrides.pop(
-        "fairness",
-        {
-            "severity": "none",
-            "reason": "Instruction covers what tests require",
-            "evidence_quote": "",
-            "evidence_test": "",
-        },
-    )
-    overrides.pop("reviewer", None)  # legacy, silently discarded
+        }
+    fairness = {
+        "severity": "none",
+        "reason": "Instruction covers what tests require",
+        "evidence_quote": "",
+        "evidence_test": "",
+    }
 
-    async def dispatcher(**kwargs):
-        schema = kwargs.get("schema")
+    async def dispatcher(prompt, schema, model, system_prompt=None, max_tokens=4096, timeout_s=120):
         if schema is DEEP_DIVE_SCHEMA:
             return _make_judge_result(deep_dive)
         if schema is FAIRNESS_REVIEW_SCHEMA:
@@ -2879,7 +2878,7 @@ def test_integration_happy_path(tmp_path):
 
     fake_claude = _canned_claude_dispatcher()
 
-    async def fake_smoke(task_obj, model, label, **kwargs):
+    async def fake_smoke(task, model, label, agent="claude-code", reasoning_effort=""):
         return {
             "score": "2/3",
             "trial_dir": str(tmp_path / "trial_opus"),
@@ -2907,14 +2906,7 @@ def test_integration_happy_path(tmp_path):
         t.oracle_resolved = True
         t.stage = Stage.ORACLE_CHECKED
 
-    triage_dispatcher = _canned_triage_dispatcher(
-        reviewer={
-            "challenges": [],
-            "pass_audit": [],
-            "verdict": "accept",
-            "overall_verdict": "Confirmed — deep dive findings hold up",
-        }
-    )
+    triage_dispatcher = _canned_triage_dispatcher()
 
     async def fake_fetch_deep_dive(task_dir, trial_dir):
         return _empty_deep_dive_context()
@@ -3001,7 +2993,7 @@ def test_integration_perfect_scores_no_flag_without_reviewer_signal(tmp_path):
 
     fake_claude = _canned_claude_dispatcher()
 
-    async def fake_smoke(task_obj, model, label, **kwargs):
+    async def fake_smoke(task, model, label, agent="claude-code", reasoning_effort=""):
         return {"score": "10/10", "trial_dir": str(tmp_path / "trial_opus")}
 
     os.makedirs(str(tmp_path / "trial_opus"))
@@ -3027,14 +3019,7 @@ def test_integration_perfect_scores_no_flag_without_reviewer_signal(tmp_path):
             "failures": [],
             "overall_assessment": "Perfect",
             "suggested_fixes": [],
-        },
-        reviewer={
-            "challenges": [],
-            "pass_audit": [],
-            "verdict": "accept",
-            "overall_verdict": "ok",
-            "easiness_concern": False,
-        },
+        }
     )
 
     async def fake_fetch_deep_dive(task_dir, trial_dir):
@@ -3329,25 +3314,7 @@ def test_run_f2p_p2p_classify_paths_are_shell_quoted(tmp_path):
         "tests/test;rm -rf /repo;.py",  # command separator
     ]
 
-    async def fake_create(*args, **kwargs):
-        # The script is written to a temp file and passed via volume mount.
-        # Capture it from the filesystem by reading the mounted path arg.
-        for arg in args:
-            if isinstance(arg, str) and arg.endswith(".sh") and "/classify" not in arg:
-                pass
-        # Instead: intercept the NamedTemporaryFile write by checking the script content
-        # arrives safely — verify the generated script contains quoted forms.
-        mock_proc = MagicMock()
-
-        async def fake_communicate():
-            # Return minimal output so the function completes without error branch
-            output = _make_classify_output(
-                oracle_passed=("tests/test_feature.py::test_x",),
-            )
-            return (output, b"")
-
-        mock_proc.communicate = fake_communicate
-        return mock_proc
+    fake_create = _fake_classify_proc(_make_classify_output(oracle_passed=("tests/test_feature.py::test_x",)))
 
     # Patch NamedTemporaryFile to capture what's written
     import tempfile as _tempfile
@@ -3356,8 +3323,8 @@ def test_run_f2p_p2p_classify_paths_are_shell_quoted(tmp_path):
     written: list[str] = []
 
     class CapturingNTF:
-        def __init__(self, **kwargs):
-            self._ntf = original_ntf(**kwargs)
+        def __init__(self, mode, suffix, delete):
+            self._ntf = original_ntf(mode=mode, suffix=suffix, delete=delete)
             self.name = self._ntf.name
 
         def write(self, content):
@@ -3368,8 +3335,8 @@ def test_run_f2p_p2p_classify_paths_are_shell_quoted(tmp_path):
             self._ntf.__enter__()
             return self
 
-        def __exit__(self, *args):
-            return self._ntf.__exit__(*args)
+        def __exit__(self, exc_type, exc_value, traceback):
+            return self._ntf.__exit__(exc_type, exc_value, traceback)
 
     async def run():
         with (
@@ -3399,7 +3366,6 @@ def test_run_f2p_p2p_classify_paths_are_shell_quoted(tmp_path):
 
 
 def _make_classify_output(
-    *,
     overlay_passed: tuple[str, ...] = (),
     overlay_failed: tuple[str, ...] = (),
     oracle_passed: tuple[str, ...] = (),
@@ -3434,8 +3400,7 @@ def _fake_classify_proc(output: bytes):
 
     mock_proc.communicate = fake_communicate
 
-    async def fake_create(*args, **kwargs):
-        return mock_proc
+    fake_create = AsyncMock(return_value=mock_proc)
 
     return fake_create
 
@@ -3738,7 +3703,7 @@ def test_step_f2p_p2p_classify_overlay_regression_rejects_immediately(tmp_path):
             patch(
                 "craft_taskgen.steps._fix_f2p_p2p_classify_or_shelve_async",
                 new_callable=AsyncMock,
-                side_effect=lambda *a, **kw: fix_called.append(1),
+                side_effect=lambda task, issue, reason: fix_called.append(1),
             ),
         ):
             await _run_docker_classify_one(task, state, state_file)
@@ -3793,7 +3758,7 @@ def test_step_f2p_p2p_classify_overlay_uncollected_rejects_immediately(tmp_path)
             patch(
                 "craft_taskgen.steps._fix_f2p_p2p_classify_or_shelve_async",
                 new_callable=AsyncMock,
-                side_effect=lambda *a, **kw: fix_called.append(1),
+                side_effect=lambda task, issue, reason: fix_called.append(1),
             ),
         ):
             await _run_docker_classify_one(task, state, state_file)
@@ -4180,8 +4145,7 @@ def test_run_score_check_async_timeout(tmp_path):
 
         mock_proc.communicate = fake_communicate
 
-        async def fake_create(*args, **kwargs):
-            return mock_proc
+        fake_create = AsyncMock(return_value=mock_proc)
 
         with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
             return await run_score_check_async(str(tmp_path), timeout=1)
@@ -4204,8 +4168,7 @@ def test_run_score_check_async_no_reward_json(tmp_path):
 
         mock_proc.communicate = fake_communicate
 
-        async def fake_create(*args, **kwargs):
-            return mock_proc
+        fake_create = AsyncMock(return_value=mock_proc)
 
         with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
             return await run_score_check_async(str(tmp_path))
@@ -4234,8 +4197,7 @@ def test_run_score_check_async_json_parse_error(tmp_path):
 
         mock_proc.communicate = fake_communicate
 
-        async def fake_create(*args, **kwargs):
-            return mock_proc
+        fake_create = AsyncMock(return_value=mock_proc)
 
         with (
             patch("asyncio.create_subprocess_exec", side_effect=fake_create),
@@ -4608,15 +4570,15 @@ def test_run_score_check_async_command_string(tmp_path):
 
         mock_proc.communicate = fake_communicate
 
-        async def fake_create(*args, **kwargs):
-            captured_args.extend(args)
-            return mock_proc
+        fake_create = AsyncMock(return_value=mock_proc)
 
         with (
             patch("asyncio.create_subprocess_exec", side_effect=fake_create),
             patch("craft_taskgen.docker.tempfile.mkdtemp", return_value=str(tmp_path / "logs")),
         ):
-            return await run_score_check_async(str(tmp_path), apply_solution=False)
+            result = await run_score_check_async(str(tmp_path), apply_solution=False)
+            captured_args.extend(fake_create.call_args.args)
+            return result
 
     result = asyncio.run(run())
 
@@ -4663,15 +4625,15 @@ def test_run_score_check_async_apply_solution_command(tmp_path):
 
         mock_proc.communicate = fake_communicate
 
-        async def fake_create(*args, **kwargs):
-            captured_args.extend(args)
-            return mock_proc
+        fake_create = AsyncMock(return_value=mock_proc)
 
         with (
             patch("asyncio.create_subprocess_exec", side_effect=fake_create),
             patch("craft_taskgen.docker.tempfile.mkdtemp", return_value=str(tmp_path / "logs")),
         ):
-            return await run_score_check_async(str(tmp_path), apply_solution=True)
+            result = await run_score_check_async(str(tmp_path), apply_solution=True)
+            captured_args.extend(fake_create.call_args.args)
+            return result
 
     asyncio.run(run())
 
@@ -4709,12 +4671,12 @@ def test_run_docker_build_async_uses_environment_as_context(tmp_path):
 
         mock_proc.communicate = fake_communicate
 
-        async def fake_create(*args, **kwargs):
-            captured_args.extend(args)
-            return mock_proc
+        fake_create = AsyncMock(return_value=mock_proc)
 
         with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
-            return await run_docker_build_async(str(tmp_path))
+            result = await run_docker_build_async(str(tmp_path))
+            captured_args.extend(fake_create.call_args.args)
+            return result
 
     run_ok, _ = asyncio.run(run())
     assert run_ok
@@ -4755,12 +4717,12 @@ def test_run_f2p_p2p_classify_mounts_from_tests_postmerge(tmp_path):
 
         mock_proc.communicate = fake_communicate
 
-        async def fake_create(*args, **kwargs):
-            captured_args.extend(args)
-            return mock_proc
+        fake_create = AsyncMock(return_value=mock_proc)
 
         with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
-            return await run_f2p_p2p_classify_async(str(tmp_path), ["tests/test_foo.py"])
+            result = await run_f2p_p2p_classify_async(str(tmp_path), ["tests/test_foo.py"])
+            captured_args.extend(fake_create.call_args.args)
+            return result
 
     asyncio.run(run())
 
@@ -4804,12 +4766,12 @@ def test_run_f2p_p2p_classify_no_mount_when_postmerge_absent(tmp_path):
 
         mock_proc.communicate = fake_communicate
 
-        async def fake_create(*args, **kwargs):
-            captured_args.extend(args)
-            return mock_proc
+        fake_create = AsyncMock(return_value=mock_proc)
 
         with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
-            return await run_f2p_p2p_classify_async(str(tmp_path), ["tests/test_foo.py"])
+            result = await run_f2p_p2p_classify_async(str(tmp_path), ["tests/test_foo.py"])
+            captured_args.extend(fake_create.call_args.args)
+            return result
 
     asyncio.run(run())
 
@@ -4893,15 +4855,17 @@ def test_run_task_pipeline_evaluated_retries_build():
         step_calls.append("oracle")
         t.stage = Stage.ORACLE_CHECKED
 
-    async def fake_smoke(t, s, sf, **kw):
-        step_calls.append(f"smoke_{kw['label']}")
-        setattr(t, kw["score_attr"], "3/5")
-        setattr(t, kw["trial_attr"], "jobs/test")
-        t.stage = kw["next_stage"]
+    async def fake_smoke(
+        t, s, sf, model, label, score_attr, trial_attr, next_stage, agent="claude-code", reasoning_effort=""
+    ):
+        step_calls.append(f"smoke_{label}")
+        setattr(t, score_attr, "3/5")
+        setattr(t, trial_attr, "jobs/test")
+        t.stage = next_stage
 
-    async def fake_triage(t, s, sf, **kw):
-        step_calls.append(f"triage_{kw['label']}")
-        t.stage = kw["accept_stage"]
+    async def fake_triage(t, s, sf, label, score_attr, trial_attr, accept_stage, reset_fix_budget=False):
+        step_calls.append(f"triage_{label}")
+        t.stage = accept_stage
 
     sems = {
         "llm": asyncio.Semaphore(4),
@@ -5340,29 +5304,11 @@ def test_deterministic_easiness_returns_false_on_missing_reward():
 
 
 def _fake_subprocess_pair(list_output: bytes):
-    """Build an async side_effect for asyncio.create_subprocess_exec. `docker
-    images ...` calls yield `list_output`; `docker image rm ...` calls return
-    a proc whose .wait() resolves to 0."""
-    state = {"calls": []}
-
-    async def fake_create(*args, **kwargs):
-        state["calls"].append(args)
-        mock_proc = MagicMock()
-        if "images" in args:
-
-            async def _communicate():
-                return (list_output, b"")
-
-            mock_proc.communicate = _communicate
-        else:
-
-            async def _wait():
-                return 0
-
-            mock_proc.wait = _wait
-        return mock_proc
-
-    return fake_create, state
+    """The mock supplies image-list output and successful removal without running Docker."""
+    mock_proc = MagicMock()
+    mock_proc.communicate = AsyncMock(return_value=(list_output, b""))
+    mock_proc.wait = AsyncMock(return_value=0)
+    return AsyncMock(return_value=mock_proc)
 
 
 def test_cleanup_task_images_matches_both_patterns():
@@ -5377,31 +5323,19 @@ def test_cleanup_task_images_matches_both_patterns():
         b"craft-t2v3-sample-slug:latest\n",
         b"t2v3-sample-slug-abc1234-main:latest\n",
     ]
-    call_seq = {"idx": 0, "cmds": []}
-
-    async def fake_create(*args, **kwargs):
-        call_seq["cmds"].append(args)
-        mock_proc = MagicMock()
-        if "images" in args:
-            out = outputs[call_seq["idx"] // 2]
-
-            async def _communicate(_out=out):
-                return (_out, b"")
-
-            mock_proc.communicate = _communicate
-        else:
-
-            async def _wait():
-                return 0
-
-            mock_proc.wait = _wait
-        call_seq["idx"] += 1
-        return mock_proc
+    processes = []
+    for output in outputs:
+        listing = MagicMock()
+        listing.communicate = AsyncMock(return_value=(output, b""))
+        removal = MagicMock()
+        removal.wait = AsyncMock(return_value=0)
+        processes.extend([listing, removal])
+    fake_create = AsyncMock(side_effect=processes)
 
     with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
         asyncio.run(cleanup_task_images("/x/t2v3-sample-slug"))
 
-    cmds = call_seq["cmds"]
+    cmds = [call.args for call in fake_create.call_args_list]
     assert len(cmds) == 4, cmds
     assert "images" in cmds[0] and "reference=craft-t2v3-sample-slug" in cmds[0]
     assert "rm" in cmds[1] and "craft-t2v3-sample-slug:latest" in cmds[1]
@@ -5414,20 +5348,12 @@ def test_cleanup_task_images_noop_when_empty_task_dir():
 
     from craft_taskgen.docker import cleanup_task_images
 
-    calls = []
-
-    def fake_create(*args, **kwargs):
-        calls.append(args)
-
-        async def _ret(*a, **k):
-            raise AssertionError("should not be called")
-
-        return _ret()
+    fake_create = AsyncMock(side_effect=AssertionError("should not be called"))
 
     with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
         asyncio.run(cleanup_task_images(""))
 
-    assert calls == []
+    fake_create.assert_not_called()
 
 
 def test_cleanup_task_images_noop_when_no_matches():
@@ -5435,12 +5361,12 @@ def test_cleanup_task_images_noop_when_no_matches():
 
     from craft_taskgen.docker import cleanup_task_images
 
-    fake_create, state = _fake_subprocess_pair(list_output=b"")
+    fake_create = _fake_subprocess_pair(list_output=b"")
     with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
         asyncio.run(cleanup_task_images("/x/t2v3-empty"))
 
     # 2 images calls (one per pattern), 0 rm calls (no matches).
-    cmds = state["calls"]
+    cmds = [call.args for call in fake_create.call_args_list]
     assert all("images" in c for c in cmds), cmds
     assert len(cmds) == 2, cmds
 
@@ -5450,8 +5376,7 @@ def test_cleanup_task_images_swallows_oserror(capsys):
 
     from craft_taskgen.docker import cleanup_task_images
 
-    def fake_create(*args, **kwargs):
-        raise OSError("docker daemon unavailable")
+    fake_create = AsyncMock(side_effect=OSError("docker daemon unavailable"))
 
     with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
         asyncio.run(cleanup_task_images("/x/t2v3-sample"))  # must not raise
@@ -5465,11 +5390,11 @@ def test_cleanup_task_images_lowercases_basename():
 
     from craft_taskgen.docker import cleanup_task_images
 
-    fake_create, state = _fake_subprocess_pair(list_output=b"")
+    fake_create = _fake_subprocess_pair(list_output=b"")
     with patch("asyncio.create_subprocess_exec", side_effect=fake_create):
         asyncio.run(cleanup_task_images("/x/T2V3-MixedCase-Slug"))
 
-    images_calls = [c for c in state["calls"] if "images" in c]
+    images_calls = [call.args for call in fake_create.call_args_list if "images" in call.args]
     # both filter args are lowercase
     assert any("reference=craft-t2v3-mixedcase-slug" in c for c in images_calls)
     assert any("reference=t2v3-mixedcase-slug*" in c for c in images_calls)
@@ -5487,10 +5412,6 @@ def _make_wrapper_test_task(task_dir: str = "/x/t2v3-wrappertest"):
     t.needs_human_review = False
     t.pending_fix_type = ""
     return t
-
-
-async def _noop_async(*args, **kwargs):
-    return None
 
 
 def test_run_task_pipeline_cleans_on_needs_fix():

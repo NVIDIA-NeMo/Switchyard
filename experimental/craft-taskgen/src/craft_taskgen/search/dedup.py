@@ -7,8 +7,6 @@ Loads tasks from all approaches, embeds instructions, removes near-duplicates
 (cosine >= threshold), and merges removed tasks' gold into kept tasks' alt fields.
 """
 
-from __future__ import annotations
-
 import json
 import math
 import os
@@ -106,9 +104,8 @@ def deduplicate(
 
 def run_dedup(
     output_dir: str,
-    *,
     threshold: float = 0.65,
-    embedding_model: str = "openai/azure/openai/text-embedding-3-small",
+    embedding_model: str = "openai/text-embedding-3-small",
 ) -> None:
     """Load tasks from all approaches, embed, deduplicate, and write back.
 

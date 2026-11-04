@@ -25,11 +25,11 @@ and publish security bulletins as appropriate.
 
 ## Security Architecture & Context
 
-`craft-taskgen` is an internal pipeline that mines merged GitHub pull requests and
+`craft-taskgen` is a pipeline that mines merged GitHub pull requests and
 converts them into [Harbor](https://harborframework.com)-compatible coding-agent
 evaluation tasks (instruction, `task.toml`, `environment/Dockerfile`, `solution/`,
 and `tests/` verifier). It uses the Claude Code CLI (`claude -p`, routed through the
-NVIDIA LiteLLM gateway) to author and fix task artifacts, builds per-task Docker
+configured gateway) to author and fix task artifacts, builds per-task Docker
 images, runs agent baselines, and scores/deep-dives the results.
 
 This software operates at the **Service / CLI Tooling** level (a Python package plus
@@ -52,7 +52,7 @@ shell launchers run by a pipeline operator). Its primary security responsibiliti
   the operator supplies, and datasets/models pulled from HuggingFace — not authored here
   and able to change without a commit to this repo.
 - **Trusted:** the pipeline operator and their host, this repository's maintainers, and
-  the NVIDIA LiteLLM gateway the pipeline routes all model traffic through.
+  the configured gateway the pipeline routes all model traffic through.
 
 ### Key interfaces
 

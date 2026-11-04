@@ -609,7 +609,7 @@ production-facing observability.
 - **Latency-aware router** — the `latency_service` route type and its
   `LatencyServiceLLMBackend`, `LatencyServiceBackendConfig`,
   `LatencyServiceEndpoint`, and `LatencyServiceProfileConfig` public API are
-  removed. It depended on NVIDIA Inference Hub's latency endpoint and schema.
+  removed. It depended on a deployment-specific latency endpoint and schema.
   Deployments that need multi-endpoint, load- or latency-aware routing should
   move endpoint selection to a dedicated upstream load balancer.
 - **Public `type: noop` and `type: passthrough` YAML routes** — removed from
@@ -688,4 +688,3 @@ traffic that sits between client applications and LLM backends.
 - The `--deterministic` launcher flag was removed during pre-release
   development — LLM-as-classifier routing is now the implicit default for the
   `claude` / `codex` / `openclaw` launchers.
-- Inference Hub integration docs are out of scope for this release.

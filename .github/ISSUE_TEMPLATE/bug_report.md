@@ -32,7 +32,7 @@ curl -s http://localhost:4000/v1/chat/completions -d '{"model":"...","messages":
 - OS / arch:
 - Install path (`uv sync`, `pip install nemo-switchyard`, source build, etc.):
 - Inbound format (Chat Completions / Anthropic Messages / Responses):
-- Backend (OpenAI / Anthropic / NVIDIA Inference Hub / other):
+- Backend (OpenAI / Anthropic / other):
 
 ## Additional context
 

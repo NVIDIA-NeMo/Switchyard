@@ -76,7 +76,7 @@ record per call. In the record below, `session_id` is the value of pi's `x-sessi
 header:
 
 ```json
-{"route_id":"switchyard","algorithm":"stage_router","model":"azure/anthropic/claude-haiku-4-5","session_id":"01a0caac-e421-7328-adaf-79d3440c0406","prompt_tokens":2659,"completion_tokens":97}
+{"route_id":"switchyard","algorithm":"stage_router","model":"claude-haiku-4-5","session_id":"01a0caac-e421-7328-adaf-79d3440c0406","prompt_tokens":2659,"completion_tokens":97}
 ```
 
 ## Which request API

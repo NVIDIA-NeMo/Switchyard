@@ -3,20 +3,19 @@
 
 """Search pipeline configuration: step order, state model, and search-specific constants."""
 
-from __future__ import annotations
-
 import json
 import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
+from typing import Self
 
 # ---------------------------------------------------------------------------
 # Search-specific constants (overridable via PipelineProfile)
 # ---------------------------------------------------------------------------
 
-CODEX_MODEL = "openai/openai/gpt-5.3-codex"
+CODEX_MODEL = "gpt-5.3-codex"
 DEDUP_THRESHOLD = 0.65
-DEDUP_EMBEDDING_MODEL = "openai/azure/openai/text-embedding-3-small"
+DEDUP_EMBEDDING_MODEL = "openai/text-embedding-3-small"
 REJECT_THRESHOLD = 0.3  # both Opus + Codex <= this → reject
 HAIKU_INVERSION_MARGIN = 0.1  # haiku must beat opus by more than this to trigger
 HAIKU_INVERSION_FLOOR = 0.5  # and haiku must actually perform (>= this) — not just non-zero noise
@@ -25,11 +24,11 @@ SYNTHESIS_CONCURRENCY = 5
 
 # LiteLLM model names for 3-model synthesis
 SYNTHESIS_MODELS = [
-    "openai/aws/anthropic/bedrock-claude-sonnet-4-6",
-    "openai/gcp/google/gemini-3.1-pro-preview",
-    "openai/us/azure/openai/gpt-5.4",
+    "openai/claude-sonnet-4-6",
+    "openai/gemini-3.1-pro-preview",
+    "openai/gpt-5.4",
 ]
-JUDGE_MODEL = "openai/aws/anthropic/bedrock-claude-sonnet-4-6"
+JUDGE_MODEL = "openai/claude-sonnet-4-6"
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +135,7 @@ class SearchPipelineState:
             json.dump(asdict(self), f, indent=2, default=str)
 
     @classmethod
-    def load(cls, path: str) -> SearchPipelineState:
+    def load(cls, path: str) -> Self:
         with open(path) as f:
             data = json.load(f)
         state = cls(

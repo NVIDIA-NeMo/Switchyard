@@ -606,7 +606,7 @@ fn responses_reasoning_survives_rebuild() -> TestResult {
 
     prepare_request_for_target(
         &mut request,
-        &"openai/openai/gpt-5.6-sol".into(),
+        &"gpt-5.6-sol".into(),
         Some("Inspect before editing."),
     );
     request.preservation.requests.clear();
@@ -2767,7 +2767,7 @@ fn responses_encrypted_reasoning_replays_without_input_content() -> TestResult {
         .request;
     prepare_request_for_target(
         &mut request,
-        &"openai/openai/gpt-5.6-sol".into(),
+        &"gpt-5.6-sol".into(),
         Some("[router-guidance] Continue from the current state."),
     );
 
@@ -2775,7 +2775,7 @@ fn responses_encrypted_reasoning_replays_without_input_content() -> TestResult {
         .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
         .body;
 
-    assert_eq!(output["model"], "openai/openai/gpt-5.6-sol");
+    assert_eq!(output["model"], "gpt-5.6-sol");
     assert_eq!(
         output["instructions"],
         "[router-guidance] Continue from the current state."

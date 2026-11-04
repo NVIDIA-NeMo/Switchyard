@@ -7,7 +7,7 @@ The Community Gardener handles externally contributed Issues and PRs:
 - Merge the good PRs that are ready, close the bad ones, and help the others become good ones.
 - Help contributors prepare their work so that someone on our dev team can review it: Explain CI failures, ensure they address Code Rabbit issues, and trigger the test suite (see Security).
 
-Every GitHub Issue is synced to Linear in "Switchyard GitHub" under Triage: https://linear.app/nvidia/team/SYGH/triage . Once a PR is ready assign it to the relevant person for review. The Community Gardener can review, but you are not the everything-reviewer. You garden.
+When a PR is ready for review, assign it to the appropriate reviewer. The Community Gardener may also review PRs and should share review work with the team.
 
 If an Issue looks important comment that it is accepted, and ask if the author wants to take it. If not move it to our Backlog. If it's urgent find someone to take it.
 
@@ -30,4 +30,3 @@ Slop:
  - Our CONTRIBUTING guide says "Using AI tools to write code is fine, but you must understand and be able to explain every change in your PR.". If you feel that's not the case close it with that quote.
 
 Out of scope: Attempts to productionize the demo server (Kubernetes, authentication). Tools that should live outside our repo, such as dashboard and CLIs. And really anything not directly related to routing.
-

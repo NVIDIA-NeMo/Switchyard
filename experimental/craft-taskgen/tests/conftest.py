@@ -8,8 +8,6 @@ raise. Tests that specifically exercise the guardrail unset these via
 `monkeypatch.delenv` to assert the RuntimeError path.
 """
 
-from __future__ import annotations
-
 import sys
 from pathlib import Path
 
@@ -29,6 +27,6 @@ def _fake_gateway_env(monkeypatch: pytest.MonkeyPatch) -> None:
     `monkeypatch.delenv` to assert the RuntimeError path.
     """
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
-    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://inference-api.test.invalid")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.example.com")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("OPENAI_BASE_URL", "https://inference-api.test.invalid/v1")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://gateway.example.com/v1")

@@ -3,8 +3,6 @@
 
 """Pipeline configuration constants, path resolution, and state model."""
 
-from __future__ import annotations
-
 import json
 import os
 import re
@@ -12,6 +10,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from typing import Self
 
 # ---------------------------------------------------------------------------
 # Config
@@ -42,25 +41,22 @@ DEFAULT_PERMISSION_MODE = "auto"
 DEFAULT_MAX_TURNS = 100  # effectively uncapped; timeout is the real safety net
 DEFAULT_TIMEOUT = 1200  # 20 min per LLM step
 TASK_SUITE_DIR = "harbor-tasks/craft-tools-v4"
-HAIKU_MODEL = "azure/anthropic/claude-haiku-4-5"
-OPUS_MODEL = "azure/anthropic/claude-opus-4-6"
-LLM_STEP_MODEL = "azure/anthropic/claude-opus-4-6"  # azure avoids bedrock context_management rejection
+HAIKU_MODEL = "claude-haiku-4-5"
+OPUS_MODEL = "claude-opus-4-6"
+LLM_STEP_MODEL = "claude-opus-4-6"
 # Smoke-test agent — the Harbor agent trial that actually *solves* the task and
 # produces the reward (the primary quality gate). Decoupled from the direct-API
 # judge models above: the agent that attempts the task can differ from the
 # Opus/GPT judges that triage its trial. Default is codex + GPT-5.5 (cross-agent
 # from the Opus deep-dive judge, per the no-self-family-judging design).
-# Gateway naming: codex routes via the NVIDIA gateway, whose slugs double the
-# vendor segment (e.g. `openai/openai/gpt-5.5`). Reasoning tokens require the
-# codex model catalog (see runner._filtered_codex_catalog).
+# The model catalog tells Codex which configured models support reasoning.
 SMOKE_AGENT = "codex"
-SMOKE_MODEL = "openai/openai/gpt-5.5"
+SMOKE_MODEL = "gpt-5.5"
 SMOKE_REASONING_EFFORT = "high"  # "" → fall back to baselines.reasoning_defaults
-# Cross-family judge for build-time alignment audit (Opus generates → GPT judges).
-# Paper story: no LLM judges output from its own family (arXiv 2410.21819
-# self-preference bias mitigation). Defaults to GPT-5.4 via the NVIDIA gateway;
-# per-profile override via llm_alignment_model TOML field.
-LLM_ALIGNMENT_MODEL = "openai/us/azure/openai/gpt-5.4"
+# GPT judges Opus output during the build-time alignment audit to reduce
+# self-preference bias (arXiv 2410.21819). The llm_alignment_model profile field
+# can override this GPT-5.4 default for the configured gateway.
+LLM_ALIGNMENT_MODEL = "openai/gpt-5.4"
 MAX_FIX_ATTEMPTS = 2  # gates retries in build, docker-fix, and classify-fix paths
 # Max times a single task may loop back through the pipeline from triage into
 # a new Build regeneration. Persists across pipeline iterations so the task
@@ -230,7 +226,7 @@ class PipelineProfile:
     task_allow_internet: bool = True
 
     @classmethod
-    def from_toml(cls, path: str) -> PipelineProfile:
+    def from_toml(cls, path: str) -> Self:
         """Load profile from a TOML file. Unknown keys are ignored."""
         import tomllib
 
@@ -471,7 +467,7 @@ class PipelineState:
             json.dump(asdict(self), f, indent=2, default=str)
 
     @classmethod
-    def load(cls, path: str) -> PipelineState:
+    def load(cls, path: str) -> Self:
         with open(path) as f:
             data = json.load(f)
         state = cls(

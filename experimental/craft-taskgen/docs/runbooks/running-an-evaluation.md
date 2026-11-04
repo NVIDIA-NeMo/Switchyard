@@ -73,7 +73,7 @@ finish in a few minutes; artifacts land in `baselines/<timestamp>/`.
 scripts/run-baselines.sh \
   --tasks-dir ~/projects/craft-bench/harbor-tasks/craft-taskgen-v2b \
   --agent claude-code \
-  --model aws/anthropic/bedrock-claude-opus-4-7 \
+  --model claude-opus-4-7 \
   --backend gateway \
   --n-tasks 1
 ```
@@ -98,15 +98,14 @@ configurations in `results.md`.
 scripts/run-baselines.sh \
   --tasks-dir ~/projects/craft-bench/harbor-tasks/craft-taskgen-v2b \
   --agent claude-code \
-  --model aws/anthropic/bedrock-claude-opus-4-7 \
+  --model claude-opus-4-7 \
   --backend gateway \
   --n-concurrent 6
 ```
 
 Claude Code CLI pinned at **2.1.118** (clean of the April-23 postmortem
-regressions). Reasoning effort `high` applied automatically by the
-launcher — gateway caps `xhigh` on Opus 4.7 until harbor's `CliFlag`
-validator lifts the limit. See
+regressions). The launcher sets reasoning effort to `xhigh` for Opus 4.7.
+The Harbor patch adds that value to Claude Code's accepted options. See
 [`baseline-reproducibility.md`](baseline-reproducibility.md) for the full
 effort table.
 
@@ -116,7 +115,7 @@ effort table.
 scripts/run-baselines.sh \
   --tasks-dir ~/projects/craft-bench/harbor-tasks/craft-taskgen-v2b \
   --agent codex \
-  --model openai/openai/gpt-5.5 \
+  --model gpt-5.5 \
   --backend gateway \
   --n-concurrent 6
 ```
@@ -130,16 +129,15 @@ launcher (Harbor default is `high` for our smoke tasks).
 scripts/run-baselines.sh \
   --tasks-dir ~/projects/craft-bench/harbor-tasks/craft-taskgen-v2b \
   --agent opencode \
-  --model aws/anthropic/claude-haiku-4-5-v1 \
+  --model claude-haiku-4-5 \
   --backend gateway \
   --n-concurrent 6
 ```
 
-opencode CLI pinned at **1.4.9**. The launcher prepends `nvidia/` to the
-model slug automatically when `--agent opencode --backend gateway` — that
-prefix selects the harbor-internal `nvidia` provider (which routes through
-`@ai-sdk/openai-compatible`); the gateway only sees the canonical slug on
-the wire.
+The opencode CLI is pinned at **1.4.9**. With
+`--agent opencode --backend gateway`, the launcher adds `gateway/` to the
+model ID. That prefix selects Harbor's `gateway` provider, which uses
+`@ai-sdk/openai-compatible`. The endpoint receives the original model ID.
 
 ### opencode · GLM-5.1
 
@@ -147,7 +145,7 @@ the wire.
 scripts/run-baselines.sh \
   --tasks-dir ~/projects/craft-bench/harbor-tasks/craft-taskgen-v2b \
   --agent opencode \
-  --model nvidia/zai-org/glm-5.1 \
+  --model zai-org/glm-5.1 \
   --backend gateway \
   --n-concurrent 6
 ```

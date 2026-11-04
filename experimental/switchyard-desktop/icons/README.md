@@ -20,8 +20,7 @@ edit removed the navy tile and frame, kept the titanium turnout and pale-blue
 supports, and enlarged the mark on a transparent canvas. The source was then
 resized to 1024 × 1024 pixels before export.
 
-Gemini 3 Pro Image generated the selected artwork through Inference Hub with
-`gcp/google/gemini-3-pro-image`, `n: 1`, and `size: "1024x1024"`.
+Gemini 3 Pro Image generated the selected artwork with a requested size of 1024 × 1024 pixels.
 The selected image used this exact prompt:
 
 ```text

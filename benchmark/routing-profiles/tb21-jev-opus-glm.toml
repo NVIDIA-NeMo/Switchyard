@@ -7,7 +7,7 @@
 # task messages and candidate metadata. Criteria below are part of the instructions.
 # The 0.05 cutoff is a starting value, not calibrated for this adapted question.
 # Jev and completion calls use OpenRouter. Completion endpoints differ from the
-# experiment's Bedrock/Inference Hub baselines. Re-evaluate before comparing with
+# experiment's baseline endpoints. Re-evaluate before comparing with
 # the recorded replay results in docs/benchmarks.md#terminal-bench-21.
 #
 # Set OPENROUTER_API_KEY, then run from the repository root:

@@ -5,7 +5,7 @@
 `llm_judge.py` (direct litellm calls).
 
 Gateway-only policy: every pipeline LLM call — whether a `claude -p` session or
-a direct prompt/response — must route through the NVIDIA LiteLLM gateway. The
+a direct prompt/response — must route through the configured gateway. The
 enforcement point is `build_gateway_env()` (and its read-only credential
 accessors below); they raise `RuntimeError` rather than silently falling back
 to OAuth or to api.anthropic.com.
@@ -28,8 +28,6 @@ This module exposes three surfaces:
 Previously located in `claude_cli.py::_build_gateway_env`; factored out so the
 direct-API wrapper can reuse the same guardrail.
 """
-
-from __future__ import annotations
 
 import os
 
@@ -111,14 +109,14 @@ def get_openai_gateway_creds() -> tuple[str, str]:
 
 
 def build_gateway_env(model: str) -> dict[str, str]:
-    """Construct the env for `claude -p` that forces NVIDIA gateway routing.
+    """The helper builds the environment for `claude -p` to use the configured gateway.
 
-    Mirrors Harbor's recipe (harbor/agents/installed/claude_code.py): set
-    ANTHROPIC_* creds + model, pin every sub-agent alias to the gateway model,
-    suppress non-essential traffic that could leak to api.anthropic.com.
+    The environment follows Harbor's setup (harbor/agents/installed/claude_code.py).
+    It sets ANTHROPIC_* credentials and pins every sub-agent alias to the configured model.
+    It also disables non-essential traffic to api.anthropic.com.
 
-    Fails loudly if gateway credentials or model are missing — OAuth fallback
-    is forbidden on this machine.
+    Missing gateway credentials or a missing model raise RuntimeError before
+    the caller starts Claude. OAuth fallback remains disabled.
     """
     api_key, base_url = get_anthropic_gateway_creds()
     if not model:

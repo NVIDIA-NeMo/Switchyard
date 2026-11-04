@@ -67,8 +67,7 @@ The paired benchmark used the following fixed setup:
   `20260904:<dataset>:<task>`; they were not selected by outcome.
 - Four arms per task: direct GLM, direct Opus, the original escalation router, and the patched
   escalation router. This produced 160 task-arm runs.
-- GLM was `nvidia/zai-org/glm-5.2`; Opus was
-  `aws/anthropic/bedrock-claude-opus-4-8` with medium effort. GLM also served as the escalation
+- The models were GLM 5.2 and Claude Opus 4.8; Opus used medium effort. GLM also served as the escalation
   judge. The two escalation arms used two confirmations, maximum one switch, and a post-switch
   latch.
 - The original router was built from upstream commit
@@ -113,7 +112,7 @@ cost problem: judging every turn can be expensive when the destination model is 
 ### Synthetic cost calculation
 
 The inference service did not provide billable cost. The values below are synthetic estimates for
-comparing routing behavior, not NVIDIA prices or charges. The assumed rates are:
+comparing routing behavior, not provider prices or charges. The assumed rates are:
 
 | Model | Uncached input / 1M tokens | Cached input / 1M tokens | Output / 1M tokens |
 | --- | ---: | ---: | ---: |

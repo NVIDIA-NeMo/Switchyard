@@ -71,8 +71,6 @@ Usage:
         --concurrency 3
 """
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import csv
@@ -363,7 +361,6 @@ def _dual_dd_agreement_status(primary_class: str, secondary_class: str) -> str:
 
 
 async def _judge_dual_dd(
-    *,
     task_id: str,
     bucket: str,
     opus_score: str,
@@ -496,7 +493,6 @@ async def _judge_dual_dd(
 
 
 async def _judge_and_compare(
-    *,
     task_id: str,
     bucket: str,
     opus_score: str,
@@ -656,7 +652,6 @@ async def _judge_and_compare(
 
 async def judge_sample(
     sample_dir: Path,
-    *,
     model: str,
     reviewer_model: str,
     skip_reviewer: bool,
@@ -696,7 +691,6 @@ async def judge_sample(
 async def judge_task_from_state(
     task_id: str,
     task_state: dict,
-    *,
     model: str,
     reviewer_model: str,
     skip_reviewer: bool,
@@ -772,7 +766,7 @@ async def _run_fixture_mode(args: argparse.Namespace, model: str) -> list[dict]:
     if args.limit:
         sample_dirs = sample_dirs[: args.limit]
 
-    reviewer_model = args.reviewer_model or "openai/gcp/google/gemini-3.1-pro-preview"
+    reviewer_model = args.reviewer_model or "openai/gemini-3.1-pro-preview"
     secondary_model = args.secondary_model or ""
     print(f"Fixture mode: {len(sample_dirs)} samples")
     print(f"  deep-dive primary: {model}")
@@ -820,7 +814,7 @@ async def _run_rundir_mode(args: argparse.Namespace, model: str) -> list[dict]:
     if args.limit:
         eligible_items = eligible_items[: args.limit]
 
-    reviewer_model = args.reviewer_model or "openai/gcp/google/gemini-3.1-pro-preview"
+    reviewer_model = args.reviewer_model or "openai/gemini-3.1-pro-preview"
     secondary_model = args.secondary_model or ""
     print(f"Run-dir mode: {state_path}")
     print(f"  candidates: {len(eligible_items)} tasks (stages: {sorted(eligible_stages)})")
@@ -1266,7 +1260,7 @@ def main() -> int:
     parser.add_argument("--concurrency", type=int, default=3, help="Parallel judge calls (default: 3)")
     parser.add_argument(
         "--model",
-        help="Override _cfg.LLM_STEP_MODEL for deep-dive (e.g. 'azure/anthropic/claude-opus-4-6')",
+        help="Override _cfg.LLM_STEP_MODEL for deep-dive (e.g. 'claude-opus-4-6')",
     )
     parser.add_argument(
         "--reviewer-model",
@@ -1286,7 +1280,7 @@ def main() -> int:
         help="Dual-DD mode: run deep dive twice in parallel with --model (primary) and "
         "--secondary-model (secondary), skip reviewer entirely. Per-test inter-model "
         "agreement statuses: agree_exact / agree_skip / agree_nonskip / disagree_across. "
-        "Example: --secondary-model openai/us/azure/openai/gpt-5.4",
+        "Example: --secondary-model openai/gpt-5.4",
     )
     parser.add_argument("--verbose", action="store_true", help="Per-sample progress + disagreement detail")
     args = parser.parse_args()

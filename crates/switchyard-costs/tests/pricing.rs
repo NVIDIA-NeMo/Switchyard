@@ -175,7 +175,6 @@ fn bundled_aliases_keep_all_cache_rates() -> TestResult {
         "claude-haiku-4-5",
         "claude-haiku-4-5-20251001",
         "anthropic/claude-haiku-4.5",
-        "azure/anthropic/claude-haiku-4-5",
     ] {
         let cost = prices.estimate(model, &usage).ok_or("missing alias")?;
         assert!((cost.usd - 9.35).abs() < 1e-9, "{model}");

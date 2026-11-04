@@ -10,8 +10,6 @@ Bridges Tools-track environments with Search scoring:
 - Generates solve.sh that writes the gold answer
 """
 
-from __future__ import annotations
-
 import json
 import os
 import shutil
@@ -53,7 +51,7 @@ def _agent_install_snippet() -> str:
             "codex config as the inference gateway base_url."
         )
     return f"""
-# --- Agent runtimes + NVIDIA gateway config (appended by harbor.py) ---
+# harbor.py appends the agent runtimes and gateway configuration below.
 RUN apt-get update && apt-get install -y --no-install-recommends curl && \\
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \\
     apt-get install -y --no-install-recommends nodejs && \\
@@ -62,11 +60,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl && \\
     apt-get remove -y curl && apt-get autoremove -y && \\
     rm -rf /var/lib/apt/lists/*
 ENV PATH="/root/.local/bin:$PATH"
-# Codex system-level config (NVIDIA LiteLLM gateway)
+# Codex uses this system-level config to reach the configured gateway.
 RUN mkdir -p /etc/codex && cat > /etc/codex/config.toml << 'EOF'
-model_provider = "nvidia_gateway"
-[model_providers.nvidia_gateway]
-name = "NVIDIA LiteLLM Gateway"
+model_provider = "gateway"
+[model_providers.gateway]
+name = "Configured Gateway"
 base_url = "{base_url}"
 env_key = "OPENAI_API_KEY"
 wire_api = "responses"
@@ -76,8 +74,9 @@ RUN mkdir -p /app
 
 
 def _copy_parent_dockerfile(env_dir: str, t2_env_dir: str) -> None:
-    """Copy the T2 Dockerfile plus any sidecar files (referenced by COPY/ADD) and
-    append agent runtime installs + NVIDIA gateway config to the Dockerfile.
+    """The helper copies the T2 Dockerfile and files referenced by COPY/ADD.
+
+    It appends agent installation commands and the configured gateway settings.
 
     Some T2 tasks ship sidecar files next to the Dockerfile (e.g. conftest
     overlays, entrypoint scripts, fixture generators). These are referenced via

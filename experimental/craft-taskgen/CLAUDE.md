@@ -6,7 +6,7 @@ Automated CRAFT benchmark task generation pipeline.
 
 This repository is intended to be made public. Follow common Python conventions:
 - Prefer explicit named functions over callable parameters for branching behaviour
-- Use `from __future__ import annotations` and type hints throughout
+- Use type hints throughout.
 - Private helpers are `_`-prefixed but should still be readable to outside contributors
 
 ## Commands
@@ -110,11 +110,10 @@ Any change to pipeline steps, stage ordering, or what each step produces must be
 
 ## Key Conventions
 
-- `from __future__ import annotations` in all files
 - Profile-controlled constants accessed via `import craft_taskgen.config as _cfg` then `_cfg.CONSTANT` (NOT `from config import CONSTANT` — that creates copies that profile.apply() can't override)
 - ruff, line-length 110, target py312
 - HTML template strings in dashboard.py are exempt from E501
-- **Gateway-only LLM**: `claude -p` is pinned to the NVIDIA gateway. `.env` must set `ANTHROPIC_API_KEY` + `ANTHROPIC_BASE_URL`; every profile must set `llm_step_model` to a gateway-shaped ID (e.g. `aws/anthropic/bedrock-claude-opus-4-6`). Never add an OAuth fallback path. Model is passed via `ANTHROPIC_MODEL` env, not `--model` on the CLI. Tests that shell out need the fake gateway env from `tests/conftest.py` (autouse) or must assert the `RuntimeError` guardrail explicitly.
+- **Gateway-only LLM:** `claude -p` uses the configured gateway. `.env` must set `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL`. Every profile must set `llm_step_model` to a model served by that endpoint (e.g. `claude-opus-4-6`). Keep OAuth fallback disabled. The helper passes the model through `ANTHROPIC_MODEL`. Tests that start a subprocess must use the fake gateway environment from `tests/conftest.py` or assert that missing configuration raises `RuntimeError`.
 - **Claude binary pinning**: `config._resolve_claude_cmd()` prefers `~/.local/share/claude/versions/{CC_VERSION}` over the system binary for consistent behavior across machines. Falls back to system `claude` if the pinned version isn't installed.
 
 ## Profiles
@@ -143,9 +142,9 @@ Key search modules:
 Harbor pinned at `git+...@a56546f` (post-v0.13.1 `main`; includes #1826 native pi log-trim and #1840 wildcard network allowlist). Patches in `patches/harbor-agent-patches.diff`:
 - base.py: raise `_truncate_output` cap 1000→8000 chars (diagnosable setup/exec logs)
 - claude_code.py: version-aware skip-install (skip only when the installed agent matches the pinned version) + apt tolerance. The attribution-header / telemetry / `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` opt-outs moved out of the patch into the launchers (`scripts/run-baselines.sh` and `planning/run_plan_impl.sh`) via `--agent-env`
-- codex.py: preserve full model path for NVIDIA gateway; full `[model_providers.nvidia_gateway]` stanza (`wire_api=responses`); custom model catalog (`CODEX_MODEL_CATALOG_JSON`) + `--disable unified_exec`; install hardening (version-aware skip-install, NVM retry, node16/ripgrep fallbacks)
-- opencode.py: custom `nvidia`/`vllm` provider (chat-completions) via unquoted-heredoc config write, per-mode sampling env-vars (`OPENCODE_BUILD_*`/`OPENCODE_PLAN_*`), `permission=allow` for non-interactive containers, Node16-direct install (NVM bypass), version-aware skip-install
-- pi.py: npm package rename `@mariozechner`→`@earendil-works`; custom `nvidia` provider via planted `~/.pi/agent/models.json`
+- `codex.py` preserves the full model ID and writes `[model_providers.gateway]` with `wire_api=responses`. It loads `CODEX_MODEL_CATALOG_JSON` and passes `--disable unified_exec`. Installation checks the pinned version, retries NVM, and provides Node 16 and ripgrep alternatives when downloads fail.
+- `opencode.py` configures `gateway` and `vllm` for Chat Completions through an unquoted heredoc. It reads sampling settings from `OPENCODE_BUILD_*` and `OPENCODE_PLAN_*`, sets `permission=allow`, and installs Node 16 directly. It skips agent installation when the pinned version is present.
+- `pi.py` uses the `@earendil-works` npm package and configures the `gateway` provider through `~/.pi/agent/models.json`.
 - openhands_sdk.py: uv-bootstrap a parallel Python 3.12 when the container's `python3` is older
 
 The host-gateway reachability for `--backend vllm` is no longer a compose patch — it's `patches/compose-overrides/host-gateway.yaml` passed via harbor's native `--extra-docker-compose` (wired into `scripts/run-baselines.sh`).

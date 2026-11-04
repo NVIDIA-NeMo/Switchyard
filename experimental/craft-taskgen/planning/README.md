@@ -26,7 +26,7 @@ directory of planning harbor tasks.
 source /path/to/harbor/.venv/bin/activate && source /path/to/harbor/.env
 export PLANNER_AGENT_KWARGS=api_base=$OPENAI_BASE_URL
 export IMPL_AGENT_KWARGS=api_base=$OPENAI_BASE_URL
-export PLANNER_MODEL=aws/anthropic/bedrock-claude-opus-4-6
+export PLANNER_MODEL=claude-opus-4-6
 ```
 
 ## Run a single task
@@ -60,11 +60,15 @@ Implementer defaults to Haiku 4.5 — the fixed implementer in the methodology.
 Override either side for ablations:
 
 ```bash
-# Non-Anthropic implementer (opencode + Nemotron)
-IMPL_AGENT=opencode IMPL_MODEL=nvdev/nvidia/nemotron-3-super \
-PLANNER_MODEL=aws/anthropic/bedrock-claude-opus-4-6 \
+# OpenCode uses Nemotron through the configured gateway.
+IMPL_AGENT=opencode IMPL_MODEL=gateway/nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16 \
+PLANNER_MODEL=claude-opus-4-6 \
 ./planning/run_plan_impl.sh
 ```
+
+`run_plan_impl.sh` passes `IMPL_MODEL` to Harbor unchanged. The `gateway/`
+prefix selects the configured OpenAI-compatible provider; the remaining
+`nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16` is the model ID sent to the endpoint.
 
 ## See per-task rewards
 

@@ -5,7 +5,7 @@
 # (https://developer.nvidia.com/blog/route-ai-agent-workloads-across-models-with-nvidia-nemo-switchyard/).
 #
 # This is the configuration as benchmarked, with one change: the published runs were
-# served through NVIDIA-internal inference endpoints, replaced here with OpenRouter
+# served through different inference endpoints, replaced here with OpenRouter
 # equivalents so the deployment is publicly runnable. Routing-algorithm parameters
 # are exactly as run; absolute solve rates may shift slightly across serving stacks.
 # As run, the strong tier used Anthropic adaptive thinking with output effort `high`,

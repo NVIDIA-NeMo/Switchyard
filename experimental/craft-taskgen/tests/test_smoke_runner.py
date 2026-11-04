@@ -3,8 +3,6 @@
 
 """Unit tests for the configurable smoke-step harbor invocation builder."""
 
-from __future__ import annotations
-
 import json
 from pathlib import Path
 
@@ -19,7 +17,7 @@ def _kwargs(cmd: list[str]) -> list[str]:
 
 def test_codex_invocation_wires_catalog_and_reasoning(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    cmd, env = _build_smoke_cmd("tasks/foo", "codex", "openai/openai/gpt-5.5", "high", "smoke-probe-foo")
+    cmd, env = _build_smoke_cmd("tasks/foo", "codex", "gpt-5.5", "high", "smoke-probe-foo")
 
     assert cmd[:9] == [
         ".venv/bin/harbor",
@@ -30,7 +28,7 @@ def test_codex_invocation_wires_catalog_and_reasoning(tmp_path, monkeypatch):
         "-a",
         "codex",
         "-m",
-        "openai/openai/gpt-5.5",
+        "gpt-5.5",
     ]
     assert "--job-name" in cmd and "smoke-probe-foo" in cmd
     kwargs = _kwargs(cmd)
@@ -43,14 +41,12 @@ def test_codex_invocation_wires_catalog_and_reasoning(tmp_path, monkeypatch):
     catalog_path = env["CODEX_MODEL_CATALOG_JSON"]
     data = json.loads(Path(catalog_path).read_text())
     slugs = [m["slug"] for m in data["models"]]
-    assert slugs == ["openai/openai/gpt-5.5"]
+    assert slugs == ["gpt-5.5"]
 
 
 def test_claude_code_invocation_keeps_plan_mode_restriction(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    cmd, env = _build_smoke_cmd(
-        "tasks/bar", "claude-code", "azure/anthropic/claude-opus-4-6", "high", "smoke-probe-bar"
-    )
+    cmd, env = _build_smoke_cmd("tasks/bar", "claude-code", "claude-opus-4-6", "high", "smoke-probe-bar")
     kwargs = _kwargs(cmd)
     assert f"version={CLAUDE_CODE_VERSION}" in kwargs
     assert "disallowed_tools=EnterPlanMode,ExitPlanMode" in kwargs
@@ -61,14 +57,14 @@ def test_claude_code_invocation_keeps_plan_mode_restriction(tmp_path, monkeypatc
 
 def test_empty_effort_falls_back_to_reasoning_defaults(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    # ("codex", "openai/openai/gpt-5.5") is "high" in reasoning_defaults.
-    cmd, _ = _build_smoke_cmd("tasks/foo", "codex", "openai/openai/gpt-5.5", "", "job")
+    # ("codex", "gpt-5.5") is "high" in reasoning_defaults.
+    cmd, _ = _build_smoke_cmd("tasks/foo", "codex", "gpt-5.5", "", "job")
     assert "reasoning_effort=high" in _kwargs(cmd)
 
 
 def test_unknown_codex_slug_warns_and_skips_catalog(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
-    cmd, env = _build_smoke_cmd("tasks/foo", "codex", "openai/openai/not-a-real-model", "high", "job")
+    cmd, env = _build_smoke_cmd("tasks/foo", "codex", "not-a-real-model", "high", "job")
     assert "CODEX_MODEL_CATALOG_JSON" not in env
     assert "no codex catalog row" in capsys.readouterr().out
     # Reasoning kwarg still passed even without a catalog row.

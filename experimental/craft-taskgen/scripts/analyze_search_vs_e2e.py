@@ -38,8 +38,6 @@ Usage:
       --out-dir /tmp/analysis-out
 """
 
-from __future__ import annotations
-
 import argparse
 import re
 import sys
@@ -56,9 +54,9 @@ from scipy import stats
 # canonical label set so we can join cleanly.
 #
 # Search side examples:
-#   "codex / openai/openai/gpt-5.5 / effort=xhigh"       -> codex55
-#   "claude-code / aws/anthropic/bedrock-claude-opus-4-7 / effort=xhigh" -> opus47
-#   "opencode / nvidia/azure/anthropic/claude-haiku-4-5 / effort=medium" -> haiku45
+#   "codex / gpt-5.5 / effort=xhigh"       -> codex55
+#   "claude-code / claude-opus-4-7 / effort=xhigh" -> opus47
+#   "opencode / gateway/claude-haiku-4-5 / effort=medium" -> haiku45
 #   "opencode / qwenai/qwen3-36 (vllm)"                  -> qwen36
 #   "opencode / minimaxai/minimax-m2.7 (vllm)"           -> minimax (DROPPED)
 #

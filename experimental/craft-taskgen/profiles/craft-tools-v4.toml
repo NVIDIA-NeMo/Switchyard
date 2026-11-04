@@ -6,16 +6,16 @@
 # than shorter wall-time.
 
 [models]
-opus_model = "azure/anthropic/claude-opus-4-6"
-haiku_model = "azure/anthropic/claude-haiku-4-5"
-llm_step_model = "azure/anthropic/claude-opus-4-6"  # azure route avoids bedrock context_management rejection
+opus_model = "claude-opus-4-6"
+haiku_model = "claude-haiku-4-5"
+llm_step_model = "claude-opus-4-6"
 claude_code_version = "2.1.118"
-# Smoke agent — the Harbor trial that solves the task (primary quality gate).
-# codex + GPT-5.5 is cross-agent from the Opus deep-dive judge. Gateway slug
-# doubles the vendor segment. Set smoke_agent="claude-code" + smoke_model=opus
-# to restore the prior claude-code+Opus behavior.
+# Codex + GPT-5.5 attempts the task; Opus judges the result.
+# The catalog and Codex patch preserve the bare gpt-5.5 model ID.
+# Set smoke_agent="claude-code" and smoke_model to the Opus model ID
+# to use Claude Code + Opus for the task attempt.
 smoke_agent = "codex"
-smoke_model = "openai/openai/gpt-5.5"
+smoke_model = "gpt-5.5"
 smoke_reasoning_effort = "high"
 
 [pipeline]

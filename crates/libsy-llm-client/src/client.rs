@@ -68,6 +68,7 @@ pub struct ModelConfig {
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
     responses_reasoning: crate::ResponsesReasoningPolicy,
+    strip_anthropic_tool_strict: bool,
 }
 
 impl ModelConfig {
@@ -84,7 +85,17 @@ impl ModelConfig {
             default_backend,
             other_backends,
             responses_reasoning: crate::ResponsesReasoningPolicy::default(),
+            strip_anthropic_tool_strict: false,
         }
+    }
+
+    /// This setting removes `tools[].strict` from outgoing Anthropic requests when enabled.
+    /// Enable it only for an upstream that rejects this field; tool schemas remain intact.
+    /// The default is `false`; other wire formats retain their strict tool settings.
+    #[must_use]
+    pub fn with_strip_anthropic_tool_strict(mut self, strip: bool) -> Self {
+        self.strip_anthropic_tool_strict = strip;
+        self
     }
 
     /// Sets how Responses reasoning items are replayed to this model.
@@ -390,7 +401,11 @@ impl TranslatingLlmClient {
             normalize_codex_string_input(&backend.url(), &mut body);
         }
         if matches!(backend, Backend::Anthropic(_)) {
-            if nvidia_inference_api_backend(backend) {
+            if self
+                .model_to_config
+                .get(model)
+                .is_some_and(|config| config.strip_anthropic_tool_strict)
+            {
                 strip_anthropic_tool_strict(&mut body);
             }
             enable_anthropic_prompt_caching(&mut body, llm_request.temporary_note_count);
@@ -1318,17 +1333,8 @@ fn strip_anthropic_incompatible_fields(body: &mut Value) {
     }
 }
 
-// NVIDIA Inference API's Anthropic-compatible schema rejects the strict tool-use
-// extension that native Anthropic accepts.
-fn nvidia_inference_api_backend(backend: &Backend) -> bool {
-    reqwest::Url::parse(backend.base_url())
-        .ok()
-        .is_some_and(|url| {
-            url.host_str()
-                .is_some_and(|host| host.eq_ignore_ascii_case("inference-api.nvidia.com"))
-        })
-}
-
+// The final body includes replayed or translated tools and any extra_body overrides.
+// Only tool-level strict fields are removed; schema properties named strict must remain.
 fn strip_anthropic_tool_strict(body: &mut Value) {
     let Some(tools) = body.get_mut("tools").and_then(Value::as_array_mut) else {
         return;
@@ -1965,18 +1971,6 @@ mod tests {
         let result =
             crate::with_payload_capture(client.call(request_for(Some("gpt"), false))).await;
         assert!(matches!(result, Err(LlmClientError::Configuration { .. })));
-    }
-
-    #[test]
-    fn nvidia_anthropic_tools_drop_unsupported_strict_field() {
-        let backend = Backend::Anthropic(config("https://inference-api.nvidia.com"));
-        assert!(nvidia_inference_api_backend(&backend));
-        assert!(!nvidia_inference_api_backend(&Backend::Anthropic(config(
-            "https://inference-api.nvidia.com.example.test"
-        ))));
-        let mut body = json!({"tools": [{"name": "a", "input_schema": {}, "strict": true}]});
-        strip_anthropic_tool_strict(&mut body);
-        assert!(body["tools"][0].get("strict").is_none());
     }
 
     #[test]
@@ -3054,62 +3048,143 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn nvidia_anthropic_requests_strip_strict_from_extra_body()
+    async fn anthropic_tool_strict_stripping_is_opt_in()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/v1/messages"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "id": "msg_1",
-                "type": "message",
-                "role": "assistant",
-                "model": "claude",
-                "content": [{"type": "text", "text": "ok"}],
-                "stop_reason": "end_turn",
-                "usage": {"input_tokens": 1, "output_tokens": 1}
-            })))
-            .expect(1)
-            .mount(&server)
-            .await;
+        // A schema property named strict catches accidental recursive removal.
+        let schema = json!({
+            "type": "object",
+            "properties": {"strict": {"type": "boolean"}},
+            "required": ["strict"],
+            "additionalProperties": false
+        });
+        let native_tools = json!([
+            {"name": "lookup", "description": "Find a record", "input_schema": schema, "strict": true},
+            {"type": "web_search_20250305", "name": "web_search", "strict": false}
+        ]);
+        for (source, strip, streaming) in [
+            ("native", false, false),
+            ("native", true, false),
+            ("decoded", true, false),
+            ("chat", true, false),
+            ("responses", false, false),
+            ("responses", true, false),
+            ("extra_body", false, false),
+            ("extra_body", true, false),
+            ("native", true, true),
+        ] {
+            let server = MockServer::start().await;
+            let template = if streaming {
+                ResponseTemplate::new(200).set_body_raw(
+                    concat!(
+                        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
+                        "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+                        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+                    ),
+                    "text/event-stream",
+                )
+            } else {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "msg_1", "type": "message", "role": "assistant", "model": "claude",
+                    "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 1, "output_tokens": 1}
+                }))
+            };
+            Mock::given(method("POST"))
+                .and(path("/v1/messages"))
+                .respond_with(template)
+                .expect(1)
+                .mount(&server)
+                .await;
 
-        let mut backend = config(&format!(
-            "http://inference-api.nvidia.com:{}",
-            server.address().port()
-        ));
-        backend.extra_body.insert(
-            "tools".into(),
-            json!([{
-                "name": "lookup",
-                "input_schema": {"type": "object", "properties": {}},
-                "strict": true
-            }]),
-        );
-        let mut client = TranslatingLlmClient::new(&[ModelConfig::new(
-            "claude",
-            Backend::Anthropic(backend),
-            None,
-        )])?;
-        client.client = reqwest::Client::builder()
-            .no_proxy()
-            .resolve("inference-api.nvidia.com", *server.address())
-            .build()?;
-        client
-            .call_rewrite_model_raw(
-                json!({
-                    "model": "claude",
-                    "max_tokens": 7,
-                    "messages": [{"role": "user", "content": "hi"}]
-                }),
-                None,
-                Some(&ModelId::from("claude")),
-                WireFormat::AnthropicMessages,
-            )
-            .await?;
+            let mut backend = config(&server.uri());
+            if source == "extra_body" {
+                backend
+                    .extra_body
+                    .insert("tools".into(), native_tools.clone());
+            }
+            let model = ModelConfig::new("claude", Backend::Anthropic(backend), None);
+            let model = if strip {
+                model.with_strip_anthropic_tool_strict(true)
+            } else {
+                model
+            };
+            let client = TranslatingLlmClient::new(&[model])?;
+            let (mut raw, format) = match source {
+                "chat" => (
+                    json!({
+                        "model": "claude", "messages": [{"role": "user", "content": "hi"}],
+                        "tools": [{"type": "function", "function": {
+                            "name": "lookup", "description": "Find a record", "parameters": schema, "strict": true
+                        }}]
+                    }),
+                    WireFormat::OpenAiChat,
+                ),
+                "responses" => (
+                    json!({
+                        "model": "claude", "input": "hi",
+                        "tools": [{"type": "function", "name": "lookup", "description": "Find a record",
+                            "parameters": schema, "strict": true}]
+                    }),
+                    WireFormat::OpenAiResponses,
+                ),
+                _ => (
+                    json!({
+                        "model": "claude", "max_tokens": 7, "messages": [{"role": "user", "content": "hi"}],
+                        "tools": native_tools
+                    }),
+                    WireFormat::AnthropicMessages,
+                ),
+            };
+            if source == "extra_body" {
+                raw.as_object_mut()
+                    .ok_or("request is not an object")?
+                    .remove("tools");
+            }
+            raw["stream"] = json!(streaming);
+            let mut llm_request = observed_translation::decode_request(format, &raw)?;
+            if source == "decoded" {
+                llm_request.extensions = Default::default();
+            }
+            let response = client
+                .call_rewrite_model(
+                    Request {
+                        llm_request,
+                        raw_request: None,
+                        metadata: None,
+                    },
+                    None,
+                )
+                .await?;
+            assert_eq!(
+                matches!(response.llm_response, LlmResponse::Stream(_)),
+                streaming
+            );
+            response.llm_response.into_agg().await?;
 
-        let requests = server.received_requests().await.unwrap();
-        let body: Value = serde_json::from_slice(&requests[0].body)?;
-        assert_eq!(body["tools"][0]["name"], "lookup");
-        assert!(body["tools"][0].get("strict").is_none());
+            let requests = server.received_requests().await.ok_or("missing requests")?;
+            let body: Value = serde_json::from_slice(&requests[0].body)?;
+            assert_eq!(body["tools"][0]["name"], "lookup", "{source}");
+            assert_eq!(body["tools"][0]["description"], "Find a record", "{source}");
+            assert_eq!(body["tools"][0]["input_schema"], schema, "{source}");
+            assert_eq!(
+                body["tools"][0].get("strict"),
+                (!strip).then_some(&Value::Bool(true)),
+                "{source}"
+            );
+            let tools = body["tools"].as_array().ok_or("tools is not an array")?;
+            if matches!(source, "chat" | "responses") {
+                assert_eq!(tools.len(), 1, "{source}");
+            } else {
+                assert_eq!(tools.len(), 2, "{source}");
+                assert_eq!(tools[1]["type"], "web_search_20250305");
+                assert_eq!(tools[1]["name"], "web_search");
+                assert_eq!(
+                    tools[1].get("strict"),
+                    (!strip).then_some(&Value::Bool(false)),
+                    "{source}"
+                );
+            }
+        }
         Ok(())
     }
 
