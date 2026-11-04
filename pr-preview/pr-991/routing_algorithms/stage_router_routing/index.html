@@ -1514,7 +1514,63 @@
   <span class="md-ellipsis">
     
   
-    Compare and Tune
+    Tuning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tuning/foundations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tuning Foundations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tuning/examples/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Examples
   
 
     
@@ -2848,7 +2904,7 @@ These are the ones that matter when you choose a threshold:</p>
 the capable side stays below 0.46. An error in the window removes the
 clean-production bonus, so with a hard error the efficient side reaches at most
 0.24. The unit test <code>scorer_ceilings_match_the_documented_values</code> in
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d21179547095cd4c1397898ea056608b85cb55ec/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9ce30ca2ae141783a01af126d4b90625a132161e/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
 pins these values, so a change to the scorer fails CI until this table is
 updated.</p>
 <h3 id="reachable-scores-per-picker">Reachable scores per picker<a class="headerlink" href="#reachable-scores-per-picker" title="Permanent link">&para;</a></h3>
@@ -2980,6 +3036,16 @@ required columns.</p>
 <td>Used only after an outer <code>composite</code> classifier selects the capable tier. No effect on a standalone route.</td>
 </tr>
 <tr>
+<td><code>capable_system_prompt</code></td>
+<td>unset</td>
+<td>System prompt prepended for capable requests.</td>
+</tr>
+<tr>
+<td><code>efficient_system_prompt</code></td>
+<td>unset</td>
+<td>System prompt prepended for efficient requests.</td>
+</tr>
+<tr>
 <td><code>recent_turn_window</code></td>
 <td><code>3</code></td>
 <td>Trailing tool results the signals are computed over.</td>
@@ -3083,6 +3149,11 @@ required columns.</p>
 <td><code>classifier.max_output_tokens</code></td>
 <td><code>4096</code></td>
 <td>Token budget for the verdict.</td>
+</tr>
+<tr>
+<td><code>classifier.judge_deadline_ms</code></td>
+<td>unset</td>
+<td>Whole-consultation bound in milliseconds on the judge call, response drain included. On expiry the judge counts as failed and <code>classifier.fail_open</code> applies. Must be at least <code>1</code>.</td>
 </tr>
 <tr>
 <td><code>subagents</code></td>
