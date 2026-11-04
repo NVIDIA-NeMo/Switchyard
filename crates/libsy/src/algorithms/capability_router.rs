@@ -31,11 +31,13 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
-use switchyard_protocol::{Category, ModelId, Request, Role};
+use switchyard_protocol::{Category, ModelId, Request};
 
 use super::advisor_gate::{AdvisorGate, AdvisorGateConfig};
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
-use super::util::affinity::{AffinityRouter, ClassifyTrigger, evict_if_full, has_new_user_turn};
+use super::util::affinity::{
+    AffinityRouter, ClassifyTrigger, evict_if_full, has_new_user_turn, is_user_turn,
+};
 use super::util::stage::{HandoffNoteConfig, PickerMode, StageClassifier};
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
@@ -161,11 +163,13 @@ impl RuleSignal {
     }
 
     fn score(&self, request: &Request) -> Option<Score> {
+        // `is_user_turn` skips environment-context and tool-result-only messages, which
+        // some harnesses send before the real task; the capability judge uses it too.
         let opening_task = request
             .llm_request
             .messages
             .iter()
-            .find(|message| message.role == Role::User)?
+            .find(|message| is_user_turn(message))?
             .text_content("\n")?
             .to_lowercase();
 
@@ -230,6 +234,35 @@ impl CapabilityRouter {
                     "capability_router: pool default {:?} is not provided by any pool model",
                     config.pool.default
                 ),
+            });
+        }
+        if config.tool_loop.is_some() || config.task.is_some() {
+            for tier in [Category::Capable, Category::Efficient] {
+                if !config
+                    .pool
+                    .models
+                    .iter()
+                    .any(|model| model.provides.contains(&tier))
+                {
+                    return Err(LibsyError::AlgorithmError {
+                        message: format!(
+                            "capability_router: tool_loop and task can name {:?}, which no pool model provides",
+                            tier
+                        ),
+                    });
+                }
+            }
+        }
+        if config
+            .tool_loop
+            .as_ref()
+            .is_some_and(|tool_loop| tool_loop.handoff_notes.is_some())
+        {
+            return Err(LibsyError::AlgorithmError {
+                message: "capability_router: tool_loop.handoff_notes is not supported in this \
+                          release, because the note is written while the signal scores, before \
+                          the pool has chosen a model"
+                    .to_string(),
             });
         }
         let has_review = config.review.is_some();
@@ -685,6 +718,69 @@ mod tests {
             }),
             Err(LibsyError::AlgorithmError { .. })
         ));
+    }
+
+    /// `tool_loop` and `task` can both name `capable` and `efficient`. A pool missing
+    /// either one starts fine and then fails every request that names it, so the route
+    /// has to refuse to build instead.
+    #[test]
+    fn rejects_a_pool_that_cannot_serve_the_tiers_tool_loop_names() {
+        let error = CapabilityRouter::new(CapabilityRouterConfig {
+            pool: pool(
+                &[("balanced", &["balanced"]), ("weak", &["efficient"])],
+                "efficient",
+            ),
+            task: None,
+            rules: None,
+            tool_loop: Some(ToolLoopSignalConfig {
+                mode: PickerMode::EfficientFirst,
+                confidence_threshold: 0.5,
+                recent_window: None,
+                tool_semantics: ToolSemantics::default(),
+                handoff_notes: None,
+            }),
+            review: None,
+            affinity: false,
+        });
+        let Err(error) = error else {
+            panic!("a pool with no capable provider must not build");
+        };
+        assert!(error.to_string().contains("Capable"), "unexpected: {error}");
+    }
+
+    /// The note is written while the signal scores, before the pool picks a model, so it
+    /// could describe a handoff that never happened.
+    #[test]
+    fn rejects_handoff_notes_on_the_tool_loop_signal() {
+        let error = CapabilityRouter::new(CapabilityRouterConfig {
+            pool: pool(
+                &[("sol", &["capable"]), ("luna", &["efficient"])],
+                "efficient",
+            ),
+            task: None,
+            rules: None,
+            tool_loop: Some(ToolLoopSignalConfig {
+                mode: PickerMode::EfficientFirst,
+                confidence_threshold: 0.5,
+                recent_window: None,
+                tool_semantics: ToolSemantics::default(),
+                handoff_notes: Some(
+                    serde_json::from_value::<HandoffNoteConfig>(
+                        serde_json::json!({"escalation_note": "switching up"}),
+                    )
+                    .expect("a valid handoff note config"),
+                ),
+            }),
+            review: None,
+            affinity: false,
+        });
+        let Err(error) = error else {
+            panic!("handoff_notes must not build on this route");
+        };
+        assert!(
+            error.to_string().contains("handoff_notes"),
+            "unexpected: {error}"
+        );
     }
 
     /// A default no model provides would only surface later, as a failed request on the

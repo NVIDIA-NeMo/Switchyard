@@ -98,8 +98,20 @@ impl Classifier for SourceStamp {
         let (classification, served) = self.inner.score(state, request, driver).await?;
         // An abstaining classifier passes the turn on, so it is not its to claim.
         if let Some(winner) = classification.argmax(false)? {
-            let need_name = winner.needs.first().map_or("unknown", Category::as_str);
-            record_routing_decision(self.source, need_name);
+            // Resolve through the scoped driver: `target_name` on this metric is the
+            // provider model in the resolved and override branches, so it stays one here.
+            let selected = winner.pin.clone().or_else(|| {
+                winner
+                    .needs
+                    .iter()
+                    .find_map(|need| driver.models_for(need).first().cloned())
+            });
+            record_routing_decision(
+                self.source,
+                selected
+                    .as_ref()
+                    .map_or("unknown", |model| driver.provider_model(model).as_str()),
+            );
             driver.set_evidence_if_empty(serde_json::json!({
                 "source": self.source.as_str(),
             }));
