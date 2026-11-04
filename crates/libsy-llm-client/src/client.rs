@@ -566,10 +566,17 @@ impl TranslatingLlmClient {
                 {
                     Ok(chunks) => chunks,
                     Err(error) => {
-                        metrics::record_upstream_attempt(None);
+                        // An in-band provider rejection can follow HTTP 200; record its status.
+                        let provider_status = match &error {
+                            LlmClientError::UpstreamHttp { status, .. } => Some(*status),
+                            _ => None,
+                        };
+                        metrics::record_upstream_attempt(
+                            provider_status.as_ref().map(StatusCode::as_u16),
+                        );
                         return Err(AttemptFailure {
                             error,
-                            status: Some(status),
+                            status: Some(provider_status.unwrap_or(status)),
                             retry_after: None,
                         });
                     }

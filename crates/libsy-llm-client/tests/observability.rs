@@ -10,7 +10,7 @@
 //! and model name. Counters are cumulative across flushes; the helpers take the
 //! latest (max) matching data point.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -39,7 +39,10 @@ use switchyard_libsy::{
     LlmClassifierConfig, LlmTaskClassifier, PickerMode, RoutingOutcome, RuntimeModels, StageRouter,
     StageRouterConfig, Step, TaskClassifierConfig,
 };
-use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
+use switchyard_llm_client::{
+    Backend, ClientRouter, HttpBackendConfig, ModelConfig, RawResponse, RunObservation,
+    RunObserver, TranslatingLlmClient,
+};
 use switchyard_protocol::{Category, ModelId};
 use switchyard_protocol::{
     ContentBlock, LlmRequest, LlmResponse, Message, Metadata, Request, Response, Role,
@@ -49,6 +52,8 @@ use switchyard_protocol::{
     LlmClientError, LlmResponseChunk, LlmResponseStreamEvent, StopReason, text_request,
     text_response,
 };
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -973,6 +978,165 @@ async fn affinity_keeps_the_algorithm_selection_after_client_fallback()
             ModelId::from("affinity-fallback-weak"),
         ]
     );
+    Ok(())
+}
+
+/// A pre-answer stream rejection records its provider status like an HTTP rejection.
+#[tokio::test]
+async fn pre_answer_stream_error_records_provider_status()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let _guard = serialize_test().lock().await;
+    let (store, exporter, provider, _, _) = telemetry();
+    let before = flushed_metrics(exporter, provider);
+    let attempts_503_before = u64_counter_value(
+        &before,
+        "switchyard.upstream_attempts",
+        &[("outcome", "retryable_error"), ("code", "503")],
+    )
+    .unwrap_or_default();
+    let attempts_200_before = u64_counter_value(
+        &before,
+        "switchyard.upstream_attempts",
+        &[("outcome", "ok"), ("code", "200")],
+    )
+    .unwrap_or_default();
+    let transport_before = u64_counter_value(
+        &before,
+        "switchyard.upstream_attempts",
+        &[("outcome", "retryable_error"), ("code", "none")],
+    )
+    .unwrap_or_default();
+
+    for (model, http_status, body, expected_503, expected_200) in [
+        (
+            "obs-in-band-503",
+            200,
+            "data: {\"error\":{\"code\":503,\"message\":\"provider overloaded\"}}\n\n",
+            1,
+            0,
+        ),
+        (
+            "obs-http-503",
+            503,
+            "{\"error\":{\"message\":\"provider overloaded\"}}",
+            2,
+            0,
+        ),
+        (
+            "obs-valid-stream-200",
+            200,
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n",
+            2,
+            1,
+        ),
+    ] {
+        let server = MockServer::start().await;
+        let content_type = if http_status == 503 {
+            "application/json"
+        } else {
+            "text/event-stream"
+        };
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(http_status).set_body_raw(body, content_type))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            model,
+            Backend::OpenAiChat(HttpBackendConfig {
+                base_url: format!("{}/v1", server.uri()),
+                api_key: None,
+                forward_auth: false,
+                extra_headers: BTreeMap::new(),
+                extra_body: BTreeMap::new(),
+                omit_body_fields: BTreeSet::new(),
+                reasoning_effort: None,
+                max_retries: 0,
+                failure_cooldown: Duration::ZERO,
+                timeout: None,
+            }),
+            None,
+        )])?;
+        let response = client
+            .call_rewrite_model_raw(
+                json!({
+                    "model": model,
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": true
+                }),
+                None,
+                None,
+                WireFormat::OpenAiChat,
+            )
+            .await;
+        let expected_status = if model == "obs-valid-stream-200" {
+            match response? {
+                RawResponse::Stream(mut stream) => {
+                    while let Some(event) = stream.next().await {
+                        event?;
+                    }
+                }
+                RawResponse::Buffered(_) => panic!("expected a stream"),
+            }
+            "200"
+        } else {
+            match response {
+                Err(LlmClientError::UpstreamHttp { status, .. }) => {
+                    assert_eq!(status.as_u16(), 503);
+                }
+                _ => panic!("expected a provider rejection"),
+            }
+            "503"
+        };
+        let attempt = find_span(&store.spans(), "libsy.upstream_attempt", "model", model);
+        assert_eq!(
+            attempt.fields.get("status_code").map(String::as_str),
+            Some(expected_status),
+            "{model}"
+        );
+        assert_eq!(
+            attempt.fields.get("outcome").map(String::as_str),
+            Some(if expected_status == "200" {
+                "ok"
+            } else {
+                "error"
+            }),
+            "{model}"
+        );
+
+        let snapshots = flushed_metrics(exporter, provider);
+        assert_eq!(
+            u64_counter_value(
+                &snapshots,
+                "switchyard.upstream_attempts",
+                &[("outcome", "retryable_error"), ("code", "503")],
+            )
+            .unwrap_or_default(),
+            attempts_503_before + expected_503,
+            "{model}"
+        );
+        assert_eq!(
+            u64_counter_value(
+                &snapshots,
+                "switchyard.upstream_attempts",
+                &[("outcome", "ok"), ("code", "200")],
+            )
+            .unwrap_or_default(),
+            attempts_200_before + expected_200,
+            "{model}"
+        );
+        assert_eq!(
+            u64_counter_value(
+                &snapshots,
+                "switchyard.upstream_attempts",
+                &[("outcome", "retryable_error"), ("code", "none")],
+            )
+            .unwrap_or_default(),
+            transport_before,
+            "{model}"
+        );
+    }
     Ok(())
 }
 
