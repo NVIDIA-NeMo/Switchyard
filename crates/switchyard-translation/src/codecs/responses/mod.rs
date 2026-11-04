@@ -76,3 +76,5 @@ fn decode_anthropic_thinking(payload: &str) -> Option<(String, String)> {
 pub fn is_anthropic_thinking_envelope(encrypted_content: &str) -> bool {
     encrypted_content.starts_with(ANTHROPIC_THINKING_PREFIX)
 }
+
+pub(crate) use buffered::decode_responses_usage;

@@ -16,6 +16,7 @@ mod sse;
 pub mod stream;
 pub mod util;
 
+pub use codecs::response_usage;
 pub use codecs::responses::is_anthropic_thinking_envelope;
 pub use switchyard_protocol::stream::{
     LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, LlmStreamError,

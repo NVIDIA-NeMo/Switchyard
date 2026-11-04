@@ -1259,7 +1259,7 @@ fn encode_anthropic_tool_choice(choice: &ToolChoice) -> Value {
 }
 
 // Normalizes Anthropic usage fields.
-fn decode_anthropic_usage(value: Option<&Value>) -> Usage {
+pub(crate) fn decode_anthropic_usage(value: Option<&Value>) -> Usage {
     let Some(value) = value.and_then(Value::as_object) else {
         return Usage::default();
     };

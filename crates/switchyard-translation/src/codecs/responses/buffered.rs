@@ -2065,7 +2065,7 @@ fn json_string_python_style(value: &Value) -> String {
 }
 
 // Normalizes Responses usage fields.
-fn decode_responses_usage(value: Option<&Value>) -> Usage {
+pub(crate) fn decode_responses_usage(value: Option<&Value>) -> Usage {
     let Some(value) = value.and_then(Value::as_object) else {
         return Usage::default();
     };
