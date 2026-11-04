@@ -19,9 +19,13 @@ they are the current-routing baseline in step 2. The overview's
 [Start here](../routing_algorithms/overview.md#start-here) list names the first
 dial to move for each strategy.
 
-Then read the decision counts, because three results mean no setting will help:
+Then read the decision counts, because three results mean no setting will help.
+The counters keep every request since the server started, so clear them first
+and run a sample of the workload you want to tune:
 
 ```bash
+curl -s -X POST localhost:4000/v1/stats/reset
+# Run the workload sample, then read the counts.
 curl -s localhost:4000/v1/stats | jq '.algorithm_stats.stage_router.routing_decisions, (.models | map_values(.calls))'
 ```
 
@@ -30,12 +34,15 @@ curl -s localhost:4000/v1/stats | jq '.algorithm_stats.stage_router.routing_deci
   threshold and holds do not affect these turns. Add the
   [classifier fallback](../routing_algorithms/stage_router_routing.md#optional-llm-classifier-fallback),
   or use Task or Composite routing, which judge the request itself.
-- **`.models` lists one entry.** Both tiers name the same model, so every request
-  goes to it. Fix the targets, then run the
+- **`.models` lists one entry.** Every sampled request went to one model. Check
+  `capable_target` and `efficient_target` in the route. If they name the same
+  target, fix them, then run the
   [inverted-pair check](../routing_algorithms/model_selection.md#check-for-an-inverted-pair).
+  If they differ, the decision counts show which decision sent every request to
+  that tier.
 - **Requests carry no session ID.** Holds and escalation state live in the
-  session. Send `x-switchyard-session-id` before tuning `capable_hold_turns` or
-  `confirmations`.
+  session. Send `x-switchyard-session-id` before tuning `capable_hold_turns` on
+  a stage-router route or `confirmations` on an escalation route.
 
 [Decision sources](../routing_algorithms/stage_router_routing.md#decision-sources)
 explains each count, and
