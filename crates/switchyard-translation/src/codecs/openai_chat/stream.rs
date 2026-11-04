@@ -117,17 +117,14 @@ fn decode_openai_chat_stream(
                     details: details.clone(),
                     text,
                 });
-            } else {
-                for reasoning_key in ["reasoning_content", "reasoning"] {
-                    if let Some(text) = delta.get(reasoning_key).and_then(Value::as_str)
-                        && !text.is_empty()
-                    {
-                        out.push(LlmResponseChunk::ReasoningDelta {
-                            index: 0,
-                            text: text.to_string(),
-                        });
-                    }
-                }
+            } else if let Some(text) =
+                first_nonempty_string(delta, &["reasoning_content", "reasoning"])
+            {
+                // Some servers send the same text under both names, so read only one.
+                out.push(LlmResponseChunk::ReasoningDelta {
+                    index: 0,
+                    text: text.to_string(),
+                });
             }
             if let Some(text) = delta.get("content").and_then(Value::as_str)
                 && !text.is_empty()
