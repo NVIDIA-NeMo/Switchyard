@@ -304,7 +304,10 @@ if TYPE_CHECKING:
 
     @final
     class ConfiguredAlgorithm:
-        """An algorithm and model groups; the host applies target prompts and provider settings."""
+        """LLM calls and outcomes use target names; the host resolves provider IDs and settings.
+
+        Decision calls use provider IDs.
+        """
 
         def run_stream(
             self,

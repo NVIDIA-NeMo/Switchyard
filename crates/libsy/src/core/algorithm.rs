@@ -52,6 +52,7 @@ pub struct RuntimeModels {
     by_category: HashMap<Category, Vec<ModelId>>,
     subagent: Option<HashMap<Category, Vec<ModelId>>>,
     has_target_restriction: bool,
+    provider_models: HashMap<ModelId, ModelId>,
 }
 
 impl RuntimeModels {
@@ -61,7 +62,19 @@ impl RuntimeModels {
             by_category,
             subagent: None,
             has_target_restriction: false,
+            provider_models: HashMap::new(),
         }
+    }
+
+    /// Supplies provider identities for telemetry while routing keeps using target keys.
+    pub fn with_provider_models(mut self, models: HashMap<ModelId, ModelId>) -> Self {
+        self.provider_models = models;
+        self
+    }
+
+    /// Returns the provider model for a routing key, or the key for direct library callers.
+    pub fn provider_model<'a>(&'a self, target: &'a ModelId) -> &'a ModelId {
+        self.provider_models.get(target).unwrap_or(target)
     }
 
     /// Adds the groups used for delegated sub-agent work.
@@ -156,6 +169,7 @@ pub struct CallModel {
     pub models: Vec<ModelId>,
     /// Return client errors to the algorithm so it can apply its fallback policy.
     pub recover_errors: bool,
+    telemetry_model: ModelId,
     /// How to send the response back to the algorithm. `None` once the call is recorded.
     reply: Option<oneshot::Sender<Result<Response>>>,
     started: Instant,
@@ -207,10 +221,7 @@ impl CallModel {
     fn record(&self, is_ok: bool) {
         observability::record_llm_call(
             &self.algorithm,
-            self.models
-                .first()
-                .map(ModelId::as_str)
-                .unwrap_or("NoTargets"),
+            self.telemetry_model.as_str(),
             self.started.elapsed(),
             is_ok,
         );
@@ -497,7 +508,7 @@ impl Driver {
         skip_all,
         fields(
             algorithm = self.algorithm,
-            selected_model = %models.first().map(ModelId::as_str).unwrap_or("NoTargets"),
+            selected_model = %models.first().map(|model| self.provider_model(model).as_str()).unwrap_or("NoTargets"),
             openinference.span.kind = "CHAIN",
             outcome = tracing::field::Empty,
             input_tokens = tracing::field::Empty,
@@ -522,6 +533,7 @@ impl Driver {
         let call = CallModel {
             algorithm: self.algorithm.clone(),
             request,
+            telemetry_model: self.provider_model(selected_model_id).clone(),
             models,
             recover_errors,
             reply: Some(reply),
@@ -581,6 +593,11 @@ impl Driver {
             .map_err(|_| LibsyError::from(DriverError::ResponseDropped))?
     }
 
+    /// Provider identity for telemetry; algorithms still route on the original target key.
+    pub fn provider_model<'a>(&'a self, target: &'a ModelId) -> &'a ModelId {
+        self.models.provider_model(target)
+    }
+
     /// The available models for this category, typically ordered best-first.
     pub fn models_for(&self, category: &Category) -> &[ModelId] {
         if *category == Category::Judge
@@ -635,7 +652,12 @@ impl Driver {
                 crate::OutcomeMetadata::new(self.algorithm.clone(), evidence.outcome)
             });
             metadata.judgments.extend(evidence.judgments);
-            observability::record_outcome(metadata, &outcome.selected_model_ids);
+            let provider_models = outcome
+                .selected_model_ids
+                .iter()
+                .map(|target| self.provider_model(target).clone())
+                .collect::<Vec<_>>();
+            observability::record_outcome(metadata, &provider_models);
             outcome
         });
         let selected_model = result
@@ -648,7 +670,7 @@ impl Driver {
             .await
             .map_err(|_| DriverError::StreamClosed)?;
         if let Some(selected_model) = selected_model {
-            observability::record_decision(&self.algorithm, &selected_model);
+            observability::record_decision(&self.algorithm, self.provider_model(&selected_model));
         }
         Ok(())
     }

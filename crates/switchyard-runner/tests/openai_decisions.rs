@@ -97,7 +97,14 @@ evidence = {{ description = "Compare the two profiles" }}
             })),
         )
         .await?;
-    assert_eq!(output.selected_model, "weak/model");
+    assert_eq!(output.selected_model, "weak");
+    assert_eq!(
+        runner
+            .route("switchyard/classifier")
+            .unwrap()
+            .provider_model(&output.selected_model),
+        "weak/model"
+    );
     let usage = observations.try_iter().find_map(|event| match event {
         RunObservation::DecisionCall(call) => call.usage,
         _ => None,
@@ -208,7 +215,7 @@ async fn direct_mode_serves_the_selected_group() -> Result<(), Box<dyn std::erro
             None,
         )
         .await?;
-    assert_eq!(output.selected_model, "premium/model");
+    assert_eq!(output.selected_model, "premium");
     let requests = server.received_requests().await.unwrap();
     let decision: Value = serde_json::from_slice(&requests[0].body)?;
     let context: Value = serde_json::from_str(decision["input"].as_str().unwrap())?;
