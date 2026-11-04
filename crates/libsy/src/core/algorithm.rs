@@ -463,6 +463,11 @@ impl Driver {
         *self.state.lock() = state;
     }
 
+    /// Snapshots a signal's evidence before another signal scores the turn.
+    pub(crate) fn evidence(&self) -> Option<Value> {
+        self.evidence.lock().outcome.clone()
+    }
+
     /// Replace the current run's evidence when a component makes the final decision.
     pub(crate) fn set_evidence(&self, evidence: Value) {
         self.evidence.lock().outcome = Some(evidence);

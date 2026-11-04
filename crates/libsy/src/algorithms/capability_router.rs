@@ -41,7 +41,7 @@ use super::util::affinity::{
 use super::util::stage::{HandoffNoteConfig, PickerMode, StageClassifier};
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
-use crate::core::classifier::{Classifier, Score};
+use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::pool::{self, PoolContext};
 use crate::core::processor::{Event, Processor};
 use crate::core::state::State;
@@ -529,11 +529,11 @@ impl Algorithm for CapabilityRouter {
             return Ok(RoutingOutcome::route_to(target, fallback, request));
         }
 
-        let mut scores = Vec::new();
+        let mut signals = Vec::new();
         if let Some(rules) = &self.rules
             && let Some(score) = rules.score(&request)
         {
-            scores.push(score);
+            signals.push((score, Some(serde_json::json!({"source": "rules"}))));
         }
         if let Some(tool_loop) = &self.tool_loop {
             tool_loop
@@ -551,17 +551,31 @@ impl Algorithm for CapabilityRouter {
                 .score(&mut state, &mut request, &driver)
                 .await?;
             if let Some(score) = classification.argmax(false)? {
-                scores.push(self.apply_three_level_band(score));
+                signals.push((self.apply_three_level_band(score), driver.evidence()));
             }
         }
         if let Some(task) = &self.task {
             let (classification, _) = task.score(&mut state, &mut request, &driver).await?;
             if let Some(score) = classification.argmax(false)? {
-                scores.push(score);
+                signals.push((score, driver.evidence()));
             }
         }
 
-        let target = self.retain_escalation(&request, pool::select(&scores, &self.pool)?);
+        let scores: Vec<_> = signals.iter().map(|(score, _)| score.clone()).collect();
+        let winner = Classification::Scores(scores.clone()).argmax(false)?;
+        let mut evidence = signals
+            .into_iter()
+            .find_map(|(score, evidence)| (Some(&score) == winner.as_ref()).then_some(evidence))
+            .flatten()
+            .unwrap_or_else(|| serde_json::json!({"source": "pool_default"}));
+        let selected = pool::select(&scores, &self.pool)?;
+        let target = self.retain_escalation(&request, selected.clone());
+        if target != selected {
+            evidence = serde_json::json!({"source": "escalation_hold"});
+        }
+        // Signals can write evidence while scoring. Only the winner explains the outcome;
+        // judge consultations remain available separately in metadata.judgments.
+        driver.set_evidence(evidence);
 
         if let Some(affinity) = &self.affinity {
             Self::replay_decision(affinity, &mut state, &mut request, &target, &driver).await?;
@@ -582,7 +596,7 @@ mod tests {
     use super::*;
     use crate::algorithms::util::stage::PickerMode;
     use crate::algorithms::util::tier_fixtures::{JUDGE, Recorder, turn_request};
-    use crate::core::testing::test_drive_with_models;
+    use crate::core::testing::{test_drive_with_models, test_drive_with_state};
 
     fn pool(models: &[(&str, &[&str])], default: &str) -> PoolContext {
         PoolContext {
@@ -1407,6 +1421,142 @@ mod tests {
         )
         .await?;
         assert_eq!(selected_model, "sol");
+        Ok(())
+    }
+
+    fn combined_signal_router() -> Result<Arc<CapabilityRouter>> {
+        Ok(Arc::new(CapabilityRouter::new(CapabilityRouterConfig {
+            pool: pool(
+                &[
+                    ("strong", &["capable"]),
+                    ("balanced", &["balanced"]),
+                    ("weak", &["efficient"]),
+                ],
+                "efficient",
+            ),
+            task: Some(TaskClassifierConfig {
+                judge: crate::CapabilityJudgeConfig::Llm(crate::LlmCapabilityConfig {
+                    base_threshold: 0.5,
+                    ..Default::default()
+                }),
+                ..TaskClassifierConfig::default()
+            }),
+            rules: None,
+            tool_loop: Some(ToolLoopSignalConfig {
+                mode: PickerMode::EfficientFirst,
+                confidence_threshold: 0.20,
+                recent_window: None,
+                tool_semantics: ToolSemantics::default(),
+                handoff_notes: None,
+            }),
+            review: None,
+            affinity: false,
+        })?))
+    }
+
+    #[tokio::test]
+    async fn final_evidence_describes_the_winning_override() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        *recorder.judge_p_solve.lock() = 0.9;
+        let outcome = test_drive_with_state(
+            combined_signal_router()?,
+            turn_request(true),
+            three_level_runtime_models(),
+            State::default(),
+            recorder.serve(),
+        )
+        .await?;
+        assert_eq!(outcome.selected_model_id()?.as_str(), "strong");
+        let evidence = outcome
+            .metadata
+            .as_ref()
+            .unwrap()
+            .evidence
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            evidence["source"], "override",
+            "the efficient judge lost this vote"
+        );
+        let judgments = &outcome.metadata.as_ref().unwrap().judgments;
+        assert_eq!(judgments.len(), 1);
+        assert_eq!(judgments[0].category.as_deref(), Some("efficient"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn final_evidence_describes_the_winning_task_judge() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        *recorder.judge_p_solve.lock() = 0.9;
+        let outcome = test_drive_with_state(
+            combined_signal_router()?,
+            soft_failure_request(),
+            three_level_runtime_models(),
+            State::default(),
+            recorder.serve(),
+        )
+        .await?;
+        assert_eq!(outcome.selected_model_id()?.as_str(), "weak");
+        assert_eq!(
+            outcome.metadata.unwrap().evidence.unwrap()["source"],
+            "llm-classifier"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn final_evidence_preserves_rules_over_other_signals() -> Result<()> {
+        let mut router = Arc::into_inner(combined_signal_router()?).unwrap();
+        router.rules = Some(RuleSignal::new(
+            RuleSignalConfig {
+                capable: vec![],
+                balanced: vec!["fix the build".to_string()],
+                named: BTreeMap::new(),
+            },
+            &router.pool,
+        )?);
+        let recorder = Arc::new(Recorder::default());
+        *recorder.judge_p_solve.lock() = 0.9;
+        let outcome = test_drive_with_state(
+            Arc::new(router),
+            turn_request(true),
+            three_level_runtime_models(),
+            State::default(),
+            recorder.serve(),
+        )
+        .await?;
+        assert_eq!(outcome.selected_model_id()?.as_str(), "balanced");
+        assert_eq!(
+            outcome.metadata.unwrap().evidence.unwrap()["source"],
+            "rules"
+        );
+        assert_eq!(recorder.judge_calls(), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn final_evidence_distinguishes_pool_default_and_escalation_hold() -> Result<()> {
+        let router = escalation_router(3)?;
+        let recorder = Arc::new(Recorder::default());
+        for (request, expected_target, expected_source) in [
+            (turn_request(false), "weak", "pool_default"),
+            (soft_failure_request(), "balanced", "dimensions"),
+            (turn_request(false), "balanced", "escalation_hold"),
+        ] {
+            let outcome = test_drive_with_state(
+                router.clone(),
+                request,
+                three_level_runtime_models(),
+                State::default(),
+                recorder.serve(),
+            )
+            .await?;
+            assert_eq!(outcome.selected_model_id()?.as_str(), expected_target);
+            assert_eq!(
+                outcome.metadata.unwrap().evidence.unwrap()["source"],
+                expected_source
+            );
+        }
         Ok(())
     }
 }

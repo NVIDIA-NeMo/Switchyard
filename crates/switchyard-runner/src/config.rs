@@ -102,9 +102,7 @@ pub struct TargetModel {
 /// This function lists each route's targets without building clients or reading credentials.
 /// It returns the same parse error the server reports for a config that does not match the schema.
 pub fn route_targets(source: &str) -> Result<Vec<RouteTargets>, RunnerError> {
-    let config: DeploymentConfig = toml::from_str(source).map_err(|error| {
-        RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
-    })?;
+    let config = AlgorithmFactory::from_toml(source)?.config;
     config.check_schema_version()?;
     Ok(config
         .routes
@@ -154,7 +152,7 @@ pub(crate) struct DeploymentConfig {
     #[serde(default)]
     decision_targets: BTreeMap<String, DecisionTargetConfig>,
     routes: BTreeMap<String, RouteConfig>,
-    /// Shared model catalog for `auto` routes' `[routes.*.signals]`.
+    /// Shared model catalog for `capability_router` routes' `[routes.*.signals]`.
     #[serde(default)]
     pool: Option<PoolSpec>,
 }
@@ -406,7 +404,7 @@ impl DeploymentConfig {
 
     /// Validates `[pool]`: every model names a configured target, every
     /// capability tag parses, and `default` is actually provided by a model.
-    fn validate_pool(&self, pool: &PoolSpec) -> RunnerResult<PoolSpec> {
+    fn validate_pool(&self, pool: &PoolSpec) -> RunnerResult<()> {
         if pool.models.is_empty() {
             return Err(RunnerError::configuration(
                 "[pool] must declare at least one model".to_string(),
@@ -453,15 +451,39 @@ impl DeploymentConfig {
                 pool.default
             )));
         }
-        Ok(pool.clone())
+        Ok(())
+    }
+
+    /// Binds the shared catalog before either execution path inspects route targets.
+    pub(crate) fn bind_pool(&mut self) {
+        if let Some(pool) = &self.pool {
+            for config in self.routes.values_mut() {
+                if let AlgorithmSpec::CapabilityRouter {
+                    pool: route_pool, ..
+                } = &mut config.algorithm
+                {
+                    *route_pool = pool.clone();
+                }
+            }
+        }
     }
 
     /// Checks route identity and target references without constructing clients.
     pub(crate) fn validate(&self) -> RunnerResult<()> {
         self.check_schema_version()?;
+        if let Some(pool) = &self.pool {
+            self.validate_pool(pool)?;
+        }
 
         let mut route_names_by_id = HashMap::new();
         for (route_name, config) in &self.routes {
+            if matches!(&config.algorithm, AlgorithmSpec::CapabilityRouter { .. })
+                && self.pool.is_none()
+            {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} requires a top-level [pool] because it uses type = \"capability_router\""
+                )));
+            }
             validate_value("route name", route_name)?;
             validate_value(&format!("route {route_name} id"), &config.id)?;
             if let Some(first_route_name) =
@@ -3489,5 +3511,93 @@ advisor_target = "advisor"
             "advisor_target = \"advisor\"\nmax_reviews = 0",
         );
         assert!(error_message(&invalid).contains("max_reviews must be at least 1"));
+    }
+
+    #[test]
+    fn factory_loads_the_same_pool_as_native_runner() {
+        let source = auto_signals_config();
+        runner_from_toml(&source).expect("native runner accepts this exact deployment");
+        let factory = crate::AlgorithmFactory::from_toml(&source).unwrap();
+        let result = factory.build();
+        assert!(
+            result.is_ok(),
+            "factory rejected valid deployment: {:?}",
+            result.err()
+        );
+    }
+
+    #[test]
+    fn explicit_task_judge_is_independent_of_pool_judge_tags() {
+        let source = auto_signals_config().replace(
+            "provides = [\"capable\"]",
+            "provides = [\"capable\", \"judge\"]",
+        );
+        let mut algorithms = crate::AlgorithmFactory::from_toml(&source)
+            .unwrap()
+            .build()
+            .unwrap();
+        let (_, models) = algorithms
+            .remove("switchyard/hier")
+            .expect("capability route must be built");
+        assert_eq!(
+            models.models_for(&Category::Judge),
+            &[ModelId::from("tier_judge")],
+            "pool tags must not add fallback judges either"
+        );
+    }
+
+    #[test]
+    fn factory_validates_shared_pool_references() {
+        let valid = auto_signals_config();
+        let (before_pool, pool_and_route) = valid.split_once("[pool]").unwrap();
+        let (_, route_body) = pool_and_route.split_once("[routes.composed]").unwrap();
+        let missing_pool = format!("{before_pool}[routes.composed]{route_body}");
+        for (source, expected) in [
+            (missing_pool, "requires a top-level [pool]"),
+            (
+                valid.replace("default = \"efficient\"", "default = \"missing\""),
+                "not provided by any pool model",
+            ),
+            (
+                valid.replace(
+                    "target = \"strong\", provides",
+                    "target = \"unknown\", provides",
+                ),
+                "references unknown target unknown",
+            ),
+        ] {
+            let factory = crate::AlgorithmFactory::from_toml(&source).unwrap();
+            let message = factory
+                .build()
+                .err()
+                .expect("invalid pool must be rejected")
+                .to_string();
+            assert!(message.contains(expected), "{message}");
+        }
+    }
+
+    #[test]
+    fn route_target_listing_includes_shared_pool_models() {
+        let routes = route_targets(&auto_signals_config()).unwrap();
+        let route = routes
+            .iter()
+            .find(|route| route.id.as_str() == "switchyard/hier")
+            .unwrap();
+        assert_eq!(
+            route
+                .answer_targets
+                .iter()
+                .map(|target| target.name.as_str())
+                .collect::<Vec<_>>(),
+            ["strong", "balanced", "compatibility", "weak"]
+        );
+        assert_eq!(
+            route
+                .judge_targets
+                .iter()
+                .map(|target| target.name.as_str())
+                .collect::<Vec<_>>(),
+            ["tier_judge"]
+        );
     }
 }

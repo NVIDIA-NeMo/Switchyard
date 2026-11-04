@@ -514,8 +514,8 @@ pub enum AlgorithmSpec {
     CapabilityRouter {
         /// The route's signal composition.
         signals: Box<SignalsConfig>,
-        /// The deployment's `[pool]`, copied in by `DeploymentConfig::build` after
-        /// parsing. Never set directly in a route's own TOML.
+        /// The deployment's `[pool]`, copied in by the shared deployment parser.
+        /// Never set directly in a route's own TOML.
         #[serde(skip)]
         pool: PoolSpec,
     },
@@ -1406,10 +1406,8 @@ impl AlgorithmSpec {
                 } else {
                     let mut models = pool_runtime_model_names(pool);
                     if let Some(task) = &signals.task {
-                        models
-                            .entry(Category::Judge)
-                            .or_default()
-                            .push(task.judge.clone());
+                        // A capability tag does not make a pool model a configured judge.
+                        models.insert(Category::Judge, vec![task.judge.clone()]);
                     }
                     models
                 }
