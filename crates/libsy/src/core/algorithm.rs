@@ -652,7 +652,12 @@ impl Driver {
                 crate::OutcomeMetadata::new(self.algorithm.clone(), evidence.outcome)
             });
             metadata.judgments.extend(evidence.judgments);
-            observability::record_outcome(metadata, &outcome.selected_model_ids);
+            let provider_models = outcome
+                .selected_model_ids
+                .iter()
+                .map(|target| self.provider_model(target).clone())
+                .collect::<Vec<_>>();
+            observability::record_outcome(metadata, &provider_models);
             outcome
         });
         let selected_model = result

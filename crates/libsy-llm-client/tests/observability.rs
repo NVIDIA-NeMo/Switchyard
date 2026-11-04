@@ -2332,6 +2332,7 @@ async fn target_aliases_preserve_provider_model_metric_labels() -> switchyard_li
                 ["efficient", "capable"]
                     .into_iter()
                     .map(|target| (ModelId::from(target), provider_model.clone()))
+                    .chain([("fallback".into(), "provider/fallback".into())])
                     .collect(),
             ),
         );
@@ -2342,7 +2343,11 @@ async fn target_aliases_preserve_provider_model_metric_labels() -> switchyard_li
                     target: target.into(),
                 }) as Arc<dyn Algorithm>
             } else {
-                algo(name, target)
+                Arc::new(SingleCallAlgo {
+                    name: name.into(),
+                    target_set: vec![target.into(), "fallback".into(), "provider/direct".into()],
+                    metadata: None,
+                })
             };
             let (selected, _) = switchyard_llm_client::run(
                 algorithm,
@@ -2359,12 +2364,31 @@ async fn target_aliases_preserve_provider_model_metric_labels() -> switchyard_li
             let spans = store
                 .spans()
                 .into_iter()
+                .rev()
                 .filter(|span| span.fields.get("algorithm").map(String::as_str) == Some(name))
                 .collect::<Vec<_>>();
             let span = find_span(&spans, "libsy.client_call", "selected_target", target);
             assert_eq!(span.fields["selected_model"], provider_model.as_str());
             assert_eq!(span.fields["gen_ai.request.model"], provider_model.as_str());
             assert_eq!(span.fields["otel.name"], format!("chat {provider_model}"));
+            let run_span = find_span(&spans, "libsy.run", "algorithm", name);
+            let exported = span_exporter.get_finished_spans().expect("exported spans");
+            let exported_run = exported
+                .iter()
+                .find(|span| {
+                    span.name == "libsy.run"
+                        && otel_attribute(span, "outcome_id")
+                            .is_some_and(|id| id.as_str() == run_span.fields["outcome_id"])
+                })
+                .expect("outcome span exported");
+            let mut expected_models = vec![provider_model.to_string().into()];
+            if !routing_time {
+                expected_models.extend(["provider/fallback".into(), "provider/direct".into()]);
+            }
+            assert_eq!(
+                otel_attribute(exported_run, "selected_model_ids"),
+                Some(&OtelValue::Array(OtelArray::String(expected_models)))
+            );
         }
         let exported = find_otel_span(
             span_exporter,
