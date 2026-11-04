@@ -738,7 +738,7 @@
 <a href=#738 id=738 data-nosnippet>738</a>        ] {
 <a href=#739 id=739 data-nosnippet>739</a>            <span class="kw">if </span><span class="self">Self</span>::consume_hold(state, <span class="kw-2">&amp;</span><span class="self">Self</span>::agent_key(request, key)) {
 <a href=#740 id=740 data-nosnippet>740</a>                <span class="kw">let </span>target = driver.first_model_for(<span class="kw-2">&amp;</span>category)<span class="question-mark">?</span>.clone();
-<a href=#741 id=741 data-nosnippet>741</a>                record_routing_decision(source, <span class="kw-2">&amp;</span>target);
+<a href=#741 id=741 data-nosnippet>741</a>                record_routing_decision(source, driver.provider_model(<span class="kw-2">&amp;</span>target));
 <a href=#742 id=742 data-nosnippet>742</a>                driver.set_evidence(<span class="macro">serde_json::json!</span>({<span class="string">"source"</span>: source.as_str()}));
 <a href=#743 id=743 data-nosnippet>743</a>                <span class="kw">return </span><span class="prelude-val">Ok</span>((
 <a href=#744 id=744 data-nosnippet>744</a>                    Classification::Scores(<span class="macro">vec!</span>[Score {
@@ -783,7 +783,7 @@
 <a href=#783 id=783 data-nosnippet>783</a>                {
 <a href=#784 id=784 data-nosnippet>784</a>                    <span class="self">Self</span>::set_hold(state, <span class="kw-2">&amp;</span>capable_hold_key, <span class="self">self</span>.capable_hold_turns);
 <a href=#785 id=785 data-nosnippet>785</a>                }
-<a href=#786 id=786 data-nosnippet>786</a>                record_routing_decision(source, target);
+<a href=#786 id=786 data-nosnippet>786</a>                record_routing_decision(source, driver.provider_model(target));
 <a href=#787 id=787 data-nosnippet>787</a>                <span class="kw">if </span>source == DecisionSource::Override
 <a href=#788 id=788 data-nosnippet>788</a>                    &amp;&amp; <span class="kw">let </span><span class="prelude-val">Some</span>(reason) = override_reason(<span class="kw-2">&amp;</span>signal)
 <a href=#789 id=789 data-nosnippet>789</a>                {

@@ -76,8 +76,8 @@
 <a href=#76 id=76 data-nosnippet>76</a>    /// standard field (e.g. an internal API that 400s on `max_output_tokens`).
 <a href=#77 id=77 data-nosnippet>77</a>    </span><span class="kw">pub </span>omit_body_fields: BTreeSet&lt;String&gt;,
 <a href=#78 id=78 data-nosnippet>78</a>    <span class="doccomment">/// Reasoning effort forced on every request to this backend, replacing whatever the caller
-<a href=#79 id=79 data-nosnippet>79</a>    /// sent. Responses carries it as `reasoning.effort`, Chat Completions as `reasoning_effort`;
-<a href=#80 id=80 data-nosnippet>80</a>    /// Anthropic has no equivalent and rejects the setting at configuration time.
+<a href=#79 id=79 data-nosnippet>79</a>    /// sent. Responses carries it as `reasoning.effort`, Chat Completions as `reasoning_effort`,
+<a href=#80 id=80 data-nosnippet>80</a>    /// and Anthropic Messages as `output_config.effort`.
 <a href=#81 id=81 data-nosnippet>81</a>    </span><span class="kw">pub </span>reasoning_effort: <span class="prelude-ty">Option</span>&lt;String&gt;,
 <a href=#82 id=82 data-nosnippet>82</a>    <span class="doccomment">/// Additional attempts for transient upstream failures.
 <a href=#83 id=83 data-nosnippet>83</a>    /// One template-compatibility retry may also run within the same timeout.
