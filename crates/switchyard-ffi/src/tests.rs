@@ -315,7 +315,7 @@ fn invalid_decision_replies_preserve_pending_calls() {
     let router = router(json!({
         "type": "llm_classifier", "classifier_target": "judge",
         "strong_target": "capable", "weak_target": "efficient", "fail_open": false,
-        "decision": {"cutoff": 0.5, "candidates": {"a": "capable", "b": "efficient"}, "evidence": {}},
+        "decision": {"cutoff": 0.5},
     }));
     let run = run(
         &router,
@@ -334,7 +334,7 @@ fn invalid_decision_replies_preserve_pending_calls() {
     let error = unsafe { sy_run_respond(&*run, id, c"{\"response\":{}}".as_ptr()) };
     assert!(!error_message(error).is_empty());
     let reply = CString::new(json!({"response": {"answers": {"route": {"value": {
-        "type": "choice", "data": {"selected": "advantage", "probabilities": {"advantage": 0.8, "no_advantage": 0.2}},
+        "type": "choice", "data": {"selected": "capable", "probabilities": {"capable": 0.8, "efficient": 0.2}},
     }}}}}).to_string()).unwrap();
     check(unsafe { sy_run_respond(&*run, id, reply.as_ptr()) });
     let done = next(&run);
@@ -348,9 +348,7 @@ fn fail_open_judge_router(decision: bool) -> Box<SyRouter> {
         "strong_target": "capable", "weak_target": "efficient", "fail_open": true,
     });
     if decision {
-        algorithm["decision"] = json!({
-            "cutoff": 0.5, "candidates": {"a": "capable", "b": "efficient"}, "evidence": {},
-        });
+        algorithm["decision"] = json!({"cutoff": 0.5});
     } else {
         algorithm["base_threshold"] = json!(0.5);
     }

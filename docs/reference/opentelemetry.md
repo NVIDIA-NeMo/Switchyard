@@ -40,7 +40,7 @@ On `libsy.run`:
 | `session_id`, `session.id` | string | Request session ID, when supplied. Both names carry the same value. |
 | `agent_id`, `task_id`, `task_kind`, `agent_role`, `correlation_id` | string | Corresponding request metadata, when supplied. |
 | `evidence.source`, `evidence.verdict`, `evidence.trigger`, `evidence.reason_code` | string | Known string fields from outcome evidence, when present. |
-| `evidence.score`, `evidence.confidence`, `evidence.threshold` | number | Known numeric fields from outcome evidence, when present. |
+| `evidence.score`, `evidence.confidence`, `evidence.threshold`, `evidence.capable_score`, `evidence.capable_threshold` | number | Known numeric fields from outcome evidence, when present. |
 
 `RoutingOutcome.metadata` is available in Rust and Python. Its optional JSON evidence
 exports only the listed keys with matching types; unknown keys and wrong types are

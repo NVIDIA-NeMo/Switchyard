@@ -478,7 +478,9 @@ fn evidence_for_mark(evidence: Option<Json>) -> Option<Json> {
         "source" | "verdict" | "trigger" | "reason_code" => value
             .as_str()
             .is_some_and(|value| value.len() <= MAX_EVIDENCE_STRING_BYTES),
-        "score" | "confidence" | "threshold" => value.is_number(),
+        "score" | "confidence" | "threshold" | "capable_score" | "capable_threshold" => {
+            value.is_number()
+        }
         _ => false,
     });
     (!evidence.is_empty()).then_some(Json::Object(evidence))
@@ -1388,6 +1390,8 @@ seed = 17
             "score": 0.9,
             "confidence": "wrong type",
             "threshold": 0.5,
+            "capable_score": 0.7,
+            "capable_threshold": 0.6,
             "verdict": "continue",
             "trigger": "turn",
             "reason_code": "x".repeat(MAX_EVIDENCE_STRING_BYTES + 1),
@@ -1401,6 +1405,8 @@ seed = 17
                 "source": "llm-classifier",
                 "score": 0.9,
                 "threshold": 0.5,
+                "capable_score": 0.7,
+                "capable_threshold": 0.6,
                 "verdict": "continue",
                 "trigger": "turn",
             }))

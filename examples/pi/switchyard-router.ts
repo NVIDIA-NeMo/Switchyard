@@ -8,7 +8,7 @@ import {
   type DecisionResponse, type RoutingContent, type RoutingMessage,
 } from "@switchyard/libsy";
 import type {
-  ClassifierApi, ClassifierContext, ClassifierModel, ClassifierResult, Message,
+  ClassifierApi, ClassifierContext, ClassifierModel, ClassifierResult, JsonValue, Message,
 } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -16,13 +16,7 @@ const POLICY = {
   classifier: {
     classify_trigger: "user_turn",
     fail_open: false,
-    decision: {
-      cutoff: 0.4,
-      candidates: { a: "capable", b: "efficient" },
-      evidence: {
-        description: "Candidate a is the larger reasoning-oriented coding and thinking model. It is intended for complex problems. Candidate b is the smaller fast coding model. It is intended for simple questions, simple local reads and edits, routine tests and straightforward fixes. These are qualitative deployment roles, not empirical success rates.",
-      },
-    },
+    decision: { cutoff: 0.4 },
   },
   stage: { efficient_first_threshold: 0.5, capable_first_threshold: 0.2 },
 } satisfies Omit<CompositeOptions, "targets">;
@@ -52,21 +46,18 @@ function loadRouter() {
   }) };
 }
 
-function text(value: unknown): string {
-  return typeof value === "string" ? value : JSON.stringify(value ?? null);
-}
-
 function classifierContext(request: DecisionRequest): ClassifierContext {
   const questions: ClassifierContext["questions"] = {};
   for (const [id, question] of Object.entries(request.questions)) {
     if (question.kind.type !== "choice") throw new Error(`Expected a choice question: ${id}`);
     questions[id] = {
       type: "choice",
-      instructions: text(question.instructions),
-      criteria: Object.fromEntries(question.kind.data.options.map((option) => [option.id, text(option.description)])),
+      instructions: question.instructions,
+      criteria: Object.fromEntries(question.kind.data.options.map((option) => [option.id, option.description])),
     };
   }
-  return { state: request.context as ClassifierContext["state"], questions };
+  // RoutingMessage is plain JSON.
+  return { state: { input: request.input as unknown as JsonValue }, questions };
 }
 
 function decisionResponse(request: DecisionRequest, result: ClassifierResult): DecisionResponse {

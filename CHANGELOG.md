@@ -36,6 +36,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Simpler decision requests and routing question** — `DecisionRequest.context`
+  is renamed to `input`. Decision judges send the conversation messages as
+  `input`, with string instructions and a description for every choice. The
+  decision judge now asks whether to start with the `capable` or the `efficient` model.
+  The `cutoff` applies to the `capable` probability and defaults to `0.6`.
+  Decision settings drop `candidates`, `evidence`, and `criteria`; use
+  `choices` (`DecisionChoice` values) and `apply_cutoff_to` for a custom question. Routing evidence
+  reports `capable_score` and `capable_threshold`. Re-evaluate existing cutoffs.
+  **Config and API change (breaking).**
 - **Stage fallback-judge knobs that had no effect are now rejected** — a
   `stage_router` route no longer loads with a `classifier.classify_trigger` other
   than `every_request` or with `classifier.message_hash_fallback`. The stage

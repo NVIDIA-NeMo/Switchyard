@@ -38,8 +38,6 @@ strong_target = "capable"
 weak_target = "fast"
 [routes.classifier.decision]
 cutoff = 0.7
-candidates = { a = "capable", b = "fast" }
-evidence = { description = "Compare both targets." }
 [routes.advisor]
 id = "public/advisor"
 type = "advisor"
@@ -53,7 +51,7 @@ const aggregate = (text = "hello") => ({
   model: "upstream/fast", outputs: [{ role: "assistant", content: [{ type: "text", text }], stop_reason: "end_turn" }],
 });
 const answer = { answers: { route: { value: {
-  type: "choice", data: { selected: "advantage", probabilities: { advantage: 0.9, no_advantage: 0.1 } },
+  type: "choice", data: { selected: "capable", probabilities: { capable: 0.9, efficient: 0.1 } },
 } } } };
 
 async function collect(source) {

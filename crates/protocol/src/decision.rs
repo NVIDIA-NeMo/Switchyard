@@ -28,13 +28,14 @@ pub struct ScoreValue(pub f64);
 #[serde(transparent)]
 pub struct ProviderConfidence(pub f64);
 
-/// Shared context evaluated against independent, named questions.
+/// Shared input evaluated against independent, named questions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DecisionRequest {
     /// Optional until a target is selected.
     pub model: Option<ModelId>,
     /// Conversation, application state, or other material to evaluate.
-    pub context: Value,
+    /// Sent as `state` (System One) or `input` (OpenAI Decisions).
+    pub input: Value,
     /// Independent questions keyed by their IDs.
     pub questions: BTreeMap<String, DecisionQuestion>,
 }
@@ -75,8 +76,10 @@ pub enum DecisionKind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChoiceOption {
     /// Stable identifier used by choice answers and distributions.
+    /// System One uses it as the `criteria` key; OpenAI Decisions uses `value`.
     pub id: String,
     /// Meaning of this option, when its ID alone is insufficient.
+    /// System One uses it as the `criteria` value; OpenAI Decisions uses `description`.
     pub description: Option<Value>,
 }
 

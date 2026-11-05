@@ -571,8 +571,6 @@ fail_open = false
         r#"{}
 [routes.chat.decision]
 cutoff = 0.5
-candidates = {{ capable = "capable", efficient = "fast" }}
-evidence = {{}}
 [decision_clients.standard]
 format = "openai_decisions"
 endpoint = "{}/v1/decisions"
@@ -602,10 +600,10 @@ labels = ["private", "customer_data"]
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "model": "approved/decision",
             "answers": [{
-                "type": "choice", "name": "route", "choice": "no_advantage",
+                "type": "choice", "name": "route", "choice": "efficient",
                 "probabilities": [
-                    {"value": "advantage", "probability": 0.0},
-                    {"value": "no_advantage", "probability": 1.0}
+                    {"value": "capable", "probability": 0.0},
+                    {"value": "efficient", "probability": 1.0}
                 ]
             }],
             "usage": {

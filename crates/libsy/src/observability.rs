@@ -75,6 +75,8 @@ pub(crate) fn run_span(algorithm: &str, request: &Request) -> Span {
         evidence.score = tracing::field::Empty,
         evidence.confidence = tracing::field::Empty,
         evidence.threshold = tracing::field::Empty,
+        evidence.capable_score = tracing::field::Empty,
+        evidence.capable_threshold = tracing::field::Empty,
         evidence.verdict = tracing::field::Empty,
         evidence.trigger = tracing::field::Empty,
         evidence.reason_code = tracing::field::Empty,
@@ -143,6 +145,8 @@ pub(crate) fn record_outcome(metadata: &OutcomeMetadata, models: &[ModelId]) {
             ("score", "evidence.score"),
             ("confidence", "evidence.confidence"),
             ("threshold", "evidence.threshold"),
+            ("capable_score", "evidence.capable_score"),
+            ("capable_threshold", "evidence.capable_threshold"),
         ] {
             if let Some(value) = evidence.get(key).and_then(serde_json::Value::as_f64) {
                 span.record(field, value);
