@@ -402,7 +402,7 @@ impl TranslatingLlmClient {
             enable_openai_guidance_caching(
                 &mut body,
                 wire_format,
-                model,
+                upstream_model,
                 llm_request.temporary_note_count,
             );
         }
