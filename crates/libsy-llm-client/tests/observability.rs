@@ -2296,6 +2296,158 @@ async fn in_flight_gauge_clears_when_a_run_is_abandoned() -> switchyard_libsy::R
     Ok(())
 }
 
+#[tokio::test]
+async fn routing_buffer_failure_preserves_real_attempt_and_parent_usage()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const MODEL: &str = "obs-routing-failure-usage";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"synthetic failure\"},\"usage\":{\"input_tokens\":11,\"output_tokens\":3}}}\n\n"
+        ), "text/event-stream"))
+        .expect(1)
+        .mount(&server).await;
+    let client = Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(
+        MODEL,
+        Backend::OpenAiResponses(HttpBackendConfig {
+            base_url: server.uri(),
+            api_key: None,
+            forward_auth: false,
+            extra_headers: Default::default(),
+            extra_body: Default::default(),
+            omit_body_fields: Default::default(),
+            reasoning_effort: None,
+            max_retries: 1,
+            failure_cooldown: Duration::ZERO,
+            timeout: None,
+        }),
+        None,
+    )])?);
+    let algorithm = Arc::new(RoutingCallAlgo {
+        name: "obs-routing-failure-usage-algo".into(),
+        target: MODEL.into(),
+    });
+    let mut request = request_with_metadata("routing-failure", "routing-failure");
+    request.llm_request.stream = true;
+    assert!(run(algorithm, client, request).await.is_err());
+    let spans = store.spans();
+    for (name, field) in [
+        ("libsy.client_call", "selected_model"),
+        ("libsy.upstream_attempt", "model"),
+    ] {
+        let span = find_span(&spans, name, field, MODEL);
+        assert_eq!(
+            span.fields
+                .get("gen_ai.usage.input_tokens")
+                .map(String::as_str),
+            Some("11")
+        );
+        assert_eq!(
+            span.fields
+                .get("gen_ai.usage.output_tokens")
+                .map(String::as_str),
+            Some("3")
+        );
+        assert_eq!(
+            span.fields.get("outcome").map(String::as_str),
+            Some("error")
+        );
+    }
+    assert_eq!(
+        spans
+            .iter()
+            .filter(|s| s.name == "libsy.upstream_attempt"
+                && s.fields.get("model").is_some_and(|m| m == MODEL))
+            .count(),
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn retries_and_fallback_keep_separate_models_and_attempt_ordinals()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const WEAK: &str = "obs-attempt-fallback-weak";
+    const STRONG: &str = "obs-attempt-fallback-strong";
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(|request: &wiremock::Request| {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        if body["model"] == WEAK {
+            ResponseTemplate::new(503).insert_header("retry-after", "0")
+                .set_body_json(json!({"error":{"message":"synthetic failure"},"usage":{"prompt_tokens":11,"completion_tokens":3,"cost":0.02}}))
+        } else {
+            ResponseTemplate::new(200).set_body_json(json!({
+                "id":"fallback", "model":STRONG,
+                "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":7,"completion_tokens":2,"cost":0.03}
+            }))
+        }
+    }).expect(3).mount(&server).await;
+    let backend = Backend::OpenAiChat(HttpBackendConfig {
+        base_url: server.uri(),
+        api_key: None,
+        forward_auth: false,
+        extra_headers: Default::default(),
+        extra_body: Default::default(),
+        omit_body_fields: Default::default(),
+        reasoning_effort: None,
+        max_retries: 1,
+        failure_cooldown: Duration::ZERO,
+        timeout: None,
+    });
+    let client = Arc::new(TranslatingLlmClient::new(&[
+        ModelConfig::new(WEAK, backend.clone(), None),
+        ModelConfig::new(STRONG, backend, None),
+    ])?);
+    let algorithm = Arc::new(SingleCallAlgo {
+        name: "obs-attempt-fallback-algo".into(),
+        target_set: vec![WEAK.into(), STRONG.into()],
+        metadata: None,
+    });
+    let (model, response) = run(
+        algorithm,
+        client,
+        request_with_metadata("fallback", "fallback"),
+    )
+    .await?;
+    assert_eq!(model.as_str(), WEAK);
+    assert_eq!(response.served_model().unwrap().as_str(), STRONG);
+    let spans = store.spans();
+    for (model, count, cost) in [(WEAK, 2, "0.02"), (STRONG, 1, "0.03")] {
+        let attempts: Vec<_> = spans
+            .iter()
+            .filter(|s| {
+                s.name == "libsy.upstream_attempt"
+                    && s.fields.get("model").is_some_and(|m| m == model)
+            })
+            .collect();
+        assert_eq!(attempts.len(), count);
+        let mut ordinals = Vec::new();
+        for attempt in attempts {
+            ordinals.push(attempt.fields["attempt"].parse::<usize>()?);
+            assert_eq!(attempt.fields["switchyard.usage.provider_cost_usd"], cost);
+        }
+        ordinals.sort();
+        assert_eq!(ordinals, (1..=count).collect::<Vec<_>>());
+        assert_eq!(
+            find_span(&spans, "libsy.client_call", "selected_model", model).fields["switchyard.accounting.attempts"],
+            count.to_string()
+        );
+    }
+    Ok(())
+}
+
 /// Routing keys remain distinct while both routing-time and answer metrics aggregate by provider.
 #[tokio::test]
 async fn target_aliases_preserve_provider_model_metric_labels() -> switchyard_libsy::Result<()> {

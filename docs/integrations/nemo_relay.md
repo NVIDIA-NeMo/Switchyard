@@ -58,34 +58,54 @@ A routed request can spend tokens choosing a model and generating the answer.
 Some routes call a judge or classifier first. The selected model, or a fallback,
 then answers the request.
 
-Relay records the request and answer seen by the agent. It can record a
-provider-reported cost or estimate one when model pricing is configured.
-Switchyard separately records model calls, available token usage and timing,
-fallbacks, and failures.
+Switchyard exports one `libsy.upstream_attempt` scope for each dispatched
+completion attempt, including retries, routing calls, and fallback candidates.
+Each scope retains available usage and supported provider charges when the
+attempt fails or its stream is dropped. Local validation failures and deadlines
+that expire before dispatch create no attempt.
 
-The integration does not calculate a combined cost or savings figure. Relay can
-price the answer returned to the agent, while Switchyard reports internal
-routing usage separately. To estimate the observed cost for a workload, use:
+Use these scopes as the accounting source for Switchyard completion work:
 
-```text
-Relay answer cost + cost of Switchyard tokens where call_role = "routing"
+1. Select end events with `switchyard.accounting.unit = "completion_attempt"`
+   in the workflow's scope tree. Count each event UUID once.
+2. Decode each scope's content-free Messages-shaped output with Relay's
+   `AnthropicMessagesCodec`. Relay uses reported charges first and configured
+   model prices otherwise. Price each attempt with its own model.
+3. Exclude `libsy.client_call` summaries, token metrics, and Relay's outer answer
+   from this total. They describe work already represented by the attempts.
+4. Check each summary's expected `switchyard.accounting.attempts` against
+   `switchyard.accounting.attempt_records` and the received attempt scopes.
+   Missing records leave coverage incomplete.
+
+The [ATOF cost-summary example](../../crates/switchyard-nemo-relay-plugin/examples/attempt_costs.py)
+implements this selection and uses Relay's existing codec and pricing resolver.
+Import `summarize(events, workflow_uuid)` into a host with Relay model pricing
+configured to obtain estimates. For recorded provider charges, it also works
+as a command:
+
+```sh
+python crates/switchyard-nemo-relay-plugin/examples/attempt_costs.py events.jsonl \
+  --workflow-uuid <workflow-scope-uuid>
 ```
 
-Apply the price of each `target_model` to those routing tokens. Do not add
-`call_role = "answer"` again because Relay already counted that answer. Do not
-sum every `token_type`; `total` is a rollup, and cache or reasoning values may
-already be included in broader counts.
+The result separates `known_cost_subtotal_usd` from nullable `total_cost_usd`.
+For example, a failed `$0.02` attempt followed by a successful `$0.03` attempt
+has a `$0.05` total. If the failed attempt has unknown consumption, the known
+subtotal is `$0.03` and the complete total is absent. A reported `$0` charge is
+valid even when token usage is missing.
 
-Relay does not copy request identity into exported metric attributes. Use this
-calculation for a workload or time window, not to reconcile one trace.
+`switchyard.accounting.usage_status` is `complete`, `partial`, or `missing`.
+Cumulative usage snapshots replace known fields; repeated snapshots are not
+added together. Cache and reasoning fields can overlap other token counts.
+Token coverage and charge coverage are separate: a known provider charge can
+cover an attempt whose token usage is incomplete.
 
-Relay does not include a model-price catalog. Follow its
-[model-pricing guide](https://docs.nvidia.com/nemo/relay/configure-plugins/model-pricing)
-to supply and validate model rates. Run the same representative workload once
-with a fixed model and once with routing. Compare cost, latency, fallback rate,
-and task success. Missing usage, failed attempts, internal HTTP retries, and
-incomplete streams can leave some cost unknown. An absent value means unknown,
-not zero.
+Relay's [model-pricing guide](https://docs.nvidia.com/nemo/relay/configure-plugins/model-pricing)
+explains how to supply model rates. The cost-summary example covers instrumented
+completion attempts. Separate decision-model calls are not yet exported with
+per-call usage. ATIF `final_metrics` still describes Relay's outer interaction;
+it does not automatically include this retry total. Provider work after a
+disconnect and missing telemetry can leave costs unknown.
 
 ## How Requests Flow
 
@@ -305,8 +325,8 @@ can receive these records, but each output format presents them differently.
 | Output | What the current integration shows |
 | --- | --- |
 | ATIF | The request and response seen by the agent. Internal routing is not added as separate steps or included in `final_metrics`. Relay-managed ATIF files may retain the raw records under `extra.observed_events`. |
-| OpenTelemetry traces, including OpenInference | Relay's outer LLM span, nested `libsy.client_call` and `libsy.upstream_attempt` duration scopes, plus eligible routing marks. |
-| OpenTelemetry metrics | Switchyard request, routing-call, latency, token, and failure measurements. Combine the reported routing usage with Relay's answer cost to estimate the observed routed cost. |
+| OpenTelemetry traces, including OpenInference | Relay's outer LLM span, nested `libsy.client_call` summaries and `libsy.upstream_attempt` accounting scopes, plus eligible routing marks. |
+| OpenTelemetry metrics | Switchyard request, routing-call, latency, token, and failure measurements. Aggregate model-call measurements; use attempt scopes for retry cost accounting. |
 | OTLP logs | Non-metric Switchyard marks that meet the configured severity threshold. |
 
 The plugin captures two existing Switchyard spans. Each routing or answer LLM

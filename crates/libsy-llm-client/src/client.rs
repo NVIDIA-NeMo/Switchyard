@@ -26,6 +26,7 @@ use switchyard_translation::{
 use tokio::time::Instant;
 use tracing::Instrument;
 
+use crate::attempt::AttemptGuard;
 use crate::backend::{Backend, openai_url};
 use crate::error::{LlmClientError, Result};
 use crate::metrics;
@@ -404,7 +405,15 @@ impl TranslatingLlmClient {
         record_gen_ai_request(&url, upstream_model, streaming);
 
         let result = self
-            .send_with_retries(&url, backend, &body, metadata, model, streaming)
+            .send_with_retries(
+                &url,
+                backend,
+                &body,
+                metadata,
+                model,
+                streaming,
+                matches!(endpoint, UpstreamEndpoint::Completion),
+            )
             .await;
         // Keep quota failures request-local when forwarding auth or returning 429 to callers.
         if let Some(until) = unavailable_until
@@ -421,6 +430,7 @@ impl TranslatingLlmClient {
     }
 
     // Sends the encoded body, retrying retryable failures within the backend's retry budget.
+    #[allow(clippy::too_many_arguments)]
     async fn send_with_retries(
         &self,
         url: &str,
@@ -429,6 +439,7 @@ impl TranslatingLlmClient {
         metadata: Option<&Metadata>,
         model: &ModelId,
         streaming: bool,
+        accounting: bool,
     ) -> Result<EncodedResponse> {
         let max_retries = u64::from(backend.max_retries());
         let max_attempts = max_retries
@@ -459,40 +470,34 @@ impl TranslatingLlmClient {
             {
                 return Err(deadline_error(timeout));
             }
-            let span = tracing::debug_span!(
-                target: "libsy",
-                "libsy.upstream_attempt",
-                model = %model,
-                wire_format = %backend.wire_format(),
-                attempt = attempt + 1 + u64::from(template_retry),
-                max_attempts,
-                retry = attempt > 0 || template_retry,
-                openinference.span.kind = "CHAIN",
-                outcome = tracing::field::Empty,
-                status_code = tracing::field::Empty,
-                will_retry = tracing::field::Empty,
-                retry_delay_ms = tracing::field::Empty,
-            );
-            let mut attempt_started = false;
+            let request = self.build_request(url, backend, body.as_ref(), metadata)?;
+            let mut guard = None;
             let result = tokio::select! {
                 biased;
-                timeout = &mut deadline => {
-                    if attempt_started {
-                        metrics::record_upstream_attempt(None);
-                    }
-                    span.record("outcome", "error");
-                    span.record("will_retry", false);
-                    return Err(deadline_error(timeout));
-                }
+                _ = &mut deadline => None,
                 result = async {
-                    attempt_started = true;
-                    self.send_once(url, backend, body.as_ref(), metadata, model, streaming).await
-                }.instrument(span.clone()) => result,
+                    let attempt_guard = guard.insert(AttemptGuard::new(self.provider_model(model), backend.wire_format(), attempt + 1 + u64::from(template_retry), max_attempts, accounting));
+                    let span = attempt_guard.span().clone();
+                    self.send_once(request, backend, metadata, model, streaming, attempt_guard).instrument(span).await
+                } => Some(result),
             };
+            let Some(result) = result else {
+                let timeout = expires_at
+                    .expect("only a configured deadline can resolve")
+                    .1;
+                let error = deadline_error(timeout);
+                if let Some(guard) = &mut guard {
+                    metrics::record_upstream_attempt(None);
+                    guard.span().record("will_retry", false);
+                    guard.error(&error);
+                }
+                return Err(error);
+            };
+            let mut guard = guard.expect("a completed HTTP attempt has accounting state");
+            let span = guard.span().clone();
             // The retained handle updates this same attempt span with its outcome.
             match result {
                 Ok(response) => {
-                    span.record("outcome", "ok");
                     span.record("status_code", response.status());
                     span.record("will_retry", false);
                     if attempt > 0 || template_retry {
@@ -505,10 +510,25 @@ impl TranslatingLlmClient {
                             upstream_headers,
                         } => EncodedResponse::Streaming {
                             status,
-                            chunks: stream_with_deadline(chunks, expires_at),
+                            chunks: guard.wrap(stream_with_deadline(chunks, expires_at)),
                             upstream_headers,
                         },
-                        buffered => buffered,
+                        EncodedResponse::Buffered {
+                            status,
+                            body,
+                            upstream_headers,
+                            ..
+                        } => {
+                            if !accounting {
+                                guard.success();
+                            }
+                            EncodedResponse::Buffered {
+                                status,
+                                body,
+                                upstream_headers,
+                                attempt: accounting.then_some(guard),
+                            }
+                        }
                     });
                 }
                 Err(failure) => {
@@ -518,7 +538,7 @@ impl TranslatingLlmClient {
                         && rejects_template_options(&failure.error);
                     let will_retry =
                         retry_without_template || (attempt < max_retries && failure.is_retryable());
-                    span.record("outcome", "error");
+                    guard.error(&failure.error);
                     if let Some(status) = failure.status {
                         span.record("status_code", status.as_u16());
                     }
@@ -539,6 +559,7 @@ impl TranslatingLlmClient {
                     span.record("retry_delay_ms", duration_millis(delay));
                     // Close the attempt span before sleeping so backoff is not attempt latency.
                     drop(span);
+                    drop(guard);
                     tokio::select! {
                         biased;
                         timeout = &mut deadline => return Err(deadline_error(timeout)),
@@ -550,16 +571,14 @@ impl TranslatingLlmClient {
         }
     }
 
-    // Performs one HTTP attempt and retains the retry metadata alongside any error.
-    async fn send_once(
+    // Validate the request before opening a physical attempt.
+    fn build_request(
         &self,
         url: &str,
         backend: &Backend,
         body: &Value,
         metadata: Option<&Metadata>,
-        model: &ModelId,
-        streaming: bool,
-    ) -> std::result::Result<EncodedResponse, AttemptFailure> {
+    ) -> Result<reqwest::Request> {
         let client = if backend.is_forwarding_auth() {
             &self.forward_auth_client
         } else {
@@ -570,9 +589,24 @@ impl TranslatingLlmClient {
         let builder = backend.apply_forwarded_auth(builder, metadata);
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
+        builder.build().map_err(convert_reqwest_error)
+    }
 
+    async fn send_once(
+        &self,
+        request: reqwest::Request,
+        backend: &Backend,
+        metadata: Option<&Metadata>,
+        model: &ModelId,
+        streaming: bool,
+        guard: &mut AttemptGuard,
+    ) -> std::result::Result<EncodedResponse, AttemptFailure> {
+        let client = if backend.is_forwarding_auth() {
+            &self.forward_auth_client
+        } else {
+            &self.client
+        };
         let response = match async {
-            let request = builder.build()?;
             if let Some(body) = request.body().and_then(reqwest::Body::as_bytes) {
                 crate::payload_capture::record("request", || String::from_utf8_lossy(body));
             }
@@ -591,10 +625,12 @@ impl TranslatingLlmClient {
             }
         };
         let status = response.status();
+        guard.span().record("status_code", status.as_u16());
+        guard.headers(response.headers());
         if status.is_success() {
             if streaming {
                 let upstream_headers = response.headers().clone();
-                let chunks = match prepare_response_stream(response, backend, model).await {
+                let chunks = match prepare_response_stream(response, backend, model, guard).await {
                     Ok(chunks) => chunks,
                     Err(error) => {
                         metrics::record_upstream_attempt(None);
@@ -630,6 +666,7 @@ impl TranslatingLlmClient {
                 status: status.as_u16(),
                 body: body.to_vec(),
                 upstream_headers,
+                attempt: None,
             });
         }
 
@@ -645,6 +682,9 @@ impl TranslatingLlmClient {
                 });
             }
         };
+        if let Ok(value) = serde_json::from_str::<Value>(&body) {
+            guard.response(&value, backend.wire_format());
+        }
         let body = redact_forwarded_headers(body, metadata, backend.is_forwarding_auth());
         metrics::record_upstream_attempt(Some(status.as_u16()));
         let error =
@@ -676,6 +716,8 @@ impl TranslatingLlmClient {
         request: Request,
         model_name: Option<&ModelId>,
     ) -> Result<Response> {
+        tracing::Span::current().record("switchyard.accounting.unit", "summary");
+        tracing::Span::current().record("switchyard.accounting.attempts", 0_u64);
         let Request {
             mut llm_request,
             metadata,
@@ -725,16 +767,22 @@ impl TranslatingLlmClient {
             EncodedResponse::Buffered {
                 body,
                 upstream_headers,
+                mut attempt,
                 ..
             } => {
-                let body = serde_json::from_slice::<Value>(&body).map_err(|error| {
-                    LlmClientError::ResponseTranslation(format!("invalid upstream JSON: {error}"))
-                })?;
-                // Map a provider's failed generation to 502, even under HTTP 200.
-                // Redact forwarded credentials before returning the provider error.
-                let mut agg =
-                    observed_translation::decode_response(&body, wire_format).map_err(|error| {
-                        match error {
+                let result = (|| {
+                    let body = serde_json::from_slice::<Value>(&body).map_err(|error| {
+                        LlmClientError::ResponseTranslation(format!(
+                            "invalid upstream JSON: {error}"
+                        ))
+                    })?;
+                    if let Some(guard) = &mut attempt {
+                        guard.response(&body, wire_format);
+                    }
+                    // Map a provider's failed generation to 502, even under HTTP 200.
+                    // Redact forwarded credentials before returning the provider error.
+                    let mut agg = observed_translation::decode_response(&body, wire_format)
+                        .map_err(|error| match error {
                             TranslationError::UpstreamFailure { error } => {
                                 LlmClientError::UpstreamHttp {
                                     status: StatusCode::BAD_GATEWAY,
@@ -746,17 +794,24 @@ impl TranslatingLlmClient {
                                 }
                             }
                             error => LlmClientError::ResponseTranslation(error.to_string()),
-                        }
-                    })?;
-                // The gateway may report a buffered charge only in its response header.
-                if agg.usage.provider_cost.is_none() {
-                    agg.usage.provider_cost = upstream_headers
-                        .get("x-litellm-response-cost")
-                        .and_then(|value| value.to_str().ok())
-                        .and_then(|value| value.trim().parse::<f64>().ok())
-                        .filter(|usd| usd.is_finite() && *usd >= 0.0);
+                        })?;
+                    // The gateway may report a buffered charge only in its response header.
+                    if agg.usage.provider_cost.is_none() {
+                        agg.usage.provider_cost = upstream_headers
+                            .get("x-litellm-response-cost")
+                            .and_then(|value| value.to_str().ok())
+                            .and_then(|value| value.trim().parse::<f64>().ok())
+                            .filter(|usd| usd.is_finite() && *usd >= 0.0);
+                    }
+                    Ok((LlmResponse::Agg(agg), upstream_headers))
+                })();
+                if let Some(guard) = &mut attempt {
+                    match &result {
+                        Ok(_) => guard.success(),
+                        Err(error) => guard.error(error),
+                    }
                 }
-                (LlmResponse::Agg(agg), upstream_headers)
+                result?
             }
         };
 
@@ -877,6 +932,7 @@ enum EncodedResponse {
         status: u16,
         body: Vec<u8>,
         upstream_headers: HeaderMap,
+        attempt: Option<AttemptGuard>,
     },
     Streaming {
         status: u16,
@@ -954,6 +1010,7 @@ async fn prepare_response_stream(
     response: reqwest::Response,
     backend: &Backend,
     model: &ModelId,
+    guard: &mut AttemptGuard,
 ) -> Result<LlmResponseStream> {
     let bytes = response.bytes_stream().map(|chunk| {
         chunk
@@ -970,6 +1027,9 @@ async fn prepare_response_stream(
         Some(first) => {
             // An in-band context overflow skips retries and advances to another candidate.
             if let Some(message) = first_event_overflow(&first, backend) {
+                if let Ok(event) = &first {
+                    guard.observe_usage(event);
+                }
                 return Err(LlmClientError::ContextWindowExceeded {
                     model: model.clone(),
                     message,
