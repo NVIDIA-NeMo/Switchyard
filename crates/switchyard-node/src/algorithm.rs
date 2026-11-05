@@ -14,14 +14,14 @@ use http::{HeaderMap, HeaderName, HeaderValue};
 use napi::bindgen_prelude::Promise;
 use napi_derive::napi;
 use parking_lot::Mutex;
-use serde::Deserialize;
-use serde_json::{Value, json};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use switchyard_libsy::{
     Algorithm, CallDecision, CallModel, LibsyError, RuntimeModels, State, Step,
 };
 use switchyard_protocol::{
-    AggLlmResponse, DecisionResponse, LlmClientError, LlmResponse, LlmResponseStream,
-    LlmResponseStreamEvent, Metadata, ModelId, Request, Response,
+    AggLlmResponse, DecisionRequest, DecisionResponse, LlmClientError, LlmRequest, LlmResponse,
+    LlmResponseStream, LlmResponseStreamEvent, Metadata, ModelId, Request, Response,
 };
 use switchyard_runner::AlgorithmFactory;
 use tokio::sync::mpsc;
@@ -434,6 +434,43 @@ impl NativeResponseStream {
     }
 }
 
+#[derive(Serialize)]
+#[serde(untagged)]
+enum StepPayload<'a> {
+    Decision {
+        algorithm: &'a str,
+        request: &'a DecisionRequest,
+        model: &'a ModelId,
+    },
+    Model {
+        algorithm: &'a str,
+        request: &'a LlmRequest,
+        models: &'a [ModelId],
+    },
+    Done {
+        selected_model_ids: &'a [ModelId],
+        request: &'a LlmRequest,
+        fallback_request: Option<&'a LlmRequest>,
+        candidate_requests: BTreeMap<&'a str, &'a LlmRequest>,
+        response: Option<ResponsePayload<'a>>,
+        metadata: Option<MetadataPayload<'a>>,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ResponsePayload<'a> {
+    Agg { response: &'a AggLlmResponse },
+    Stream,
+}
+
+#[derive(Serialize)]
+struct MetadataPayload<'a> {
+    outcome_id: &'a str,
+    algorithm: &'a str,
+    evidence: Option<&'a Value>,
+}
+
 fn step_to_native(step: Step) -> napi::Result<NativeAlgorithmStep> {
     let mut result = NativeAlgorithmStep {
         kind: String::new(),
@@ -444,10 +481,12 @@ fn step_to_native(step: Step) -> napi::Result<NativeAlgorithmStep> {
     match step {
         Step::CallDecision(call) => {
             result.kind = "decision".into();
-            result.data = json!({
-                "algorithm": call.algorithm, "request": call.request, "model": call.model,
+            result.data = serde_json::to_string(&StepPayload::Decision {
+                algorithm: &call.algorithm,
+                request: &call.request,
+                model: &call.model,
             })
-            .to_string();
+            .map_err(routing_error)?;
             result.call = Some(NativeAlgorithmCall {
                 model: call.model.clone(),
                 inner: Mutex::new(Some(HostCall::Decision(call))),
@@ -457,9 +496,12 @@ fn step_to_native(step: Step) -> napi::Result<NativeAlgorithmStep> {
         }
         Step::CallModel(call) => {
             result.kind = "model".into();
-            result.data = json!({
-                "algorithm": call.algorithm, "request": call.request.llm_request, "models": call.models,
-            }).to_string();
+            result.data = serde_json::to_string(&StepPayload::Model {
+                algorithm: &call.algorithm,
+                request: &call.request.llm_request,
+                models: &call.models,
+            })
+            .map_err(routing_error)?;
             result.call = Some(NativeAlgorithmCall {
                 model: call
                     .request
@@ -475,37 +517,39 @@ fn step_to_native(step: Step) -> napi::Result<NativeAlgorithmStep> {
         }
         Step::Done(outcome) => {
             result.kind = "done".into();
-            let response = match outcome.response {
-                Some(response) => match response.llm_response {
-                    LlmResponse::Agg(response) => json!({"kind": "agg", "response": response}),
-                    LlmResponse::Stream(stream) => {
-                        result.stream = Some(NativeResponseStream::new(stream));
-                        json!({"kind": "stream"})
-                    }
-                },
-                None => Value::Null,
-            };
-            let candidate_requests: BTreeMap<_, _> = outcome
-                .candidate_requests
-                .into_iter()
-                .map(|(id, request)| (id.to_string(), request.llm_request))
-                .collect();
-            let metadata = outcome.metadata.map(|metadata| {
-                json!({
-                    "outcome_id": metadata.outcome_id(),
-                    "algorithm": metadata.algorithm,
-                    "evidence": metadata.evidence,
-                })
-            });
-            result.data = json!({
-                "selected_model_ids": outcome.selected_model_ids,
-                "request": outcome.request.llm_request,
-                "fallback_request": outcome.fallback_request.map(|request| request.llm_request),
-                "candidate_requests": candidate_requests,
-                "response": response,
-                "metadata": metadata,
+            result.data = serde_json::to_string(&StepPayload::Done {
+                selected_model_ids: &outcome.selected_model_ids,
+                request: &outcome.request.llm_request,
+                fallback_request: outcome
+                    .fallback_request
+                    .as_ref()
+                    .map(|request| &request.llm_request),
+                candidate_requests: outcome
+                    .candidate_requests
+                    .iter()
+                    .map(|(id, request)| (id.as_str(), &request.llm_request))
+                    .collect(),
+                response: outcome
+                    .response
+                    .as_ref()
+                    .map(|response| match &response.llm_response {
+                        LlmResponse::Agg(response) => ResponsePayload::Agg { response },
+                        LlmResponse::Stream(_) => ResponsePayload::Stream,
+                    }),
+                metadata: outcome.metadata.as_ref().map(|metadata| MetadataPayload {
+                    outcome_id: metadata.outcome_id(),
+                    algorithm: &metadata.algorithm,
+                    evidence: metadata.evidence.as_ref(),
+                }),
             })
-            .to_string();
+            .map_err(routing_error)?;
+            if let Some(Response {
+                llm_response: LlmResponse::Stream(stream),
+                ..
+            }) = outcome.response
+            {
+                result.stream = Some(NativeResponseStream::new(stream));
+            }
         }
     }
     Ok(result)
