@@ -1,6 +1,3 @@
-# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-# SPDX-License-Identifier: Apache-2.0
-
 # Shift picks the model for each request. Switchyard serves it through Shift.
 # Switchyard asks for decisions with the Shift API key in SHIFT_API_KEY. Codex and
 # Claude Code send the same key, and Switchyard forwards it with each model call.

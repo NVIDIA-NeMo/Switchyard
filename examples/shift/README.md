@@ -1,8 +1,3 @@
-<!--
-SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-SPDX-License-Identifier: Apache-2.0
--->
-
 # Shift-1 with direct selection
 
 [Shift](https://shift.ac) runs Shift-1, a router for Codex and Claude Code. In
