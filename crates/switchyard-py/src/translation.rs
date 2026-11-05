@@ -164,7 +164,7 @@ impl PyTranslationEngine {
         let adapter = adapter(py, byte_stream)?;
         let bytes = input_stream(&adapter, |item| {
             Ok(item.cast::<PyBytes>()?.as_bytes().to_vec())
-        })?;
+        });
         let stream = self
             .inner
             .decode_stream(source, bytes)
@@ -195,7 +195,7 @@ impl PyTranslationEngine {
         let adapter = adapter(py, chunks)?;
         let chunks = input_stream(&adapter, |item| {
             from_python::<LlmResponseStreamEvent>(item.cast::<PyDict>()?.as_any())
-        })?;
+        });
         let stream = self
             .inner
             .encode_stream_with_extensions(target, chunks, served_model, &extensions)
@@ -217,7 +217,7 @@ impl PyTranslationEngine {
         let adapter = adapter(py, byte_stream)?;
         let bytes = input_stream(&adapter, |item| {
             Ok(item.cast::<PyBytes>()?.as_bytes().to_vec())
-        })?;
+        });
         let decoded = self
             .inner
             .decode_stream(source, bytes)
@@ -257,53 +257,49 @@ impl NativeStream {
 
 fn adapter<'py>(py: Python<'py>, input: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
     py.import("switchyard_rust._translation_stream")?
-        .getattr("_TranslationStream")?
+        .getattr("_StreamInput")?
         .call1((input,))
 }
 
 fn input_stream<T: Send + 'static>(
     adapter: &Bound<'_, PyAny>,
     convert: fn(&Bound<'_, PyAny>) -> PyResult<T>,
-) -> PyResult<BoxStream<'static, Result<T, LlmClientError>>> {
-    let adapter = adapter.getattr("_input")?.unbind();
-    Ok(
-        futures::stream::unfold(Some(adapter), move |state| async move {
-            let adapter = state?;
-            let next = Python::attach(|py| {
-                let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
-                pyo3_async_runtimes::into_future_with_locals(
-                    &locals,
-                    adapter.bind(py).call_method0("_read")?,
-                )
-            });
-            let result = match next {
-                Ok(next) => next.await,
-                Err(error) => Err(error),
-            };
-            match result {
-                Ok(item) => {
-                    let item = Python::attach(|py| convert(item.bind(py))).map_err(|error| {
-                        LlmClientError::Ffi {
-                            source: Box::new(error),
-                        }
-                    });
-                    Some((item, Some(adapter)))
-                }
-                Err(error)
-                    if Python::attach(|py| error.is_instance_of::<PyStopAsyncIteration>(py)) =>
-                {
-                    None
-                }
-                Err(error) => Some((
-                    Err(LlmClientError::Ffi {
+) -> BoxStream<'static, Result<T, LlmClientError>> {
+    let adapter = adapter.clone().unbind();
+    futures::stream::unfold(Some(adapter), move |state| async move {
+        let adapter = state?;
+        let next = Python::attach(|py| {
+            let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
+            pyo3_async_runtimes::into_future_with_locals(
+                &locals,
+                adapter.bind(py).call_method0("_read")?,
+            )
+        });
+        let result = match next {
+            Ok(next) => next.await,
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(item) => {
+                let item = Python::attach(|py| convert(item.bind(py))).map_err(|error| {
+                    LlmClientError::Ffi {
                         source: Box::new(error),
-                    }),
-                    None,
-                )),
+                    }
+                });
+                Some((item, Some(adapter)))
             }
-        })
-        .boxed(),
-    )
+            Err(error) if Python::attach(|py| error.is_instance_of::<PyStopAsyncIteration>(py)) => {
+                None
+            }
+            Err(error) => Some((
+                Err(LlmClientError::Ffi {
+                    source: Box::new(error),
+                }),
+                None,
+            )),
+        }
+    })
+    .boxed()
 }
 
 fn output_stream<T: Serialize + Send + 'static>(
@@ -323,16 +319,16 @@ fn output_stream<T: Serialize + Send + 'static>(
             )),
         })
     });
-    adapter.setattr(
-        "_native",
-        Py::new(
-            py,
-            NativeStream {
-                inner: Arc::new(Mutex::new(stream.boxed())),
-            },
-        )?,
+    let native = Py::new(
+        py,
+        NativeStream {
+            inner: Arc::new(Mutex::new(stream.boxed())),
+        },
     )?;
-    Ok(adapter.unbind())
+    py.import("switchyard_rust._translation_stream")?
+        .getattr("_TranslationStream")?
+        .call1((adapter, native))
+        .map(Bound::unbind)
 }
 
 fn translation_error(py: Python<'_>, kind: &str, message: String, details: Value) -> PyErr {

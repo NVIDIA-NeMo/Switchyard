@@ -34,9 +34,9 @@ class _StreamInput:
 
 
 class _TranslationStream:
-    def __init__(self, source: AsyncIterable[Any]) -> None:
-        self._input: _StreamInput | None = _StreamInput(source)
-        self._native: Any = None
+    def __init__(self, input_stream: _StreamInput, native: Any) -> None:
+        self._input: _StreamInput | None = input_stream
+        self._native: Any = native
         self._next_future: asyncio.Future[dict[str, Any]] | None = None
         self._closed = False
 
