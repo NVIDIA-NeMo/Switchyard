@@ -159,15 +159,20 @@
 <a href=#159 id=159 data-nosnippet>159</a>/// not serialize requests unless their transport requires it.
 <a href=#160 id=160 data-nosnippet>160</a></span><span class="attr">#[async_trait]
 <a href=#161 id=161 data-nosnippet>161</a></span><span class="kw">pub trait </span>RoutedLlmClient: Send + Sync {
-<a href=#162 id=162 data-nosnippet>162</a>    <span class="doccomment">/// Make a request
-<a href=#163 id=163 data-nosnippet>163</a>    </span><span class="kw">async fn </span>call(<span class="kw-2">&amp;</span><span class="self">self</span>, request: Request) -&gt; <span class="prelude-ty">Result</span>&lt;Response, LlmClientError&gt;;
-<a href=#164 id=164 data-nosnippet>164</a>}
-<a href=#165 id=165 data-nosnippet>165</a>
-<a href=#166 id=166 data-nosnippet>166</a><span class="doccomment">/// Serves typed decision calls over a host-owned transport.
-<a href=#167 id=167 data-nosnippet>167</a>/// Implementations may be shared across targets and called concurrently.
-<a href=#168 id=168 data-nosnippet>168</a></span><span class="attr">#[async_trait]
-<a href=#169 id=169 data-nosnippet>169</a></span><span class="kw">pub trait </span>RoutedDecisionClient: Send + Sync {
-<a href=#170 id=170 data-nosnippet>170</a>    <span class="doccomment">/// Evaluate the request using its selected model.
-<a href=#171 id=171 data-nosnippet>171</a>    </span><span class="kw">async fn </span>call(<span class="kw-2">&amp;</span><span class="self">self</span>, request: DecisionRequest) -&gt; <span class="prelude-ty">Result</span>&lt;DecisionResponse, LlmClientError&gt;;
-<a href=#172 id=172 data-nosnippet>172</a>}
+<a href=#162 id=162 data-nosnippet>162</a>    <span class="doccomment">/// Resolves a routing key for telemetry. Direct model clients keep the key unchanged.
+<a href=#163 id=163 data-nosnippet>163</a>    </span><span class="kw">fn </span>provider_model&lt;<span class="lifetime">'a</span>&gt;(<span class="kw-2">&amp;</span><span class="lifetime">'a </span><span class="self">self</span>, target: <span class="kw-2">&amp;</span><span class="lifetime">'a </span>ModelId) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'a </span>ModelId {
+<a href=#164 id=164 data-nosnippet>164</a>        target
+<a href=#165 id=165 data-nosnippet>165</a>    }
+<a href=#166 id=166 data-nosnippet>166</a>
+<a href=#167 id=167 data-nosnippet>167</a>    <span class="doccomment">/// Make a request
+<a href=#168 id=168 data-nosnippet>168</a>    </span><span class="kw">async fn </span>call(<span class="kw-2">&amp;</span><span class="self">self</span>, request: Request) -&gt; <span class="prelude-ty">Result</span>&lt;Response, LlmClientError&gt;;
+<a href=#169 id=169 data-nosnippet>169</a>}
+<a href=#170 id=170 data-nosnippet>170</a>
+<a href=#171 id=171 data-nosnippet>171</a><span class="doccomment">/// Serves typed decision calls over a host-owned transport.
+<a href=#172 id=172 data-nosnippet>172</a>/// Implementations may be shared across targets and called concurrently.
+<a href=#173 id=173 data-nosnippet>173</a></span><span class="attr">#[async_trait]
+<a href=#174 id=174 data-nosnippet>174</a></span><span class="kw">pub trait </span>RoutedDecisionClient: Send + Sync {
+<a href=#175 id=175 data-nosnippet>175</a>    <span class="doccomment">/// Evaluate the request using its selected model.
+<a href=#176 id=176 data-nosnippet>176</a>    </span><span class="kw">async fn </span>call(<span class="kw-2">&amp;</span><span class="self">self</span>, request: DecisionRequest) -&gt; <span class="prelude-ty">Result</span>&lt;DecisionResponse, LlmClientError&gt;;
+<a href=#177 id=177 data-nosnippet>177</a>}
 </code></pre></div></section></main></body></html>

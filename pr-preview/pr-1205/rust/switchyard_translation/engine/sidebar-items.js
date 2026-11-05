@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"struct":["FormatRegistry","RequestIrOutput","ResponseIrOutput","TranslationEngine","TranslationOutput"]};
+window.SIDEBAR_ITEMS = {"struct":["FormatRegistry","RequestIrOutput","ResponseIrOutput","TranslationEngine","TranslationOutput"],"type":["RawEventStream"]};
