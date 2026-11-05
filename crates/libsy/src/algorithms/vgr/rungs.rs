@@ -172,18 +172,38 @@ pub(super) fn build_verdict_request(
 /// Stable history messages let llama.cpp reuse its cache before the proposed turn.
 pub(super) fn turn_view(request: &Request, proposed: &AggLlmResponse) -> Vec<Message> {
     let conversation = switchyard_translation::conversation(&request.llm_request);
-    let turns: Vec<Turn> = conversation
+    let mut turns: Vec<Turn> = conversation
         .instructions
         .iter()
         .map(|instruction| Turn {
             role: instruction.role,
             text: content_text(&instruction.content).0,
         })
-        .chain(conversation.messages.iter().map(|message| Turn {
-            role: message.role,
-            text: message_text(message),
-        }))
         .collect();
+    for message in conversation.messages.iter() {
+        if message.content.is_empty() {
+            turns.push(Turn {
+                role: message.role,
+                text: String::new(),
+            });
+        }
+        // Contiguous assistant blocks stay together so message_text can remove
+        // command batches duplicated by structured tool calls.
+        for content in message.content.chunk_by(|left, right| {
+            matches!(left, ContentBlock::ToolResult(_))
+                == matches!(right, ContentBlock::ToolResult(_))
+        }) {
+            let role = if matches!(content[0], ContentBlock::ToolResult(_)) {
+                Role::Tool
+            } else {
+                message.role
+            };
+            turns.push(Turn {
+                role,
+                text: message_text(role, content),
+            });
+        }
+    }
     let system_index = turns.iter().position(|turn| turn.role == Role::System);
     let first_user_index = turns.iter().position(|turn| turn.role == Role::User);
 

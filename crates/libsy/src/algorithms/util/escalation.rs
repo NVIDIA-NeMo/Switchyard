@@ -385,7 +385,7 @@ fn summarize_for_judge(
     }
 
     for message in messages {
-        let text = message_text(message);
+        let text = message_text(message.role, &message.content);
         match message.role {
             Role::System | Role::Developer => instruction_anchors.push(format!(
                 "[{}] {}",

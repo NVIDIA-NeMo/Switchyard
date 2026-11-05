@@ -230,13 +230,17 @@ impl FormatCodec for OpenAiChatCodec {
         let mut messages = Vec::new();
         let conversation = crate::conversation(request);
         for instruction in conversation.instructions.iter() {
+            let content = text_from_blocks(&instruction.content, "\n\n");
+            if content.is_empty() {
+                continue;
+            }
             let role = match instruction.role {
                 Role::Developer => "developer",
                 _ => "system",
             };
             messages.push(json!({
                 "role": role,
-                "content": text_from_blocks(&instruction.content, "\n\n"),
+                "content": content,
             }));
         }
         for message in conversation.messages.iter() {
