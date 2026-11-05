@@ -2586,3 +2586,141 @@ async fn target_aliases_preserve_provider_model_metric_labels() -> switchyard_li
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn host_decision_accounting_records_invocations_instead_of_questions()
+-> switchyard_libsy::Result<()> {
+    use switchyard_protocol::{
+        DecisionKind, DecisionQuestion, DecisionRequest, DecisionResponse, RoutedDecisionClient,
+    };
+    const MODEL: &str = "obs-host-decision-model";
+    const ALGORITHM: &str = "obs-host-decision-algo";
+    struct DecisionAlgo;
+    #[async_trait]
+    impl Algorithm for DecisionAlgo {
+        fn name(&self) -> &str {
+            ALGORITHM
+        }
+        async fn route(
+            self: Arc<Self>,
+            driver: Driver,
+            request: Request,
+        ) -> switchyard_libsy::Result<RoutingOutcome> {
+            for _ in 0..2 {
+                let questions = ["first", "second"]
+                    .into_iter()
+                    .map(|id| {
+                        (
+                            id.into(),
+                            DecisionQuestion {
+                                instructions: json!("private question"),
+                                kind: DecisionKind::Boolean {
+                                    true_description: None,
+                                    false_description: None,
+                                },
+                            },
+                        )
+                    })
+                    .collect();
+                driver
+                    .call_decision(
+                        DecisionRequest {
+                            model: None,
+                            context: json!("private context"),
+                            questions,
+                        },
+                        MODEL.into(),
+                    )
+                    .await?;
+            }
+            Ok(RoutingOutcome::route_to("answer".into(), vec![], request))
+        }
+    }
+    struct DecisionClient;
+    #[async_trait]
+    impl RoutedDecisionClient for DecisionClient {
+        async fn call(&self, request: DecisionRequest) -> Result<DecisionResponse, LlmClientError> {
+            assert_eq!(request.questions.len(), 2);
+            Ok(DecisionResponse {
+                id: Some("host-decision-id".into()),
+                model: None,
+                answers: Default::default(),
+                usage: Usage {
+                    input_tokens: Some(6),
+                    output_tokens: Some(2),
+                    provider_cost: Some(0.01),
+                    ..Default::default()
+                },
+            })
+        }
+    }
+    let _guard = serialize_test().lock().await;
+    let (store, exporter, provider, _, _) = telemetry();
+    let clients = ClientRouter::single_with_decision_clients(
+        Arc::new(UsageClient {
+            usage: Usage::default(),
+        }),
+        [(
+            ModelId::from(MODEL),
+            Arc::new(DecisionClient) as Arc<dyn RoutedDecisionClient>,
+        )]
+        .into(),
+    );
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let seen = observations.clone();
+    switchyard_llm_client::run(
+        Arc::new(DecisionAlgo),
+        clients,
+        request_with_metadata("host-decision-session", "host-decision-correlation"),
+        Arc::new(RuntimeModels::default()),
+        Some(Arc::new(move |event| seen.lock().push(event))),
+    )
+    .await?;
+    let spans = store.spans();
+    let host: Vec<_> = spans
+        .iter()
+        .filter(|s| {
+            s.name == "libsy.decision_client_call"
+                && s.fields
+                    .get("selected_model")
+                    .is_some_and(|model| model == MODEL)
+        })
+        .collect();
+    assert_eq!(host.len(), 2);
+    for span in host {
+        assert_eq!(span.fields["switchyard.accounting.unit"], "decision_call");
+        assert_eq!(
+            span.fields["switchyard.accounting.usage_status"],
+            "complete"
+        );
+        assert_eq!(span.fields["gen_ai.usage.input_tokens"], "6");
+        assert_eq!(span.fields["switchyard.usage.provider_cost_usd"], "0.01");
+        assert_eq!(
+            span.fields["gen_ai.conversation.id"],
+            "host-decision-session"
+        );
+        assert!(!format!("{span:?}").contains("private question"));
+    }
+    assert_eq!(
+        observations
+            .lock()
+            .iter()
+            .filter(|o| matches!(o, RunObservation::DecisionCall(_)))
+            .count(),
+        2
+    );
+    let snapshots = flushed_metrics(exporter, provider);
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.decision_calls",
+            &[
+                ("algorithm", ALGORITHM),
+                ("selected_model", MODEL),
+                ("outcome", "ok")
+            ]
+        ),
+        Some(2)
+    );
+    Ok(())
+}

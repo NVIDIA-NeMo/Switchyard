@@ -338,5 +338,18 @@ cost summaries. Relay also loads system plugin configuration when present.
 
 The [cost-summary example](examples/attempt_costs.py) selects unique attempt
 records and uses Relay's codec to obtain costs. These summaries cover Switchyard
-completion work. They do not change ATIF `final_metrics` or include separate
-decision-model usage.
+completion and typed decision work. They do not change ATIF `final_metrics`.
+
+Add `--include-decisions` to the fixture command to test explicit zero-rate and
+paid decisions, missing usage and prices, reported zero charges, repeated
+invocations, concurrent workflows, and native cancellation. Each workflow uses
+its own Relay scope stack. The test checks actual native parent scopes,
+including workflows without identity headers, and keeps decision marks as
+coverage checks rather than charges.
+
+The focused consumer tests require Relay and no native bundle:
+
+```sh
+uv run --with nemo-relay==0.10.0 python \
+  crates/switchyard-nemo-relay-plugin/scripts/test_attempt_costs.py
+```

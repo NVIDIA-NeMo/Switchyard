@@ -22,6 +22,7 @@ use tracing_subscriber::registry::LookupSpan;
 
 const CLIENT_CALL: &str = "libsy.client_call";
 const UPSTREAM_ATTEMPT: &str = "libsy.upstream_attempt";
+const DECISION_CALL: &str = "libsy.decision_client_call";
 const PAYLOAD_TARGET: &str = "switchyard.payload";
 const MAX_PAYLOAD_REDACTION_DEPTH: usize = 64;
 
@@ -201,8 +202,13 @@ impl CapturedSpan {
 
     pub(crate) fn emit(self, runtime: &PluginRuntime) -> Result<(), String> {
         let (scope_type, metadata, input, output) = self.projection();
+        let decision = self.name == DECISION_CALL;
         let mut scope = runtime.scope_at(
-            self.name,
+            if decision {
+                "libsy.decision_call"
+            } else {
+                self.name
+            },
             scope_type,
             None,
             Some(&metadata),
@@ -230,9 +236,10 @@ impl CapturedSpan {
             .and_then(Json::as_str);
         let summary = unit == Some("summary");
         let attempt = unit == Some("completion_attempt");
+        let decision = unit == Some("decision_call");
         let scope_type = if summary {
             ScopeType::Custom
-        } else if attempt {
+        } else if attempt || decision {
             ScopeType::Llm
         } else {
             relay_scope_type(self.name)
@@ -252,7 +259,7 @@ impl CapturedSpan {
                     .count(),
             );
             None
-        } else if attempt || self.name == CLIENT_CALL {
+        } else if attempt || decision || self.name == CLIENT_CALL {
             // Debug payloads supplement accounting, rather than replacing its usage.
             let mut output = response_data(&metadata);
             if let Some(payload) = &self.payloads.response {
@@ -565,7 +572,11 @@ impl Visit for FieldVisitor<'_> {
 }
 
 fn captures(metadata: &Metadata<'_>) -> bool {
-    metadata.target() == "libsy" && matches!(metadata.name(), CLIENT_CALL | UPSTREAM_ATTEMPT)
+    metadata.target() == "libsy"
+        && matches!(
+            metadata.name(),
+            CLIENT_CALL | UPSTREAM_ATTEMPT | DECISION_CALL
+        )
 }
 
 fn relay_scope_type(name: &str) -> ScopeType {
@@ -591,6 +602,9 @@ fn is_safe_field(name: &str) -> bool {
             | "switchyard.candidate_count"
             | "switchyard.call_phase"
             | "selected_model"
+            | "task_id"
+            | "turn_id"
+            | "correlation_id"
             | "gen_ai.request.model"
             | "gen_ai.request.stream"
             | "gen_ai.request.temperature"
@@ -1071,3 +1085,7 @@ mod tests {
 #[cfg(test)]
 #[path = "attempt_tests.rs"]
 mod attempt_tests;
+
+#[cfg(test)]
+#[path = "decision_tests.rs"]
+mod decision_tests;

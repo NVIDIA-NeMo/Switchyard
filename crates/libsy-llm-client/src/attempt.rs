@@ -14,7 +14,7 @@ use switchyard_protocol::{
 };
 use tracing::Span;
 
-use crate::observability::{llm_client_error_type, record_gen_ai_usage};
+use crate::observability::{llm_client_error_type, record_accounting_usage};
 
 pub(crate) struct AttemptGuard {
     span: Span,
@@ -198,37 +198,7 @@ impl AttemptGuard {
         if !self.accounting {
             return;
         }
-        record_gen_ai_usage(&self.span, &self.usage);
-        if let Some(total) = self.usage.total_tokens {
-            self.span.record("switchyard.usage.total_tokens", total);
-        }
-        if let Some(cost) = self.usage.provider_cost {
-            self.span.record("switchyard.usage.provider_cost_usd", cost);
-        }
-        let known = self.usage.input_tokens.is_some()
-            || self.usage.output_tokens.is_some()
-            || self.usage.cached_input_tokens().is_some()
-            || self.usage.cache_creation_input_tokens().is_some()
-            || self
-                .usage
-                .cache
-                .as_ref()
-                .is_some_and(|cache| cache.cache_creation_1h_input_tokens.is_some())
-            || self.usage.total_tokens.is_some()
-            || self.usage.reasoning_tokens.is_some();
-        let complete = self.final_usage
-            && self.usage.input_tokens.is_some()
-            && self.usage.output_tokens.is_some();
-        self.span.record(
-            "switchyard.accounting.usage_status",
-            if complete {
-                "complete"
-            } else if known {
-                "partial"
-            } else {
-                "missing"
-            },
-        );
+        record_accounting_usage(&self.span, &self.usage, self.final_usage);
     }
 
     pub(crate) fn wrap(self, stream: LlmResponseStream) -> LlmResponseStream {

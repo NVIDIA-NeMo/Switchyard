@@ -64,10 +64,15 @@ Each scope retains available usage and supported provider charges when the
 attempt fails or its stream is dropped. Local validation failures and deadlines
 that expire before dispatch create no attempt.
 
-Use these scopes as the accounting source for Switchyard completion work:
+Typed decision-model invocations also emit one `libsy.decision_call` scope,
+with available normalized usage and outcome. This covers decision transports
+such as OpenAI Decisions and SystemOne. LLM classifier calls that use the normal
+completion client remain completion attempts.
 
-1. Select end events with `switchyard.accounting.unit = "completion_attempt"`
-   in the workflow's scope tree. Count each event UUID once.
+Use these scopes as the accounting source for Switchyard model work:
+
+1. Select end events with accounting unit `completion_attempt` or
+   `decision_call` in the workflow's native scope tree. Count each UUID once.
 2. Decode each scope's content-free Messages-shaped output with Relay's
    `AnthropicMessagesCodec`. Relay uses reported charges first and configured
    model prices otherwise. Price each attempt with its own model.
@@ -75,7 +80,9 @@ Use these scopes as the accounting source for Switchyard completion work:
    from this total. They describe work already represented by the attempts.
 4. Check each summary's expected `switchyard.accounting.attempts` against
    `switchyard.accounting.attempt_records` and the received attempt scopes.
-   Missing records leave coverage incomplete.
+   Missing records leave coverage incomplete. Compare decision records with the
+   unique `switchyard.routing.decision_call` marks in the same workflow. These
+   marks check coverage and do not contribute another charge.
 
 The [ATOF cost-summary example](../../crates/switchyard-nemo-relay-plugin/examples/attempt_costs.py)
 implements this selection and uses Relay's existing codec and pricing resolver.
@@ -98,14 +105,24 @@ valid even when token usage is missing.
 Cumulative usage snapshots replace known fields; repeated snapshots are not
 added together. Cache and reasoning fields can overlap other token counts.
 Token coverage and charge coverage are separate: a known provider charge can
-cover an attempt whose token usage is incomplete.
+cover an attempt or decision whose token usage is incomplete.
+
+Configure known free decision models with explicit zero rates in Relay. A missing
+price remains unknown. For example, a `$0.03` answer plus a zero-priced decision
+has a `$0.03` total; with a decision priced at `$0.01`, the total is `$0.04`.
+A decision with unknown usage or price leaves only the known subtotal.
+
+The consumer uses native scope parentage for workflow association. Session,
+task, turn, and correlation IDs supplement it; they do not assign a record to a
+workflow. It reports decisions without a known workflow ancestor in
+`unattributed_decisions` and leaves the complete total absent. Supply the scope
+tree and decision marks needed to verify coverage.
 
 Relay's [model-pricing guide](https://docs.nvidia.com/nemo/relay/configure-plugins/model-pricing)
-explains how to supply model rates. The cost-summary example covers instrumented
-completion attempts. Separate decision-model calls are not yet exported with
-per-call usage. ATIF `final_metrics` still describes Relay's outer interaction;
-it does not automatically include this retry total. Provider work after a
-disconnect and missing telemetry can leave costs unknown.
+explains how to supply model rates. ATIF `final_metrics` still describes Relay's
+outer interaction; it does not automatically include the ATOF workflow total.
+Failed decision bodies are not reparsed for usage. Invalid responses, provider
+work after a disconnect, and missing telemetry can leave costs unknown.
 
 ## How Requests Flow
 
@@ -325,17 +342,24 @@ can receive these records, but each output format presents them differently.
 | Output | What the current integration shows |
 | --- | --- |
 | ATIF | The request and response seen by the agent. Internal routing is not added as separate steps or included in `final_metrics`. Relay-managed ATIF files may retain the raw records under `extra.observed_events`. |
-| OpenTelemetry traces, including OpenInference | Relay's outer LLM span, nested `libsy.client_call` summaries and `libsy.upstream_attempt` accounting scopes, plus eligible routing marks. |
+| OpenTelemetry traces, including OpenInference | Relay's outer LLM span, nested `libsy.client_call` summaries, `libsy.upstream_attempt` accounting scopes, and `libsy.decision_call` scopes, plus eligible routing marks. |
 | OpenTelemetry metrics | Switchyard request, routing-call, latency, token, and failure measurements. Aggregate model-call measurements; use attempt scopes for retry cost accounting. |
 | OTLP logs | Non-metric Switchyard marks that meet the configured severity threshold. |
 
-The plugin captures two existing Switchyard spans. Each routing or answer LLM
+The plugin captures existing Switchyard client, attempt, and host decision spans. Each routing or answer LLM
 call becomes a `libsy.client_call` scope. Physical HTTP attempts and retries
 become `libsy.upstream_attempt` child scopes. Buffered calls close with the response;
 streaming calls close when the stream finishes, fails, or is dropped. The
 projection contains allowlisted routing metadata by default. Optional
 [routing payload capture](#inspect-classifier-and-judge-payloads) adds the final
 classifier/judge request and successful buffered response.
+
+The existing host `libsy.decision_client_call` span is projected as
+`libsy.decision_call` with accounting unit `decision_call`. Each invocation is
+one record, even when it asks several questions. The core decision span, marks,
+and token metrics retain their diagnostic roles. Decision accounting works with
+payload capture disabled and excludes questions, context, answers, and raw
+provider error bodies.
 
 `switchyard.call_phase` records when Switchyard issued a client call:
 `routing` while the algorithm was still deciding, or `completion` after a
@@ -348,6 +372,7 @@ classification as `routing` or `answer`.
 | --- | --- | --- | --- |
 | Routing or answer model call | `libsy.client_call` scope | Relay's managed request scope | Starts with the Switchyard call and closes with the buffered response or terminal stream event. |
 | Physical provider request or retry | `libsy.upstream_attempt` scope | Its `libsy.client_call` scope | Starts before the HTTP attempt and closes on response, error, or cancellation. |
+| Typed decision-model invocation | `libsy.decision_call` scope | Relay's managed request scope | Closes on response, error, or cancellation. |
 | Routing request, decision, overhead, or failure | Existing `switchyard.routing.*` mark | Active Relay scope at emission | Point-in-time mark using the existing outcome fields. |
 
 ### Inspect Classifier and Judge Payloads

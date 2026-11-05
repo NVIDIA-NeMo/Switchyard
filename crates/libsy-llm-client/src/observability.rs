@@ -147,6 +147,41 @@ pub(crate) fn record_gen_ai_usage(span: &Span, usage: &Usage) {
     }
 }
 
+/// Records normalized consumption and whether its final report is available.
+pub(crate) fn record_accounting_usage(span: &Span, usage: &Usage, final_report: bool) {
+    record_gen_ai_usage(span, usage);
+    if let Some(total) = usage.total_tokens {
+        span.record("switchyard.usage.total_tokens", total);
+    }
+    if let Some(cost) = usage
+        .provider_cost
+        .filter(|cost| cost.is_finite() && *cost >= 0.0)
+    {
+        span.record("switchyard.usage.provider_cost_usd", cost);
+    }
+    let known = usage.input_tokens.is_some()
+        || usage.output_tokens.is_some()
+        || usage.cached_input_tokens().is_some()
+        || usage.cache_creation_input_tokens().is_some()
+        || usage
+            .cache
+            .as_ref()
+            .is_some_and(|cache| cache.cache_creation_1h_input_tokens.is_some())
+        || usage.total_tokens.is_some()
+        || usage.reasoning_tokens.is_some();
+    let complete = final_report && usage.input_tokens.is_some() && usage.output_tokens.is_some();
+    span.record(
+        "switchyard.accounting.usage_status",
+        if complete {
+            "complete"
+        } else if known {
+            "partial"
+        } else {
+            "missing"
+        },
+    );
+}
+
 // OpenTelemetry integer attributes are signed; token counts are unsigned in the IR.
 fn otel_int(value: u64) -> i64 {
     value.min(i64::MAX as u64) as i64
