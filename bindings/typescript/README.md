@@ -101,8 +101,8 @@ Treat `CompositeState` as opaque. It carries the judge's tier and stage holds.
 
 A rejected `decide` call follows `classifier.fail_open`. With `false`, routing
 fails with the original error as `cause`. With `true`, routing keeps the previous
-tier or uses the stage default. An answer without a usable advantage score also
-keeps that fallback tier.
+tier or uses the stage default. An answer without a usable probability for the
+`apply_cutoff_to` choice (`capable` by default) follows the same policy.
 
 An aborted signal closes the Rust run and rejects promptly, including while
 `decide` is pending. Late callback results are ignored. Pass the same signal to
