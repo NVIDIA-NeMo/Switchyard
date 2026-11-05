@@ -402,6 +402,17 @@ request; they do not accumulate in the caller's conversation. The escalation
 note accompanies a signal-driven capable decision, and the optional de-escalation
 note accompanies a signal-driven efficient decision.
 
+Switchyard appends notes directly to supported saved Chat Completions,
+Responses, and Anthropic Messages request bodies. Unsupported bodies may still
+require reconstruction.
+
+Switchyard places cache markers before the notes for Anthropic requests. For
+Chat Completions and Responses, it does so only when it recognizes the upstream
+model ID as part of the GPT-5.6 or GPT-6 family. Route aliases do not change
+eligibility. OpenAI explicit-only cache mode skips these automatic markers.
+Switchyard skips new markers when the request's existing marker limit is reached.
+Cache reuse depends on the provider and request; measure it with your workload.
+
 ```toml
 [routes.stage.handoff_notes]
 escalation_note = "the previous model was stalling; pick up the diagnosis"
