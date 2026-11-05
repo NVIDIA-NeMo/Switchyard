@@ -438,19 +438,7 @@ impl Middleware {
                 "algorithm": route.algorithm_name(), "required_labels": required_labels,
             })
         });
-        let output = match route
-            .execute_with_privacy_observer(
-                request,
-                events.observer(),
-                |requirements| {
-                    events.emit("admission", || serde_json::json!({
-                        "required_labels": requirements.required_labels(), "lane": requirements.lane(),
-                        "source": requirements.source(),
-                    }))
-                },
-            )
-            .await
-        {
+        let output = match route.execute(request, events.observer()).await {
             Ok(output) => output,
             Err(error) => {
                 let summary = error.execution_error_summary();
@@ -460,18 +448,21 @@ impl Middleware {
                         "message": "Approved models unavailable",
                     })
                 });
-                return completed(503,
+                return completed(
+                    503,
                     serde_json::json!({
                         "error": { "type": "upstream_unavailable", "message": "Approved models unavailable" }
-                    })
+                    }),
                 );
             }
         };
-        let served = output
+        let served_target = output
             .response
             .served_model()
             .cloned()
             .unwrap_or_else(|| output.selected_model.clone());
+        let selected = route.provider_model(&output.selected_model);
+        let served = route.provider_model(&served_target);
         let response = output.response.llm_response.into_agg().await?;
         let body = encode_aggregated_response_with_extensions(
             &response,
@@ -481,7 +472,7 @@ impl Middleware {
         )?;
         let mut result = completed(200, body)?;
         result.metadata = [
-            ("selected_model".into(), output.selected_model.to_string()),
+            ("selected_model".into(), selected.to_string()),
             ("served_model".into(), served.to_string()),
             (
                 "lane".into(),
@@ -501,7 +492,7 @@ impl Middleware {
         events.emit("request_completed", || {
             serde_json::json!({
                 "algorithm": route.algorithm_name(), "required_labels": required_labels,
-                "selected_model": output.selected_model, "served_model": served,
+                "selected_model": selected, "served_model": served,
                 "elapsed_ms": started.elapsed().as_secs_f64() * 1000.0,
             })
         });
