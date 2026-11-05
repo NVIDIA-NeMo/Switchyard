@@ -12,11 +12,13 @@ export interface CompositeOptions {
     classify_trigger: "user_turn" | "new_session";
     fail_open: boolean;
     decision: {
-      cutoff: number;
-      candidates: Record<string, "capable" | "efficient">;
-      evidence: unknown;
-      instructions?: unknown;
-      criteria?: Record<string, unknown>;
+      /** Defaults to 0.6. */
+      cutoff?: number;
+      instructions?: string;
+      /** Defaults to the `capable` and `efficient` choices. */
+      choices?: { id: string; description: string }[];
+      /** Defaults to `capable`. */
+      apply_cutoff_to?: string;
     };
   };
   stage: {
@@ -46,15 +48,15 @@ export interface RoutingMessage {
 
 export interface DecisionRequest {
   model?: string | null;
-  context: unknown;
+  input: RoutingMessage[];
   questions: Record<string, DecisionQuestion>;
 }
 
 export interface DecisionQuestion {
-  instructions: unknown;
+  instructions: string;
   kind:
     | { type: "boolean"; data: { true_description?: unknown; false_description?: unknown } }
-    | { type: "choice"; data: { options: { id: string; description?: unknown }[] } }
+    | { type: "choice"; data: { options: { id: string; description: string }[] } }
     | { type: "score"; data: { levels: unknown[] } };
 }
 

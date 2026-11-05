@@ -41,8 +41,6 @@ strong_target = "capable"
 weak_target = "fast"
 [routes.classifier.decision]
 cutoff = 0.7
-candidates = { a = "capable", b = "fast" }
-evidence = { description = "Compare both targets." }
 "#;
 
 #[test]

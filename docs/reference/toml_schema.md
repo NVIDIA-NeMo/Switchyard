@@ -252,7 +252,8 @@ decision_client = "decisions"
 ```
 
 Each `decision_targets` entry pairs an upstream model `id` with a `decision_client`.
-OpenAI receives structured context, instructions, and descriptions as JSON text.
+Both formats receive the conversation messages, the question instructions, and
+the choice descriptions.
 
 ## `[routes.<name>]`
 
@@ -574,6 +575,10 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classifier.classify_trigger` | Yes | — | `user_turn` re-picks the tier whenever the user speaks, `new_session` picks once and holds it. `every_request` is rejected here: a judge call per tool step is the cost this route exists to avoid. |
 | `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. It cannot be combined with the LLM judge keys (`base_threshold`, `threshold_step`, `prompt`, `response_format_type`, `max_output_tokens`). |
+| `classifier.decision.cutoff` | No | `0.6` | Select capable when the `apply_cutoff_to` probability is above this value. In `[0, 1]`. |
+| `classifier.decision.instructions` | No | built in | Replaces the default question text. Keep the meaning of the choices. |
+| `classifier.decision.choices` | No | `capable`, `efficient` | Array of `{ id, description }` tables sent as the choice options. IDs must be unique. |
+| `classifier.decision.apply_cutoff_to` | No | `capable` | Choice ID whose probability is compared with `cutoff`. |
 | `classifier.fail_open` | No | `true` | On judge failure, retain the last classified tier or default to efficient. Set `false` to return the error. |
 | `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier. |
 | `classifier.recent_turn_window` | No | unset | LLM judges default to task messages. Decision judges default to 10 recent messages plus the opening task. An explicit value sets the trailing message window. |

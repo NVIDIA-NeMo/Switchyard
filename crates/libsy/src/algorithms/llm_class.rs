@@ -12,8 +12,8 @@ use serde_json::Value;
 use switchyard_protocol::{Category, ContentBlock, Message, Role};
 
 mod decision;
+pub use decision::{DecisionChoice, DecisionJudgeConfig, DirectClassifierConfig};
 use decision::{DecisionClassifier, DirectClassifier};
-pub use decision::{DecisionJudgeConfig, DirectClassifierConfig};
 
 use super::escalation;
 use super::fall_through::FallThrough;
@@ -1545,7 +1545,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decision_judge_routes_on_relative_advantage() -> Result<()> {
+    async fn decision_judge_routes_on_capable_probability() -> Result<()> {
         use crate::{Call, RuntimeModels, drive};
         use serde_json::json;
         use std::collections::BTreeMap;
@@ -1556,19 +1556,8 @@ mod tests {
         };
 
         let settings = DecisionJudgeConfig {
-            cutoff: 0.4,
-            instructions: None,
-            criteria: None,
-            candidates: BTreeMap::from([
-                ("a".into(), "capable".into()),
-                ("b".into(), "efficient".into()),
-                ("c".into(), "third".into()),
-            ]),
-            evidence: json!({
-                "candidate_descriptions": {"a": "Profile A", "b": "Profile B", "c": "Profile C"},
-                "reference_cases": [{"task": "Independent example", "observed_solved": {"a": true, "b": null, "c": false}}],
-                "summaries": [],
-            }),
+            cutoff: Some(0.4),
+            ..DecisionJudgeConfig::default()
         };
         let mut request = classify_session_request();
         request.llm_request.messages.push(Message {
@@ -1616,18 +1605,19 @@ mod tests {
             ("provider error", 0.0, true, Some("capable")),
             ("provider error", 0.0, false, None),
             ("dropped reply", 0.0, true, Some("capable")),
-            ("missing candidate", 0.0, true, None),
+            ("custom choices", 0.45, false, Some("capable")),
         ] {
             let mut config = settings.clone();
-            if name == "missing candidate" {
-                config.candidates.remove("a");
-            }
             if name == "below" {
-                config.instructions = Some(
-                    json!({"policy": "Judge capable-only success using the supplied evidence."}),
-                );
+                config.instructions = Some("Choose capable when the task needs it.".into());
+            }
+            if name == "custom choices" {
+                config.choices[0].id = "complex".into();
+                config.choices[1].id = "simple".into();
+                config.apply_cutoff_to = "complex".into();
             }
             let override_instructions = config.instructions.clone();
+            let choice_ids = [config.choices[0].id.clone(), config.choices[1].id.clone()];
             let router: Arc<dyn Algorithm> =
                 Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                     config: TaskClassifierConfig {
@@ -1642,8 +1632,8 @@ mod tests {
             let serve = |call| {
                 let calls = &calls;
                 let expected_task = &expected_task;
-                let settings = &settings;
                 let override_instructions = &override_instructions;
+                let [capable_id, efficient_id] = choice_ids.clone();
                 async move {
                     let Call::Decision(call) = call else {
                         panic!("judge must use the decision step")
@@ -1652,14 +1642,8 @@ mod tests {
                     assert_eq!(call.model, "judge");
                     assert_eq!(call.request.model, Some("judge".into()));
                     assert_eq!(
-                        call.request.context,
-                        json!({
-                            "task": expected_task,
-                            "session": "session-1",
-                            "candidates": ["a", "b", "c"],
-                            "comparison": {"capable": "a", "efficient": "b"},
-                            "evidence": settings.evidence,
-                        })
+                        serde_json::to_value(&call.request.input).unwrap(),
+                        *expected_task
                     );
                     assert_eq!(call.request.questions.len(), 1);
                     let question = &call.request.questions["route"];
@@ -1672,14 +1656,17 @@ mod tests {
                             .iter()
                             .map(|option| option.id.as_str())
                             .collect::<Vec<_>>(),
-                        ["advantage", "no_advantage"]
+                        [capable_id.as_str(), efficient_id.as_str()]
                     );
                     if let Some(instructions) = override_instructions {
                         assert_eq!(&question.instructions, instructions);
                     } else {
-                        for key in ["setting", "evidence", "comparison", "boundary", "policy"] {
-                            assert!(question.instructions[key].as_str().is_some());
-                        }
+                        assert!(
+                            question
+                                .instructions
+                                .as_str()
+                                .is_some_and(|text| !text.is_empty())
+                        );
                     }
                     if name == "provider error" {
                         return call
@@ -1697,19 +1684,18 @@ mod tests {
                         DecisionValue::Boolean(BooleanEstimate::Value(true))
                     } else {
                         DecisionValue::Choice {
-                            selected: "no_advantage".into(),
+                            selected: efficient_id.clone(),
                             probabilities: (name != "no distribution").then(|| {
                                 BTreeMap::from([
                                     (
                                         if name == "missing probability" {
-                                            "other"
+                                            "other".into()
                                         } else {
-                                            "advantage"
-                                        }
-                                        .into(),
+                                            capable_id.clone()
+                                        },
                                         Probability(score),
                                     ),
-                                    ("no_advantage".into(), Probability(1.0 - score)),
+                                    (efficient_id.clone(), Probability(1.0 - score)),
                                 ])
                             }),
                         }
@@ -1736,17 +1722,9 @@ mod tests {
             };
             let models = Arc::new(RuntimeModels::new(runtime_models()));
             let result = drive(router.clone(), request.clone(), models.clone(), &serve).await;
-            assert_eq!(
-                calls.load(Ordering::SeqCst),
-                usize::from(name != "missing candidate"),
-                "{name}"
-            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "{name}");
             let Some(expected) = expected else {
-                if name == "missing candidate" {
-                    assert!(
-                        matches!(result, Err(LibsyError::AlgorithmError { message }) if message.contains("candidate is missing"))
-                    );
-                } else if name == "provider error" {
+                if name == "provider error" {
                     assert!(
                         matches!(result, Err(LibsyError::ClientCall { .. })),
                         "{name}"
@@ -1766,12 +1744,12 @@ mod tests {
             let metadata = outcome.metadata.expect("routing metadata");
             assert_eq!(metadata.judgments.len(), 1);
             let evidence = metadata.evidence.expect("routing evidence");
-            if matches!(name, "above" | "equal" | "below") {
+            if matches!(name, "above" | "equal" | "below" | "custom choices") {
                 assert_eq!(metadata.judgments[0].target.as_deref(), Some(expected));
                 assert_eq!(evidence["source"], "decision_classifier");
-                assert_eq!(evidence["verdict"], "relative_advantage");
-                assert_eq!(evidence["threshold"], settings.cutoff);
-                assert_eq!(evidence["score"], score);
+                assert_eq!(evidence["verdict"], expected);
+                assert_eq!(evidence["capable_threshold"], 0.4);
+                assert_eq!(evidence["capable_score"], score);
             } else {
                 let reason = match name {
                     "provider error" => "client_error",
@@ -1800,7 +1778,7 @@ mod tests {
         }
         for cutoff in [-0.1, 1.1, f64::NAN] {
             let mut config = settings.clone();
-            config.cutoff = cutoff;
+            config.cutoff = Some(cutoff);
             assert!(
                 LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                     config: TaskClassifierConfig {
@@ -1811,22 +1789,6 @@ mod tests {
                 .is_err()
             );
         }
-        let mut duplicate = settings.clone();
-        duplicate
-            .candidates
-            .insert("duplicate-a".into(), "capable".into());
-        assert!(duplicate.validate().is_err());
-        let mut custom = settings.clone();
-        custom.candidates.remove("c");
-        custom.criteria = Some(BTreeMap::from([
-            ("a".into(), json!("Start capable")),
-            ("b".into(), json!("Start efficient")),
-        ]));
-        assert!(custom.validate().is_err());
-        custom.instructions = Some(json!("Choose a profile."));
-        assert!(custom.validate().is_ok());
-        custom.candidates.remove("b");
-        assert!(custom.validate().is_err());
         Ok(())
     }
 

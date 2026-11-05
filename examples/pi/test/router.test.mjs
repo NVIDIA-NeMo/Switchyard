@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -18,10 +18,10 @@ const request = (fields = {}) => ({
   reason: "user", messages: [{ role: "user", content: "task" }],
   thinkingLevel: "high", signal: new AbortController().signal, ...fields,
 });
-const result = (advantage = 0.6) => ({
+const result = (capable = 0.6) => ({
   provider: "openrouter", model: "inception/mercury-decide:free", stopReason: "stop",
   answers: { route: {
-    type: "choice", choice: advantage > 0.5 ? "advantage" : "no_advantage", probabilities: { advantage, no_advantage: 1 - advantage }, confidence: 0.9,
+    type: "choice", choice: capable > 0.5 ? "capable" : "efficient", probabilities: { capable, efficient: 1 - capable }, confidence: 0.9,
   } },
 });
 
@@ -67,15 +67,11 @@ test("Pi classifies the libsy question and retains the capable tier on a read co
   const [judge, context, options] = registry.classify.mock.calls[0].arguments;
   assert.equal(judge, registry.findOfType.mock.calls[0].result);
   assert.deepEqual(options, { signal: req.signal });
-  assert.deepEqual(context.state.comparison, { capable: "a", efficient: "b" });
-  assert.equal(context.state.evidence.description, "Candidate a is the larger reasoning-oriented coding and thinking model. It is intended for complex problems. Candidate b is the smaller fast coding model. It is intended for simple questions, simple local reads and edits, routine tests and straightforward fixes. These are qualitative deployment roles, not empirical success rates.");
-  assert.deepEqual(context.state.task, [{ role: "user", content: [{ type: "text", text: "task" }] }]);
+  assert.deepEqual(context.state, { input: [{ role: "user", content: [{ type: "text", text: "task" }] }] });
   assert.equal(context.questions.route.type, "choice");
   assert.equal(typeof context.questions.route.instructions, "string");
-  assert.deepEqual(JSON.parse(context.questions.route.instructions), JSON.parse(readFileSync(new URL(
-    "../../../crates/libsy/src/prompts/capability-classifier/relative_advantage.json", import.meta.url,
-  ), "utf8")));
-  assert.deepEqual(Object.keys(context.questions.route.criteria), ["advantage", "no_advantage"]);
+  assert.ok(context.questions.route.instructions.length > 0);
+  assert.deepEqual(Object.keys(context.questions.route.criteria), ["capable", "efficient"]);
   const continued = await route(request({
     reason: "continuation", state: initial.state,
     messages: [...req.messages, ...tool("read", "read", { path: "parser.rs" }, "fn parse() {}")],
@@ -157,18 +153,19 @@ test("config loads lazily, names missing fields, and is cached until reload", as
 
 test("message and classifier adapters preserve content and model identities", async (t) => {
   const { route, registry } = setup(t);
+  const input = [{ role: "user", content: [{ type: "text", text: "task" }] }];
   const nativeRoute = t.mock.fn(async (_, { decide }) => {
-    const response = await decide({ context: { task: "task" }, questions: { route: {
+    const response = await decide({ input, questions: { route: {
       instructions: "Choose a model",
       kind: { type: "choice", data: { options: [
-        { id: "advantage", description: "Complex work" }, { id: "no_advantage", description: { task: "Simple work" } }, { id: "unspecified" },
+        { id: "capable", description: "Complex work" }, { id: "efficient", description: "Simple work" },
       ] } },
     } } });
     assert.deepEqual(response, { model: config.decision_model, answers: { route: {
-      value: { type: "choice", data: { selected: "advantage", probabilities: result().answers.route.probabilities } },
+      value: { type: "choice", data: { selected: "capable", probabilities: result().answers.route.probabilities } },
       provider_confidence: 0.9,
     } } });
-    await assert.rejects(decide({ context: {}, questions: { route: { kind: { type: "score" } } } }), /Expected a choice question/);
+    await assert.rejects(decide({ input: [], questions: { route: { kind: { type: "score" } } } }), /Expected a choice question/);
     return { model: "openrouter/vendor/model" };
   });
   t.mock.method(CompositeRouter, "create", () => ({ route: nativeRoute }));
@@ -190,8 +187,8 @@ test("message and classifier adapters preserve content and model identities", as
   assert.equal(options.signal, req.signal);
   assert.equal(options.state, req.state);
   assert.deepEqual(registry.classify.mock.calls[0].arguments[1], {
-    state: { task: "task" }, questions: { route: {
-      type: "choice", instructions: "Choose a model", criteria: { advantage: "Complex work", no_advantage: '{"task":"Simple work"}', unspecified: "null" },
+    state: { input }, questions: { route: {
+      type: "choice", instructions: "Choose a model", criteria: { capable: "Complex work", efficient: "Simple work" },
     } },
   });
 });
