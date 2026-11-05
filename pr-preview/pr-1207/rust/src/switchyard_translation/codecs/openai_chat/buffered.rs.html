@@ -28,7 +28,7 @@
 <a href=#28 id=28 data-nosnippet>28</a><span class="kw">use </span><span class="kw">crate</span>::util::{
 <a href=#29 id=29 data-nosnippet>29</a>    capture_request_preservation, capture_response_preservation, embed_preservation,
 <a href=#30 id=30 data-nosnippet>30</a>    exact_preserved_request, exact_preserved_response, json_string, object, push_lossy,
-<a href=#31 id=31 data-nosnippet>31</a>    reject_responses_builtin_tool_item, stable_id, string_value, validate_request_capabilities,
+<a href=#31 id=31 data-nosnippet>31</a>    reject_responses_native_input_item, stable_id, string_value, validate_request_capabilities,
 <a href=#32 id=32 data-nosnippet>32</a>};
 <a href=#33 id=33 data-nosnippet>33</a>
 <a href=#34 id=34 data-nosnippet>34</a><span class="doccomment">/// Format codec for OpenAI Chat Completions payloads.
@@ -1092,7 +1092,7 @@
 <a href=#1092 id=1092 data-nosnippet>1092</a>    <span class="kw">if </span>role != Role::User {
 <a href=#1093 id=1093 data-nosnippet>1093</a>        <span class="kw">for </span>block <span class="kw">in </span>content {
 <a href=#1094 id=1094 data-nosnippet>1094</a>            <span class="kw">if let </span>ContentBlock::Unknown { provider, raw } = block {
-<a href=#1095 id=1095 data-nosnippet>1095</a>                reject_responses_builtin_tool_item(provider, raw, WireFormat::OpenAiChat)<span class="question-mark">?</span>;
+<a href=#1095 id=1095 data-nosnippet>1095</a>                reject_responses_native_input_item(provider, raw, WireFormat::OpenAiChat)<span class="question-mark">?</span>;
 <a href=#1096 id=1096 data-nosnippet>1096</a>            }
 <a href=#1097 id=1097 data-nosnippet>1097</a>        }
 <a href=#1098 id=1098 data-nosnippet>1098</a>        push_lossy(
@@ -1147,7 +1147,7 @@
 <a href=#1147 id=1147 data-nosnippet>1147</a>                ));
 <a href=#1148 id=1148 data-nosnippet>1148</a>            }
 <a href=#1149 id=1149 data-nosnippet>1149</a>            ContentBlock::Unknown { provider, raw } =&gt; {
-<a href=#1150 id=1150 data-nosnippet>1150</a>                reject_responses_builtin_tool_item(provider, raw, WireFormat::OpenAiChat)<span class="question-mark">?</span>;
+<a href=#1150 id=1150 data-nosnippet>1150</a>                reject_responses_native_input_item(provider, raw, WireFormat::OpenAiChat)<span class="question-mark">?</span>;
 <a href=#1151 id=1151 data-nosnippet>1151</a>                push_lossy(
 <a href=#1152 id=1152 data-nosnippet>1152</a>                    diagnostics,
 <a href=#1153 id=1153 data-nosnippet>1153</a>                    policy,

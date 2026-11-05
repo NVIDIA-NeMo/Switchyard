@@ -26,8 +26,8 @@ header names are case-insensitive.</p>
 so a target can reinstate one deliberately. For providers that reject an otherwise
 standard field (e.g. an internal API that 400s on <code>max_output_tokens</code>).</p>
 </div><span id="structfield.reasoning_effort" class="structfield section-header"><a href="#structfield.reasoning_effort" class="anchor field">§</a><code>reasoning_effort: <a class="enum" href="https://doc.rust-lang.org/1.99.1/core/option/enum.Option.html" title="enum core::option::Option">Option</a>&lt;<a class="struct" href="https://doc.rust-lang.org/1.99.1/alloc/string/struct.String.html" title="struct alloc::string::String">String</a>&gt;</code></span><div class="docblock"><p>Reasoning effort forced on every request to this backend, replacing whatever the caller
-sent. Responses carries it as <code>reasoning.effort</code>, Chat Completions as <code>reasoning_effort</code>;
-Anthropic has no equivalent and rejects the setting at configuration time.</p>
+sent. Responses carries it as <code>reasoning.effort</code>, Chat Completions as <code>reasoning_effort</code>,
+and Anthropic Messages as <code>output_config.effort</code>.</p>
 </div><span id="structfield.max_retries" class="structfield section-header"><a href="#structfield.max_retries" class="anchor field">§</a><code>max_retries: <a class="primitive" href="https://doc.rust-lang.org/1.99.1/std/primitive.u32.html">u32</a></code></span><div class="docblock"><p>Additional attempts for transient upstream failures.
 One template-compatibility retry may also run within the same timeout.</p>
 </div><span id="structfield.failure_cooldown" class="structfield section-header"><a href="#structfield.failure_cooldown" class="anchor field">§</a><code>failure_cooldown: <a class="struct" href="https://doc.rust-lang.org/1.99.1/core/time/struct.Duration.html" title="struct core::time::Duration">Duration</a></code></span><div class="docblock"><p>Cooldown after an exhausted transient completion failure. Zero disables it.</p>
