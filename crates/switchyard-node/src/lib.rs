@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Composite routing with caller-owned decision calls and state.
+//! Node bindings for composite routing and buffered JSON translation.
+
+mod translation;
 
 use std::future::ready;
 use std::sync::Arc;

@@ -1,8 +1,9 @@
 # Switchyard libsy for Node.js
 
-TypeScript bindings for composite routing. Rust builds a Decision request and uses
-the caller's answer with local tool signals to select a model. The caller handles
-classifier calls, completion requests, and branch state.
+TypeScript bindings for composite routing and buffered JSON translation.
+Composite routing uses the caller's decision response and local tool signals to
+select a model. The caller handles classifier calls, completion requests, and
+branch state.
 
 Capable-first routing defaults to pinning the efficient tier after switching to
 it. Set `stage.efficient_hold_turns: 0` to disable this hold. Efficient-first
@@ -107,3 +108,32 @@ tier or uses the stage default. An answer without a usable probability for the
 An aborted signal closes the Rust run and rejects promptly, including while
 `decide` is pending. Late callback results are ignored. Pass the same signal to
 your classifier client to cancel its work too.
+
+## Buffered JSON translation
+
+Translate complete OpenAI Chat Completions, OpenAI Responses, and Anthropic
+Messages bodies with the built-in codecs and default policy:
+
+```ts
+import { TranslationEngine, WireFormat } from "@switchyard/libsy";
+
+const engine = new TranslationEngine();
+const { request, diagnostics } = engine.decodeRequest(WireFormat.OPENAI_CHAT, {
+  model: "example",
+  messages: [{ role: "user", content: "Hello" }],
+});
+const { body } = engine.encodeRequest(WireFormat.ANTHROPIC_MESSAGES, request);
+```
+
+`decodeRequest` and `decodeResponse` return normalized JSON under `request` or
+`response`, plus `diagnostics`. `encodeRequest`, `encodeResponse`,
+`translateRequest`, and `translateResponse` return `body` and `diagnostics`.
+Inputs must be JSON objects. Translation failures raise `TranslationError` with
+`kind` and `details`; invalid normalized input has code `ERR_INVALID_REQUEST`.
+
+Calls retain no request context. To restore request-specific tool names, pass
+decoded `request.extensions` as the third argument to `encodeResponse` or the
+fourth argument to `translateResponse`. Decoded values also retain provider data
+for same-format replay, so editing normalized fields does not automatically
+replace that saved body. This API handles buffered JSON; HTTP transport and SSE
+streams remain with the caller.
