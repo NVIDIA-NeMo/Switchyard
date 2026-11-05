@@ -2606,6 +2606,7 @@ name = "switchyard-node"
 version = "0.3.0"
 dependencies = [
  "futures",
+ "http",
  "napi",
  "napi-build",
  "napi-derive",
@@ -2614,7 +2615,9 @@ dependencies = [
  "serde_json",
  "switchyard-libsy",
  "switchyard-protocol",
+ "switchyard-runner",
  "switchyard-translation",
+ "tokio",
 ]
 
 [[package]]

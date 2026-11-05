@@ -3,6 +3,7 @@
 
 import { createRequire } from "node:module";
 
+export * from "./algorithm.js";
 export { TranslationEngine, TranslationError, WireFormat } from "./translation.js";
 
 /** Opaque routing state. Store it unchanged and pass it back on the same branch. */

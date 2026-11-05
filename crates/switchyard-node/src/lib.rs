@@ -1,8 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Node bindings for composite routing and buffered JSON translation.
+//! Node bindings for routing algorithms and buffered JSON translation.
 
+mod algorithm;
 mod translation;
 
 use std::future::ready;

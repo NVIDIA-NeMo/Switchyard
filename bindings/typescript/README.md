@@ -1,13 +1,9 @@
 # Switchyard libsy for Node.js
 
-TypeScript bindings for composite routing and buffered JSON translation.
-Composite routing uses the caller's decision response and local tool signals to
-select a model. The caller handles classifier calls, completion requests, and
-branch state.
-
-Capable-first routing defaults to pinning the efficient tier after switching to
-it. Set `stage.efficient_hold_turns: 0` to disable this hold. Efficient-first
-defaults to no efficient hold. Persist the returned state to retain holds.
+TypeScript bindings for routing algorithms and buffered JSON translation.
+The host handles model and decision calls. `AlgorithmFactory` builds configured
+algorithms from deployment TOML; `CompositeRouter` provides the smaller composite
+routing API.
 
 Requires Node.js 22.19 or newer and the repository's Rust toolchain. The package
 is private. Its native addon is built for the local host. Linux is covered in CI.
@@ -24,8 +20,8 @@ npm --prefix bindings/typescript test
 ```
 
 The build uses Cargo's development profile and copies the addon and license files
-into the package. Rebuild after changing Rust code. Tests use local decision
-callbacks.
+into the package. Rebuild after changing Rust code. Tests use local callbacks and
+HTTP fixtures.
 
 Install the built package in a local Node project:
 
@@ -33,7 +29,71 @@ Install the built package in a local Node project:
 npm install /absolute/path/to/Switchyard/bindings/typescript
 ```
 
-## API
+## Configured algorithms
+
+```ts
+import { AlgorithmFactory, LlmResponse, Step } from "@switchyard/libsy";
+
+const routes = AlgorithmFactory.fromToml(source).build();
+const steps = routes["public/main"].runStream(request, { headers });
+```
+
+`source` is deployment TOML and `request` is a normalized Switchyard request.
+The factory validates configuration without resolving credentials or creating
+provider clients. Reuse configured algorithms to retain algorithm-owned state.
+Configurations that require target eligibility checks must use Runner admission;
+the factory rejects them.
+
+The iterator yields Python-compatible routing steps:
+
+- `Step.CallModel`: serve `call.request` using `call.models[0]`, then pass a Promise
+  of `LlmResponse.Agg` or `LlmResponse.Stream` to `call.respond`.
+- `Step.CallDecision`: serve `call.request` using `call.model`, then pass a
+  Promise of `DecisionResponse` to `call.respond`.
+- `Step.Done`: read the selected models, rewritten requests, optional response,
+  and metadata from `step.outcome`.
+
+For routing-time model calls, use only the first candidate and pass failures to
+`call.respond` or `call.fail`. The reply has no field for the actual served logical
+target. When `Step.Done` has no response, the host may try `outcome.selected_model_ids`
+in order to serve the final answer, applying the outcome's requests.
+
+Model calls and selected models use logical target names from the TOML.
+Decision calls use configured provider IDs. The host owns provider settings,
+target prompts, transport, and final completion calls when the outcome has no
+response. Responses and streams use normalized protocol JSON, not provider wire
+formats or SSE bytes. `ContextWindowExceededError` reports a typed context-window
+failure to the algorithm.
+
+Calls can overlap. Keep reading steps while serving concurrent calls, and handle
+rejections from every `respond` or `fail` Promise. A non-recovering call rejects
+its responder; ignoring that error loses the original failure.
+
+Returning the routing iterator stops Rust from waiting on outstanding calls.
+JavaScript cannot cancel a supplied Promise. For buffered calls, use a host-owned
+controller; here `callProvider` returns the response expected by `call.respond`:
+
+```ts
+const controller = new AbortController();
+const work = callProvider(call.request, { signal: controller.signal });
+try {
+  await call.respond(work);
+} finally {
+  controller.abort();
+  await work.catch(() => {});
+}
+```
+
+The provider client must honor the signal and have a request timeout. This also
+cleans up work when the algorithm stops waiting before the response arrives.
+For `LlmResponse.Stream`, `respond` finishes when the stream is delivered. Keep
+its HTTP request alive until stream completion or cancellation.
+
+## CompositeRouter
+
+Capable-first routing defaults to pinning the efficient tier after switching to
+it. Set `stage.efficient_hold_turns: 0` to disable this hold. Efficient-first
+defaults to no efficient hold. Persist the returned state to retain holds.
 
 ```ts
 import { CompositeRouter, type DecisionRequest, type DecisionResponse } from "@switchyard/libsy";
@@ -92,7 +152,7 @@ Treat `CompositeState` as opaque. It carries the judge's tier and stage holds.
 
 | Code | Meaning |
 | --- | --- |
-| `ERR_CONFIG` | Invalid composite options |
+| `ERR_CONFIG` | Invalid options or deployment configuration |
 | `ERR_INVALID_REQUEST` | Invalid messages, state, or decision response JSON |
 | `ERR_ROUTING` | The algorithm or classifier call failed |
 | `ABORT_ERR` | Routing was cancelled; the error name is `AbortError` |
