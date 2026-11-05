@@ -183,7 +183,9 @@ async def test_stream_translation_preserves_ir_and_restores_extensions():
 async def test_stream_errors_preserve_exceptions(method, kind):
     engine = TranslationEngine()
     make_stream = getattr(engine, method)
-    formats = ("openai_chat", "anthropic_messages") if method == "translate_stream" else ("openai_chat",)
+    formats = (
+        ("openai_chat", "anthropic_messages") if method == "translate_stream" else ("openai_chat",)
+    )
     with pytest.raises(TranslationError, match="no stream codec registered for fake") as caught:
         make_stream("fake", *formats[1:], items([]))
     assert caught.value.kind == kind

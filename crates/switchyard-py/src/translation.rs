@@ -7,6 +7,7 @@ use futures::{StreamExt, stream::BoxStream};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyStopAsyncIteration};
 use pyo3::prelude::*;
+use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyDict};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -19,6 +20,8 @@ use switchyard_translation::{
 use tokio::sync::Mutex;
 
 use crate::py_serde::{from_python, to_python};
+
+static TRANSLATION_STREAM_MODULE: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
 
 create_exception!(
     switchyard.translation,
@@ -161,8 +164,9 @@ impl PyTranslationEngine {
         source: &str,
         byte_stream: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
-        let adapter = adapter(py, byte_stream)?;
-        let bytes = input_stream(&adapter, |item| {
+        let module = translation_stream_module(py)?;
+        let input = create_stream_input(module, byte_stream)?;
+        let bytes = input_stream(&input, |item| {
             Ok(item.cast::<PyBytes>()?.as_bytes().to_vec())
         });
         let stream = self
@@ -170,8 +174,8 @@ impl PyTranslationEngine {
             .decode_stream(source, bytes)
             .map_err(|error| client_error(py, error))?;
         output_stream(
-            py,
-            adapter,
+            module,
+            input,
             stream
                 .map(|item| item.map_err(LlmStreamError::Client))
                 .boxed(),
@@ -192,15 +196,16 @@ impl PyTranslationEngine {
             .map(|extensions| from_python(extensions.as_any()))
             .transpose()?
             .unwrap_or_default();
-        let adapter = adapter(py, chunks)?;
-        let chunks = input_stream(&adapter, |item| {
+        let module = translation_stream_module(py)?;
+        let input = create_stream_input(module, chunks)?;
+        let chunks = input_stream(&input, |item| {
             from_python::<LlmResponseStreamEvent>(item.cast::<PyDict>()?.as_any())
         });
         let stream = self
             .inner
             .encode_stream_with_extensions(target, chunks, served_model, &extensions)
             .map_err(|error| client_error(py, error))?;
-        output_stream(py, adapter, stream)
+        output_stream(module, input, stream)
     }
 
     /// Translate SSE byte chunks into target-format event dictionaries.
@@ -214,8 +219,9 @@ impl PyTranslationEngine {
         served_model: Option<String>,
         request_extensions: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
-        let adapter = adapter(py, byte_stream)?;
-        let bytes = input_stream(&adapter, |item| {
+        let module = translation_stream_module(py)?;
+        let input = create_stream_input(module, byte_stream)?;
+        let bytes = input_stream(&input, |item| {
             Ok(item.cast::<PyBytes>()?.as_bytes().to_vec())
         });
         let decoded = self
@@ -230,11 +236,11 @@ impl PyTranslationEngine {
             .inner
             .encode_stream_with_extensions(target, decoded, served_model, &extensions)
             .map_err(|error| client_error(py, error))?;
-        output_stream(py, adapter, encoded)
+        output_stream(module, input, encoded)
     }
 }
 
-// Each Python awaitable owns a handle while it polls; the Python adapter permits one poll at a time.
+// Each Python awaitable owns a handle while it polls; _TranslationStream permits one poll at a time.
 #[pyclass(frozen)]
 struct NativeStream {
     inner: Arc<Mutex<BoxStream<'static, PyResult<Py<PyAny>>>>>,
@@ -255,24 +261,34 @@ impl NativeStream {
     }
 }
 
-fn adapter<'py>(py: Python<'py>, input: &Bound<'py, PyAny>) -> PyResult<Bound<'py, PyAny>> {
-    py.import("switchyard_rust._translation_stream")?
-        .getattr("_StreamInput")?
-        .call1((input,))
+fn translation_stream_module(py: Python<'_>) -> PyResult<&Bound<'_, PyModule>> {
+    TRANSLATION_STREAM_MODULE
+        .get_or_try_init(py, || {
+            py.import("switchyard_rust._translation_stream")
+                .map(Bound::unbind)
+        })
+        .map(|module| module.bind(py))
+}
+
+fn create_stream_input<'py>(
+    module: &Bound<'py, PyModule>,
+    source: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyAny>> {
+    module.getattr("_StreamInput")?.call1((source,))
 }
 
 fn input_stream<T: Send + 'static>(
-    adapter: &Bound<'_, PyAny>,
+    input: &Bound<'_, PyAny>,
     convert: fn(&Bound<'_, PyAny>) -> PyResult<T>,
 ) -> BoxStream<'static, Result<T, LlmClientError>> {
-    let adapter = adapter.clone().unbind();
-    futures::stream::unfold(Some(adapter), move |state| async move {
-        let adapter = state?;
+    let input = input.clone().unbind();
+    futures::stream::unfold(Some(input), move |state| async move {
+        let input = state?;
         let next = Python::attach(|py| {
             let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
             pyo3_async_runtimes::into_future_with_locals(
                 &locals,
-                adapter.bind(py).call_method0("_read")?,
+                input.bind(py).call_method0("_read")?,
             )
         });
         let result = match next {
@@ -286,7 +302,7 @@ fn input_stream<T: Send + 'static>(
                         source: Box::new(error),
                     }
                 });
-                Some((item, Some(adapter)))
+                Some((item, Some(input)))
             }
             Err(error) if Python::attach(|py| error.is_instance_of::<PyStopAsyncIteration>(py)) => {
                 None
@@ -303,8 +319,8 @@ fn input_stream<T: Send + 'static>(
 }
 
 fn output_stream<T: Serialize + Send + 'static>(
-    py: Python<'_>,
-    adapter: Bound<'_, PyAny>,
+    module: &Bound<'_, PyModule>,
+    input: Bound<'_, PyAny>,
     stream: BoxStream<'static, Result<T, LlmStreamError>>,
 ) -> PyResult<Py<PyAny>> {
     let stream = stream.map(|item| {
@@ -320,14 +336,14 @@ fn output_stream<T: Serialize + Send + 'static>(
         })
     });
     let native = Py::new(
-        py,
+        module.py(),
         NativeStream {
             inner: Arc::new(Mutex::new(stream.boxed())),
         },
     )?;
-    py.import("switchyard_rust._translation_stream")?
+    module
         .getattr("_TranslationStream")?
-        .call1((adapter, native))
+        .call1((input, native))
         .map(Bound::unbind)
 }
 
