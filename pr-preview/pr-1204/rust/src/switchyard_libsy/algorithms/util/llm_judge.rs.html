@@ -288,7 +288,7 @@
 <a href=#288 id=288 data-nosnippet>288</a>    ) -&gt; <span class="kw-2">&amp;</span><span class="lifetime">'static </span>str {
 <a href=#289 id=289 data-nosnippet>289</a>        <span class="kw">let </span>judge_target = driver
 <a href=#290 id=290 data-nosnippet>290</a>            .first_model_for(<span class="kw-2">&amp;</span>Category::Judge)
-<a href=#291 id=291 data-nosnippet>291</a>            .map(|c| c.as_str())
+<a href=#291 id=291 data-nosnippet>291</a>            .map(|c| driver.provider_model(c).as_str())
 <a href=#292 id=292 data-nosnippet>292</a>            .unwrap_or(<span class="string">"missing"</span>);
 <a href=#293 id=293 data-nosnippet>293</a>        report_fail_open(judge_target, error, reason);
 <a href=#294 id=294 data-nosnippet>294</a>        <span class="kw">if </span><span class="self">self</span>.evidence.is_some() {
