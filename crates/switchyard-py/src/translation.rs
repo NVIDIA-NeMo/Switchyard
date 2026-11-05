@@ -7,7 +7,6 @@ use futures::{StreamExt, stream::BoxStream};
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyStopAsyncIteration};
 use pyo3::prelude::*;
-use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyBytes, PyDict};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -20,8 +19,6 @@ use switchyard_translation::{
 use tokio::sync::Mutex;
 
 use crate::py_serde::{from_python, to_python};
-
-static TRANSLATION_STREAM_MODULE: PyOnceLock<Py<PyModule>> = PyOnceLock::new();
 
 create_exception!(
     switchyard.translation,
@@ -164,8 +161,8 @@ impl PyTranslationEngine {
         source: &str,
         byte_stream: &Bound<'_, PyAny>,
     ) -> PyResult<Py<PyAny>> {
-        let module = translation_stream_module(py)?;
-        let input = create_stream_input(module, byte_stream)?;
+        let module = py.import("switchyard_rust._translation_stream")?;
+        let input = create_stream_input(&module, byte_stream)?;
         let bytes = input_stream(&input, |item| {
             Ok(item.cast::<PyBytes>()?.as_bytes().to_vec())
         });
@@ -174,7 +171,7 @@ impl PyTranslationEngine {
             .decode_stream(source, bytes)
             .map_err(|error| client_error(py, error))?;
         output_stream(
-            module,
+            &module,
             input,
             stream
                 .map(|item| item.map_err(LlmStreamError::Client))
@@ -196,8 +193,8 @@ impl PyTranslationEngine {
             .map(|extensions| from_python(extensions.as_any()))
             .transpose()?
             .unwrap_or_default();
-        let module = translation_stream_module(py)?;
-        let input = create_stream_input(module, chunks)?;
+        let module = py.import("switchyard_rust._translation_stream")?;
+        let input = create_stream_input(&module, chunks)?;
         let chunks = input_stream(&input, |item| {
             from_python::<LlmResponseStreamEvent>(item.cast::<PyDict>()?.as_any())
         });
@@ -205,7 +202,7 @@ impl PyTranslationEngine {
             .inner
             .encode_stream_with_extensions(target, chunks, served_model, &extensions)
             .map_err(|error| client_error(py, error))?;
-        output_stream(module, input, stream)
+        output_stream(&module, input, stream)
     }
 
     /// Translate SSE byte chunks into target-format event dictionaries.
@@ -219,8 +216,8 @@ impl PyTranslationEngine {
         served_model: Option<String>,
         request_extensions: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
-        let module = translation_stream_module(py)?;
-        let input = create_stream_input(module, byte_stream)?;
+        let module = py.import("switchyard_rust._translation_stream")?;
+        let input = create_stream_input(&module, byte_stream)?;
         let bytes = input_stream(&input, |item| {
             Ok(item.cast::<PyBytes>()?.as_bytes().to_vec())
         });
@@ -236,7 +233,7 @@ impl PyTranslationEngine {
             .inner
             .encode_stream_with_extensions(target, decoded, served_model, &extensions)
             .map_err(|error| client_error(py, error))?;
-        output_stream(module, input, encoded)
+        output_stream(&module, input, encoded)
     }
 }
 
@@ -259,15 +256,6 @@ impl NativeStream {
                 .unwrap_or_else(|| Err(PyStopAsyncIteration::new_err(())))
         })
     }
-}
-
-fn translation_stream_module(py: Python<'_>) -> PyResult<&Bound<'_, PyModule>> {
-    TRANSLATION_STREAM_MODULE
-        .get_or_try_init(py, || {
-            py.import("switchyard_rust._translation_stream")
-                .map(Bound::unbind)
-        })
-        .map(|module| module.bind(py))
 }
 
 fn create_stream_input<'py>(
