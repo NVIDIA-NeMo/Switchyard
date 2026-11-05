@@ -8,7 +8,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::Path;
 
-use crate::history::Entry;
+use crate::history::{Entry, parse_entry};
 use chrono::{DateTime, Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 use switchyard_costs::CostTotals;
@@ -229,8 +229,11 @@ impl Reader {
                     format!("invalid routing record at byte {}: {message}", self.offset),
                 )
             };
-            let record: Entry =
-                serde_json::from_slice(&line).map_err(|error| invalid(error.to_string()))?;
+            let Some(record) = parse_entry(&line).map_err(|error| invalid(error.to_string()))?
+            else {
+                self.offset += bytes as u64;
+                continue;
+            };
             if record.model.trim().is_empty() {
                 return Err(invalid("model must not be empty".into()));
             }
@@ -312,12 +315,13 @@ mod tests {
     }
 
     #[test]
-    fn reads_appends_once_and_retries_an_unfinished_line() {
+    fn reads_calls_among_outcomes_and_retries_an_unfinished_line() {
         use std::io::Write;
 
+        let outcome = r#"{"session_id":"s","outcome":{"ts":"2026-09-28T10:00:00Z","route_id":"smart","judgments":[]}}"#;
         let first = line("2026-09-28T10:00:00.000", "luna", "", 100, 10);
         let second = line("2026-09-28T10:00:01.000", "terra", "classifier", 30, 1);
-        let (_dir, path) = log(&format!("{first}\n"));
+        let (_dir, path) = log(&format!("{outcome}\n{first}\n{outcome}\n"));
         let today = date("2026-09-28");
         let mut reader = Reader::default();
         assert_eq!(reader.read(&path, today).expect("read").today.tokens(), 110);
@@ -342,10 +346,34 @@ mod tests {
             110
         );
         writeln!(file, "{}", &second[split..]).expect("finish append");
+        writeln!(file, "{outcome}").expect("append outcome");
         let usage = reader.read(&path, today).expect("read append");
         assert_eq!(usage.today.tokens(), 141);
         assert_eq!(usage.today.requests(), 1);
         assert_eq!(usage.today.classifier["terra"].requests, 1);
+        assert_eq!(reader.read(&path, today).expect("reread").all, usage.all);
+    }
+
+    #[test]
+    fn rejects_invalid_calls_even_when_they_contain_an_outcome() {
+        for contents in [
+            "not json\n",
+            "{\"outcome\":null}\n",
+            "{\"outcome\":{},\"prompt_tokens\":100}\n",
+            "{\"outcome\":{},\"cost\":{}}\n",
+            "{\"outcome\":{},\"ts\":\"2026-09-28T10:00:00Z\",\"model\":42}\n",
+        ] {
+            let (_dir, path) = log(contents);
+            let error = Reader::default()
+                .read(&path, date("2026-09-28"))
+                .expect_err("invalid call");
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+            assert!(
+                error
+                    .to_string()
+                    .contains("invalid routing record at byte 0")
+            );
+        }
     }
 
     #[test]
