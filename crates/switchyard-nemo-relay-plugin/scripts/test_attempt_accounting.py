@@ -136,6 +136,15 @@ attestation = "integrity_only"
             assert Provider.calls == 2
             assert len(report["attempts"]) == 2
             assert report["attempts"][0]["outcome"] == "error"
+            ends = {e["uuid"]: e for e in events if e.get("scope_category") == "end"}
+            for record in report["attempts"]:
+                attempt = ends[record["uuid"]]
+                assert attempt["name"] == "libsy.upstream_attempt"
+                assert attempt["metadata"]["switchyard.accounting.schema_version"] == 1
+                parent = ends[attempt["parent_uuid"]]
+                assert parent["name"] == "libsy.client_call"
+                assert parent["metadata"]["switchyard.accounting.unit"] == "summary"
+                assert parent["metadata"]["switchyard.accounting.schema_version"] == 1
             assert report["coverage_complete"]
             assert math.isclose(report["known_cost_subtotal_usd"], expected_subtotal)
             if expected_total is None:

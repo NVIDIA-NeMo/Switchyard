@@ -16,7 +16,9 @@ def summarize(events, workflow_uuid):
 
     Configure Relay's pricing component before calling this function to enable
     estimates. Provider-reported charges work without a pricing catalog.
-    This covers instrumented completion attempts, including routing calls.
+    Coverage applies only to observed instrumented completion calls, including
+    routing calls. It excludes separate decisions and other workflow work and
+    cannot detect calls whose entire telemetry is absent.
     """
     scopes = {e["uuid"]: e for e in events if e.get("kind") == "scope"}
 

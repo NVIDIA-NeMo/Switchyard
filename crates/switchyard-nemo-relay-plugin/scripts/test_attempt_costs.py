@@ -11,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "examples"))
 from attempt_costs import summarize  # noqa: E402
 
 
-def report(*costs):
+def cost_events(*costs):
     events = [
         {"kind": "scope", "uuid": "workflow", "scope_category": "end"},
         {
@@ -37,7 +37,11 @@ def report(*costs):
                 "usage": {"input_tokens": 1, "output_tokens": 1, "cost": cost},
             },
         })
-    return summarize(events, "workflow")
+    return events
+
+
+def report(*costs):
+    return summarize(cost_events(*costs), "workflow")
 
 
 class CurrencyTests(unittest.TestCase):
@@ -67,6 +71,47 @@ class CurrencyTests(unittest.TestCase):
         self.assertEqual(result["known_cost_subtotal_usd"], 0.03)
         self.assertIsNone(result["total_cost_usd"])
         self.assertEqual(result["cost_status"], "incomplete")
+
+
+class CompatibilityTests(unittest.TestCase):
+    def test_versioned_and_legacy_attempts_keep_completion_only_results(self):
+        events = cost_events({"total": 0.02}, {"total": 0.03})
+        expected = summarize(events, "workflow")
+        for event in [events[1], events[3]]:
+            event["metadata"].update({
+                "switchyard.accounting.schema_version": 1, "future_field": "ignored",
+            })
+        events.append(events[3].copy())
+        for name, unit in [("libsy.decision_call", "decision_call"), ("outer", "summary")]:
+            events.append({
+                **events[2], "uuid": name, "name": name, "parent_uuid": "workflow",
+                "metadata": {"switchyard.accounting.unit": unit},
+            })
+        result = summarize(events, "workflow")
+        self.assertEqual(result, expected)
+        self.assertEqual(set(result), {
+            "workflow_uuid", "attempts", "coverage_complete", "cost_status",
+            "known_cost_subtotal_usd", "total_cost_usd",
+        })
+        self.assertEqual(result["total_cost_usd"], 0.05)
+        self.assertEqual([r["uuid"] for r in result["attempts"]], ["attempt-1", "attempt-2"])
+
+    def test_missing_consumption_and_reported_zero_remain_distinct(self):
+        events = cost_events({})
+        attempt = events[-1]
+        attempt["metadata"]["switchyard.accounting.usage_status"] = "missing"
+        attempt["data"].pop("usage")
+        missing = summarize(events, "workflow")
+        self.assertTrue(missing["coverage_complete"])
+        self.assertEqual(missing["known_cost_subtotal_usd"], 0.0)
+        self.assertIsNone(missing["total_cost_usd"])
+        attempt["data"]["usage"] = {"cost": {
+            "total": 0.0, "currency": "USD", "source": "provider_reported",
+        }}
+        zero = summarize(events, "workflow")
+        self.assertEqual(zero["total_cost_usd"], 0.0)
+        self.assertEqual(zero["attempts"][0]["usage_status"], "missing")
+        self.assertEqual(zero["cost_status"], "complete")
 
 
 if __name__ == "__main__":

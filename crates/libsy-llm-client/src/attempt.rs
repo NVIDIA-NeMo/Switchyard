@@ -51,6 +51,8 @@ impl AttemptGuard {
             gen_ai.usage.cache_creation.input_tokens = tracing::field::Empty,
             gen_ai.usage.cache_creation_1h.input_tokens = tracing::field::Empty,
             gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
+            switchyard.usage.input_tokens = tracing::field::Empty,
+            switchyard.usage.input_tokens_reported = tracing::field::Empty,
             switchyard.usage.total_tokens = tracing::field::Empty,
             switchyard.usage.provider_cost_usd = tracing::field::Empty,
             switchyard.accounting.charge_source = tracing::field::Empty,
@@ -199,6 +201,14 @@ impl AttemptGuard {
             return;
         }
         record_gen_ai_usage(&self.span, &self.usage);
+        // Aggregate semantic counts cannot distinguish missing uncached input from zero.
+        self.span.record(
+            "switchyard.usage.input_tokens_reported",
+            self.usage.input_tokens.is_some(),
+        );
+        if let Some(input) = self.usage.input_tokens {
+            self.span.record("switchyard.usage.input_tokens", input);
+        }
         if let Some(total) = self.usage.total_tokens {
             self.span.record("switchyard.usage.total_tokens", total);
         }

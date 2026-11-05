@@ -230,6 +230,9 @@ impl CapturedSpan {
             .and_then(Json::as_str);
         let summary = unit == Some("summary");
         let attempt = unit == Some("completion_attempt");
+        if summary || attempt {
+            metadata["switchyard.accounting.schema_version"] = Json::from(1);
+        }
         let scope_type = if summary {
             ScopeType::Custom
         } else if attempt {
@@ -372,22 +375,31 @@ fn response_data(fields: &Json) -> Option<Json> {
             serde_json::json!({"ephemeral_1h_input_tokens": value}),
         );
     }
-    if let Some(input) = fields
-        .get("gen_ai.usage.input_tokens")
-        .and_then(Json::as_u64)
+    let input = match fields
+        .get("switchyard.usage.input_tokens_reported")
+        .and_then(Json::as_bool)
     {
-        let cached = usage
-            .get("cache_read_input_tokens")
+        Some(true) => fields
+            .get("switchyard.usage.input_tokens")
+            .and_then(Json::as_u64),
+        Some(false) => None,
+        None => fields
+            .get("gen_ai.usage.input_tokens")
             .and_then(Json::as_u64)
-            .unwrap_or(0);
-        let created = usage
-            .get("cache_creation_input_tokens")
-            .and_then(Json::as_u64)
-            .unwrap_or(0);
-        usage.insert(
-            "input_tokens".into(),
-            input.saturating_sub(cached).saturating_sub(created).into(),
-        );
+            .map(|input| {
+                let cached = usage
+                    .get("cache_read_input_tokens")
+                    .and_then(Json::as_u64)
+                    .unwrap_or(0);
+                let created = usage
+                    .get("cache_creation_input_tokens")
+                    .and_then(Json::as_u64)
+                    .unwrap_or(0);
+                input.saturating_sub(cached).saturating_sub(created)
+            }),
+    };
+    if let Some(input) = input {
+        usage.insert("input_tokens".into(), input.into());
     }
     if !usage.is_empty() {
         output.insert("usage".into(), Json::Object(usage));
@@ -584,6 +596,8 @@ fn is_safe_field(name: &str) -> bool {
             | "switchyard.accounting.attempts"
             | "switchyard.accounting.usage_status"
             | "switchyard.accounting.charge_source"
+            | "switchyard.usage.input_tokens"
+            | "switchyard.usage.input_tokens_reported"
             | "switchyard.usage.total_tokens"
             | "switchyard.usage.provider_cost_usd"
             | "algorithm"

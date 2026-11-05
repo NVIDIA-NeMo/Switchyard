@@ -100,6 +100,40 @@ added together. Cache and reasoning fields can overlap other token counts.
 Token coverage and charge coverage are separate: a known provider charge can
 cover an attempt whose token usage is incomplete.
 
+#### Accounting Scope Profile, Version 1
+
+Completion-attempt and summary scopes set the integer metadata field
+`switchyard.accounting.schema_version` to `1`. This versions the scope
+representation independently of Relay's worker protocol and mark `DataSchema`.
+Consumers should tolerate additional fields and unknown values. Removing or
+renaming fields, changing their types, or changing their meaning requires a
+new profile version.
+
+| Record | Scope type and accounting unit | Identity and output |
+| --- | --- | --- |
+| `libsy.client_call` | Custom; `summary` | Parent of its attempts; no priceable response output |
+| `libsy.upstream_attempt` | LLM; `completion_attempt` | Its scope UUID identifies one attempt; `parent_uuid` refers to its client call; content-free Messages-shaped output carries known usage and USD charges |
+
+The summary declares expected attempts in `switchyard.accounting.attempts`
+and captured attempts in `switchyard.accounting.attempt_records`. Each child
+has a one-based `attempt` ordinal. `outcome` (`ok`, `error`, or `cancelled`)
+is separate from `switchyard.accounting.usage_status`. Missing token counts
+remain absent; reported zero remains zero. Charges use `usage.cost` with
+`currency = "USD"` and `source = "provider_reported"`.
+`switchyard.accounting.charge_source` distinguishes body charges (`provider`)
+from the supported header fallback (`header`); body charges take precedence.
+
+`switchyard.usage.input_tokens_reported` preserves whether the original
+non-cached input count was known. When true, `switchyard.usage.input_tokens`
+contains that count, including zero. When false, the projected input count
+stays absent even if cache usage is known. Older captures without this flag
+retain the aggregate-minus-cache fallback.
+
+The example's `coverage_complete` checks the received, instrumented completion
+records against their summary counts. It cannot detect a wholly absent call
+or certify full workflow coverage. Its `total_cost_usd` has that same scope;
+decision calls and other producers require a separate accounting view.
+
 Relay's [model-pricing guide](https://docs.nvidia.com/nemo/relay/configure-plugins/model-pricing)
 explains how to supply model rates. The cost-summary example covers instrumented
 completion attempts. Separate decision-model calls are not yet exported with

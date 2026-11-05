@@ -340,3 +340,6 @@ The [cost-summary example](examples/attempt_costs.py) selects unique attempt
 records and uses Relay's codec to obtain costs. These summaries cover Switchyard
 completion work. They do not change ATIF `final_metrics` or include separate
 decision-model usage.
+
+See the [versioned accounting scope profile](../../docs/integrations/nemo_relay.md#accounting-scope-profile-version-1)
+for stable fields and the limits of `coverage_complete` and `total_cost_usd`.
