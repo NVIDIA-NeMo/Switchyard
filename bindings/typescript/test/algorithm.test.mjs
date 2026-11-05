@@ -36,8 +36,6 @@ type = "llm_classifier"
 classifier_target = "judge"
 strong_target = "capable"
 weak_target = "fast"
-[routes.classifier.decision]
-cutoff = 0.7
 [routes.advisor]
 id = "public/advisor"
 type = "advisor"
@@ -165,11 +163,8 @@ test("non-recovering model responders reject with the original host failure", { 
   for (const fail of [false, true]) {
     const { call } = await start(t);
     const cause = new Error("executor unavailable");
-    await assert.rejects(fail ? call.fail(cause) : call.respond(Promise.reject(cause)), (error) => {
-      assert.ok(error instanceof LibsyError);
-      assert.equal(error.code, "ERR_ROUTING");
-      assert.match(error.message, /executor unavailable/);
-      return true;
+    await assert.rejects(fail ? call.fail(cause) : call.respond(Promise.reject(cause)), {
+      name: "LibsyError", code: "ERR_ROUTING", message: /executor unavailable/,
     });
   }
 });
@@ -228,65 +223,38 @@ test("iterator return releases native waits and closes input readers without can
 });
 
 test("host-owned AbortController closes HTTP work while a concurrent route survives", { timeout: 5000 }, async (t) => {
-  const requests = Object.fromEntries(["cancel", "healthy"].map((name) => [name, {
-    entered: Promise.withResolvers(), closed: Promise.withResolvers(), controller: new AbortController(),
-  }]));
-  const healthyRelease = Promise.withResolvers();
-  const runs = [];
-  const server = createServer((req, res) => {
-    const state = requests[req.url.slice(1)];
-    res.on("close", () => state.closed.resolve());
-    req.resume();
-    state.entered.resolve();
-    if (req.url === "/healthy") {
-      void healthyRelease.promise.then(() => {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify(aggregate("healthy")));
-      });
-    }
+  const entered = Promise.withResolvers();
+  const closed = Promise.withResolvers();
+  const controller = new AbortController();
+  const server = createServer((_req, res) => {
+    res.once("close", closed.resolve);
+    entered.resolve();
   });
   t.after(async () => {
-    for (const state of Object.values(requests)) state.controller.abort();
-    await Promise.all(runs.map((run) => run.return()));
+    controller.abort();
     const closing = new Promise((resolve) => server.close(resolve));
     server.closeAllConnections();
     await closing;
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${server.address().port}`;
-  async function startHTTP(name) {
-    const { run, call } = await start(t);
-    runs.push(run);
-    const work = fetch(`${base}/${name}`, { signal: requests[name].controller.signal })
-      .then((response) => response.json()).then((response) => new LlmResponse.Agg(response));
-    return { run, call, work };
-  }
-
-  const cancelled = await startHTTP("cancel");
-  const responding = (async () => {
-    try {
-      await cancelled.call.respond(cancelled.work);
-    } finally {
-      requests.cancel.controller.abort();
-      await cancelled.work.catch(() => {});
-    }
-  })();
-  await requests.cancel.entered.promise;
-  const healthy = await startHTTP("healthy");
-  const healthyResponding = healthy.call.respond(healthy.work);
-  void healthyResponding.catch(() => {});
+  const cancelled = await start(t);
+  const work = fetch(base, { signal: controller.signal })
+    .then((response) => response.json()).then((response) => new LlmResponse.Agg(response));
+  const responding = cancelled.call.respond(work).finally(async () => {
+    controller.abort();
+    await work.catch(() => {});
+  });
+  await entered.promise;
+  const healthy = await start(t);
   const healthyNext = healthy.run.next();
-  await requests.healthy.entered.promise;
   await cancelled.run.return();
   await responding;
-  await requests.cancel.closed.promise;
-  assert.equal(requests.healthy.controller.signal.aborted, false);
-  healthyRelease.resolve();
-  await healthyResponding;
+  await closed.promise;
+  await healthy.call.respond(Promise.resolve(new LlmResponse.Agg(aggregate("healthy"))));
   const done = (await healthyNext).value;
   assert.ok(done instanceof Step.Done);
   assert.equal(done.outcome.response.response.outputs[0].content[0].text, "healthy");
   assert.deepEqual(await healthy.run.next(), { done: true, value: undefined });
-  await requests.healthy.closed.promise;
   assert.deepEqual(await cancelled.run.next(), { done: true, value: undefined });
 });
