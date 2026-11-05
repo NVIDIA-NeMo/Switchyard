@@ -153,6 +153,14 @@ fn preserved_same_format_events_replay_unknown_fields_exactly() -> TestResult {
             }),
         ),
         (
+            WireFormat::OpenAiResponses,
+            json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {"type": "compaction", "id": "cmp_1", "encrypted_content": "opaque"}
+            }),
+        ),
+        (
             WireFormat::AnthropicMessages,
             json!({
                 "type": "content_block_delta",

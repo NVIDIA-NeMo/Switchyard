@@ -31,7 +31,7 @@ use crate::llm::{
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,
-    exact_preserved_request, exact_preserved_response, is_responses_builtin_tool_item, json_string,
+    exact_preserved_request, exact_preserved_response, is_responses_native_input_item, json_string,
     push_lossy, stable_id, string_value, validate_request_capabilities,
 };
 
@@ -45,11 +45,6 @@ impl FormatCodec for OpenAiResponsesCodec {
 
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = crate::util::object(body, "$")?;
-        // Codex marks remote-compact requests with a `compaction_trigger` input
-        // item. It is codex-internal protocol that strict upstream parsers
-        // reject, so drop it before preservation capture and normalization.
-        let sanitized = strip_codex_compaction_markers(body);
-        let body = sanitized.as_ref().unwrap_or(body);
         let mut diagnostics = Vec::new();
         let response_format = decode_responses_text_format(body.get("text"));
         let mut request = LlmRequest {
@@ -515,22 +510,20 @@ fn decode_responses_input(
                             &format!("$.input[{index}].role"),
                         )?;
                         let content_value = item.get("content").unwrap_or(&Value::Null);
-                        if is_responses_builtin_tool_item(content_value) {
+                        if is_responses_native_input_item(content_value) {
                             return Err(TranslationError::InvalidValue {
                                 path: format!("$.input[{index}].content.type"),
-                                message:
-                                    "built-in tool items must be top-level Responses input items"
-                                        .to_string(),
+                                message: "native Responses items must be top-level input items"
+                                    .to_string(),
                             });
                         }
                         if let Some(content_index) = content_value.as_array().and_then(|blocks| {
-                            blocks.iter().position(is_responses_builtin_tool_item)
+                            blocks.iter().position(is_responses_native_input_item)
                         }) {
                             return Err(TranslationError::InvalidValue {
                                 path: format!("$.input[{index}].content[{content_index}].type"),
-                                message:
-                                    "built-in tool items must be top-level Responses input items"
-                                        .to_string(),
+                                message: "native Responses items must be top-level input items"
+                                    .to_string(),
                             });
                         }
                         let content = decode_responses_content(content_value);
@@ -1299,11 +1292,11 @@ fn encode_responses_input(
         }
     }
     for message in messages {
-        // The decoder carries each valid top-level built-in tool item as one
+        // The decoder carries each native top-level input item as one
         // provider-qualified block, so replay that block in place.
         if let [ContentBlock::Unknown { provider, raw }] = message.content.as_slice()
             && provider.as_str() == WireFormat::OpenAiResponses.as_str()
-            && is_responses_builtin_tool_item(raw)
+            && is_responses_native_input_item(raw)
         {
             encoded.push(raw.clone());
             continue;
@@ -1442,23 +1435,6 @@ fn pair_tool_calls_with_outputs(items: &mut Vec<Value>) {
         }
         index += 1;
     }
-}
-
-// Returns the body without Codex `compaction_trigger` input items, or `None`
-// when there are none (the common case, sparing the clone).
-fn strip_codex_compaction_markers(body: &Map<String, Value>) -> Option<Map<String, Value>> {
-    fn is_marker(item: &Value) -> bool {
-        item.get("type").and_then(Value::as_str) == Some("compaction_trigger")
-    }
-    let input = body.get("input")?.as_array()?;
-    if !input.iter().any(is_marker) {
-        return None;
-    }
-    let mut sanitized = body.clone();
-    if let Some(Value::Array(items)) = sanitized.get_mut("input") {
-        items.retain(|item| !is_marker(item));
-    }
-    Some(sanitized)
 }
 
 // Encodes IR blocks that Responses represents as top-level input items.
