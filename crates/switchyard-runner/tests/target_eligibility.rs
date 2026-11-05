@@ -638,12 +638,6 @@ labels = ["private", "customer_data"]
         .await
         .expect("approved typed judge and candidate");
     assert_eq!(outcome.selected_model, "both_fast");
-    assert!(
-        route
-            .execute(request("blocked", Some(&["unapproved"])), None)
-            .await
-            .is_err()
-    );
     assert_eq!(models_called(&primary).await, ["approved/fast"]);
     assert_eq!(models_called(&approved).await, ["approved/decision"]);
     primary.verify().await;

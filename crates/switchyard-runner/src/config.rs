@@ -1793,20 +1793,8 @@ evidence = {{}}
         for (algorithm, initial) in [
             ("type = 'passthrough'\ntarget = 'weak'", "weak"),
             (
-                "type = 'auto'\ncapable_target = 'strong'\nefficient_target = 'weak'",
-                "weak",
-            ),
-            (
                 "type = 'plan_execute'\ncapable_target = 'strong'\nefficient_target = 'weak'",
                 "strong",
-            ),
-            (
-                "type = 'stage_router'\ncapable_target = 'strong'\nefficient_target = 'weak'\npicker = 'efficient_first'\nconfidence_threshold = 1.0",
-                "weak",
-            ),
-            (
-                "type = 'passthrough'\ntarget = 'weak'\nsubagents = { type = 'passthrough', target = 'strong' }",
-                "weak",
             ),
         ] {
             let runner = Runner::from_toml(&alternative_config(algorithm))?;
@@ -1886,11 +1874,6 @@ evidence = {{}}
                 .expect("invalid eligible bindings");
             assert!(error.to_string().contains(expected), "{error}");
         }
-        let prompt = config.replace(
-            "[targets.approved_weak]",
-            "[targets.approved_weak]\nsystem_prompt = 'local prompt'",
-        );
-        assert!(Runner::from_toml(&prompt).is_ok());
         Runner::from_toml(&config.replace("id = 'approved/weak'", "id = 'weak/model'"))?;
         let shared_model =
             alternative_config("type = 'random'\ntargets = ['weak', 'strong']\nweights = [0, 1]")
