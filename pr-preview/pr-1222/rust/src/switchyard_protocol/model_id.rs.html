@@ -14,8 +14,8 @@
 <a href=#14 id=14 data-nosnippet>14</a>/// It can name a provider model, such as `"openai/gpt-oss-20b"`. It can also name a
 <a href=#15 id=15 data-nosnippet>15</a>/// Switchyard route, such as `"switchyard/random"`.
 <a href=#16 id=16 data-nosnippet>16</a>///
-<a href=#17 id=17 data-nosnippet>17</a>/// A target name from server config, such as `"capable"`, is not a model ID. The server
-<a href=#18 id=18 data-nosnippet>18</a>/// resolves target names to model IDs before routing.
+<a href=#17 id=17 data-nosnippet>17</a>/// The runner routes on target names from server config, such as `"capable"`, and sends
+<a href=#18 id=18 data-nosnippet>18</a>/// each target's provider model upstream.
 <a href=#19 id=19 data-nosnippet>19</a>///
 <a href=#20 id=20 data-nosnippet>20</a>/// This type acts like a string. It can be printed, compared, and saved as a JSON string.
 <a href=#21 id=21 data-nosnippet>21</a></span><span class="attr">#[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
