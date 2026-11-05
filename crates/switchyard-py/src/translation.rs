@@ -138,18 +138,29 @@ impl PyTranslationEngine {
         translation_output(py, output)
     }
 
-    /// Translate a complete response dictionary, returning body and diagnostics.
+    /// Translate a complete response, optionally restoring tool details from request extensions.
+    #[pyo3(signature = (source, target, body, *, request_extensions=None))]
     fn translate_response(
         &self,
         py: Python<'_>,
         source: &str,
         target: &str,
         body: &Bound<'_, PyDict>,
+        request_extensions: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyDict>> {
         let body: Value = from_python(body.as_any())?;
+        let request_extensions: ProviderExtensions = request_extensions
+            .map(|extensions| from_python(extensions.as_any()))
+            .transpose()?
+            .unwrap_or_default();
         let output = py.detach(|| {
-            self.inner
-                .translate_response(source, target, &body, &self.default_policy)
+            self.inner.translate_response_with_extensions(
+                source,
+                target,
+                &body,
+                &request_extensions,
+                &self.default_policy,
+            )
         });
         translation_output(py, output)
     }
