@@ -122,15 +122,16 @@ empty arrays cannot clear them. `require_explicit_requirements = true` requires
 an array on every turn. Switchyard does not classify the data.
 
 `RunnerDecideOptions` names the options; `RunnerDecision` names the result.
-`selectedModelIds` contains approved candidates in fallback order. `request` is
+`selectedModelIds` contains approved target names in fallback order. `request` is
 the rewritten selected request; `fallbackRequest`, when present, is the shared
 fallback request. A `candidateRequests[model]` entry takes precedence over both
-and preserves that candidate's own instructions. The host sets the model ID for
-each attempt and must stay within the returned candidates. `response` is a
+and preserves that candidate's own instructions. The host resolves each target
+to its deployment and sets the provider model ID for that attempt. It must stay
+within the returned candidates. `response` is a
 buffered normalized answer if routing already produced one, otherwise `null`.
 
 Input is normalized protocol JSON, not a raw provider request. The input model
-names a configured route; output models are upstream IDs. Reuse the Runner to
+names a configured route; output models are configured target names. Reuse the Runner to
 retain task requirements. This binding does not accept session headers or carry
 per-run libsy state between calls. `Runner.decide` does not accept host client
 callbacks or a cancellation signal; it uses configured client timeouts.

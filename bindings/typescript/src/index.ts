@@ -200,7 +200,7 @@ export class CompositeRouter {
 }
 
 /** Switchyard-normalized request JSON, not a raw provider body.
- * Input model is a route ID; decision.request.model is the selected upstream model ID.
+ * Input model is a route ID; decision.request.model is the selected target name.
  */
 export interface RoutingRequest {
   model: string;
@@ -208,12 +208,12 @@ export interface RoutingRequest {
 }
 
 export interface RunnerDecision {
-  /** Approved candidates in fallback order, with the selected model first. */
+  /** Approved target names in fallback order, with the selected target first. */
   selectedModelIds: string[];
   request: RoutingRequest;
   /** Alternate request for fallbacks; the host sets model to the candidate it calls. */
   fallbackRequest: RoutingRequest | null;
-  /** Candidate-specific request rewrites, keyed by upstream model ID. */
+  /** Candidate-specific request rewrites, keyed by configured target name. */
   candidateRequests: Record<string, RoutingRequest>;
   /** Buffered normalized response when the algorithm already produced an answer. */
   response: Record<string, unknown> | null;

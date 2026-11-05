@@ -52,18 +52,18 @@ target_alternatives = { fast = ["private_fast", "both_fast"], capable = ["privat
 
 test("Runner preserves Stage roles, approved fallback order and request rewrites", async () => {
   const runner = Runner.fromToml(config());
-  for (const [labels, prefix] of [[[], "cloud"], [["private"], "private"], [["customer_data"], "approved"], [["private", "customer_data", "private"], "approved"]]) {
+  for (const [labels, prefix] of [[[], ""], [["private"], "private_"], [["customer_data"], "both_"], [["private", "customer_data", "private"], "both_"]]) {
     const outcome = await runner.decide(request, { requiredLabels: labels });
-    assert.deepEqual(outcome.selectedModelIds, [`${prefix}/fast`, `${prefix}/capable`]);
-    assert.equal(outcome.request.model, `${prefix}/fast`);
+    assert.deepEqual(outcome.selectedModelIds, [`${prefix}fast`, `${prefix}capable`]);
+    assert.equal(outcome.request.model, `${prefix}fast`);
     assert.equal(outcome.metadata.algorithm, "stage_router");
     assert.equal(typeof outcome.metadata.outcomeId, "string");
     assert.equal(outcome.response, null);
-    const fallback = outcome.candidateRequests[`${prefix}/capable`];
-    assert.equal(fallback.model, `${prefix}/capable`);
+    const fallback = outcome.candidateRequests[`${prefix}capable`];
+    assert.equal(fallback.model, `${prefix}capable`);
     assert.equal(fallback.instructions[0].content[0].text, "Capable role.");
     assert.ok(!JSON.stringify(fallback).includes("Efficient role."));
-    if (prefix === "approved") {
+    if (prefix === "both_") {
       assert.ok(outcome.request.instructions.some((instruction) => instruction.content.some((block) => block.text === "Use approved account data.")));
       assert.equal(outcome.fallbackRequest, null);
     }
@@ -88,12 +88,12 @@ type = "noop"`);
 test("unspecified and explicitly empty requirements stay distinct across turns", async () => {
   const runner = Runner.fromToml(config({ scope: "task", required: true }));
   await assert.rejects(runner.decide(request, { taskId: "renewal" }), { code: "ERR_INVALID_REQUEST" });
-  assert.equal((await runner.decide(request, { requiredLabels: [], taskId: "renewal" })).selectedModelIds[0], "cloud/fast");
-  assert.equal((await runner.decide(request, { requiredLabels: ["private"], taskId: "renewal" })).selectedModelIds[0], "private/fast");
-  assert.equal((await runner.decide(request, { requiredLabels: ["customer_data"], taskId: "renewal" })).selectedModelIds[0], "approved/fast");
-  assert.equal((await runner.decide(request, { requiredLabels: [], taskId: "renewal" })).selectedModelIds[0], "approved/fast");
+  assert.equal((await runner.decide(request, { requiredLabels: [], taskId: "renewal" })).selectedModelIds[0], "fast");
+  assert.equal((await runner.decide(request, { requiredLabels: ["private"], taskId: "renewal" })).selectedModelIds[0], "private_fast");
+  assert.equal((await runner.decide(request, { requiredLabels: ["customer_data"], taskId: "renewal" })).selectedModelIds[0], "both_fast");
+  assert.equal((await runner.decide(request, { requiredLabels: [], taskId: "renewal" })).selectedModelIds[0], "both_fast");
   await assert.rejects(runner.decide(request, { taskId: "renewal" }), { code: "ERR_INVALID_REQUEST" });
-  assert.equal((await runner.decide(request, { requiredLabels: [], taskId: "other" })).selectedModelIds[0], "cloud/fast");
+  assert.equal((await runner.decide(request, { requiredLabels: [], taskId: "other" })).selectedModelIds[0], "fast");
   for (const options of [{ requiredLabels: null }, { requiredLabels: [1] }, { requiredLabels: [""] }, { requiredLabels: [], taskId: "" }]) {
     await assert.rejects(runner.decide(request, options), { code: "ERR_INVALID_REQUEST" });
   }
@@ -121,7 +121,7 @@ test("Runner checks labels before any routing call and calls only the approved j
   }
   assert.equal(calls.length, 0);
   const outcome = await runner.decide(request, { requiredLabels: ["private", "customer_data"] });
-  assert.equal(outcome.selectedModelIds[0], "approved/fast");
+  assert.equal(outcome.selectedModelIds[0], "both_fast");
   assert.deepEqual(calls.map((call) => call.model), ["approved/judge"]);
   assert.ok(!JSON.stringify(calls).includes("required_target_labels"));
 });
