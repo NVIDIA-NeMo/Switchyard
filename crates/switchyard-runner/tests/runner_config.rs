@@ -144,11 +144,11 @@ async fn typed_and_toml_routes_select_the_same_ordered_roles() -> Result<(), Run
         Some(&["customer_data", "private"][..]),
     ] {
         let expected = if labels.is_none_or(|labels| labels.is_empty()) {
-            ["cloud/fast", "cloud/capable"]
+            ["fast", "capable"]
         } else if labels.is_some_and(|labels| labels.len() == 1) {
-            ["private/fast", "private/capable"]
+            ["private_fast", "private_capable"]
         } else {
-            ["approved/fast", "approved/capable"]
+            ["approved_fast", "approved_capable"]
         };
         for runner in [&typed, &parsed] {
             let result = runner
@@ -177,7 +177,7 @@ async fn typed_and_toml_routes_select_the_same_ordered_roles() -> Result<(), Run
         .expect("route")
         .decide(request(Some(&["private"])))
         .await?;
-    assert_eq!(result.selected_model_ids, ["cloud/fast", "private/capable"]);
+    assert_eq!(result.selected_model_ids, ["fast", "private_capable"]);
     Ok(())
 }
 
@@ -194,11 +194,11 @@ async fn typed_and_toml_policies_require_labels_and_retain_task_union() -> Resul
         let route = runner.route("coding").expect("route");
         assert!(route.decide(request(None)).await.is_err());
         for (labels, expected) in [
-            (&[][..], "cloud/fast"),
-            (&["private"][..], "private/fast"),
-            (&[][..], "private/fast"),
-            (&["customer_data"][..], "approved/fast"),
-            (&[][..], "approved/fast"),
+            (&[][..], "fast"),
+            (&["private"][..], "private_fast"),
+            (&[][..], "private_fast"),
+            (&["customer_data"][..], "approved_fast"),
+            (&[][..], "approved_fast"),
         ] {
             let result = route.decide(request(Some(labels))).await?;
             assert_eq!(
