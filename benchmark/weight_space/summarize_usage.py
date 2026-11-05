@@ -26,6 +26,8 @@ def summarize(log: str, stats: dict, session_id: str) -> dict:
         record, _ = decoder.raw_decode(payload.lstrip())
         if isinstance(record, str):
             record = json.loads(record)
+        # RoutingRecord omits this field when its value is zero.
+        record.setdefault("cache_creation_1h_tokens", 0)
         if record.get("session_id") == session_id:
             calls.append(record)
     if len(calls) != session.get("total_calls"):

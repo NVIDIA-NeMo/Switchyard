@@ -6,6 +6,7 @@
 import json
 import unittest
 
+from price_usage import price
 from summarize_usage import summarize
 
 
@@ -37,6 +38,23 @@ class UsageCaptureTests(unittest.TestCase):
             summarize("\n".join(log.splitlines()[:-1]), stats, "session")
         with self.assertRaises(ValueError):
             summarize(log + "\n" + log.splitlines()[0], stats, "session")
+
+    def test_native_omitted_zero_cache_duration_can_be_priced(self):
+        log, stats = self.fixture()
+        result = summarize(log, stats, "session")
+        rates = {model: {"input": 1, "output": 1, "cache_read": 1, "cache_write": 1}
+                 for model in ["a", "b", "judge"]}
+        self.assertEqual(price(result, rates)["call_count"], 4)
+        self.assertTrue(all(call["cache_creation_1h_tokens"] == 0 for call in result["calls"]))
+
+    def test_reported_cache_duration_is_preserved(self):
+        log, stats = self.fixture()
+        prefix, payload = log.splitlines()[0].split("record=", 1)
+        call = json.loads(payload)
+        call.update(cache_creation_tokens=10, cache_creation_1h_tokens=7)
+        log = "\n".join([prefix + "record=" + json.dumps(call), *log.splitlines()[1:]])
+        stats["sessions"]["session"]["total_cache_creation_tokens"] = 10
+        self.assertEqual(summarize(log, stats, "session")["calls"][0]["cache_creation_1h_tokens"], 7)
 
     def test_inconsistent_token_totals_are_rejected(self):
         log, stats = self.fixture()
