@@ -203,24 +203,34 @@ impl PyTranslationEngine {
         output_stream(py, adapter, stream)
     }
 
-    /// Convenience method for calling decode_stream and encode_stream.
+    /// Translate SSE byte chunks into target-format event dictionaries.
     #[pyo3(signature = (source, target, byte_stream, *, served_model=None, request_extensions=None))]
     fn translate_stream(
-        slf: PyRef<'_, Self>,
+        &self,
+        py: Python<'_>,
         source: &str,
         target: &str,
         byte_stream: &Bound<'_, PyAny>,
         served_model: Option<String>,
         request_extensions: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Py<PyAny>> {
-        let py = slf.py();
-        let kwargs = PyDict::new(py);
-        kwargs.set_item("served_model", served_model)?;
-        kwargs.set_item("request_extensions", request_extensions)?;
-        py.import("switchyard_rust._translation_stream")?
-            .getattr("_TranslatedStream")?
-            .call((slf, source, target, byte_stream), Some(&kwargs))
-            .map(Bound::unbind)
+        let adapter = adapter(py, byte_stream)?;
+        let bytes = input_stream(&adapter, |item| {
+            Ok(item.cast::<PyBytes>()?.as_bytes().to_vec())
+        })?;
+        let decoded = self
+            .inner
+            .decode_stream(source, bytes)
+            .map_err(|error| client_error(py, error))?;
+        let extensions = request_extensions
+            .map(|extensions| from_python(extensions.as_any()))
+            .transpose()?
+            .unwrap_or_default();
+        let encoded = self
+            .inner
+            .encode_stream_with_extensions(target, decoded, served_model, &extensions)
+            .map_err(|error| client_error(py, error))?;
+        output_stream(py, adapter, encoded)
     }
 }
 
@@ -305,7 +315,7 @@ fn output_stream<T: Serialize + Send + 'static>(
         Python::attach(|py| match item {
             Ok(event) => to_python(py, &event),
             Err(LlmStreamError::Client(error)) => Err(client_error(py, error)),
-            Err(LlmStreamError::Upstream(error)) => Err(exception(
+            Err(LlmStreamError::Upstream(error)) => Err(translation_error(
                 py,
                 "UpstreamFailure",
                 format!("upstream stream error: {error}"),
@@ -325,7 +335,7 @@ fn output_stream<T: Serialize + Send + 'static>(
     Ok(adapter.unbind())
 }
 
-fn exception(py: Python<'_>, kind: &str, message: String, details: Value) -> PyErr {
+fn translation_error(py: Python<'_>, kind: &str, message: String, details: Value) -> PyErr {
     let error = TranslationError::new_err(message);
     let attach = || -> PyResult<()> {
         let value = error.value(py);
@@ -382,7 +392,7 @@ fn client_error(py: Python<'_>, error: LlmClientError) -> PyErr {
         LlmClientError::Ffi { source } => ("Ffi", json!({"message": source.to_string()})),
         _ => ("Other", json!({"message": error.to_string()})),
     };
-    exception(py, kind, error.to_string(), details)
+    translation_error(py, kind, error.to_string(), details)
 }
 
 fn translation_output(
@@ -397,17 +407,9 @@ fn translation_output(
 }
 
 fn into_python_result<T>(py: Python<'_>, result: Result<T, CoreTranslationError>) -> PyResult<T> {
-    match result {
-        Ok(output) => Ok(output),
-        Err(error) => {
-            let exception = TranslationError::new_err(error.to_string());
-            exception.value(py).setattr("kind", error.kind())?;
-            exception
-                .value(py)
-                .setattr("details", to_python(py, &error_details(&error))?)?;
-            Err(exception)
-        }
-    }
+    result.map_err(|error| {
+        translation_error(py, error.kind(), error.to_string(), error_details(&error))
+    })
 }
 
 fn error_details(error: &CoreTranslationError) -> Value {

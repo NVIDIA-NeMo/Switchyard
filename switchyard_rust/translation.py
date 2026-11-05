@@ -20,7 +20,7 @@ class WireFormat(str, Enum):
 if TYPE_CHECKING:
     from collections.abc import AsyncIterable
 
-    from switchyard_rust._translation_stream import _TranslatedStream, _TranslationStream
+    from switchyard_rust._translation_stream import _TranslationStream
 
     class TranslationError(Exception):
         """Translation failure with a readable message and structured details."""
@@ -102,8 +102,8 @@ if TYPE_CHECKING:
             *,
             served_model: str | None = None,
             request_extensions: dict[str, Any] | None = None,
-        ) -> _TranslatedStream:
-            """Convenience method for calling decode_stream and encode_stream."""
+        ) -> _TranslationStream:
+            """Translate SSE byte chunks into target-format event dictionaries."""
             ...
 
 

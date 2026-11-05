@@ -173,14 +173,30 @@ async def test_stream_translation_preserves_ir_and_restores_extensions():
 
 
 @pytest.mark.parametrize(
-    "method,kind", [("decode_stream", "ResponseTranslation"), ("encode_stream", "Configuration")]
+    "method,kind",
+    [
+        ("decode_stream", "ResponseTranslation"),
+        ("encode_stream", "Configuration"),
+        ("translate_stream", "ResponseTranslation"),
+    ],
 )
-async def test_stream_errors_keep_their_python_and_ir_forms(method, kind):
+async def test_stream_errors_preserve_exceptions(method, kind):
     engine = TranslationEngine()
+    make_stream = getattr(engine, method)
+    formats = ("openai_chat", "anthropic_messages") if method == "translate_stream" else ("openai_chat",)
     with pytest.raises(TranslationError, match="no stream codec registered for fake") as caught:
-        getattr(engine, method)("fake", items([]))
+        make_stream("fake", *formats[1:], items([]))
     assert caught.value.kind == kind
     assert caught.value.details == {"message": "no stream codec registered for fake"}
+
+    if method == "translate_stream":
+        with pytest.raises(TranslationError, match="no stream codec registered for fake") as caught:
+            make_stream("openai_chat", "fake", items([]))
+        assert caught.value.kind == "Configuration"
+
+    if method != "decode_stream":
+        with pytest.raises(ValueError):
+            make_stream(*formats, items([]), request_extensions={"fields": []})
 
     failure = OSError("input failed")
 
@@ -188,13 +204,13 @@ async def test_stream_errors_keep_their_python_and_ir_forms(method, kind):
         raise failure
         yield  # pragma: no cover
 
-    async with getattr(engine, method)("openai_chat", failing_input()) as stream:
+    async with make_stream(*formats, failing_input()) as stream:
         with pytest.raises(OSError) as caught:
             await anext(stream)
         assert caught.value is failure
 
-    invalid = "not bytes" if method == "decode_stream" else []
-    async with getattr(engine, method)("openai_chat", items([invalid])) as stream:
+    invalid = [] if method == "encode_stream" else "not bytes"
+    async with make_stream(*formats, items([invalid])) as stream:
         with pytest.raises(TypeError):
             await anext(stream)
 
@@ -207,27 +223,37 @@ async def test_stream_errors_keep_their_python_and_ir_forms(method, kind):
         return
 
     for payload in (b"data: {\n\n", b""):
-        async with engine.decode_stream("openai_chat", items([payload])) as stream:
+        async with make_stream(*formats, items([payload])) as stream:
             with pytest.raises(TranslationError) as caught:
                 await anext(stream)
             assert caught.value.kind == "ResponseTranslation"
             assert caught.value.details["message"]
 
+
+@pytest.mark.parametrize("method", ["decode_encode", "translate_stream"])
+async def test_stream_error_events_become_upstream_failures(method):
+    engine = TranslationEngine()
     for raw, variant, message in [
         ([], "DecodeError", "OpenAI stream event is not an object"),
         ({"error": {"message": "provider failed"}}, "StreamError", "provider failed"),
     ]:
-        async with engine.decode_stream(
-            "openai_chat", byte_stream([raw], terminal=False)
-        ) as stream:
-            ir = [event async for event in stream]
-        assert ir == [
-            {
-                "preservation": {"source": "openai_chat", "raw": raw},
-                "normalized": [{variant: {"message": message}}],
-            }
-        ]
-        async with engine.encode_stream("anthropic_messages", items(ir)) as stream:
+        if method == "decode_encode":
+            async with engine.decode_stream(
+                "openai_chat", byte_stream([raw], terminal=False)
+            ) as decoded:
+                ir = [event async for event in decoded]
+            assert ir == [
+                {
+                    "preservation": {"source": "openai_chat", "raw": raw},
+                    "normalized": [{variant: {"message": message}}],
+                }
+            ]
+            stream = engine.encode_stream("anthropic_messages", items(ir))
+        else:
+            stream = engine.translate_stream(
+                "openai_chat", "anthropic_messages", byte_stream([raw], terminal=False)
+            )
+        async with stream:
             with pytest.raises(TranslationError) as caught:
                 async for _ in stream:
                     pass

@@ -6,10 +6,7 @@
 import asyncio
 from collections.abc import AsyncIterable, AsyncIterator
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
-
-if TYPE_CHECKING:
-    from switchyard_rust.translation import TranslationEngine
+from typing import Any
 
 
 class _StreamInput:
@@ -85,54 +82,6 @@ class _TranslationStream:
             self._input = None
 
     async def __aenter__(self) -> "_TranslationStream":
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_value: BaseException | None,
-        traceback: TracebackType | None,
-    ) -> None:
-        await self.aclose()
-
-
-class _TranslatedStream:
-    def __init__(
-        self,
-        engine: "TranslationEngine",
-        source: str,
-        target: str,
-        byte_stream: AsyncIterable[bytes],
-        *,
-        served_model: str | None = None,
-        request_extensions: dict[str, Any] | None = None,
-    ) -> None:
-        self._decoded = engine.decode_stream(source, byte_stream)
-        self._encoded = engine.encode_stream(
-            target,
-            self._decoded,
-            served_model=served_model,
-            request_extensions=request_extensions,
-        )
-
-    def __aiter__(self) -> "_TranslatedStream":
-        return self
-
-    async def __anext__(self) -> dict[str, Any]:
-        try:
-            return await anext(self._encoded)
-        except BaseException:
-            await self.aclose()
-            raise
-
-    async def aclose(self) -> None:
-        # These iterators are ours; the supplied byte stream remains caller-owned.
-        try:
-            await self._encoded.aclose()
-        finally:
-            await self._decoded.aclose()
-
-    async def __aenter__(self) -> "_TranslatedStream":
         return self
 
     async def __aexit__(

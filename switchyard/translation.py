@@ -45,19 +45,7 @@ decoded request's extensions when encoding the response::
 request_extensions uses the IR shape {"fields": {...}}. Omitting it, passing None,
 or passing an empty dictionary or {"fields": {}} all encode without request context.
 
-For streaming format conversion, translate SSE byte chunks into provider events::
-
-    async with engine.decode_stream(backend_format, byte_stream) as decoded:
-        async with engine.encode_stream(
-            source_format,
-            decoded,
-            served_model="selected-model",
-            request_extensions=decoded_request["request"]["extensions"],
-        ) as encoded:
-            async for event in encoded:
-                handle_provider_event(event)
-
-Alternately the translate_stream method can be used::
+Use translate_stream to convert SSE byte chunks into provider event dictionaries::
 
     async with engine.translate_stream(
         backend_format,
@@ -69,8 +57,18 @@ Alternately the translate_stream method can be used::
         async for event in encoded:
             handle_provider_event(event)
 
-translate_stream composes decode_stream and encode_stream in Python and closes
-both internal iterators. Use the separate methods when working with IR events.
+Use decode_stream and encode_stream separately when you need access to the IR
+events, such as to inspect or modify them between decoding and encoding::
+
+    async with engine.decode_stream(backend_format, byte_stream) as decoded:
+        async with engine.encode_stream(
+            source_format,
+            decoded,
+            served_model="selected-model",
+            request_extensions=decoded_request["request"]["extensions"],
+        ) as encoded:
+            async for event in encoded:
+                handle_provider_event(event)
 
 The stream methods return async iterators that also support async context management.
 Prefer async with to release translation resources on early exit. Each iterator owns
