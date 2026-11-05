@@ -45,11 +45,14 @@ pub(crate) fn parse_entry(line: &[u8]) -> serde_json::Result<Option<Entry>> {
         Err(error) => {
             let is_outcome =
                 serde_json::from_slice::<serde_json::Value>(line).is_ok_and(|record| {
-                    record
-                        .get("outcome")
-                        .is_some_and(serde_json::Value::is_object)
-                        && record.get("ts").is_none()
-                        && record.get("model").is_none()
+                    record.as_object().is_some_and(|record| {
+                        record
+                            .get("outcome")
+                            .is_some_and(serde_json::Value::is_object)
+                            && record
+                                .keys()
+                                .all(|key| matches!(key.as_str(), "session_id" | "outcome"))
+                    })
                 });
             if is_outcome { Ok(None) } else { Err(error) }
         }
@@ -162,16 +165,20 @@ mod tests {
         let outcome = r#"{"session_id":"s","outcome":{"ts":"2026-10-08T12:00:00Z","route_id":"smart","judgments":[]}}"#;
         let first = r#"{"ts":"2026-10-08T12:00:00Z","model":"luna"}"#;
         let second = r#"{"ts":"2026-10-08T12:00:01Z","model":"astra"}"#;
+        let invalid_usage = r#"{"outcome":{},"prompt_tokens":100}"#;
+        let invalid_cost = r#"{"outcome":{},"cost":{}}"#;
         std::fs::write(
             &path,
-            format!("{outcome}\n{first}\n{outcome}\nnot json\n{second}\n{outcome}\n"),
+            format!(
+                "{outcome}\n{first}\n{outcome}\nnot json\n{invalid_usage}\n{second}\n{invalid_cost}\n{outcome}\n"
+            ),
         )
         .expect("write log");
         let history = load(&path).expect("history");
         assert_eq!(history.entries.len(), 2);
         assert_eq!(history.entries[0].model, "luna");
         assert_eq!(history.entries[1].model, "astra");
-        assert_eq!(history.skipped, 1);
+        assert_eq!(history.skipped, 3);
         assert!(!history.limited);
     }
 

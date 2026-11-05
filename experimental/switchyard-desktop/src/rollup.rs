@@ -359,6 +359,8 @@ mod tests {
         for contents in [
             "not json\n",
             "{\"outcome\":null}\n",
+            "{\"outcome\":{},\"prompt_tokens\":100}\n",
+            "{\"outcome\":{},\"cost\":{}}\n",
             "{\"outcome\":{},\"ts\":\"2026-09-28T10:00:00Z\",\"model\":42}\n",
         ] {
             let (_dir, path) = log(contents);
