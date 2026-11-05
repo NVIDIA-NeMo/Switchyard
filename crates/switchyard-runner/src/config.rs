@@ -1950,9 +1950,9 @@ labels = ["private"]
 [routes.ambiguous]
 id = "switchyard/ambiguous"
 type = "composite"
-classifier = {{ target = "standard", classify_trigger = "user_turn", decision = {{ cutoff = 0.4, candidates = {{ a = "strong", b = "weak" }}, evidence = {{}} }} }}
+classifier = {{ target = "standard", classify_trigger = "user_turn", decision = {{ cutoff = 0.4 }} }}
 stage = {{ capable_target = "strong", efficient_target = "weak", confidence_threshold = 0.5 }}
-efficient = {{ classifier = {{ target = "secondary", decision = {{ cutoff = 0.4, candidates = {{ a = "strong", b = "weak" }}, evidence = {{}} }} }} }}
+efficient = {{ classifier = {{ target = "secondary", decision = {{ cutoff = 0.4 }} }} }}
 
 [routes.ambiguous.eligibility.target_alternatives]
 standard = ["approved_primary"]
