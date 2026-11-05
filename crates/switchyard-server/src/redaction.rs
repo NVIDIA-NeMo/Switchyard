@@ -129,6 +129,7 @@ mod tests {
                         Box::pin(events),
                         WireFormat::OpenAiChat,
                         Arc::clone(&state.redactor),
+                        None,
                     )
                     .into_response();
                     response.headers_mut().insert("x-upstream-debug", header);

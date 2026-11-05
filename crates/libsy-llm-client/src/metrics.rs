@@ -99,6 +99,17 @@ pub(crate) fn record_upstream_attempt(status: Option<u16>) {
         );
 }
 
+/// Measures an HTTP attempt from dispatch until its response headers arrive.
+pub(crate) fn record_upstream_headers_latency(model: &ModelId, latency: Duration) {
+    global::meter("switchyard")
+        .f64_histogram("switchyard.upstream_headers_latency_ms")
+        .build()
+        .record(
+            latency.as_secs_f64() * 1_000.0,
+            &[KeyValue::new("model", model.to_string())],
+        );
+}
+
 /// Records an upstream operation that succeeded after at least one retry.
 pub(crate) fn record_retry_recovered() {
     global::meter("switchyard")
