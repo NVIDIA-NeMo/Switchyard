@@ -211,13 +211,17 @@ if TYPE_CHECKING:
         @staticmethod
         def decision(
             *,
-            cutoff: float,
-            candidates: Mapping[str, str],
-            evidence: object,
-            instructions: object | None = None,
-            criteria: Mapping[str, object] | None = None,
+            cutoff: float | None = None,
+            instructions: str | None = None,
+            choices: Sequence[Mapping[str, str]] | None = None,
+            apply_cutoff_to: str | None = None,
         ) -> TaskClassifierConfig:
-            """Apply a cutoff to relative advantage or a custom candidate choice score."""
+            """Route capable when the ``apply_cutoff_to`` choice probability exceeds ``cutoff``.
+
+            Omitted values use the library defaults: cutoff ``0.6`` and the
+            ``capable`` and ``efficient`` choices. Each choice has an ``id`` and a
+            ``description``.
+            """
             ...
 
         def __init__(

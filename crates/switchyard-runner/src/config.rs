@@ -206,13 +206,7 @@ fn bound_target<'a>(name: &'a str, overrides: &TargetOverrides<'a>) -> &'a str {
 }
 
 fn callable_targets(algorithm: &AlgorithmSpec) -> BTreeSet<&str> {
-    let mut targets: BTreeSet<_> = algorithm.callable_target_names().into_iter().collect();
-    for (_, decision) in algorithm.classifier_targets() {
-        if let Some(decision) = decision {
-            targets.extend(decision.candidates.values().map(String::as_str));
-        }
-    }
-    targets
+    algorithm.callable_target_names().into_iter().collect()
 }
 
 type TargetBindings = Vec<(String, String)>;
@@ -535,7 +529,6 @@ impl DeploymentConfig {
     ) -> impl Iterator<Item = RunnerResult<(&str, &RouteConfig, AlgorithmAndModels)>> {
         let targets = self.build_targets();
         self.routes.iter().map(move |(route_name, config)| {
-            let classifiers: Vec<_> = config.algorithm.classifier_targets().collect();
             let decision_targets = config.algorithm.decision_target_names();
             for name in config.callable_target_names() {
                 let (exists, kind) = if decision_targets.contains(&name) {
@@ -549,15 +542,10 @@ impl DeploymentConfig {
                     )));
                 }
             }
-            for name in config.routing_target_names().into_iter().chain(
-                classifiers
-                    .into_iter()
-                    .filter_map(|(_, decision)| decision)
-                    .flat_map(|judge| judge.candidates.values().map(String::as_str)),
-            ) {
+            for name in config.routing_target_names() {
                 if !self.targets.contains_key(name) {
                     return Err(RunnerError::configuration(format!(
-                        "route {route_name} completion and candidate target {name} must be an LLM target"
+                        "route {route_name} completion target {name} must be an LLM target"
                     )));
                 }
             }
@@ -1641,8 +1629,6 @@ weak_target = "weak"
 
 [routes.typed.decision]
 cutoff = 0.4
-candidates = {{ a = "strong", b = "weak" }}
-evidence = {{}}
 
 [routes.typed.eligibility]
 "#
@@ -1689,7 +1675,7 @@ evidence = {{}}
                     "id = \"weak/model\"\nlabels = ['private']",
                     "id = \"weak/model\"",
                 ),
-                "decision candidate weak",
+                "required target weak",
             ),
         ] {
             let runner = Runner::from_toml(&config)?;
@@ -1964,9 +1950,9 @@ labels = ["private"]
 [routes.ambiguous]
 id = "switchyard/ambiguous"
 type = "composite"
-classifier = {{ target = "standard", classify_trigger = "user_turn", decision = {{ cutoff = 0.4, candidates = {{ a = "strong", b = "weak" }}, evidence = {{}} }} }}
+classifier = {{ target = "standard", classify_trigger = "user_turn", decision = {{ cutoff = 0.4 }} }}
 stage = {{ capable_target = "strong", efficient_target = "weak", confidence_threshold = 0.5 }}
-efficient = {{ classifier = {{ target = "secondary", decision = {{ cutoff = 0.4, candidates = {{ a = "strong", b = "weak" }}, evidence = {{}} }} }} }}
+efficient = {{ classifier = {{ target = "secondary", decision = {{ cutoff = 0.4 }} }} }}
 
 [routes.ambiguous.eligibility.target_alternatives]
 standard = ["approved_primary"]
@@ -2426,8 +2412,7 @@ new = ["send_message"]
         ) + r#"
 [routes.composed.classifier.decision]
 cutoff = 0.4
-candidates = { a = "strong", b = "weak" }
-evidence = { description = "candidate comparison" }
+instructions = "candidate comparison"
 "#;
         for (source, valid) in [
             (source.clone(), true),
@@ -2438,7 +2423,7 @@ evidence = { description = "candidate comparison" }
                 ),
                 false,
             ),
-            (source.replace("b = \"weak\"", "b = \"strong\""), false),
+            (source.replace("cutoff = 0.4", "cutoff = 1.1"), false),
         ] {
             let deployment: DeploymentConfig = toml::from_str(&source).unwrap();
             let spec = &deployment.routes["composed"].algorithm;

@@ -40,10 +40,12 @@ weak_target = "weak"
 fail_open = false
 [routes.classifier.decision]
 cutoff = 0.92
-candidates = {{ capable_first = "strong", efficient_first = "weak" }}
-criteria = {{ capable_first = "Start capable", efficient_first = "Start efficient" }}
-instructions = {{ task = "Choose a Stage profile." }}
-evidence = {{ description = "Compare the two profiles" }}
+instructions = "Choose a Stage profile."
+apply_cutoff_to = "capable_first"
+choices = [
+    {{ id = "capable_first", description = "Start capable" }},
+    {{ id = "efficient_first", description = "Start efficient" }},
+]
 "#
     );
     // This unique variable is only read while constructing this client.
@@ -57,7 +59,7 @@ evidence = {{ description = "Compare the two profiles" }}
     let runner = runner?;
     let question = json!({
         "name": "route", "type": "choice",
-        "instructions": json!({"task": "Choose a Stage profile."}).to_string(),
+        "instructions": "Choose a Stage profile.",
         "choices": [{"value": "capable_first", "description": "Start capable"},
             {"value": "efficient_first", "description": "Start efficient"}]
     });
@@ -122,12 +124,10 @@ evidence = {{ description = "Compare the two profiles" }}
     );
     let requests = server.received_requests().await.unwrap();
     let decision: Value = serde_json::from_slice(&requests[0].body)?;
-    let context: Value = serde_json::from_str(decision["input"].as_str().unwrap())?;
     assert_eq!(
-        context["evidence"],
-        json!({"description": "Compare the two profiles"})
+        decision["input"],
+        serde_json::to_string(&text_request(None, "Route this request").messages)?
     );
-    assert_eq!(context["session"], "session-1");
     server.verify().await;
     Ok(())
 }
@@ -183,7 +183,11 @@ async fn direct_mode_serves_the_selected_group() -> Result<(), Box<dyn std::erro
     Mock::given(method("POST")).and(path("/v1/decisions"))
         .and(body_partial_json(json!({"model": "router-model", "questions": [{
             "name": "route", "type": "choice",
-            "choices": [{"value": "balanced"}, {"value": "fast"}, {"value": "premium"}]
+            "choices": [
+                {"value": "balanced", "description": "Serve this request with the balanced models."},
+                {"value": "fast", "description": "Serve this request with the fast models."},
+                {"value": "premium", "description": "Serve this request with the premium models."}
+            ]
         }]})))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "model": "router-model", "answers": [{
@@ -218,13 +222,10 @@ async fn direct_mode_serves_the_selected_group() -> Result<(), Box<dyn std::erro
     assert_eq!(output.selected_model, "premium");
     let requests = server.received_requests().await.unwrap();
     let decision: Value = serde_json::from_slice(&requests[0].body)?;
-    let context: Value = serde_json::from_str(decision["input"].as_str().unwrap())?;
     assert_eq!(
-        context,
-        json!({
-            "task": [{"role": "user", "content": [{"type": "text", "text": "Route this request"}]}],
-            "session": "session-1",
-        })
+        decision["input"],
+        json!([{"role": "user", "content": [{"type": "text", "text": "Route this request"}]}])
+            .to_string()
     );
     server.verify().await;
     Ok(())

@@ -329,27 +329,26 @@ impl PyLlmClassifierConfig {
 
 #[pymethods]
 impl PyTaskClassifierConfig {
-    /// Apply a cutoff to relative advantage or a custom candidate choice score.
+    /// Route capable when a decision model's choice probability exceeds a cutoff.
     #[staticmethod]
-    #[pyo3(signature = (*, cutoff, candidates, evidence, instructions=None, criteria=None))]
+    #[pyo3(signature = (*, cutoff=None, instructions=None, choices=None, apply_cutoff_to=None))]
     fn decision(
-        cutoff: f64,
-        candidates: BTreeMap<String, String>,
-        evidence: &Bound<'_, PyAny>,
-        instructions: Option<&Bound<'_, PyAny>>,
-        criteria: Option<&Bound<'_, PyAny>>,
+        cutoff: Option<f64>,
+        instructions: Option<String>,
+        choices: Option<&Bound<'_, PyAny>>,
+        apply_cutoff_to: Option<String>,
     ) -> PyResult<Self> {
+        let defaults = DecisionJudgeConfig::default();
         Ok(Self {
             inner: TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
                     cutoff,
-                    candidates: candidates
-                        .into_iter()
-                        .map(|(label, model)| (label, ModelId::from(model)))
-                        .collect(),
-                    evidence: from_python(evidence)?,
-                    instructions: instructions.map(from_python).transpose()?,
-                    criteria: criteria.map(from_python).transpose()?,
+                    instructions,
+                    choices: match choices {
+                        Some(choices) => from_python(choices)?,
+                        None => defaults.choices,
+                    },
+                    apply_cutoff_to: apply_cutoff_to.unwrap_or(defaults.apply_cutoff_to),
                 }),
                 ..TaskClassifierConfig::default()
             },

@@ -28,22 +28,23 @@ failures raise TranslationError, whose kind and details attributes
 identify the failure. str(error) provides a human-readable message.
 
 To restore Responses tool namespaces and custom tool calls, pass the original
-decoded request's extensions when encoding the response::
+decoded request's extensions when translating the response::
 
     decoded_request = engine.decode_request(source_format, request_body)
     encoded = engine.encode_request(backend_format, decoded_request["request"])
 
     # Send encoded["body"] to the backend and receive backend_response.
-    decoded_response = engine.decode_response(backend_format, backend_response)
-
-    result = engine.encode_response(
+    result = engine.translate_response(
+        backend_format,
         source_format,
-        decoded_response["response"],
+        backend_response,
         request_extensions=decoded_request["request"]["extensions"],
     )
 
+encode_response also accepts request_extensions when encoding an edited response IR.
 request_extensions uses the IR shape {"fields": {...}}. Omitting it, passing None,
-or passing an empty dictionary or {"fields": {}} all encode without request context.
+or passing an empty dictionary or {"fields": {}} all translate without request context.
+Extensions apply after encoding, including when a same-format response is preserved.
 
 Use translate_stream to convert SSE byte chunks into provider event dictionaries::
 

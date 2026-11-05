@@ -72,9 +72,14 @@ if TYPE_CHECKING:
             ...
 
         def translate_response(
-            self, source: WireFormat | str, target: WireFormat | str, body: dict[str, Any]
+            self,
+            source: WireFormat | str,
+            target: WireFormat | str,
+            body: dict[str, Any],
+            *,
+            request_extensions: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
-            """Translate a complete response, returning body and diagnostics."""
+            """Return body and diagnostics, optionally using decoded request extensions."""
             ...
 
         def decode_stream(

@@ -1016,6 +1016,7 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
         ALGO.to_string(),
         Some(json!({
             "source": "llm-classifier", "score": 0.9, "threshold": 0.5,
+            "capable_score": 0.7, "capable_threshold": 0.6,
             "verdict": "continue", "trigger": "turn", "reason_code": "test",
             "confidence": "wrong type", "unknown": LEAKED_CONTENT,
         })),
@@ -1106,6 +1107,8 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
         ("evidence.source", "llm-classifier"),
         ("evidence.score", "0.9"),
         ("evidence.threshold", "0.5"),
+        ("evidence.capable_score", "0.7"),
+        ("evidence.capable_threshold", "0.6"),
         ("evidence.verdict", "continue"),
         ("evidence.trigger", "turn"),
         ("evidence.reason_code", "test"),
@@ -1697,7 +1700,7 @@ async fn decision_calls_record_each_terminal_path_once() -> switchyard_libsy::Re
                 .call_decision(
                     DecisionRequest {
                         model: None,
-                        context: json!(LEAKED_CONTENT),
+                        input: json!(LEAKED_CONTENT),
                         questions: Default::default(),
                     },
                     self.0.clone().into(),

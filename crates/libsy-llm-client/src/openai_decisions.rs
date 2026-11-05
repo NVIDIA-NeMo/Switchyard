@@ -242,7 +242,9 @@ fn encode(request: &DecisionRequest) -> Result<Value> {
             wire
         })
         .collect();
-    Ok(json!({"model": model, "input": text(&request.context), "questions": questions}))
+    // OpenAI Decisions accepts a string or its own message items. Sending the
+    // input as text avoids translating each message and tool block.
+    Ok(json!({"model": model, "input": text(&request.input), "questions": questions}))
 }
 
 // OpenAI requires text; retain structured IR content as JSON rather than dropping it.
