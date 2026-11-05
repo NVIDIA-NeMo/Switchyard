@@ -576,12 +576,12 @@ evidence = {{}}
 [decision_clients.standard]
 format = "openai_decisions"
 endpoint = "{}/v1/decisions"
-api_key_env = "SWITCHYARD_ELIGIBILITY_DECISION_TEST_KEY"
+api_key_env = "PATH"
 timeout_ms = 2000
 [decision_clients.approved]
 format = "openai_decisions"
 endpoint = "{}/v1/decisions"
-api_key_env = "SWITCHYARD_ELIGIBILITY_DECISION_TEST_KEY"
+api_key_env = "PATH"
 timeout_ms = 2000
 [decision_targets.standard]
 id = "cloud/decision"
@@ -595,15 +595,7 @@ labels = ["private", "customer_data"]
         primary.uri(),
         approved.uri()
     );
-    // This unique variable is only read while constructing these clients.
-    unsafe {
-        std::env::set_var("SWITCHYARD_ELIGIBILITY_DECISION_TEST_KEY", "test-key");
-    }
-    let runner = Runner::from_toml(&source);
-    unsafe {
-        std::env::remove_var("SWITCHYARD_ELIGIBILITY_DECISION_TEST_KEY");
-    }
-    let runner = runner.expect("typed judge alternatives");
+    let runner = Runner::from_toml(&source).expect("typed judge alternatives");
     Mock::given(method("POST"))
         .and(path("/v1/decisions"))
         .and(body_partial_json(json!({"model": "approved/decision"})))
