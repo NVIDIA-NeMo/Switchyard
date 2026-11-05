@@ -186,58 +186,59 @@
 <a href=#186 id=186 data-nosnippet>186</a>            DecisionKind::Choice { options } =&gt; {
 <a href=#187 id=187 data-nosnippet>187</a>                <span class="kw">let </span><span class="kw-2">mut </span>criteria = serde_json::Map::new();
 <a href=#188 id=188 data-nosnippet>188</a>                <span class="kw">for </span>option <span class="kw">in </span>options {
-<a href=#189 id=189 data-nosnippet>189</a>                    <span class="kw">if </span>criteria
-<a href=#190 id=190 data-nosnippet>190</a>                        .insert(option.id.clone(), option.description.clone().into())
-<a href=#191 id=191 data-nosnippet>191</a>                        .is_some()
-<a href=#192 id=192 data-nosnippet>192</a>                    {
-<a href=#193 id=193 data-nosnippet>193</a>                        <span class="kw">return </span><span class="prelude-val">Err</span>(LlmClientError::InvalidRequest {
-<a href=#194 id=194 data-nosnippet>194</a>                            message: <span class="macro">format!</span>(<span class="string">"duplicate option {:?} in questions.{id}"</span>, option.id),
-<a href=#195 id=195 data-nosnippet>195</a>                        });
-<a href=#196 id=196 data-nosnippet>196</a>                    }
-<a href=#197 id=197 data-nosnippet>197</a>                }
-<a href=#198 id=198 data-nosnippet>198</a>                (<span class="string">"choice"</span>, Value::Object(criteria))
-<a href=#199 id=199 data-nosnippet>199</a>            }
-<a href=#200 id=200 data-nosnippet>200</a>            DecisionKind::Score { levels } =&gt; (<span class="string">"score"</span>, <span class="macro">json!</span>(levels)),
-<a href=#201 id=201 data-nosnippet>201</a>        };
-<a href=#202 id=202 data-nosnippet>202</a>        questions.insert(
-<a href=#203 id=203 data-nosnippet>203</a>            id.clone(),
-<a href=#204 id=204 data-nosnippet>204</a>            <span class="macro">json!</span>({
-<a href=#205 id=205 data-nosnippet>205</a>                <span class="string">"type"</span>: kind, <span class="string">"instructions"</span>: question.instructions, <span class="string">"criteria"</span>: criteria,
-<a href=#206 id=206 data-nosnippet>206</a>            }),
-<a href=#207 id=207 data-nosnippet>207</a>        );
-<a href=#208 id=208 data-nosnippet>208</a>    }
-<a href=#209 id=209 data-nosnippet>209</a>    <span class="prelude-val">Ok</span>(<span class="macro">json!</span>({<span class="string">"model"</span>: model, <span class="string">"state"</span>: request.input, <span class="string">"questions"</span>: questions}))
-<a href=#210 id=210 data-nosnippet>210</a>}
-<a href=#211 id=211 data-nosnippet>211</a>
-<a href=#212 id=212 data-nosnippet>212</a><span class="attr">#[derive(Deserialize)]
-<a href=#213 id=213 data-nosnippet>213</a></span><span class="kw">struct </span>WireResponse {
-<a href=#214 id=214 data-nosnippet>214</a>    id: <span class="prelude-ty">Option</span>&lt;String&gt;,
-<a href=#215 id=215 data-nosnippet>215</a>    model: <span class="prelude-ty">Option</span>&lt;ModelId&gt;,
-<a href=#216 id=216 data-nosnippet>216</a>    answers: BTreeMap&lt;String, WireAnswer&gt;,
-<a href=#217 id=217 data-nosnippet>217</a>    <span class="attr">#[serde(default)]
-<a href=#218 id=218 data-nosnippet>218</a>    </span>usage: Usage,
-<a href=#219 id=219 data-nosnippet>219</a>}
-<a href=#220 id=220 data-nosnippet>220</a>
-<a href=#221 id=221 data-nosnippet>221</a><span class="attr">#[derive(Deserialize)]
-<a href=#222 id=222 data-nosnippet>222</a></span><span class="kw">struct </span>WireAnswer {
-<a href=#223 id=223 data-nosnippet>223</a>    <span class="attr">#[serde(flatten)]
-<a href=#224 id=224 data-nosnippet>224</a>    </span>value: WireValue,
-<a href=#225 id=225 data-nosnippet>225</a>    confidence: <span class="prelude-ty">Option</span>&lt;ProviderConfidence&gt;,
-<a href=#226 id=226 data-nosnippet>226</a>}
-<a href=#227 id=227 data-nosnippet>227</a>
-<a href=#228 id=228 data-nosnippet>228</a><span class="attr">#[derive(Deserialize)]
-<a href=#229 id=229 data-nosnippet>229</a>#[serde(tag = <span class="string">"type"</span>, rename_all = <span class="string">"snake_case"</span>)]
-<a href=#230 id=230 data-nosnippet>230</a></span><span class="kw">enum </span>WireValue {
-<a href=#231 id=231 data-nosnippet>231</a>    Noul {
-<a href=#232 id=232 data-nosnippet>232</a>        noul: Probability,
-<a href=#233 id=233 data-nosnippet>233</a>    },
-<a href=#234 id=234 data-nosnippet>234</a>    Choice {
-<a href=#235 id=235 data-nosnippet>235</a>        choice: String,
-<a href=#236 id=236 data-nosnippet>236</a>        probabilities: <span class="prelude-ty">Option</span>&lt;BTreeMap&lt;String, Probability&gt;&gt;,
-<a href=#237 id=237 data-nosnippet>237</a>    },
-<a href=#238 id=238 data-nosnippet>238</a>    Score {
-<a href=#239 id=239 data-nosnippet>239</a>        score: ScoreValue,
-<a href=#240 id=240 data-nosnippet>240</a>        probabilities: <span class="prelude-ty">Option</span>&lt;BTreeMap&lt;String, Probability&gt;&gt;,
-<a href=#241 id=241 data-nosnippet>241</a>    },
-<a href=#242 id=242 data-nosnippet>242</a>}
+<a href=#189 id=189 data-nosnippet>189</a>                    <span class="kw">let </span>description = option.description.as_ref().unwrap_or(<span class="kw-2">&amp;</span>Value::Null);
+<a href=#190 id=190 data-nosnippet>190</a>                    <span class="kw">if </span>criteria
+<a href=#191 id=191 data-nosnippet>191</a>                        .insert(option.id.clone(), description.clone())
+<a href=#192 id=192 data-nosnippet>192</a>                        .is_some()
+<a href=#193 id=193 data-nosnippet>193</a>                    {
+<a href=#194 id=194 data-nosnippet>194</a>                        <span class="kw">return </span><span class="prelude-val">Err</span>(LlmClientError::InvalidRequest {
+<a href=#195 id=195 data-nosnippet>195</a>                            message: <span class="macro">format!</span>(<span class="string">"duplicate option {:?} in questions.{id}"</span>, option.id),
+<a href=#196 id=196 data-nosnippet>196</a>                        });
+<a href=#197 id=197 data-nosnippet>197</a>                    }
+<a href=#198 id=198 data-nosnippet>198</a>                }
+<a href=#199 id=199 data-nosnippet>199</a>                (<span class="string">"choice"</span>, Value::Object(criteria))
+<a href=#200 id=200 data-nosnippet>200</a>            }
+<a href=#201 id=201 data-nosnippet>201</a>            DecisionKind::Score { levels } =&gt; (<span class="string">"score"</span>, <span class="macro">json!</span>(levels)),
+<a href=#202 id=202 data-nosnippet>202</a>        };
+<a href=#203 id=203 data-nosnippet>203</a>        questions.insert(
+<a href=#204 id=204 data-nosnippet>204</a>            id.clone(),
+<a href=#205 id=205 data-nosnippet>205</a>            <span class="macro">json!</span>({
+<a href=#206 id=206 data-nosnippet>206</a>                <span class="string">"type"</span>: kind, <span class="string">"instructions"</span>: question.instructions, <span class="string">"criteria"</span>: criteria,
+<a href=#207 id=207 data-nosnippet>207</a>            }),
+<a href=#208 id=208 data-nosnippet>208</a>        );
+<a href=#209 id=209 data-nosnippet>209</a>    }
+<a href=#210 id=210 data-nosnippet>210</a>    <span class="prelude-val">Ok</span>(<span class="macro">json!</span>({<span class="string">"model"</span>: model, <span class="string">"state"</span>: request.input, <span class="string">"questions"</span>: questions}))
+<a href=#211 id=211 data-nosnippet>211</a>}
+<a href=#212 id=212 data-nosnippet>212</a>
+<a href=#213 id=213 data-nosnippet>213</a><span class="attr">#[derive(Deserialize)]
+<a href=#214 id=214 data-nosnippet>214</a></span><span class="kw">struct </span>WireResponse {
+<a href=#215 id=215 data-nosnippet>215</a>    id: <span class="prelude-ty">Option</span>&lt;String&gt;,
+<a href=#216 id=216 data-nosnippet>216</a>    model: <span class="prelude-ty">Option</span>&lt;ModelId&gt;,
+<a href=#217 id=217 data-nosnippet>217</a>    answers: BTreeMap&lt;String, WireAnswer&gt;,
+<a href=#218 id=218 data-nosnippet>218</a>    <span class="attr">#[serde(default)]
+<a href=#219 id=219 data-nosnippet>219</a>    </span>usage: Usage,
+<a href=#220 id=220 data-nosnippet>220</a>}
+<a href=#221 id=221 data-nosnippet>221</a>
+<a href=#222 id=222 data-nosnippet>222</a><span class="attr">#[derive(Deserialize)]
+<a href=#223 id=223 data-nosnippet>223</a></span><span class="kw">struct </span>WireAnswer {
+<a href=#224 id=224 data-nosnippet>224</a>    <span class="attr">#[serde(flatten)]
+<a href=#225 id=225 data-nosnippet>225</a>    </span>value: WireValue,
+<a href=#226 id=226 data-nosnippet>226</a>    confidence: <span class="prelude-ty">Option</span>&lt;ProviderConfidence&gt;,
+<a href=#227 id=227 data-nosnippet>227</a>}
+<a href=#228 id=228 data-nosnippet>228</a>
+<a href=#229 id=229 data-nosnippet>229</a><span class="attr">#[derive(Deserialize)]
+<a href=#230 id=230 data-nosnippet>230</a>#[serde(tag = <span class="string">"type"</span>, rename_all = <span class="string">"snake_case"</span>)]
+<a href=#231 id=231 data-nosnippet>231</a></span><span class="kw">enum </span>WireValue {
+<a href=#232 id=232 data-nosnippet>232</a>    Noul {
+<a href=#233 id=233 data-nosnippet>233</a>        noul: Probability,
+<a href=#234 id=234 data-nosnippet>234</a>    },
+<a href=#235 id=235 data-nosnippet>235</a>    Choice {
+<a href=#236 id=236 data-nosnippet>236</a>        choice: String,
+<a href=#237 id=237 data-nosnippet>237</a>        probabilities: <span class="prelude-ty">Option</span>&lt;BTreeMap&lt;String, Probability&gt;&gt;,
+<a href=#238 id=238 data-nosnippet>238</a>    },
+<a href=#239 id=239 data-nosnippet>239</a>    Score {
+<a href=#240 id=240 data-nosnippet>240</a>        score: ScoreValue,
+<a href=#241 id=241 data-nosnippet>241</a>        probabilities: <span class="prelude-ty">Option</span>&lt;BTreeMap&lt;String, Probability&gt;&gt;,
+<a href=#242 id=242 data-nosnippet>242</a>    },
+<a href=#243 id=243 data-nosnippet>243</a>}
 </code></pre></div></section></main></body></html>

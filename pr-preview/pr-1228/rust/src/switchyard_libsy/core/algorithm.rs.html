@@ -957,7 +957,7 @@
 <a href=#957 id=957 data-nosnippet>957</a>    <span class="kw">use </span><span class="kw">crate</span>::core::testing::{Serve, ServeResult, echo, reply, serve_decision, test_drive};
 <a href=#958 id=958 data-nosnippet>958</a>    <span class="kw">use </span>futures::StreamExt;
 <a href=#959 id=959 data-nosnippet>959</a>    <span class="kw">use </span>switchyard_protocol::{
-<a href=#960 id=960 data-nosnippet>960</a>        LlmResponse, LlmResponseChunk, Message, Role, completion_text, text_request, text_response,
+<a href=#960 id=960 data-nosnippet>960</a>        LlmResponse, LlmResponseChunk, completion_text, text_request, text_response,
 <a href=#961 id=961 data-nosnippet>961</a>    };
 <a href=#962 id=962 data-nosnippet>962</a>
 <a href=#963 id=963 data-nosnippet>963</a>    <span class="attr">#[test]
@@ -1120,7 +1120,7 @@
 <a href=#1120 id=1120 data-nosnippet>1120</a>                        .call_decision(
 <a href=#1121 id=1121 data-nosnippet>1121</a>                            DecisionRequest {
 <a href=#1122 id=1122 data-nosnippet>1122</a>                                model: <span class="prelude-val">None</span>,
-<a href=#1123 id=1123 data-nosnippet>1123</a>                                input: <span class="macro">vec!</span>[],
+<a href=#1123 id=1123 data-nosnippet>1123</a>                                input: Value::Null,
 <a href=#1124 id=1124 data-nosnippet>1124</a>                                questions: Default::default(),
 <a href=#1125 id=1125 data-nosnippet>1125</a>                            },
 <a href=#1126 id=1126 data-nosnippet>1126</a>                            (<span class="kw-2">*</span>model).into(),
@@ -1397,7 +1397,7 @@
 <a href=#1397 id=1397 data-nosnippet>1397</a>            <span class="kw">fn </span>decision_request() -&gt; DecisionRequest {
 <a href=#1398 id=1398 data-nosnippet>1398</a>                DecisionRequest {
 <a href=#1399 id=1399 data-nosnippet>1399</a>                    model: <span class="prelude-val">Some</span>(<span class="string">"overwritten"</span>.into()),
-<a href=#1400 id=1400 data-nosnippet>1400</a>                    input: <span class="macro">vec!</span>[Message::text(Role::User, <span class="string">"choose a route"</span>)],
+<a href=#1400 id=1400 data-nosnippet>1400</a>                    input: <span class="macro">serde_json::json!</span>({<span class="string">"task"</span>: <span class="string">"choose a route"</span>}),
 <a href=#1401 id=1401 data-nosnippet>1401</a>                    questions: Default::default(),
 <a href=#1402 id=1402 data-nosnippet>1402</a>                }
 <a href=#1403 id=1403 data-nosnippet>1403</a>            }

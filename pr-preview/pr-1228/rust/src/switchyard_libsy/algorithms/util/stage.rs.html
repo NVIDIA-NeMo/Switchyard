@@ -1497,7 +1497,7 @@
 <a href=#1497 id=1497 data-nosnippet>1497</a>            .score(<span class="kw-2">&amp;mut </span>state, <span class="kw-2">&amp;mut </span>request, <span class="kw-2">&amp;</span>driver)
 <a href=#1498 id=1498 data-nosnippet>1498</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#1499 id=1499 data-nosnippet>1499</a>
-<a href=#1500 id=1500 data-nosnippet>1500</a>        <span class="macro">assert_eq!</span>(trailing_text(<span class="kw-2">&amp;</span>request), <span class="prelude-val">Some</span>(<span class="macro">format!</span>(<span class="string">"hi|{ESCALATION}"</span>)));
+<a href=#1500 id=1500 data-nosnippet>1500</a>        <span class="macro">assert_eq!</span>(trailing_text(<span class="kw-2">&amp;</span>request), <span class="prelude-val">Some</span>(ESCALATION.to_string()));
 <a href=#1501 id=1501 data-nosnippet>1501</a>        <span class="prelude-val">Ok</span>(())
 <a href=#1502 id=1502 data-nosnippet>1502</a>    }
 <a href=#1503 id=1503 data-nosnippet>1503</a>
@@ -1509,7 +1509,7 @@
 <a href=#1509 id=1509 data-nosnippet>1509</a>
 <a href=#1510 id=1510 data-nosnippet>1510</a>        <span class="kw">let </span><span class="kw-2">mut </span>first = request();
 <a href=#1511 id=1511 data-nosnippet>1511</a>        classifier.score(<span class="kw-2">&amp;mut </span>state, <span class="kw-2">&amp;mut </span>first, <span class="kw-2">&amp;</span>driver).<span class="kw">await</span><span class="question-mark">?</span>;
-<a href=#1512 id=1512 data-nosnippet>1512</a>        <span class="macro">assert_eq!</span>(trailing_text(<span class="kw-2">&amp;</span>first), <span class="prelude-val">Some</span>(<span class="macro">format!</span>(<span class="string">"hi|{ESCALATION}"</span>)));
+<a href=#1512 id=1512 data-nosnippet>1512</a>        <span class="macro">assert_eq!</span>(trailing_text(<span class="kw-2">&amp;</span>first), <span class="prelude-val">Some</span>(ESCALATION.to_string()));
 <a href=#1513 id=1513 data-nosnippet>1513</a>
 <a href=#1514 id=1514 data-nosnippet>1514</a>        <span class="kw">for _ in </span><span class="number">0</span>..<span class="number">2 </span>{
 <a href=#1515 id=1515 data-nosnippet>1515</a>            <span class="kw">let </span><span class="kw-2">mut </span>held = request();
@@ -1535,7 +1535,7 @@
 <a href=#1535 id=1535 data-nosnippet>1535</a>            .score(<span class="kw-2">&amp;mut </span>state, <span class="kw-2">&amp;mut </span>request, <span class="kw-2">&amp;</span>driver)
 <a href=#1536 id=1536 data-nosnippet>1536</a>            .<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#1537 id=1537 data-nosnippet>1537</a>
-<a href=#1538 id=1538 data-nosnippet>1538</a>        <span class="macro">assert_eq!</span>(trailing_text(<span class="kw-2">&amp;</span>request), <span class="prelude-val">Some</span>(<span class="macro">format!</span>(<span class="string">"hi|{DEESCALATION}"</span>)));
+<a href=#1538 id=1538 data-nosnippet>1538</a>        <span class="macro">assert_eq!</span>(trailing_text(<span class="kw-2">&amp;</span>request), <span class="prelude-val">Some</span>(DEESCALATION.to_string()));
 <a href=#1539 id=1539 data-nosnippet>1539</a>        <span class="prelude-val">Ok</span>(())
 <a href=#1540 id=1540 data-nosnippet>1540</a>    }
 <a href=#1541 id=1541 data-nosnippet>1541</a>
