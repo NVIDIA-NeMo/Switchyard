@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Shift picks the model for each request. Switchyard serves it through Shift.
+# Switchyard asks for decisions with the Shift API key in SHIFT_API_KEY. Codex and
+# Claude Code send the same key, and Switchyard forwards it with each model call.
+schema_version = 1
+
+[llm_clients.shift_openai]
+format = "openai_responses"
+base_url = "https://api.shift.ac/v1"
+forward_auth = true
+
+# Shift reads the key from the Authorization header, so the client forwards it.
+[llm_clients.shift_anthropic]
+format = "anthropic_messages"
+base_url = "https://api.shift.ac"
+forward_auth = true
+
+[targets]
+sol = { id = "gpt-6.1-sol", llm_client = "shift_openai" }
+astra = { id = "gpt-6-astra", llm_client = "shift_openai" }
+sonnet = { id = "claude-sonnet-5-5", llm_client = "shift_anthropic" }
+opus = { id = "claude-opus-5-5", llm_client = "shift_anthropic" }
+
+[decision_clients.shift]
+format = "openai_decisions"
+endpoint = "https://api.shift.ac/v1/decisions"
+api_key_env = "SHIFT_API_KEY"
+timeout_ms = 10000
+
+[decision_targets.shift_1]
+id = "shift-1"
+decision_client = "shift"
+
+# Group names are the model names Shift answers with.
+# Each route offers one provider's models. Shift rejects a mix, and the route
+# then serves default_target.
+[routes.codex]
+id = "codex"
+type = "llm_classifier"
+mode = "direct"
+default_target = "shift-1/gpt-6.1-sol"
+# Shift reads the whole session.
+recent_turn_window = 10000
+
+[routes.codex.models]
+judge = ["shift_1"]
+"shift-1/gpt-6.1-sol" = ["sol"]
+"shift-1/gpt-6-astra" = ["astra"]
+any = ["sol", "astra"]
+
+[routes.claude_code]
+id = "claude_code"
+type = "llm_classifier"
+mode = "direct"
+default_target = "shift-1/claude-opus-5-5"
+recent_turn_window = 10000
+
+[routes.claude_code.models]
+judge = ["shift_1"]
+"shift-1/claude-sonnet-5-5" = ["sonnet"]
+"shift-1/claude-opus-5-5" = ["opus"]
+any = ["sonnet", "opus"]
