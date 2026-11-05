@@ -804,8 +804,6 @@
       
         
       
-        
-      
     
     
     
@@ -919,34 +917,6 @@
     
   
     Execution (Stage Router)
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../routing_algorithms/plan_execute_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Plan/Execute Routing
   
 
     
@@ -2837,7 +2807,7 @@ Unknown values are omitted; request content, answers, and error details are not 
 <td>Known string fields from outcome evidence, when present.</td>
 </tr>
 <tr>
-<td><code>evidence.score</code>, <code>evidence.confidence</code>, <code>evidence.threshold</code></td>
+<td><code>evidence.score</code>, <code>evidence.confidence</code>, <code>evidence.threshold</code>, <code>evidence.capable_score</code>, <code>evidence.capable_threshold</code></td>
 <td>number</td>
 <td>Known numeric fields from outcome evidence, when present.</td>
 </tr>
@@ -3221,10 +3191,10 @@ configured names and fixed categories, not request/session IDs or user text.</p>
 <p>These are current implementation names, not a separately versioned telemetry schema.
 Debug spans and log events are not a stable field contract.</p>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/00e7aaf22dc019b1a9b1e2ab364b33898bb527d9/crates/libsy/src/observability.rs">Libsy spans, outcome projection, and metrics</a></li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/00e7aaf22dc019b1a9b1e2ab364b33898bb527d9/crates/libsy-llm-client/src/run.rs">Client span fields</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/00e7aaf22dc019b1a9b1e2ab364b33898bb527d9/crates/libsy-llm-client/src/observability.rs">stream/usage observation</a></li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/00e7aaf22dc019b1a9b1e2ab364b33898bb527d9/crates/libsy-llm-client/src/metrics.rs">Client metrics</a></li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/00e7aaf22dc019b1a9b1e2ab364b33898bb527d9/crates/libsy/src/algorithms/util/stage.rs">Stage Router metrics</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/00e7aaf22dc019b1a9b1e2ab364b33898bb527d9/crates/libsy/src/algorithms/advisor_gate/telemetry.rs">Advisor Gate metrics</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/545818b72fc900fefeed0e42681bc5a555849eb9/crates/libsy/src/observability.rs">Libsy spans, outcome projection, and metrics</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/545818b72fc900fefeed0e42681bc5a555849eb9/crates/libsy-llm-client/src/run.rs">Client span fields</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/545818b72fc900fefeed0e42681bc5a555849eb9/crates/libsy-llm-client/src/observability.rs">stream/usage observation</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/545818b72fc900fefeed0e42681bc5a555849eb9/crates/libsy-llm-client/src/metrics.rs">Client metrics</a></li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/545818b72fc900fefeed0e42681bc5a555849eb9/crates/libsy/src/algorithms/util/stage.rs">Stage Router metrics</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/545818b72fc900fefeed0e42681bc5a555849eb9/crates/libsy/src/algorithms/advisor_gate/telemetry.rs">Advisor Gate metrics</a></li>
 </ul>
 
 

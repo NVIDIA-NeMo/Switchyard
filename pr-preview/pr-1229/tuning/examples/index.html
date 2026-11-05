@@ -804,8 +804,6 @@
       
         
       
-        
-      
     
     
     
@@ -919,34 +917,6 @@
     
   
     Execution (Stage Router)
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../routing_algorithms/plan_execute_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Plan/Execute Routing
   
 
     
@@ -2712,11 +2682,12 @@ Longer holds can reduce switching and preserve cached context, so measure total
 cost, retries, and task success together. See the
 <a href="../../routing_algorithms/stage_router_routing/#pickers">stage-router guide</a> for
 profile and threshold details.</p>
-<p><strong>Handoff notes can break cache reuse across turns.</strong> They are added only to the forwarded
-request, so later requests can omit the note and break reuse of the cached
-continuation. A fix is planned for a future release. Leave <code>handoff_notes</code>
-unconfigured for this cost comparison; see
-<a href="../../routing_algorithms/stage_router_routing/#optional-handoff-notes">handoff notes</a>.</p>
+<p><strong>Handoff notes are an optional tuning control.</strong> Use failures on calibration
+tasks to choose the notes, then validate them on held-out tasks.
+Keep the notes fixed while comparing profiles, thresholds, or hold turns. Measure
+task success and total cost, including retries and cache charges. See
+<a href="../../routing_algorithms/stage_router_routing/#optional-handoff-notes">handoff notes</a>
+for configuration and cache behavior.</p>
 <h3 id="split-the-benchmark-and-collect-baselines">Split the benchmark and collect baselines<a class="headerlink" href="#split-the-benchmark-and-collect-baselines" title="Permanent link">&para;</a></h3>
 <p>Use <strong>20% for calibration and 80% for held-out validation</strong>, chosen before tuning.
 For this example's 500-task benchmark, tune on 100 tasks and reserve 400 for the

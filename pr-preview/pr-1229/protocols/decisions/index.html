@@ -912,8 +912,6 @@
       
         
       
-        
-      
     
     
     
@@ -1027,34 +1025,6 @@
     
   
     Execution (Stage Router)
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../../routing_algorithms/plan_execute_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Plan/Execute Routing
   
 
     
@@ -2575,7 +2545,7 @@
 
 
 <h1 id="decision-model-related-protocols">Decision Model-Related Protocols<a class="headerlink" href="#decision-model-related-protocols" title="Permanent link">&para;</a></h1>
-<p>A decision model evaluates a context against named questions and returns typed
+<p>A decision model evaluates an input against named questions and returns typed
 answers. An algorithm can use those answers to choose a model or decide what
 work to request next.</p>
 <p>Switchyard represents this exchange with
@@ -2588,12 +2558,12 @@ Switchyard supports it alongside OpenAI Decisions through the same protocol.</p>
 <div class="admonition info">
 <p class="admonition-title">Question fields, answer types, and API mappings</p>
 <ul>
-<li><strong><a href="../../reference/protocols/decision_questions/">Question reference</a>:</strong> shared context, question IDs, Boolean/choice/score questions, and provider request mappings.</li>
+<li><strong><a href="../../reference/protocols/decision_questions/">Question reference</a>:</strong> shared input, question IDs, Boolean/choice/score questions, and provider request mappings.</li>
 <li><strong><a href="../../reference/protocols/decision_answers/">Answer reference</a>:</strong> probabilities, rubric scores, confidence, usage, provider response mappings, and errors.</li>
 </ul>
 </div>
 <h2 id="describe-the-questions">Describe the questions<a class="headerlink" href="#describe-the-questions" title="Permanent link">&para;</a></h2>
-<p>One request carries shared context and independent questions keyed by ID.
+<p>One request carries shared input and independent questions keyed by ID.
 Each <a href="../../rust/switchyard_protocol/decision/struct.DecisionQuestion.html"><code>DecisionQuestion</code></a>
 defines what to evaluate and which answer kind to return. The response uses the
 same question IDs, so the algorithm can match each answer to its question.</p>
@@ -2605,7 +2575,7 @@ request construction only; it does not call a provider.</p>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DecisionRequest</span><span class="w"> </span><span class="p">{</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="n">model</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="s">&quot;privacy-judge&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()),</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="n">context</span><span class="p">:</span><span class="w"> </span><span class="nc">json</span><span class="o">!</span><span class="p">({</span><span class="s">&quot;task&quot;</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Summarize this customer&#39;s account history.&quot;</span><span class="p">}),</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">    </span><span class="n">input</span><span class="p">:</span><span class="w"> </span><span class="nc">json</span><span class="o">!</span><span class="p">({</span><span class="s">&quot;task&quot;</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Summarize this customer&#39;s account history.&quot;</span><span class="p">}),</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">    </span><span class="n">questions</span><span class="p">:</span><span class="w"> </span><span class="nc">BTreeMap</span><span class="p">::</span><span class="n">from</span><span class="p">([(</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="w">        </span><span class="s">&quot;contains_private_data&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="w">        </span><span class="n">DecisionQuestion</span><span class="w"> </span><span class="p">{</span>
@@ -2657,7 +2627,7 @@ See <a href="../../mechanics_of_libsy/#stepcalldecision">Mechanics of Libsy</a> 
 call-handling loop and cancellation behavior.</p>
 <h2 id="use-the-supplied-clients">Use the supplied clients<a class="headerlink" href="#use-the-supplied-clients" title="Permanent link">&para;</a></h2>
 <p>You can instead use the public <a href="../../rust/switchyard_llm_client/struct.SystemOneClient.html"><code>SystemOneClient</code></a> or <a href="../../rust/switchyard_llm_client/struct.OpenAiDecisionClient.html"><code>OpenAiDecisionClient</code></a> from
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/00e7aaf22dc019b1a9b1e2ab364b33898bb527d9/crates/libsy-llm-client/README.md"><code>switchyard-llm-client</code></a>. Use dependencies at
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/545818b72fc900fefeed0e42681bc5a555849eb9/crates/libsy-llm-client/README.md"><code>switchyard-llm-client</code></a>. Use dependencies at
 the same API revision as libsy and the protocol crate.</p>
 <p>This async excerpt sends the earlier <code>request</code> to System One. Set its <code>model</code> to
 an ID served by your endpoint. <code>SYSTEM_ONE_ENDPOINT</code> must include <code>/v1/systemone</code>.
