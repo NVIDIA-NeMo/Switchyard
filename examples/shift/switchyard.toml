@@ -41,8 +41,8 @@ id = "codex"
 type = "llm_classifier"
 mode = "direct"
 default_target = "shift-1/gpt-6.1-sol"
-# Shift reads the whole session.
-recent_turn_window = 10000
+# Shift-1 reads more of the session than the default 10 messages.
+recent_turn_window = 128
 
 [routes.codex.models]
 judge = ["shift_1"]
@@ -55,7 +55,7 @@ id = "claude_code"
 type = "llm_classifier"
 mode = "direct"
 default_target = "shift-1/claude-opus-5-5"
-recent_turn_window = 10000
+recent_turn_window = 128
 
 [routes.claude_code.models]
 judge = ["shift_1"]

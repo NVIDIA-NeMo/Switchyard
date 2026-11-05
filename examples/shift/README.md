@@ -56,7 +56,11 @@ requests.
 
 Each route lists Shift's model names as its groups. Shift reads the
 conversation and answers with one of them. Switchyard serves the target in that
-group. Shift reads the whole session, so `recent_turn_window` sends all of it.
+group.
+
+By default, a decision includes the opening task and the last 10 messages.
+Shift-1 reads more of the session than that, so the example sets
+`recent_turn_window = 128`.
 
 Each route offers one provider's models. Shift rejects a route that mixes
 providers. When a decision fails, the route serves `default_target`. Set
