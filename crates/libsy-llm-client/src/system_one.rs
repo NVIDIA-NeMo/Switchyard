@@ -186,8 +186,9 @@ fn encode(request: &DecisionRequest) -> Result<Value> {
             DecisionKind::Choice { options } => {
                 let mut criteria = serde_json::Map::new();
                 for option in options {
+                    let description = option.description.as_ref().unwrap_or(&Value::Null);
                     if criteria
-                        .insert(option.id.clone(), option.description.clone().into())
+                        .insert(option.id.clone(), description.clone())
                         .is_some()
                     {
                         return Err(LlmClientError::InvalidRequest {

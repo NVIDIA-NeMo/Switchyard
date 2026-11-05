@@ -7,7 +7,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
-use serde_json::json;
+use serde::Deserialize;
+use serde_json::{Value, json};
 use switchyard_protocol::{
     Category, ChoiceOption, DecisionKind, DecisionQuestion, DecisionRequest, DecisionValue,
     ModelId, Request, Response,
@@ -37,6 +38,47 @@ Mildly prefer capable for shared semantic contracts, executable interpretation, 
 const CAPABLE_FIRST_DESC: &str = "Capable first: select the router configuration that starts with the more capable model and follows its configured routing policy for the rest of the task.";
 const EFFICIENT_FIRST_DESC: &str = "Efficient first: select the router configuration that starts with the efficient model and follows its configured routing policy for the rest of the task.";
 
+/// One option in a decision choice question.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DecisionChoice {
+    /// Stable ID used by the answer's selection and probabilities.
+    pub id: String,
+    /// Meaning of this choice, sent to the decision model.
+    pub description: String,
+}
+
+/// Builds a choice question for the protocol.
+fn choice_question(instructions: String, choices: Vec<DecisionChoice>) -> DecisionQuestion {
+    DecisionQuestion {
+        instructions: Value::String(instructions),
+        kind: DecisionKind::Choice {
+            options: choices
+                .into_iter()
+                .map(|choice| ChoiceOption {
+                    id: choice.id,
+                    description: Some(Value::String(choice.description)),
+                })
+                .collect(),
+        },
+    }
+}
+
+/// Builds a request that asks `question` about the selected conversation messages.
+fn route_request(
+    input: &TaskInput,
+    request: &Request,
+    question: &DecisionQuestion,
+) -> Result<DecisionRequest> {
+    let messages = input.messages(request);
+    Ok(DecisionRequest {
+        model: None,
+        input: serde_json::to_value(&messages)
+            .map_err(|error| LibsyError::external("serializing decision input", error))?,
+        questions: BTreeMap::from([(ROUTE.into(), question.clone())]),
+    })
+}
+
 /// Question and cutoff policy for a decision judge.
 ///
 /// The defaults ask whether to start with the capable or the efficient model.
@@ -50,7 +92,7 @@ pub struct DecisionJudgeConfig {
     /// Replaces the default instructions. Keep the meaning of the choices.
     pub instructions: Option<String>,
     /// Choices sent to the decision model.
-    pub choices: Vec<ChoiceOption>,
+    pub choices: Vec<DecisionChoice>,
     /// Choice ID whose probability is compared with the cutoff.
     pub apply_cutoff_to: String,
 }
@@ -61,11 +103,11 @@ impl Default for DecisionJudgeConfig {
             cutoff: None,
             instructions: None,
             choices: vec![
-                ChoiceOption {
+                DecisionChoice {
                     id: CAPABLE_FIRST.into(),
                     description: CAPABLE_FIRST_DESC.into(),
                 },
-                ChoiceOption {
+                DecisionChoice {
                     id: EFFICIENT_FIRST.into(),
                     description: EFFICIENT_FIRST_DESC.into(),
                 },
@@ -123,15 +165,13 @@ impl DecisionClassifier {
         fail_open: bool,
     ) -> Result<Self> {
         input.recent_turn_window.get_or_insert(DEFAULT_TURN_WINDOW);
-        let question = DecisionQuestion {
-            instructions: config
+        let question = choice_question(
+            config
                 .instructions
                 .take()
                 .unwrap_or_else(|| DEFAULT_INSTRUCTIONS.into()),
-            kind: DecisionKind::Choice {
-                options: std::mem::take(&mut config.choices),
-            },
-        };
+            std::mem::take(&mut config.choices),
+        );
         Ok(Self {
             config,
             input,
@@ -194,11 +234,7 @@ impl Classifier for DecisionClassifier {
         let judge = driver.first_model_for(&Category::Judge)?;
         let capable = driver.first_model_for(&Category::Capable)?;
         let efficient = driver.first_model_for(&Category::Efficient)?;
-        let decision = DecisionRequest {
-            model: None,
-            input: self.input.messages(request),
-            questions: BTreeMap::from([(ROUTE.into(), self.question.clone())]),
-        };
+        let decision = route_request(&self.input, request, &self.question)?;
         let score = match self.try_score(decision, driver, judge).await {
             Ok(score) => score,
             Err(error) if self.fail_open => {
@@ -268,22 +304,17 @@ impl DirectClassifier {
                 message: "direct mode needs at least two options other than judge and any".into(),
             });
         }
-        let question = DecisionQuestion {
-            instructions: "Select the option that should serve this request.".into(),
-            kind: DecisionKind::Choice {
-                options: config
-                    .options
-                    .iter()
-                    .map(|option| ChoiceOption {
-                        id: option.as_str().into(),
-                        description: format!(
-                            "Serve this request with the {} models.",
-                            option.as_str()
-                        ),
-                    })
-                    .collect(),
-            },
-        };
+        let question = choice_question(
+            "Select the option that should serve this request.".into(),
+            config
+                .options
+                .iter()
+                .map(|option| DecisionChoice {
+                    id: option.as_str().into(),
+                    description: format!("Serve this request with the {} models.", option.as_str()),
+                })
+                .collect(),
+        );
         Ok(Self {
             input: TaskInput {
                 recent_turn_window: Some(config.recent_turn_window.unwrap_or(DEFAULT_TURN_WINDOW)),
@@ -327,11 +358,7 @@ impl Classifier for DirectClassifier {
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
         let judge = driver.first_model_for(&Category::Judge)?;
-        let decision = DecisionRequest {
-            model: None,
-            input: self.input.messages(request),
-            questions: BTreeMap::from([(ROUTE.into(), self.question.clone())]),
-        };
+        let decision = route_request(&self.input, request, &self.question)?;
         let category = match self.try_select(decision, driver, judge).await {
             Ok(category) => category,
             Err(error) if self.config.fail_open => {
@@ -383,7 +410,7 @@ mod tests {
         assert!(defaults.validate().is_ok());
 
         let custom = DecisionJudgeConfig {
-            choices: vec![ChoiceOption {
+            choices: vec![DecisionChoice {
                 id: "complex".into(),
                 description: "Requires the capable model".into(),
             }],

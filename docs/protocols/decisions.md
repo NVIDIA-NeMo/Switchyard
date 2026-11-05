@@ -1,6 +1,6 @@
 # Decision Model-Related Protocols
 
-A decision model evaluates messages against named questions and returns typed
+A decision model evaluates an input against named questions and returns typed
 answers. An algorithm can use those answers to choose a model or decide what
 work to request next.
 
@@ -15,12 +15,12 @@ Switchyard supports it alongside OpenAI Decisions through the same protocol.
 
 !!! info "Question fields, answer types, and API mappings"
 
-    - **[Question reference](../reference/protocols/decision_questions.md):** input messages, question IDs, Boolean/choice/score questions, and provider request mappings.
+    - **[Question reference](../reference/protocols/decision_questions.md):** shared input, question IDs, Boolean/choice/score questions, and provider request mappings.
     - **[Answer reference](../reference/protocols/decision_answers.md):** probabilities, rubric scores, confidence, usage, provider response mappings, and errors.
 
 ## Describe the questions
 
-One request carries input messages and independent questions keyed by ID.
+One request carries shared input and independent questions keyed by ID.
 Each <a href="../../rust/switchyard_protocol/decision/struct.DecisionQuestion.html"><code>DecisionQuestion</code></a>
 defines what to evaluate and which answer kind to return. The response uses the
 same question IDs, so the algorithm can match each answer to its question.
@@ -31,15 +31,15 @@ request construction only; it does not call a provider.
 ```rust
 use std::collections::BTreeMap;
 use serde_json::json;
-use switchyard_protocol::{DecisionKind, DecisionQuestion, DecisionRequest, Message, Role};
+use switchyard_protocol::{DecisionKind, DecisionQuestion, DecisionRequest};
 
 let request = DecisionRequest {
     model: Some("privacy-judge".into()),
-    input: vec![Message::text(Role::User, "Summarize this customer's account history.")],
+    input: json!({"task": "Summarize this customer's account history."}),
     questions: BTreeMap::from([(
         "contains_private_data".into(),
         DecisionQuestion {
-            instructions: "Does the task contain private customer data?".into(),
+            instructions: json!("Does the task contain private customer data?"),
             kind: DecisionKind::Boolean {
                 true_description: Some(json!("Contains private customer data")),
                 false_description: Some(json!("Contains only public information")),

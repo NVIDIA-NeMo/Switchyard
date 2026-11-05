@@ -13,11 +13,11 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use switchyard_libsy::{
     Algorithm, CallDecision, CapabilityJudgeConfig, ClassifyTrigger, CompositeJudgeConfig,
-    CompositeRouter, CompositeRouterConfig, DecisionJudgeConfig, LibsyError, PickerMode,
-    RuntimeModels, StageRouterConfig, State, Step, StepStream, TaskClassifierConfig,
+    CompositeRouter, CompositeRouterConfig, DecisionChoice, DecisionJudgeConfig, LibsyError,
+    PickerMode, RuntimeModels, StageRouterConfig, State, Step, StepStream, TaskClassifierConfig,
 };
 use switchyard_protocol::{
-    Category, ChoiceOption, DecisionResponse, LlmClientError, LlmRequest, ModelId, Request,
+    Category, DecisionResponse, LlmClientError, LlmRequest, ModelId, Request,
 };
 
 // The JS wrapper turns these prefixes into public Error codes.
@@ -62,7 +62,7 @@ struct ClassifierOptions {
 struct DecisionOptions {
     cutoff: Option<f64>,
     instructions: Option<String>,
-    choices: Option<Vec<ChoiceOption>>,
+    choices: Option<Vec<DecisionChoice>>,
     apply_cutoff_to: Option<String>,
 }
 

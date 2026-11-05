@@ -197,7 +197,7 @@ fn encode(request: &DecisionRequest) -> Result<Value> {
         .questions
         .iter()
         .map(|(name, question)| {
-            let mut wire = json!({"name": name, "instructions": &question.instructions});
+            let mut wire = json!({"name": name, "instructions": text(&question.instructions)});
             match &question.kind {
                 DecisionKind::Boolean {
                     true_description,
@@ -220,7 +220,11 @@ fn encode(request: &DecisionRequest) -> Result<Value> {
                         options
                             .iter()
                             .map(|option| {
-                                json!({"value": option.id, "description": option.description})
+                                let mut choice = json!({"value": option.id});
+                                if let Some(description) = &option.description {
+                                    choice["description"] = json!(text(description));
+                                }
+                                choice
                             })
                             .collect(),
                     );
@@ -239,12 +243,8 @@ fn encode(request: &DecisionRequest) -> Result<Value> {
         })
         .collect();
     // OpenAI Decisions accepts a string or its own message items. Sending the
-    // conversation as JSON text avoids translating each message and tool block.
-    let input =
-        serde_json::to_string(&request.input).map_err(|error| LlmClientError::InvalidRequest {
-            message: format!("serializing decision input: {error}"),
-        })?;
-    Ok(json!({"model": model, "input": input, "questions": questions}))
+    // input as text avoids translating each message and tool block.
+    Ok(json!({"model": model, "input": text(&request.input), "questions": questions}))
 }
 
 // OpenAI requires text; retain structured IR content as JSON rather than dropping it.

@@ -23,8 +23,8 @@ pub use algorithms::composite::{CompositeJudgeConfig, CompositeRouter, Composite
 pub use algorithms::infra::InfraPolicy;
 pub use algorithms::llm_class::{
     CapabilityJudgeConfig, CustomClassifierConfig, CustomClassifierPolicy, DEFAULT_UNMATCHED_STEPS,
-    DecisionJudgeConfig, DirectClassifierConfig, LlmCapabilityConfig, LlmClassifierConfig,
-    LlmTaskClassifier, TaskClassifierConfig,
+    DecisionChoice, DecisionJudgeConfig, DirectClassifierConfig, LlmCapabilityConfig,
+    LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
 };
 pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::Passthrough;

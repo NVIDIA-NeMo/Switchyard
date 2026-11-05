@@ -1700,7 +1700,7 @@ async fn decision_calls_record_each_terminal_path_once() -> switchyard_libsy::Re
                 .call_decision(
                     DecisionRequest {
                         model: None,
-                        input: vec![Message::text(Role::User, LEAKED_CONTENT)],
+                        input: json!(LEAKED_CONTENT),
                         questions: Default::default(),
                     },
                     self.0.clone().into(),

@@ -13,15 +13,15 @@ use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, BreakerConfig, CapabilityJudgeConfig,
     ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeJudgeConfig,
     CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    DEFAULT_UNMATCHED_STEPS, DecisionJudgeConfig, DirectClassifierConfig, EscalationJudgeConfig,
-    GateTrigger, HandoffNoteConfig, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback,
-    LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, RuntimeModels, StageRouter,
-    StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
-    Vgr, VgrConfig,
+    DEFAULT_UNMATCHED_STEPS, DecisionChoice, DecisionJudgeConfig, DirectClassifierConfig,
+    EscalationJudgeConfig, GateTrigger, HandoffNoteConfig, LlmCapabilityConfig,
+    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
+    RuntimeModels, StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig,
+    TaskClassifierConfig, ToolSemantics, Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use strum_macros::IntoStaticStr;
-use switchyard_protocol::{Category, ChoiceOption, ModelId};
+use switchyard_protocol::{Category, ModelId};
 
 /// Error returned when an algorithm description cannot be constructed.
 #[derive(Debug)]
@@ -273,7 +273,7 @@ pub struct DecisionJudgeRouteConfig {
     /// Replaces the default decision instructions.
     pub instructions: Option<String>,
     /// Replaces the default `capable` and `efficient` choices.
-    pub choices: Option<Vec<ChoiceOption>>,
+    pub choices: Option<Vec<DecisionChoice>>,
     /// Choice ID whose probability is compared with the cutoff. Defaults to `capable`.
     pub apply_cutoff_to: Option<String>,
 }

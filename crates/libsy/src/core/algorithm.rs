@@ -957,7 +957,7 @@ mod tests {
     use crate::core::testing::{Serve, ServeResult, echo, reply, serve_decision, test_drive};
     use futures::StreamExt;
     use switchyard_protocol::{
-        LlmResponse, LlmResponseChunk, Message, Role, completion_text, text_request, text_response,
+        LlmResponse, LlmResponseChunk, completion_text, text_request, text_response,
     };
 
     #[test]
@@ -1120,7 +1120,7 @@ mod tests {
                         .call_decision(
                             DecisionRequest {
                                 model: None,
-                                input: vec![],
+                                input: Value::Null,
                                 questions: Default::default(),
                             },
                             (*model).into(),
@@ -1397,7 +1397,7 @@ mod tests {
             fn decision_request() -> DecisionRequest {
                 DecisionRequest {
                     model: Some("overwritten".into()),
-                    input: vec![Message::text(Role::User, "choose a route")],
+                    input: serde_json::json!({"task": "choose a route"}),
                     questions: Default::default(),
                 }
             }

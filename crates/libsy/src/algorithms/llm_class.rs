@@ -12,8 +12,8 @@ use serde_json::Value;
 use switchyard_protocol::{Category, ContentBlock, Message, Role};
 
 mod decision;
+pub use decision::{DecisionChoice, DecisionJudgeConfig, DirectClassifierConfig};
 use decision::{DecisionClassifier, DirectClassifier};
-pub use decision::{DecisionJudgeConfig, DirectClassifierConfig};
 
 use super::escalation;
 use super::fall_through::FallThrough;
@@ -1661,7 +1661,12 @@ mod tests {
                     if let Some(instructions) = override_instructions {
                         assert_eq!(&question.instructions, instructions);
                     } else {
-                        assert!(!question.instructions.is_empty());
+                        assert!(
+                            question
+                                .instructions
+                                .as_str()
+                                .is_some_and(|text| !text.is_empty())
+                        );
                     }
                     if name == "provider error" {
                         return call
