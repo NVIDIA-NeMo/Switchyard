@@ -133,10 +133,11 @@ function failure(error: unknown): string {
 }
 
 async function pump(source: AsyncIterable<JsonObject>, input: NativeInput): Promise<void> {
-  const iterator = source[Symbol.asyncIterator]();
-  const closed = input.closed().then(() => null);
+  let iterator: AsyncIterator<JsonObject> | undefined;
   let isFinished = false;
   try {
+    iterator = source[Symbol.asyncIterator]();
+    const closed = input.closed().then(() => null);
     for (;;) {
       const item = await Promise.race([iterator.next(), closed]);
       if (item === null) return;
@@ -148,7 +149,7 @@ async function pump(source: AsyncIterable<JsonObject>, input: NativeInput): Prom
   } catch (error) {
     await input.finish(message(error), error instanceof ContextWindowExceededError).catch(() => {});
   } finally {
-    if (!isFinished) void Promise.resolve(iterator.return?.()).catch(() => {});
+    if (!isFinished) void Promise.resolve(iterator?.return?.()).catch(() => {});
   }
 }
 

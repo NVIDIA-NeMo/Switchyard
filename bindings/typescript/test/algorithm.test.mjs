@@ -147,6 +147,20 @@ test("model calls accept normalized aggregates and response streams", async (t) 
   }
 });
 
+test("response stream setup and read failures reach the routing iterator", { timeout: 5000 }, async (t) => {
+  for (const isSetupFailure of [true, false]) {
+    const { run, call } = await start(t);
+    const source = isSetupFailure
+      ? { [Symbol.asyncIterator]() { throw new Error("stream unavailable"); } }
+      : { async *[Symbol.asyncIterator]() { throw new Error("stream unavailable"); } };
+    const rejected = assert.rejects(run.next(), {
+      name: "LibsyError", code: "ERR_ROUTING", message: /stream unavailable/,
+    });
+    await call.respond(Promise.resolve(new LlmResponse.Stream(source)));
+    await rejected;
+  }
+});
+
 test("non-recovering model responders reject with the original host failure", { timeout: 5000 }, async (t) => {
   for (const fail of [false, true]) {
     const { call } = await start(t);
