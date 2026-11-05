@@ -219,13 +219,14 @@ if [[ -f .env ]]; then
     unset _envline _envkey _envval
 fi
 
-# Pin the in-container LLM judge to the configured gateway independent of the
-# agent's endpoint. Captured BEFORE the vllm branch rewrites OPENAI_*, so the
-# task.toml verifier.env block (which reads ${JUDGE_BASE_URL}/${JUDGE_API_KEY})
-# keeps pointing at the gateway even when the agent is routed to local vLLM.
-# Explicit JUDGE_* overrides win; otherwise fall back to OPENAI_API_BASE /
-# OPENAI_BASE_URL / OPENAI_API_KEY from .env.
-export JUDGE_BASE_URL="${JUDGE_BASE_URL:-${OPENAI_API_BASE:-${OPENAI_BASE_URL:-}}}"
+# OPENAI_BASE_URL takes precedence over the legacy OPENAI_API_BASE alias.
+export OPENAI_BASE_URL="${OPENAI_BASE_URL:-${OPENAI_API_BASE:-}}"
+
+# The judge uses the configured gateway even when the agent uses local vLLM.
+# The launcher captures the judge settings before configuring the vLLM agent endpoint.
+# The task.toml verifier.env block reads JUDGE_BASE_URL and JUDGE_API_KEY.
+# Explicit JUDGE_* values win; otherwise, the judge uses the OpenAI endpoint and key.
+export JUDGE_BASE_URL="${JUDGE_BASE_URL:-${OPENAI_BASE_URL:-}}"
 export JUDGE_API_KEY="${JUDGE_API_KEY:-${OPENAI_API_KEY:-}}"
 
 # Codex only emits reasoning tokens when it recognizes the model slug as
@@ -331,7 +332,7 @@ if [[ "$IS_SANITY_AGENT" -eq 0 ]]; then
         # codex / openhands via _get_env). Only non-secret base URLs are
         # forwarded explicitly.
         _add_env ANTHROPIC_BASE_URL "${ANTHROPIC_BASE_URL:-}"
-        _add_env OPENAI_BASE_URL "${OPENAI_API_BASE:-${OPENAI_BASE_URL:-}}"
+        _add_env OPENAI_BASE_URL "${OPENAI_BASE_URL:-}"
         _add_env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC 1
         _add_env CLAUDE_CODE_ATTRIBUTION_HEADER 0
         _add_env CLAUDE_CODE_ENABLE_TELEMETRY 0
@@ -345,7 +346,7 @@ if [[ "$IS_SANITY_AGENT" -eq 0 ]]; then
             # into os.environ (read via _get_env) instead of --agent-env so it
             # stays off the process argv; LLM_BASE_URL is not secret.
             export LLM_API_KEY="${OPENAI_API_KEY:-}"
-            _add_env LLM_BASE_URL "${OPENAI_API_BASE:-${OPENAI_BASE_URL:-}}"
+            _add_env LLM_BASE_URL "${OPENAI_BASE_URL:-}"
         fi
         if [[ "$AGENT" == "qwen-coder" ]]; then
             # Harbor's QwenCode agent reads OPENAI_MODEL inside the container
@@ -772,7 +773,7 @@ if [[ "$BACKEND" == "vllm" ]]; then
 elif [[ "$AGENT" == "claude-code" ]]; then
     MANIFEST_BASE_URL="${ANTHROPIC_BASE_URL:-}"
 else
-    MANIFEST_BASE_URL="${OPENAI_API_BASE:-${OPENAI_BASE_URL:-}}"
+    MANIFEST_BASE_URL="${OPENAI_BASE_URL:-}"
 fi
 
 uv run python -m craft_taskgen.baselines.run_manifest \

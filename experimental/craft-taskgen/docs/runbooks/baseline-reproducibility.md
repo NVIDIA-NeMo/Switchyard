@@ -128,7 +128,7 @@ Pinned to **0.16.0** in `src/craft_taskgen/adapters/_docker.py::QWEN_CODE_VERSIO
 
 | Model | Effort | Source |
 |---|---|---|
-| `Qwen/Qwen3.6-35B-A3B` | — | No effort kwarg; Qwen3.x thinking is server-side and default-on at the gateway |
+| `Qwen/Qwen3.6-35B-A3B` | — | Qwen Code has no effort option; thinking depends on the endpoint's server configuration. |
 
 No reasoning_effort row in `reasoning_defaults.py` for qwen-coder — the launcher passes nothing. Output is also uncapped at the agent (qwen-code's `maxOutputTokens` setting in `~/.qwen/settings.json` is not plumbed by harbor's install template).
 

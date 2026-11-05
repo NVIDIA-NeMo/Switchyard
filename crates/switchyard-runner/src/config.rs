@@ -3273,13 +3273,15 @@ target = "weak"
             let clients = config.build_clients(&mut Vec::new())?;
             let client = clients.get("anthropic").ok_or("missing client")?;
             client.call_rewrite_model_raw(
-                json!({"model": "weak/model", "max_tokens": 7,
+                json!({"model": "weak", "max_tokens": 7,
                     "messages": [{"role": "user", "content": "hi"}],
                     "tools": [{"name": "lookup", "input_schema": {"type": "object"}, "strict": true}]}),
                 None, None, WireFormat::AnthropicMessages,
             ).await?;
             let requests = server.received_requests().await.ok_or("missing requests")?;
             let body: Value = serde_json::from_slice(&requests.last().ok_or("no request")?.body)?;
+            // The alias must resolve before the request reaches the endpoint.
+            assert_eq!(body["model"], "weak/model");
             assert_eq!(
                 body["tools"][0].get("strict").is_none(),
                 strips,

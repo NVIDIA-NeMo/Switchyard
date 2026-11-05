@@ -66,9 +66,13 @@ def _dry_run(
 
 
 def test_example_env_passes_literal_endpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """The example must pass a literal URL because the launcher does not expand .env variables."""
-    for name in ("OPENAI_API_BASE", "OPENAI_BASE_URL", "JUDGE_BASE_URL"):
+    """The example must pass a literal URL because the launcher does not expand .env variables.
+
+    OPENAI_BASE_URL must also override an inherited OPENAI_API_BASE.
+    """
+    for name in ("OPENAI_BASE_URL", "JUDGE_BASE_URL"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENAI_API_BASE", "https://legacy.example.com/v1")
     output = _dry_run(
         tmp_path,
         ["--agent", "opencode", "--model", "claude-haiku-4-5"],
@@ -218,16 +222,9 @@ def test_sanity_agent_no_model_required(tmp_path: Path, agent: str):
     assert "--agent-kwarg version=" not in output, (
         f"{agent} has no CLI version to pin; --agent-kwarg version=... should be absent"
     )
-    # Positive: the harbor command IS rendered with the agent name.
+    # Sanity agents need no model or LLM settings but keep deterministic environment values.
     assert f"--agent {agent}" in output
 
-
-@pytest.mark.parametrize("agent", ["oracle", "nop"])
-def test_sanity_agent_skips_llm_envs(tmp_path: Path, agent: str):
-    """Sanity agents don't speak to LLMs — none of the gateway/vllm env
-    plumbing nor the claude-code opt-outs should appear.
-    """
-    output = _dry_run(tmp_path, ["--agent", agent])
     for env in (
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_BASE_URL",
@@ -242,22 +239,9 @@ def test_sanity_agent_skips_llm_envs(tmp_path: Path, agent: str):
     ):
         assert env not in output, f"{agent} dry-run should not include {env} in --agent-env"
 
-
-@pytest.mark.parametrize("agent", ["oracle", "nop"])
-def test_sanity_agent_skips_agent_specific_kwargs(tmp_path: Path, agent: str):
-    """No reasoning_effort, max_turns, or disallowed_tools for sanity agents."""
-    output = _dry_run(tmp_path, ["--agent", agent])
     for kwarg in ("reasoning_effort", "max_turns", "disallowed_tools"):
         assert kwarg not in output, f"{agent} dry-run should not include --agent-kwarg {kwarg}"
 
-
-@pytest.mark.parametrize("agent", ["oracle", "nop"])
-def test_sanity_agent_keeps_determinism_envs(tmp_path: Path, agent: str):
-    """Determinism envs apply to every harbor run regardless of agent —
-    in-container pytest reproducibility doesn't depend on what agent
-    drove the run.
-    """
-    output = _dry_run(tmp_path, ["--agent", agent])
     assert "PYTHONHASHSEED=0" in output, f"{agent} dry-run missing PYTHONHASHSEED determinism env"
     assert "LC_ALL=C.UTF-8" in output, f"{agent} dry-run missing LC_ALL determinism env"
 

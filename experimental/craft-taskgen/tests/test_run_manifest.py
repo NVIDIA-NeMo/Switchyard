@@ -17,14 +17,10 @@ from craft_taskgen.baselines.run_manifest import (
 
 
 def _write_and_load(tmp_path: Path, fields: dict | None = None) -> dict:
+    """Parsing the saved manifest also checks that the writer produces valid JSON."""
     out = tmp_path / "run_manifest.json"
     write_manifest(out, **(fields or {}))
     return json.loads(out.read_text())
-
-
-def test_manifest_is_valid_json(tmp_path: Path):
-    manifest = _write_and_load(tmp_path, {"agent": {"name": "claude-code"}})
-    assert isinstance(manifest, dict)
 
 
 def test_schema_version_present(tmp_path: Path):

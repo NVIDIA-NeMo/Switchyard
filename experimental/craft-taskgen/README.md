@@ -428,7 +428,7 @@ Each machine records its hostname, user, full CLI args, and candidate file list 
 
 ### Prerequisites (one-time)
 
-1. `.env` populated (`ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_API_BASE`).
+1. Populate `.env` with `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_BASE_URL`.
 2. Docker daemon running with ≥8 GB available to containers (preflight enforces a `memory_mb >= 8192` floor on every `task.toml`).
 3. A built task suite directory (e.g. `harbor-tasks/craft-taskgen-v2b/`).
 

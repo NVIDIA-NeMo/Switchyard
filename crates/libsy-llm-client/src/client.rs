@@ -3103,11 +3103,7 @@ mod tests {
                     .insert("tools".into(), native_tools.clone());
             }
             let model = ModelConfig::new("claude", Backend::Anthropic(backend), None);
-            let model = if strip {
-                model.with_strip_anthropic_tool_strict(true)
-            } else {
-                model
-            };
+            let model = model.with_strip_anthropic_tool_strict(strip);
             let client = TranslatingLlmClient::new(&[model])?;
             let (mut raw, format) = match source {
                 "chat" => (
@@ -3143,7 +3139,8 @@ mod tests {
             raw["stream"] = json!(streaming);
             let mut llm_request = observed_translation::decode_request(format, &raw)?;
             if source == "decoded" {
-                llm_request.extensions = Default::default();
+                // This case exercises decoded tools without preserved raw input.
+                llm_request.preservation = Default::default();
             }
             let response = client
                 .call_rewrite_model(
@@ -3180,7 +3177,7 @@ mod tests {
                 assert_eq!(tools[1]["name"], "web_search");
                 assert_eq!(
                     tools[1].get("strict"),
-                    (!strip).then_some(&Value::Bool(false)),
+                    (!strip && source == "extra_body").then_some(&Value::Bool(false)),
                     "{source}"
                 );
             }
