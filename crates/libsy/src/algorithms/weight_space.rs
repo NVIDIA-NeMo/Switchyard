@@ -42,11 +42,15 @@ const MAX_MESSAGES: usize = 32;
 const MAX_BLOCKS: usize = 8;
 const MAX_BYTES: usize = 65_536;
 
+/// Schema 2 appends explicit tool status after previous-target indicators.
+pub const WEIGHT_SPACE_EXECUTION_FEATURES: [&str; 2] =
+    ["latest_tool_succeeded", "latest_tool_failed"];
+
 /// Explicit weights for one ReLU hidden layer and one linear output per target.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WeightSpaceWeights {
-    /// Version of the feature layout, currently 1.
+    /// Feature layout version. Schema 2 adds explicit tool execution status.
     pub schema_version: u32,
     /// Hidden rows over request features followed by previous-target indicators.
     pub input_weights: Vec<Vec<f64>>,
@@ -77,9 +81,13 @@ impl WeightSpaceWeights {
     /// Rejects incompatible shapes, unbounded coefficients and unknown versions.
     pub fn validate(&self, target_count: usize) -> Result<()> {
         let hidden = self.hidden_bias.len();
-        let inputs = WEIGHT_SPACE_FEATURES.len() + target_count;
-        if self.schema_version != 1
-            || !(1..=32).contains(&target_count)
+        let status_inputs = match self.schema_version {
+            1 => 0,
+            2 => WEIGHT_SPACE_EXECUTION_FEATURES.len(),
+            _ => return Err(invalid("unsupported feature schema")),
+        };
+        let inputs = WEIGHT_SPACE_FEATURES.len() + target_count + status_inputs;
+        if !(1..=32).contains(&target_count)
             || !(1..=64).contains(&hidden)
             || self.input_weights.len() != hidden
             || self.input_weights.iter().any(|row| row.len() != inputs)
@@ -264,6 +272,13 @@ impl WeightSpaceClassifier {
                 .iter()
                 .map(|t| flag(prior == Some(t.as_str()) && !new_turn)),
         );
+        if self.weights.schema_version == 2 {
+            let status = latest_tool_status(request);
+            inputs.extend([
+                flag(status == Some(ExecutionStatus::Succeeded)),
+                flag(status == Some(ExecutionStatus::Failed)),
+            ]);
+        }
         (
             self.weights.forward(inputs, self.cost_weight),
             snapshot.task,
@@ -305,7 +320,7 @@ impl Classifier for WeightSpaceClassifier {
         let trace = self.decide(state, request);
         let target = self.targets[trace.selected].clone();
         let evidence = serde_json::json!({
-            "source": "weight_space", "schema_version": 1,
+            "source": "weight_space", "schema_version": self.weights.schema_version,
             "cost_weight": self.cost_weight, "trace": trace,
         });
         tracing::debug!(target: "switchyard.weight_space", evidence = %evidence, "Weight space decision");
@@ -356,6 +371,116 @@ struct Snapshot {
     request: Request,
     task: Option<String>,
     truncated: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ExecutionStatus {
+    Succeeded,
+    Failed,
+}
+
+#[derive(Deserialize)]
+struct ExecutionResult {
+    exit_code: Option<i64>,
+    success: Option<bool>,
+}
+
+fn explicit_text_status(text: &str) -> Option<ExecutionStatus> {
+    let text = text.trim_start();
+    if text.starts_with('{')
+        && let Ok(result) = serde_json::Deserializer::from_str(text)
+            .into_iter::<ExecutionResult>()
+            .next()?
+    {
+        if result.success == Some(false) || result.exit_code.is_some_and(|code| code != 0) {
+            return Some(ExecutionStatus::Failed);
+        }
+        if result.success == Some(true) || result.exit_code == Some(0) {
+            return Some(ExecutionStatus::Succeeded);
+        }
+    }
+    if !text.starts_with("Chunk ID:") {
+        return None;
+    }
+    let prefix = &text[..text.floor_char_boundary(text.len().min(4096))];
+    let header = prefix.split_once("\nOutput:\n")?.0;
+    header.lines().find_map(|line| {
+        line.strip_prefix("Process exited with code ")
+            .and_then(|code| code.trim().parse::<i64>().ok())
+            .map(|code| {
+                if code == 0 {
+                    ExecutionStatus::Succeeded
+                } else {
+                    ExecutionStatus::Failed
+                }
+            })
+    })
+}
+
+fn latest_tool_status(request: &Request) -> Option<ExecutionStatus> {
+    for message in request.llm_request.messages.iter().rev().take(MAX_MESSAGES) {
+        if is_user_turn(message) {
+            return None;
+        }
+        for block in message.content.iter().rev().take(MAX_BLOCKS) {
+            if let ContentBlock::ToolResult(result) = block {
+                if result.is_error == Some(true) {
+                    return Some(ExecutionStatus::Failed);
+                }
+                if !is_terminal_result(request, &result.tool_call_id) {
+                    return None;
+                }
+                let mut status = None;
+                for content in result.content.iter().take(MAX_BLOCKS) {
+                    if let ContentBlock::Text { text } = content
+                        && let Some(observed) = explicit_text_status(text)
+                    {
+                        if observed == ExecutionStatus::Failed {
+                            return Some(observed);
+                        }
+                        status = Some(observed);
+                    }
+                }
+                // Unknown newest results must not inherit an earlier exit status.
+                return status;
+            }
+            if let ContentBlock::Unknown { raw, .. } = block
+                && matches!(
+                    raw.get("type").and_then(serde_json::Value::as_str),
+                    Some("shell_call_output" | "apply_patch_call_output")
+                )
+            {
+                return None;
+            }
+        }
+    }
+    None
+}
+
+fn is_terminal_result(request: &Request, call_id: &str) -> bool {
+    for message in request.llm_request.messages.iter().rev().take(MAX_MESSAGES) {
+        if is_user_turn(message) {
+            break;
+        }
+        for block in message.content.iter().rev().take(MAX_BLOCKS) {
+            if let ContentBlock::ToolCall(call) = block
+                && call.id == call_id
+            {
+                let name = call.name.rsplit('.').next().unwrap_or_default();
+                return [
+                    "exec_command",
+                    "write_stdin",
+                    "bash",
+                    "terminal",
+                    "shell",
+                    "run_shell_command",
+                ]
+                .iter()
+                .any(|expected| name.eq_ignore_ascii_case(expected));
+            }
+        }
+    }
+    false
 }
 
 // The input request already exists. Only bounded text is copied into the scorer.
@@ -595,7 +720,7 @@ mod tests {
     #[test]
     fn validates_dimensions_and_nonfinite_weights() {
         for mutate in [
-            |w: &mut WeightSpaceWeights| w.schema_version = 2,
+            |w: &mut WeightSpaceWeights| w.schema_version = 3,
             |w: &mut WeightSpaceWeights| w.input_weights[0].pop().map(|_| ()).unwrap_or(()),
             |w: &mut WeightSpaceWeights| w.output_bias[0] = f64::NAN,
             |w: &mut WeightSpaceWeights| w.cost_bias[0] = -1.0,
@@ -609,6 +734,151 @@ mod tests {
         assert!(
             WeightSpaceClassifier::new(vec!["same".into(), "same".into()], weights(), 0.0).is_err()
         );
+    }
+
+    fn execution_request(text: &str) -> Request {
+        let mut req = request();
+        req.llm_request.messages.push(Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: "inspect".into(),
+                name: "exec_command".into(),
+                arguments: serde_json::json!({"cmd": "inspect"}),
+            })],
+        });
+        req.llm_request.messages.push(Message {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "inspect".into(),
+                content: vec![ContentBlock::Text { text: text.into() }],
+                is_error: None,
+            })],
+        });
+        req
+    }
+
+    #[test]
+    fn execution_status_uses_the_header_not_quoted_source() {
+        for (text, expected) in [
+            (
+                "Chunk ID: a\nProcess exited with code 0\nOutput:\nexcept FileNotFoundError:\nProcess exited with code 7",
+                Some(ExecutionStatus::Succeeded),
+            ),
+            (
+                "Chunk ID: b\nProcess exited with code 1\nOutput:\nAll checks passed",
+                Some(ExecutionStatus::Failed),
+            ),
+            (
+                "Chunk ID: c\nProcess running with session ID 42\nOutput:\n",
+                None,
+            ),
+            ("Quoted text: Process exited with code 1", None),
+            ("Chunk ID: d\nOutput:\nProcess exited with code 1", None),
+        ] {
+            assert_eq!(latest_tool_status(&execution_request(text)), expected);
+        }
+    }
+
+    #[test]
+    fn structured_status_survives_large_output_and_rejects_unknown_status() {
+        let large = serde_json::json!({
+            "output": "FileNotFoundError: ".repeat(10_000), "exit_code": 0,
+        });
+        assert_eq!(
+            latest_tool_status(&execution_request(&large.to_string())),
+            Some(ExecutionStatus::Succeeded)
+        );
+        for (text, expected) in [
+            (
+                r#"{"output":"done","exit_code":-1}"#,
+                Some(ExecutionStatus::Failed),
+            ),
+            (
+                r#"{"output":"done","exit_code":0,"success":false}"#,
+                Some(ExecutionStatus::Failed),
+            ),
+            (r#"{"output":"pending","exit_code":null}"#, None),
+            (r#"{"output":"done","exit_code":"0"}"#, None),
+        ] {
+            assert_eq!(latest_tool_status(&execution_request(text)), expected);
+        }
+    }
+
+    #[test]
+    fn execution_status_does_not_carry_across_unknown_results_or_new_tasks() {
+        let mut req = execution_request(r#"{"exit_code":1}"#);
+        let unknown = execution_request("No execution status available");
+        req.llm_request
+            .messages
+            .push(unknown.llm_request.messages.last().expect("result").clone());
+        assert_eq!(latest_tool_status(&req), None);
+        let mut req = execution_request(r#"{"exit_code":1}"#);
+        req.llm_request
+            .messages
+            .push(Message::text(Role::User, "Another task"));
+        assert_eq!(latest_tool_status(&req), None);
+    }
+
+    #[test]
+    fn explicit_tool_error_takes_precedence_over_a_successful_exit() {
+        let mut req = execution_request(r#"{"exit_code":0}"#);
+        if let ContentBlock::ToolResult(result) =
+            &mut req.llm_request.messages.last_mut().expect("result").content[0]
+        {
+            result.is_error = Some(true);
+        }
+        assert_eq!(latest_tool_status(&req), Some(ExecutionStatus::Failed));
+    }
+
+    #[test]
+    fn retrieved_json_is_not_a_process_exit_status() {
+        let mut req = execution_request(r#"{"exit_code":1,"output":"source data"}"#);
+        if let ContentBlock::ToolCall(call) = &mut req.llm_request.messages[1].content[0] {
+            call.name = "Read".into();
+        }
+        assert_eq!(latest_tool_status(&req), None);
+    }
+
+    #[test]
+    fn schema_two_can_separate_quoted_errors_from_failed_commands() -> Result<()> {
+        let mut w = weights();
+        w.schema_version = 2;
+        w.input_weights[0].extend([-2.0, 0.0]);
+        let classifier =
+            WeightSpaceClassifier::new(vec!["efficient".into(), "capable".into()], w, 0.0)?;
+        let mut results = Vec::new();
+        for exit in [0, 1] {
+            let req = execution_request(&format!(
+                "Chunk ID: a\nProcess exited with code {exit}\nOutput:\nexcept FileNotFoundError:"
+            ));
+            let trace = classifier.trace(&State::default(), &req);
+            assert_eq!(trace.inputs.len(), 20);
+            assert!(trace.inputs[6] > 0.69);
+            assert_eq!(
+                &trace.inputs[18..],
+                if exit == 0 { &[1.0, 0.0] } else { &[0.0, 1.0] }
+            );
+            results.push(trace.selected);
+        }
+        assert_eq!(results, [0, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn schema_one_keeps_its_input_layout_and_decisions() -> Result<()> {
+        let req = execution_request(r#"{"exit_code":0,"output":"FileNotFoundError:"}"#);
+        let original = classifier(0.0)?.trace(&State::default(), &req);
+        let mut w = weights();
+        w.schema_version = 2;
+        w.input_weights[0].extend([0.0, 0.0]);
+        let extended =
+            WeightSpaceClassifier::new(vec!["efficient".into(), "capable".into()], w, 0.0)?
+                .trace(&State::default(), &req);
+        assert_eq!(original.inputs.len(), 18);
+        assert_eq!(original.inputs, extended.inputs[..18]);
+        assert_eq!(original.utilities, extended.utilities);
+        assert_eq!(original.selected, extended.selected);
+        Ok(())
     }
 
     #[test]

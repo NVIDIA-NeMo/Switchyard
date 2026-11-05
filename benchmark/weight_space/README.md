@@ -16,6 +16,10 @@ Tool arguments may arrive as an object or a JSON string. String arguments are va
 
 State retains the last selection, whether the current task has mutated files, and the bounded task excerpt. It is scoped by the runtime session and agent identity. A cold scorer joining a conversation after the task has left the recent window has no cached task excerpt. Tool results and command names provide approximate signals. Truncation can omit relevant evidence.
 
+Feature schema 2 appends `latest_tool_succeeded` and `latest_tool_failed` after the previous-target indicators. These inputs expose explicit execution status separately from error-like text. Both are zero when the newest result has no recognized status. For recognized shell tools, the extractor reads Codex command headers and structured `exit_code` or `success` fields. It ignores exit-status text inside the output body and JSON returned by file-reading tools. It does not carry an earlier status across a newer unknown result or a new user task. A tool error flag takes precedence over a successful exit. Existing schema 1 checkpoints keep their original feature layout and behavior.
+
+These status inputs do not prove task progress or failure severity. A successful command can reveal a real problem, and a failed command can reflect an environment issue. Schema 2 still has no live cache-cost estimate or remaining-budget input. A two-target policy with 20 inputs and 13 hidden units has 303 numeric coefficients including the two cost penalties.
+
 The forward computation is:
 
 ```text

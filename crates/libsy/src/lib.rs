@@ -53,8 +53,8 @@ pub use algorithms::util::stage::{
 };
 
 pub use algorithms::weight_space::{
-    WEIGHT_SPACE_FEATURES, WeightSpaceClassifier, WeightSpaceRouter, WeightSpaceTrace,
-    WeightSpaceWeights,
+    WEIGHT_SPACE_EXECUTION_FEATURES, WEIGHT_SPACE_FEATURES, WeightSpaceClassifier,
+    WeightSpaceRouter, WeightSpaceTrace, WeightSpaceWeights,
 };
 
 mod observability;

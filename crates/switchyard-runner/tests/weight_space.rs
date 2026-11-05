@@ -64,6 +64,22 @@ async fn selects_target_without_any_provider_calls() {
 }
 
 #[test]
+fn execution_status_checkpoint_builds_with_twenty_inputs() {
+    let mut config: toml::Value = toml::from_str(&config()).expect("config");
+    let weights = &mut config["routes"]["neural"]["weights"];
+    weights["schema_version"] = toml::Value::Integer(2);
+    for row in weights["input_weights"].as_array_mut().expect("rows") {
+        row.as_array_mut()
+            .expect("inputs")
+            .extend([toml::Value::Float(0.0), toml::Value::Float(0.0)]);
+    }
+    AlgorithmFactory::from_toml(&toml::to_string(&config).expect("TOML"))
+        .expect("parse")
+        .build()
+        .expect("schema 2 checkpoint");
+}
+
+#[test]
 fn incompatible_checkpoint_and_duplicate_targets_are_rejected() {
     for config in [
         config().replace(
