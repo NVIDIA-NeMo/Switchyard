@@ -20,9 +20,8 @@ use libsy::{
     Vgr, VgrConfig,
 };
 use serde::Deserialize;
-use serde_json::Value;
 use strum_macros::IntoStaticStr;
-use switchyard_protocol::{Category, ModelId};
+use switchyard_protocol::{Category, ChoiceOption, ModelId};
 
 /// Error returned when an algorithm description cannot be constructed.
 #[derive(Debug)]
@@ -120,46 +119,26 @@ struct CapabilityClassifierRouteConfig {
 }
 
 impl CapabilityClassifierRouteConfig {
-    fn into_task_config(
-        self,
-        route_name: &str,
-        targets: &BTreeMap<String, ModelId>,
-    ) -> AlgorithmResult<TaskClassifierConfig> {
-        let config = self;
-        let judge = match config.judge {
+    fn into_task_config(self) -> TaskClassifierConfig {
+        let judge = match self.judge {
             CapabilityJudgeRouteConfig::Llm(judge) => CapabilityJudgeConfig::Llm(judge),
             CapabilityJudgeRouteConfig::Decision(judge) => {
-                for target in [&config.strong_target, &config.weak_target] {
-                    if !judge.candidates.values().any(|name| name == target) {
-                        return Err(AlgorithmConfigError::new(format!(
-                            "route {route_name}: decision.candidates must include target {target}"
-                        )));
-                    }
-                }
-                let candidates = judge
-                    .candidates
-                    .into_iter()
-                    .map(|(label, name)| {
-                        resolve_target_model_id(route_name, &name, targets)
-                            .map(|model| (label, model))
-                    })
-                    .collect::<AlgorithmResult<_>>()?;
+                let defaults = DecisionJudgeConfig::default();
                 CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
                     cutoff: judge.cutoff,
                     instructions: judge.instructions,
-                    criteria: judge.criteria,
-                    candidates,
-                    evidence: judge.evidence,
+                    choices: judge.choices.unwrap_or(defaults.choices),
+                    apply_cutoff_to: judge.apply_cutoff_to.unwrap_or(defaults.apply_cutoff_to),
                 })
             }
         };
-        Ok(TaskClassifierConfig {
+        TaskClassifierConfig {
             judge,
-            fail_open: config.fail_open,
-            classify_trigger: config.classify_trigger,
-            message_hash_fallback: config.message_hash_fallback,
-            recent_turn_window: config.recent_turn_window,
-        })
+            fail_open: self.fail_open,
+            classify_trigger: self.classify_trigger,
+            message_hash_fallback: self.message_hash_fallback,
+            recent_turn_window: self.recent_turn_window,
+        }
     }
 }
 
@@ -284,20 +263,19 @@ impl CategoryModelConfig {
     }
 }
 
-/// Choice judgment using a decision model.
-#[derive(Clone, Debug, Deserialize)]
+/// Routing by a decision model's choice probability.
+#[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DecisionJudgeRouteConfig {
-    /// Route capable only when its choice score is strictly above this cutoff.
-    pub cutoff: f64,
-    /// Replaces the default relative-advantage instructions.
-    pub instructions: Option<Value>,
-    /// Two choice descriptions keyed by candidate label. Requires custom instructions.
-    pub criteria: Option<BTreeMap<String, Value>>,
-    /// Anonymous evidence labels mapped to configured LLM target names.
-    pub candidates: BTreeMap<String, String>,
-    /// Candidate descriptions and reference outcomes, passed unchanged to the judge.
-    pub evidence: Value,
+    /// Route capable when the `apply_cutoff_to` probability is strictly above
+    /// this cutoff. Uses the library default when omitted.
+    pub cutoff: Option<f64>,
+    /// Replaces the default decision instructions.
+    pub instructions: Option<String>,
+    /// Replaces the default `capable` and `efficient` choices.
+    pub choices: Option<Vec<ChoiceOption>>,
+    /// Choice ID whose probability is compared with the cutoff. Defaults to `capable`.
+    pub apply_cutoff_to: Option<String>,
 }
 
 /// Settings for an `llm_classifier` route. Which fields are required depends on
@@ -348,7 +326,7 @@ pub struct LlmClassifierRouteConfig {
     /// Escalation mode: how many escalate verdicts latch the session, and how
     /// much of the transcript the judge sees.
     pub escalation: Option<EscalationJudgeConfig>,
-    /// Capability mode: use a decision target as the judge, with relative-advantage scoring.
+    /// Capability mode: use a decision target as the judge, with a capable-or-efficient choice.
     pub decision: Option<DecisionJudgeRouteConfig>,
     /// Custom and direct modes: runtime model groups. In direct mode, every non-empty
     /// group except `judge` and `any` is an option the decision target may select.
@@ -741,7 +719,6 @@ impl StageClassifierConfig {
         route_name: &str,
         capable_target: &str,
         efficient_target: &str,
-        targets: &BTreeMap<String, ModelId>,
     ) -> AlgorithmResult<TaskClassifierConfig> {
         if self
             .mode
@@ -771,9 +748,7 @@ impl StageClassifierConfig {
             ..Default::default()
         };
         match config.validated_classifier_mode(route_name)? {
-            LlmClassifierModeConfig::Capability(config) => {
-                config.into_task_config(route_name, targets)
-            }
+            LlmClassifierModeConfig::Capability(config) => Ok(config.into_task_config()),
             _ => Err(AlgorithmConfigError::new("expected a capability judge")),
         }
     }
@@ -787,7 +762,7 @@ impl StageClassifierConfig {
     ) -> AlgorithmResult<LlmFallback> {
         Ok(LlmFallback {
             target: Some(resolve_target_model_id(route_name, &self.target, targets)?),
-            config: self.task_classifier_config(route_name, capable, efficient, targets)?,
+            config: self.task_classifier_config(route_name, capable, efficient)?,
         })
     }
 
@@ -867,16 +842,6 @@ impl AlgorithmSpec {
                 }
             }
             _ => {}
-        }
-        if let Some(target) = restricted
-            .classifier_targets()
-            .filter_map(|(_, decision)| decision)
-            .flat_map(|decision| decision.candidates.values())
-            .find(|target| !allowed.contains(target.as_str()))
-        {
-            return Err(AlgorithmConfigError::new(format!(
-                "decision candidate {target} does not satisfy target requirements"
-            )));
         }
         let subagents = match &mut restricted {
             Self::Passthrough { subagents, .. }
@@ -1794,7 +1759,7 @@ fn build_algorithm(
             let mode = classifier_config.validated_classifier_mode(route_name)?;
             let algorithm = match mode {
                 LlmClassifierModeConfig::Capability(config) => {
-                    let classifier_config = config.into_task_config(route_name, targets)?;
+                    let classifier_config = config.into_task_config();
                     LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                         config: classifier_config,
                     })
@@ -1921,7 +1886,6 @@ fn build_algorithm(
                     route_name,
                     &stage.capable_target,
                     &stage.efficient_target,
-                    targets,
                 )?)
             };
             let shared = &stage.settings;
@@ -2310,66 +2274,11 @@ mod tests {
     }
 
     #[test]
-    fn restricted_roles_and_decision_candidates_are_not_replaced() {
+    fn restricted_roles_are_not_replaced() {
         let stage = AlgorithmSpec::Auto {
             capable_target: "private".into(),
             efficient_target: "public".into(),
         };
         assert!(stage.restricted_to(&BTreeSet::from(["private"])).is_err());
-        let decision = AlgorithmSpec::LlmClassifier {
-            config: LlmClassifierRouteConfig {
-                classifier_target: "judge".into(),
-                strong_target: Some("strong".into()),
-                weak_target: Some("weak".into()),
-                max_output_tokens: default_classifier_max_output_tokens(),
-                decision: Some(DecisionJudgeRouteConfig {
-                    cutoff: 0.5,
-                    instructions: None,
-                    criteria: None,
-                    candidates: BTreeMap::from([
-                        ("strong".into(), "strong".into()),
-                        ("weak".into(), "weak".into()),
-                        ("extra".into(), "public".into()),
-                    ]),
-                    evidence: Value::Null,
-                }),
-                ..LlmClassifierRouteConfig::default()
-            },
-        };
-        let judge = decision.classifier_targets().next().unwrap().1.unwrap();
-        let classifier = serde_json::json!({
-            "target": "judge",
-            "decision": {
-                "cutoff": judge.cutoff, "candidates": judge.candidates,
-                "evidence": judge.evidence,
-            },
-        });
-        let tiers = serde_json::json!({
-            "capable_target": "strong",
-            "efficient_target": "weak",
-            "confidence_threshold": 0.6,
-        });
-        let composite = serde_json::from_value(serde_json::json!({
-            "type": "composite", "classifier": classifier, "stage": tiers,
-        }))
-        .unwrap();
-        let stage = serde_json::from_value(serde_json::json!({
-            "type": "stage_router", "classifier": classifier,
-            "capable_target": "strong", "efficient_target": "weak",
-            "confidence_threshold": 0.6, "picker": "efficient_first",
-        }))
-        .unwrap();
-        for decision in [decision, composite, stage] {
-            assert!(decision.runtime_model_names("test").is_ok());
-            let error = decision
-                .restricted_to(&BTreeSet::from(["strong", "weak", "judge"]))
-                .expect_err(
-                    "an extra public candidate must not be restored during lane construction",
-                );
-            assert_eq!(
-                error.to_string(),
-                "decision candidate public does not satisfy target requirements"
-            );
-        }
     }
 }

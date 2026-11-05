@@ -31,7 +31,7 @@ impl Algorithm for Abandon {
                         .call_decision(
                             DecisionRequest {
                                 model: None,
-                                context: serde_json::json!({}),
+                                input: vec![],
                                 questions: Default::default(),
                             },
                             "abandoned".into(),

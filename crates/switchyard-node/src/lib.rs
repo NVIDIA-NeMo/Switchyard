@@ -3,7 +3,6 @@
 
 //! Composite routing with caller-owned decision calls and state.
 
-use std::collections::BTreeMap;
 use std::future::ready;
 use std::sync::Arc;
 
@@ -12,14 +11,13 @@ use futures::future::{AbortHandle, Abortable};
 use napi_derive::napi;
 use parking_lot::Mutex;
 use serde::Deserialize;
-use serde_json::Value;
 use switchyard_libsy::{
     Algorithm, CallDecision, CapabilityJudgeConfig, ClassifyTrigger, CompositeJudgeConfig,
     CompositeRouter, CompositeRouterConfig, DecisionJudgeConfig, LibsyError, PickerMode,
     RuntimeModels, StageRouterConfig, State, Step, StepStream, TaskClassifierConfig,
 };
 use switchyard_protocol::{
-    Category, DecisionResponse, LlmClientError, LlmRequest, ModelId, Request,
+    Category, ChoiceOption, DecisionResponse, LlmClientError, LlmRequest, ModelId, Request,
 };
 
 // The JS wrapper turns these prefixes into public Error codes.
@@ -62,18 +60,10 @@ struct ClassifierOptions {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DecisionOptions {
-    cutoff: f64,
-    candidates: BTreeMap<String, Candidate>,
-    evidence: Value,
-    instructions: Option<Value>,
-    criteria: Option<BTreeMap<String, Value>>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Candidate {
-    Capable,
-    Efficient,
+    cutoff: Option<f64>,
+    instructions: Option<String>,
+    choices: Option<Vec<ChoiceOption>>,
+    apply_cutoff_to: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -106,17 +96,7 @@ impl NativeComposite {
             ));
         }
         let decision = classifier.decision;
-        let candidates = decision
-            .candidates
-            .into_iter()
-            .map(|(id, tier)| {
-                let model = match tier {
-                    Candidate::Capable => &targets.capable,
-                    Candidate::Efficient => &targets.efficient,
-                };
-                (id, model.clone())
-            })
-            .collect();
+        let defaults = DecisionJudgeConfig::default();
         let mut stage_config =
             StageRouterConfig::new(PickerMode::EfficientFirst, stage.efficient_first_threshold);
         stage_config.capable_first_threshold = stage.capable_first_threshold;
@@ -125,10 +105,9 @@ impl NativeComposite {
             judge: CompositeJudgeConfig::Capability(TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
                     cutoff: decision.cutoff,
-                    candidates,
-                    evidence: decision.evidence,
                     instructions: decision.instructions,
-                    criteria: decision.criteria,
+                    choices: decision.choices.unwrap_or(defaults.choices),
+                    apply_cutoff_to: decision.apply_cutoff_to.unwrap_or(defaults.apply_cutoff_to),
                 }),
                 classify_trigger: classifier.classify_trigger,
                 fail_open: classifier.fail_open,

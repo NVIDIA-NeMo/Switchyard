@@ -5,6 +5,7 @@
 
 import asyncio
 import gc
+from typing import Any
 
 import pytest
 
@@ -23,13 +24,7 @@ from switchyard.libsy import (
 async def test_response_cancellation_cleans_up_python_work(
     decision: bool, cancel_handler: bool
 ) -> None:
-    config = (
-        TaskClassifierConfig.decision(
-            cutoff=0.5, candidates={"strong": "strong", "weak": "weak"}, evidence={}
-        )
-        if decision
-        else TaskClassifierConfig(0.5)
-    )
+    config = TaskClassifierConfig.decision(cutoff=0.5) if decision else TaskClassifierConfig(0.5)
     algorithm = algorithms.llm_task_classifier(config=config)
     stream = algorithm.run_stream(
         {"messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]},
@@ -70,13 +65,34 @@ async def test_response_cancellation_cleans_up_python_work(
     assert cleaned_up.is_set()
 
 
+CUSTOM_CHOICES = {
+    "choices": [
+        {"id": "complex", "description": "Needs the capable model"},
+        {"id": "simple", "description": "The efficient model is enough"},
+    ],
+    "apply_cutoff_to": "complex",
+}
+
+
 @pytest.mark.parametrize("failure", [False, True])
-async def test_decision_response_and_failure_keep_their_routing_behavior(failure: bool) -> None:
-    algorithm = algorithms.llm_task_classifier(
-        config=TaskClassifierConfig.decision(
-            cutoff=0.5, candidates={"strong": "strong", "weak": "weak"}, evidence={}
-        )
-    )
+@pytest.mark.parametrize(
+    ("options", "score", "expected"),
+    [
+        ({}, 0.6, "weak"),
+        ({}, 0.61, "strong"),
+        ({"cutoff": None}, 0.0, "weak"),
+        ({"cutoff": 0.5}, 0.5, "weak"),
+        ({"cutoff": 0.5}, 0.9, "strong"),
+        ({"cutoff": 0.5, **CUSTOM_CHOICES}, 0.9, "strong"),
+    ],
+)
+async def test_decision_response_and_failure_keep_their_routing_behavior(
+    failure: bool, options: dict[str, Any], score: float, expected: str
+) -> None:
+    algorithm = algorithms.llm_task_classifier(config=TaskClassifierConfig.decision(**options))
+    capable, efficient = [
+        choice["id"] for choice in options.get("choices", [{"id": "capable"}, {"id": "efficient"}])
+    ]
     stream = algorithm.run_stream(
         {"messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]},
         {
@@ -98,8 +114,8 @@ async def test_decision_response_and_failure_keep_their_routing_behavior(failure
                     "value": {
                         "type": "choice",
                         "data": {
-                            "selected": "no_advantage",
-                            "probabilities": {"advantage": 0.1, "no_advantage": 0.9},
+                            "selected": capable,
+                            "probabilities": {capable: score, efficient: 1 - score},
                         },
                     },
                     "provider_confidence": None,
@@ -113,6 +129,6 @@ async def test_decision_response_and_failure_keep_their_routing_behavior(failure
         await step.call.respond(answer())
     outcome = await anext(stream)
     assert isinstance(outcome, Step.Done)
-    assert outcome.outcome.selected_model_ids[0] == ("strong" if failure else "weak")
+    assert outcome.outcome.selected_model_ids[0] == ("strong" if failure else expected)
     with pytest.raises(LibsyError, match="already been completed"):
         await step.call.respond(answer())

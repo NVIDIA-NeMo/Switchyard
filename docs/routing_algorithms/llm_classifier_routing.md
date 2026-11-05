@@ -8,7 +8,7 @@ The same classifier also supports [escalation](escalation_router_routing.md),
 [custom routing](#custom-multi-target-routing) across two or more targets, and
 [direct selection](#direct-selection) by an external decision service.
 
-For a task-level decision-model example with structured instructions, see the
+For a task-level decision-model example with detailed instructions, see the
 [Jev routing profile](../../benchmark/routing-profiles/tb21-jev-opus-glm.toml).
 
 ## Configure a classifier route
@@ -282,9 +282,8 @@ option ID, so name each group with an ID the decision service returns. Options
 are sent in group-name order. A route needs at least two options. `models.judge`
 must name a decision target.
 
-The request context holds the conversation as `task` and the caller's session ID
-as `session` (or null). `recent_turn_window` sets how many trailing turns `task`
-carries after the opening task. The default is 10.
+The request `input` holds the conversation messages. `recent_turn_window` sets
+how many trailing turns it carries after the opening task. The default is 10.
 
 Switchyard routes on the selected option and ignores the probabilities. When
 the decision call fails, times out, or returns a choice that is not an option,

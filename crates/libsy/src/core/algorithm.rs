@@ -864,8 +864,9 @@ impl RoutingIdentity {
 /// alongside `selected_model_ids` (an ordered OpenTelemetry string array).
 /// `algorithm` and `switchyard.algorithm` retain the run's [`Algorithm::name`].
 /// Optional `evidence.source`, `evidence.verdict`, `evidence.trigger`, and
-/// `evidence.reason_code` are strings; `evidence.score`, `evidence.confidence`, and
-/// `evidence.threshold` are numbers. Unknown evidence fields are not exported.
+/// `evidence.reason_code` are strings; `evidence.score`, `evidence.confidence`,
+/// `evidence.threshold`, `evidence.capable_score`, and `evidence.capable_threshold`
+/// are numbers. Unknown evidence fields are not exported.
 /// These fields are span attributes, never metric labels.
 ///
 /// The run/call observability helpers retain `outcome` status and operational metrics,
@@ -956,7 +957,7 @@ mod tests {
     use crate::core::testing::{Serve, ServeResult, echo, reply, serve_decision, test_drive};
     use futures::StreamExt;
     use switchyard_protocol::{
-        LlmResponse, LlmResponseChunk, completion_text, text_request, text_response,
+        LlmResponse, LlmResponseChunk, Message, Role, completion_text, text_request, text_response,
     };
 
     #[test]
@@ -1119,7 +1120,7 @@ mod tests {
                         .call_decision(
                             DecisionRequest {
                                 model: None,
-                                context: Value::Null,
+                                input: vec![],
                                 questions: Default::default(),
                             },
                             (*model).into(),
@@ -1396,7 +1397,7 @@ mod tests {
             fn decision_request() -> DecisionRequest {
                 DecisionRequest {
                     model: Some("overwritten".into()),
-                    context: serde_json::json!({"task": "choose a route"}),
+                    input: vec![Message::text(Role::User, "choose a route")],
                     questions: Default::default(),
                 }
             }
@@ -1483,7 +1484,7 @@ mod tests {
                             assert_eq!(call.algorithm, "mixed");
                             assert_eq!(call.model, "decision");
                             assert_eq!(call.request.model, Some("decision".into()));
-                            assert_eq!(call.request.context, decision_request().context);
+                            assert_eq!(call.request.input, decision_request().input);
                             match mode {
                                 "mock" => serve_decision(call).await,
                                 "reply" => call.respond(std::future::ready(Ok(decision_response()))).await,

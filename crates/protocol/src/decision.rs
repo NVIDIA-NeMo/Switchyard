@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ModelId, Usage};
+use crate::{Message, ModelId, Usage};
 
 /// Answer probability on a `[0, 1]` scale.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -28,13 +28,14 @@ pub struct ScoreValue(pub f64);
 #[serde(transparent)]
 pub struct ProviderConfidence(pub f64);
 
-/// Shared context evaluated against independent, named questions.
+/// Messages evaluated against independent, named questions.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DecisionRequest {
     /// Optional until a target is selected.
     pub model: Option<ModelId>,
-    /// Conversation, application state, or other material to evaluate.
-    pub context: Value,
+    /// Messages the questions are about, usually the conversation.
+    /// Sent as `state` (System One) or `input` (OpenAI Decisions).
+    pub input: Vec<Message>,
     /// Independent questions keyed by their IDs.
     pub questions: BTreeMap<String, DecisionQuestion>,
 }
@@ -42,8 +43,8 @@ pub struct DecisionRequest {
 /// Instructions and the expected answer shape for one question.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DecisionQuestion {
-    /// Structured or textual instructions shared with the provider.
-    pub instructions: Value,
+    /// The question to ask about the input.
+    pub instructions: String,
     /// Expected answer shape.
     pub kind: DecisionKind,
 }
@@ -71,13 +72,16 @@ pub enum DecisionKind {
     },
 }
 
-/// An identified choice with an optional structured description.
+/// An identified choice with a description.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ChoiceOption {
     /// Stable identifier used by choice answers and distributions.
+    /// System One uses it as the `criteria` key; OpenAI Decisions uses `value`.
     pub id: String,
-    /// Meaning of this option, when its ID alone is insufficient.
-    pub description: Option<Value>,
+    /// Meaning of this option. The provider APIs make it optional; Switchyard
+    /// always sends it. System One uses it as the `criteria` value; OpenAI
+    /// Decisions uses `description`.
+    pub description: String,
 }
 
 /// Answers keyed by the matching request's question IDs.
