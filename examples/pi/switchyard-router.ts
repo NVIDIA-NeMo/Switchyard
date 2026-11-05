@@ -16,7 +16,6 @@ const POLICY = {
   classifier: {
     classify_trigger: "user_turn",
     fail_open: false,
-    decision: { cutoff: 0.4 },
   },
   stage: { efficient_first_threshold: 0.5, capable_first_threshold: 0.2 },
 } satisfies Omit<CompositeOptions, "targets">;

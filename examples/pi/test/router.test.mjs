@@ -18,7 +18,7 @@ const request = (fields = {}) => ({
   reason: "user", messages: [{ role: "user", content: "task" }],
   thinkingLevel: "high", signal: new AbortController().signal, ...fields,
 });
-const result = (capable = 0.6) => ({
+const result = (capable = 0.7) => ({
   provider: "openrouter", model: "inception/mercury-decide:free", stopReason: "stop",
   answers: { route: {
     type: "choice", choice: capable > 0.5 ? "capable" : "efficient", probabilities: { capable, efficient: 1 - capable }, confidence: 0.9,
@@ -82,7 +82,7 @@ test("Pi classifies the libsy question and retains the capable tier on a read co
 });
 
 test("cutoff equality selects efficient, then a tool failure holds capable for two requests", async (t) => {
-  const { route, registry } = setup(t, result(0.4));
+  const { route, registry } = setup(t, result(0.6));
   const messages = request().messages;
   let selected = await route(request({ messages }));
   assert.equal(selected.model.id, "gpt-6-luna");

@@ -39,9 +39,6 @@ target = "classifier"
 classify_trigger = "user_turn"
 fail_open = false
 
-[routes.auto.classifier.decision]
-cutoff = 0.4
-
 [routes.auto.stage]
 capable_target = "capable"
 efficient_target = "efficient"

@@ -13,8 +13,8 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use switchyard_libsy::{
     Algorithm, CallDecision, CapabilityJudgeConfig, ClassifyTrigger, CompositeJudgeConfig,
-    CompositeRouter, CompositeRouterConfig, DecisionChoice, DecisionJudgeConfig, LibsyError,
-    PickerMode, RuntimeModels, StageRouterConfig, State, Step, StepStream, TaskClassifierConfig,
+    CompositeRouter, CompositeRouterConfig, LibsyError, PickerMode, RuntimeModels,
+    StageRouterConfig, State, Step, StepStream, TaskClassifierConfig,
 };
 use switchyard_protocol::{
     Category, DecisionResponse, LlmClientError, LlmRequest, ModelId, Request,
@@ -54,16 +54,6 @@ struct Targets {
 struct ClassifierOptions {
     classify_trigger: ClassifyTrigger,
     fail_open: bool,
-    decision: DecisionOptions,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DecisionOptions {
-    cutoff: Option<f64>,
-    instructions: Option<String>,
-    choices: Option<Vec<DecisionChoice>>,
-    apply_cutoff_to: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -95,20 +85,13 @@ impl NativeComposite {
                 "capable and efficient targets must differ",
             ));
         }
-        let decision = classifier.decision;
-        let defaults = DecisionJudgeConfig::default();
         let mut stage_config =
             StageRouterConfig::new(PickerMode::EfficientFirst, stage.efficient_first_threshold);
         stage_config.capable_first_threshold = stage.capable_first_threshold;
         stage_config.efficient_hold_turns = stage.efficient_hold_turns;
         let router = CompositeRouter::new(CompositeRouterConfig {
             judge: CompositeJudgeConfig::Capability(TaskClassifierConfig {
-                judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
-                    cutoff: decision.cutoff,
-                    instructions: decision.instructions,
-                    choices: decision.choices.unwrap_or(defaults.choices),
-                    apply_cutoff_to: decision.apply_cutoff_to.unwrap_or(defaults.apply_cutoff_to),
-                }),
+                judge: CapabilityJudgeConfig::Decision(Default::default()),
                 classify_trigger: classifier.classify_trigger,
                 fail_open: classifier.fail_open,
                 ..Default::default()
