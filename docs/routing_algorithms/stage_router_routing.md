@@ -321,6 +321,44 @@ switchyard-server --config routes.toml --port 4000
 
 This is the recommended default: routing on tool signals alone, no classifier.
 
+### Plan and execute
+
+To start with the capable model and keep using the efficient model after a
+switch, add this route to the [minimal configuration](#minimal-route):
+
+```toml
+[routes.plan_execute]
+id = "switchyard/plan-execute"
+type = "stage_router"
+capable_target = "capable"
+efficient_target = "efficient"
+picker = "capable_first"
+confidence_threshold = 0.0
+capable_hold_turns = 0
+efficient_hold_turns = -1
+capable_system_prompt = "Inspect the task and plan before modifying files."
+```
+
+With no tool history, Stage selects capable and adds the planning prompt.
+After successful writes, Stage can select efficient; critical failures can keep
+capable selected. A switch from capable to efficient starts a hold that keeps
+selecting efficient while the session state remains. Later tool errors do not
+end it. Only capable requests receive the planning prompt. See
+[How it works](#how-it-works) for scoring and hold behavior.
+
+Send requests to `switchyard/plan-execute` with the same
+`x-switchyard-session-id` from the first planning request onward. Include the
+full conversation, including the plan, tool calls, and results. For the Responses
+API, send that history in `input` and omit both `previous_response_id` and
+`conversation`. Known continuation IDs bypass Stage even with full input
+history. Send `x-switchyard-session-final: true` when the shared session ends to
+clear all of its agents' state.
+
+When migrating from the removed `plan_execute` type, use this recipe and replace
+`planning_prompt` with `capable_system_prompt`. Stage has no exact equivalent
+for the old judged handoff or reasoning-to-text conversion; keep the plan in
+ordinary conversation text so the executor receives it.
+
 ### Optional: custom tool semantics
 
 Extend the built-in coding vocabulary when an agent uses domain-specific tool

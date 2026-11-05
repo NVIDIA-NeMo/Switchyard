@@ -1459,9 +1459,13 @@ target = "weak"
 
 [routes.plan_execute]
 id = "switchyard/plan-execute"
-type = "plan_execute"
+type = "stage_router"
 capable_target = "strong"
 efficient_target = "weak"
+picker = "capable_first"
+confidence_threshold = 0.0
+efficient_hold_turns = -1
+capable_system_prompt = "Inspect the task and plan before modifying files."
 "#;
 
     fn decision_eligibility_config() -> String {
@@ -1755,6 +1759,55 @@ evidence = {{}}
         Ok(())
     }
 
+    /// Both the TOML and JSON parsers must reject the removed `plan_execute` type.
+    #[test]
+    fn removed_plan_execute_type_is_rejected() {
+        let route = r#"
+type = "plan_execute"
+capable_target = "strong"
+efficient_target = "weak"
+"#;
+        let config = format!("{VALID_CONFIG}\n[routes.obsolete]\nid = \"obsolete\"\n{route}");
+        assert!(error_message(&config).contains("unknown variant `plan_execute`"));
+
+        let error = serde_json::from_str::<AlgorithmSpec>(
+            r#"{"type":"plan_execute","capable_target":"strong","efficient_target":"weak"}"#,
+        )
+        .expect_err("the removed algorithm must be rejected");
+        assert!(error.to_string().contains("unknown variant `plan_execute`"));
+    }
+
+    /// TOML and JSON parsers must reject old `plan_execute` fields on `stage_router` routes.
+    /// Changing only the route type must not load a route that ignores its handoff settings.
+    #[test]
+    fn stage_rejects_obsolete_plan_execute_settings() {
+        let stage = json!({
+            "type": "stage_router", "capable_target": "strong", "efficient_target": "weak",
+            "picker": "capable_first", "confidence_threshold": 0.0,
+            "efficient_hold_turns": -1, "capable_system_prompt": "Plan before editing.",
+        });
+        assert!(serde_json::from_str::<AlgorithmSpec>(&stage.to_string()).is_ok());
+        for (field, value, toml_value) in [
+            ("planning_prompt", json!("plan"), r#""plan""#),
+            ("handoff_prompt", json!("execute"), r#""execute""#),
+            ("planner_reasoning_as_text", json!(true), "true"),
+            ("execution_trigger", json!("edit"), r#""edit""#),
+            (
+                "judge",
+                json!({"target": "classifier"}),
+                r#"{ target = "classifier" }"#,
+            ),
+        ] {
+            let mut invalid = stage.clone();
+            invalid[field] = value;
+            let error = serde_json::from_str::<AlgorithmSpec>(&invalid.to_string())
+                .expect_err("obsolete fields must be rejected");
+            assert!(error.to_string().contains(field), "{error}");
+            let error = error_message(&format!("{VALID_CONFIG}\n{field} = {toml_value}\n"));
+            assert!(error.contains(field), "{error}");
+        }
+    }
+
     #[test]
     fn duplicate_route_ids_are_rejected() {
         let config = format!(
@@ -1775,32 +1828,6 @@ target = "strong"
             ),
             "{error}"
         );
-    }
-
-    #[tokio::test]
-    async fn plan_execute_applies_custom_tool_semantics() -> RunnerResult<()> {
-        use switchyard_protocol::{ContentBlock, Message, Request, Role, ToolCall};
-
-        let configured = format!(
-            "{VALID_CONFIG}\n[routes.plan_execute.tool_semantics]\nmutate = [\"persist_source_file\"]"
-        );
-        let mut request = Request::default();
-        request.llm_request.messages.push(Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
-                id: "write-1".to_string(),
-                name: "mcp__files__Persist_Source_File".to_string(),
-                arguments: json!({"path": "task.py", "content": "print('hello')"}),
-            })],
-        });
-
-        for (config, expected) in [(VALID_CONFIG, "strong"), (configured.as_str(), "weak")] {
-            let runner = Runner::from_toml(config)?;
-            let route = runner.route("switchyard/plan-execute").unwrap();
-            let outcome = route.decide(request.clone()).await?;
-            assert_eq!(outcome.selected_model_ids[0], expected);
-        }
-        Ok(())
     }
 
     fn error_message(toml: &str) -> String {

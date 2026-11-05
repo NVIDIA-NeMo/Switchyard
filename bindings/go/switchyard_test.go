@@ -385,26 +385,29 @@ func TestReplyAttributionAndMetadata(t *testing.T) {
 	if _, err := delegated.Route(context.Background(), request, nil); err == nil {
 		t.Fatal("empty child pool selected a parent model")
 	}
-	plan := newRouter(t, `{"type":"plan_execute","capable_target":"strong","efficient_target":"weak"}`)
+	// Both agents need active holds so a final request tests cleanup of the sibling's hold.
+	plan := newRouter(t, `{"type":"stage_router","capable_target":"strong","efficient_target":"weak","picker":"capable_first","confidence_threshold":0,"efficient_hold_turns":-1}`)
 	for _, tc := range []struct {
 		agent                string
 		child, final, edited bool
 		expected             string
 	}{
+		{"a", true, false, false, "strong-model"},
 		{"a", true, false, true, "weak-model"},
 		{"b", true, false, false, "strong-model"},
+		{"b", true, false, true, "weak-model"},
 		{"root", false, false, false, "strong-model"},
 		{"a", true, true, false, "weak-model"},
-		{"a", true, false, false, "strong-model"},
+		{"b", true, false, false, "strong-model"},
 	} {
 		request := input()
 		request.Request = json.RawMessage(`{}`)
 		if tc.edited {
-			request.Request = json.RawMessage(`{"messages":[{"role":"assistant","content":[{"type":"tool_call","id":"edit","name":"apply_patch","arguments":{}}]}]}`)
+			request.Request = json.RawMessage(`{"messages":[{"role":"assistant","content":[{"type":"tool_call","id":"edit","name":"apply_patch","arguments":{}}]},{"role":"tool","content":[{"type":"tool_result","tool_call_id":"edit","content":[{"type":"text","text":"Applied patch"}],"is_error":false}]}]}`)
 		}
 		request.Metadata = &RequestMetadata{SessionID: "session", AgentID: tc.agent, IsSubagent: tc.child, SessionFinal: &tc.final}
 		outcome, err := plan.Route(context.Background(), request, nil)
-		if err != nil || len(outcome.SelectedModelIDs) != 1 || outcome.SelectedModelIDs[0] != tc.expected {
+		if err != nil || len(outcome.SelectedModelIDs) == 0 || outcome.SelectedModelIDs[0] != tc.expected {
 			t.Fatalf("agent=%s final=%v outcome=%+v err=%v", tc.agent, tc.final, outcome, err)
 		}
 	}

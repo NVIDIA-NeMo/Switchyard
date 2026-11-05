@@ -3006,6 +3006,86 @@ mutate = ["send_payment_request"]
     Ok(())
 }
 
+/// The executor receives the plan and write result, but not the planner's prompt.
+#[tokio::test]
+async fn stage_plan_execute_handoff_preserves_history_and_prompts() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    // Stage metrics are process-wide, so unique model IDs keep this test's counts separate.
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.local]
+format = "openai_chat"
+base_url = "{}"
+[targets]
+planner = {{ id = "model/plan-execute-planner", llm_client = "local" }}
+executor = {{ id = "model/plan-execute-executor", llm_client = "local" }}
+[routes.plan_execute]
+id = "plan-execute"
+type = "stage_router"
+capable_target = "planner"
+efficient_target = "executor"
+picker = "capable_first"
+confidence_threshold = 0.0
+capable_hold_turns = 0
+efficient_hold_turns = -1
+capable_system_prompt = "Inspect the task and plan before modifying files."
+"#,
+        upstream.base_url,
+    ))?);
+    let planning_history = json!([{"role": "user", "content": "implement the task"}]);
+    let execution_history = json!([
+        {"role": "user", "content": "implement the task"},
+        {"role": "assistant", "content": "The plan is to update the file.",
+            "tool_calls": [{"id": "call", "type": "function",
+                "function": {"name": "write_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call", "content": "file written"}
+    ]);
+    for (messages, expected) in [
+        (&planning_history, "model/plan-execute-planner"),
+        (&execution_history, "model/plan-execute-executor"),
+    ] {
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({"model": "plan-execute", "messages": messages, "stream": false})),
+            &[("x-switchyard-session-id", "plan-execute-session")],
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected),
+        );
+    }
+    {
+        let calls = upstream.calls.lock().await;
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["model"], "model/plan-execute-planner");
+        assert!(has_system_prompt(
+            &calls[0],
+            "Inspect the task and plan before modifying files.",
+        ));
+        assert_eq!(calls[1]["model"], "model/plan-execute-executor");
+        assert_eq!(calls[1]["messages"], execution_history);
+        assert!(!has_system_prompt(
+            &calls[1],
+            "Inspect the task and plan before modifying files.",
+        ));
+    }
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["classifier"]["total_requests"], 0);
+    assert_eq!(
+        stats["algorithm_stats"]["stage_router"]["routing_decisions"]["dimensions"]["targets"]["model/plan-execute-executor"],
+        1
+    );
+    Ok(())
+}
+
 // Composite TOML must pass custom stage semantics through to the nested stage router.
 #[tokio::test]
 async fn composite_router_uses_configured_tool_semantics() -> TestResult {

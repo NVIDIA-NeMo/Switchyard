@@ -327,19 +327,11 @@ Splits traffic across targets. See
 
 ### `plan_execute`
 
-Plans on a capable target, then switches to an efficient target after the first
-recognized edit or write tool call. See [Plan/Execute Routing](../routing_algorithms/plan_execute_routing.md).
-
-| Key | Required | Default | Meaning |
-|---|:---:|---|---|
-| `capable_target` | Yes | - | Target used for read-only inspection and planning. |
-| `efficient_target` | Yes | - | Target used after the first edit or write. |
-| `execution_trigger` | No | `edit` | Use `edit` for mutation detection or `judge` for a judged handoff. |
-| `judge` | For `judge` | unset | Same fields as a Stage classifier. Supports LLM and decision models. Defaults to 10 recent messages. |
-| `tool_semantics.mutate` | No | `[]` | Additional tool names that trigger handoff. See the [example](../routing_algorithms/plan_execute_routing.md#optional-settings). |
-| `planning_prompt` | No | packaged prompt | Replaces the planning instruction. |
-| `handoff_prompt` | No | unset | Adds an instruction to the handoff request. |
-| `planner_reasoning_as_text` | No | `false` | Converts visible planner reasoning summaries to assistant text at handoff. |
+This route type has been removed. Use `stage_router` with
+`picker = "capable_first"`, `confidence_threshold = 0.0`,
+`capable_hold_turns = 0`, `efficient_hold_turns = -1`, and a
+`capable_system_prompt`. See the recipe in
+[Plan/Execute with Stage](../routing_algorithms/stage_router_routing.md#plan-and-execute).
 
 ### `prefill_router`
 

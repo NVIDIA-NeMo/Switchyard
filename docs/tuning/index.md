@@ -16,7 +16,7 @@ Examples walks through the stage router. Each algorithm has its own controls:
 - [Escalation router](../routing_algorithms/escalation_router_routing.md#tuning-options): confirmations and judge window.
 - [Advisor gate](../routing_algorithms/advisor_gate_routing.md#tuning): review count and stall limits, with the benchmarked settings.
 - [Composite](../routing_algorithms/composite_routing.md#independent-stage-profiles): separate stage-router settings per profile.
-- [Plan/Execute](../routing_algorithms/plan_execute_routing.md#optional-settings): handoff triggers and prompts.
+- [Plan/Execute with Stage](../routing_algorithms/stage_router_routing.md#plan-and-execute) covers tool scoring, tier holds, and the planning prompt.
 - [Verification-gated](../routing_algorithms/vgr_routing.md#serving-modes): serving mode and [execution limits](../routing_algorithms/vgr_routing.md#execution-limits).
 - [Random](../routing_algorithms/random_routing.md#control-the-traffic-split): target weights.
 
