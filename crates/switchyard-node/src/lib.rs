@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Composite routing with caller-owned decision calls and state.
+//! Routing algorithms with host-owned model and decision calls.
+
+mod algorithm;
 
 use std::collections::BTreeMap;
 use std::future::ready;

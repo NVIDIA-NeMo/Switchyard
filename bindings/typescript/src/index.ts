@@ -3,6 +3,8 @@
 
 import { createRequire } from "node:module";
 
+export * from "./algorithm.js";
+
 /** Opaque routing state. Store it unchanged and pass it back on the same branch. */
 export type CompositeState = { readonly [key: string]: unknown };
 
