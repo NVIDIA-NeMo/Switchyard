@@ -20,8 +20,8 @@ use switchyard_libsy::{
     Algorithm, CallDecision, CallModel, LibsyError, RuntimeModels, State, Step,
 };
 use switchyard_protocol::{
-    DecisionResponse, LlmClientError, LlmResponse, LlmResponseStream, LlmResponseStreamEvent,
-    Metadata, ModelId, Request, Response,
+    AggLlmResponse, DecisionResponse, LlmClientError, LlmResponse, LlmResponseStream,
+    LlmResponseStreamEvent, Metadata, ModelId, Request, Response,
 };
 use switchyard_runner::AlgorithmFactory;
 use tokio::sync::mpsc;
@@ -219,12 +219,20 @@ pub struct NativeAlgorithmCall {
 }
 
 #[derive(Deserialize)]
-struct Reply {
-    kind: String,
-    response: Option<Value>,
-    error: Option<String>,
-    #[serde(default)]
-    context_window_exceeded: bool,
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum Reply {
+    Agg {
+        response: AggLlmResponse,
+    },
+    Stream,
+    Decision {
+        response: DecisionResponse,
+    },
+    Error {
+        error: String,
+        #[serde(default)]
+        context_window_exceeded: bool,
+    },
 }
 
 #[derive(Debug)]
@@ -288,14 +296,14 @@ impl NativeAlgorithmCall {
             let reply: Reply = serde_json::from_str(&json).map_err(|err| {
                 LibsyError::client_call(model.clone(), client_error(model, err.to_string(), false))
             })?;
-            if reply.kind == "error" {
+            if let Reply::Error {
+                error,
+                context_window_exceeded,
+            } = reply
+            {
                 return Err(LibsyError::client_call(
                     model.clone(),
-                    client_error(
-                        model,
-                        reply.error.unwrap_or_default(),
-                        reply.context_window_exceeded,
-                    ),
+                    client_error(model, error, context_window_exceeded),
                 ));
             }
             Ok(reply)
@@ -303,35 +311,22 @@ impl NativeAlgorithmCall {
         let result = match call {
             HostCall::Decision(call) => {
                 call.respond(async {
-                    let reply = work.await?;
-                    serde_json::from_value::<DecisionResponse>(
-                        reply.response.unwrap_or(Value::Null),
-                    )
-                    .map_err(|err| {
-                        LibsyError::client_call(
+                    match work.await? {
+                        Reply::Decision { response } => Ok(response),
+                        _ => Err(LibsyError::client_call(
                             model.clone(),
-                            client_error(model, err.to_string(), false),
-                        )
-                    })
+                            client_error(model, "Expected a decision response".into(), false),
+                        )),
+                    }
                 })
                 .await
             }
             HostCall::Model(call) => {
                 let metadata = call.request.metadata.clone();
                 call.respond(async {
-                    let reply = work.await?;
-                    let llm_response = match reply.kind.as_str() {
-                        "agg" => LlmResponse::Agg(
-                            serde_json::from_value(reply.response.unwrap_or(Value::Null)).map_err(
-                                |err| {
-                                    LibsyError::client_call(
-                                        model.clone(),
-                                        client_error(model, err.to_string(), false),
-                                    )
-                                },
-                            )?,
-                        ),
-                        "stream" => {
+                    let llm_response = match work.await? {
+                        Reply::Agg { response } => LlmResponse::Agg(response),
+                        Reply::Stream => {
                             let receiver = self.input.lock().take().ok_or_else(|| {
                                 LibsyError::client_call(
                                     model.clone(),
