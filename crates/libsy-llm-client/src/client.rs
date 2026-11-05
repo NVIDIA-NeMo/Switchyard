@@ -393,7 +393,18 @@ impl TranslatingLlmClient {
             if nvidia_inference_api_backend(backend) {
                 strip_anthropic_tool_strict(&mut body);
             }
-            enable_anthropic_prompt_caching(&mut body);
+            enable_anthropic_prompt_caching(&mut body, llm_request.temporary_note_count);
+        }
+        if matches!(
+            backend,
+            Backend::OpenAiChat(_) | Backend::OpenAiResponses(_)
+        ) {
+            enable_openai_guidance_caching(
+                &mut body,
+                wire_format,
+                upstream_model,
+                llm_request.temporary_note_count,
+            );
         }
         if matches!(backend, Backend::OpenAiChat(_)) {
             ensure_openai_stream_usage(&mut body);
@@ -1452,44 +1463,135 @@ fn count_cache_control_blocks(value: &Value) -> usize {
     }
 }
 
-// Marks the final message content block as the Anthropic prompt-cache breakpoint.
-fn enable_anthropic_prompt_caching(body: &mut Value) {
-    // Top-level cache control manages the final breakpoint and its TTL.
-    if body.get("cache_control").is_some() {
-        return;
-    }
-    // Abstain once the caller has spent the budget itself. Adding a fifth marker
-    // turns a request that was valid on arrival into an upstream HTTP 400, and a
-    // caller that placed four breakpoints deliberately needs them more than we
-    // need a fifth. When the final block is already marked this returns early
-    // and changes nothing, which is what the insert below would have done.
+// This helper marks the final caller content block before any temporary notes, if policy permits.
+fn enable_anthropic_prompt_caching(body: &mut Value, temporary_note_count: usize) {
+    // Anthropic rejects a fifth cache marker with HTTP 400.
+    // This check preserves the caller's markers when the request has reached that limit.
     if count_cache_control_blocks(body) >= MAX_CACHE_CONTROL_BLOCKS {
         return;
     }
-    let Some(content) = body
-        .get_mut("messages")
-        .and_then(Value::as_array_mut)
-        .and_then(|messages| messages.last_mut())
-        .and_then(|message| message.get_mut("content"))
-    else {
+    // Requests with only a top-level `1h` policy can return HTTP 400.
+    // New block markers match the caller's TTL on turns with or without notes.
+    let marker = body
+        .get("cache_control")
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({"type":"ephemeral"}));
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
         return;
     };
-    match content {
-        Value::String(text) => {
-            *content = serde_json::json!([{
-                "type": "text",
-                "text": std::mem::take(text),
-                "cache_control": {"type": "ephemeral"}
-            }]);
-        }
-        Value::Array(blocks) => {
-            if let Some(block) = blocks.last_mut().and_then(Value::as_object_mut) {
-                block
-                    .entry("cache_control".to_string())
-                    .or_insert_with(|| serde_json::json!({"type": "ephemeral"}));
+    let mut remaining = temporary_note_count;
+    // Temporary guidance is absent next turn, so the breakpoint must precede it.
+    for message in messages.iter_mut().rev() {
+        match message.get_mut("content") {
+            Some(content @ Value::String(_)) if remaining == 0 => {
+                let text = std::mem::take(content);
+                *content = serde_json::json!([{
+                    "type": "text", "text": text, "cache_control": marker
+                }]);
+                return;
             }
+            Some(Value::String(_)) => remaining = remaining.saturating_sub(1),
+            Some(Value::Array(blocks)) => {
+                if remaining >= blocks.len() {
+                    remaining -= blocks.len();
+                    continue;
+                }
+                let index = blocks.len() - remaining - 1;
+                if let Some(block) = blocks[index].as_object_mut() {
+                    block.entry("cache_control".to_string()).or_insert(marker);
+                }
+                return;
+            }
+            _ => {}
         }
-        _ => {}
+    }
+}
+
+// GPT-5.6 and GPT-6 cache writes end at selected message or content boundaries.
+// A temporary suffix needs a separate cache entry before it so the next request can reuse the prefix.
+fn enable_openai_guidance_caching(
+    body: &mut Value,
+    format: WireFormat,
+    model: &ModelId,
+    suffix: usize,
+) {
+    let name = model.as_str().rsplit('/').next().unwrap_or_default();
+    let supported = name == "gpt-5.6"
+        || name.starts_with("gpt-5.6-")
+        || name == "gpt-6"
+        || name.starts_with("gpt-6-")
+        || name.starts_with("gpt-6.");
+    // Explicit-only callers choose their write locations.
+    // This helper adds markers only for names recognized by its model-name check.
+    if suffix == 0
+        || !supported
+        || body
+            .pointer("/prompt_cache_options/mode")
+            .and_then(Value::as_str)
+            == Some("explicit")
+    {
+        return;
+    }
+    let key = if format == WireFormat::OpenAiResponses {
+        "input"
+    } else {
+        "messages"
+    };
+    let Some(items) = body.get_mut(key).and_then(Value::as_array_mut) else {
+        return;
+    };
+    let marker_count = items
+        .iter()
+        .map(|item| {
+            ["content", "output"]
+                .iter()
+                .filter_map(|key| item.get(key).and_then(Value::as_array))
+                .flatten()
+                .filter(|block| block.get("prompt_cache_breakpoint").is_some())
+                .count()
+        })
+        .sum::<usize>();
+    // Implicit mode reserves one of the four write slots for the provider's final breakpoint.
+    if marker_count >= 3 {
+        return;
+    }
+    let Some(prefix_len) = items.len().checked_sub(suffix) else {
+        return;
+    };
+    for item in items[..prefix_len].iter_mut().rev() {
+        let field = if item.get("type").and_then(Value::as_str) == Some("function_call_output") {
+            "output"
+        } else if matches!(
+            item.get("role").and_then(Value::as_str),
+            Some("user" | "tool" | "developer" | "system")
+        ) {
+            "content"
+        } else {
+            continue;
+        };
+        let Some(content) = item.get_mut(field) else {
+            continue;
+        };
+        if let Value::String(text) = content {
+            let text = std::mem::take(text);
+            let kind = if format == WireFormat::OpenAiResponses {
+                "input_text"
+            } else {
+                "text"
+            };
+            *content = serde_json::json!([{"type":kind,"text":text}]);
+        }
+        // Empty content arrays have no block to mark, so the search continues through earlier items.
+        if let Some(block) = content
+            .as_array_mut()
+            .and_then(|blocks| blocks.last_mut())
+            .and_then(Value::as_object_mut)
+        {
+            block
+                .entry("prompt_cache_breakpoint".to_string())
+                .or_insert_with(|| serde_json::json!({"mode":"explicit"}));
+            return;
+        }
     }
 }
 
@@ -1884,14 +1986,21 @@ mod tests {
             "messages": [{"role": "user", "content": "hello"}]
         });
         let mut body = caller_managed.clone();
-        enable_anthropic_prompt_caching(&mut body);
-        assert_eq!(body, caller_managed);
+        enable_anthropic_prompt_caching(&mut body, 0);
+        assert_eq!(body["cache_control"], caller_managed["cache_control"]);
+        assert_eq!(
+            body["messages"][0]["content"],
+            json!([{
+                "type": "text", "text": "hello",
+                "cache_control": {"type": "ephemeral", "ttl": "1h"}
+            }])
+        );
 
         let mut body = json!({
             "messages": [{"role": "user", "content": "hello"}]
         });
 
-        enable_anthropic_prompt_caching(&mut body);
+        enable_anthropic_prompt_caching(&mut body, 0);
 
         assert_eq!(
             body["messages"][0]["content"][0]["cache_control"],
@@ -1931,7 +2040,7 @@ mod tests {
         let mut body = body_at_the_cache_control_limit();
         assert_eq!(cache_control_blocks(&body), 4);
 
-        enable_anthropic_prompt_caching(&mut body);
+        enable_anthropic_prompt_caching(&mut body, 0);
 
         // Anthropic and Bedrock both reject a fifth marker with HTTP 400, which
         // would fail a request that was valid before it reached us.
@@ -1950,7 +2059,7 @@ mod tests {
         body["system"].as_array_mut().unwrap().pop();
         assert_eq!(cache_control_blocks(&body), 3);
 
-        enable_anthropic_prompt_caching(&mut body);
+        enable_anthropic_prompt_caching(&mut body, 0);
 
         assert_eq!(cache_control_blocks(&body), 4);
         assert_eq!(
