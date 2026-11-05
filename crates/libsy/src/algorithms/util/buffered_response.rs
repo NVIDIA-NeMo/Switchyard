@@ -70,6 +70,7 @@ pub(crate) async fn buffer_response(
                             Some(LlmClientError::UpstreamHttp {
                                 status: http::StatusCode::BAD_GATEWAY,
                                 body: message.clone(),
+                                headers: Box::default(),
                             })
                         }
                         chunk => {

@@ -780,6 +780,7 @@ mod tests {
                 LlmClientError::UpstreamHttp {
                     status: StatusCode::INTERNAL_SERVER_ERROR,
                     body: "server error".to_string(),
+                    headers: Box::default(),
                 },
                 "upstream_5xx",
             ),
@@ -787,6 +788,7 @@ mod tests {
                 LlmClientError::UpstreamHttp {
                     status: StatusCode::FOUND,
                     body: "redirect".to_string(),
+                    headers: Box::default(),
                 },
                 "upstream_non_5xx",
             ),
