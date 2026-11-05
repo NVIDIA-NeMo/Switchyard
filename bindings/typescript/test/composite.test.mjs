@@ -11,7 +11,6 @@ const options = {
   classifier: {
     classify_trigger: "user_turn",
     fail_open: false,
-    decision: { cutoff: 0.4 },
   },
   stage: { efficient_first_threshold: 0.5, capable_first_threshold: 0.2 },
 };
@@ -31,7 +30,7 @@ function response(capable) {
 
 test("decision request, cutoff, and branch-owned state", async () => {
   const router = CompositeRouter.create(options);
-  const states = await Promise.all([0.41, 0.4].map(async (capable) => {
+  const states = await Promise.all([0.61, 0.6].map(async (capable) => {
     let calls = 0;
     const selected = await router.route(messages, { decide: async (request) => {
       calls++;
@@ -45,7 +44,7 @@ test("decision request, cutoff, and branch-owned state", async () => {
       return response(capable);
     } });
     assert.equal(calls, 1);
-    assert.equal(selected.model, capable > 0.4 ? options.targets.capable : options.targets.efficient);
+    assert.equal(selected.model, capable > 0.6 ? options.targets.capable : options.targets.efficient);
     assert.ok(selected.state);
     return selected;
   }));
@@ -62,7 +61,7 @@ test("decision request, cutoff, and branch-owned state", async () => {
   const once = structuredClone(options);
   once.classifier.classify_trigger = "new_session";
   const sessionRouter = CompositeRouter.create(once);
-  const { state } = await sessionRouter.route(messages, { decide: async () => response(0.41) });
+  const { state } = await sessionRouter.route(messages, { decide: async () => response(0.61) });
   assert.deepEqual(await sessionRouter.route(messages, { state, decide: unexpectedDecision }), { model: options.targets.capable });
 });
 
@@ -93,7 +92,7 @@ test("capable-first pins efficient by default and accepts an explicit opt-out", 
     const config = structuredClone(options);
     config.stage.efficient_hold_turns = turns;
     const router = CompositeRouter.create(config);
-    const initial = await router.route(messages, { decide: async () => response(0.41) });
+    const initial = await router.route(messages, { decide: async () => response(0.61) });
     assert.equal(initial.model, options.targets.capable);
     const write = structuredClone(continuation);
     write[1].content[0].name = "write";
@@ -115,10 +114,7 @@ test("capable-first pins efficient by default and accepts an explicit opt-out", 
 test("validation and decision failure policy", async () => {
   for (const change of [
     (config) => { config.targets.efficient = config.targets.capable; },
-    (config) => { config.classifier.decision.cutoff = 2; },
-    (config) => { config.classifier.decision.extra = true; },
-    (config) => { config.classifier.decision.apply_cutoff_to = "missing"; },
-    (config) => { config.classifier.decision.instructions = { task: "structured" }; },
+    (config) => { config.classifier.decision = { cutoff: 0.4 }; },
     (config) => { config.classifier.classify_trigger = "every_request"; },
     (config) => { config.stage.efficient_hold_turns = -2; },
   ]) {
@@ -144,7 +140,7 @@ test("validation and decision failure policy", async () => {
   const config = structuredClone(options);
   config.classifier.fail_open = true;
   const fallback = CompositeRouter.create(config);
-  const { state } = await fallback.route(messages, { decide: async () => response(0.41) });
+  const { state } = await fallback.route(messages, { decide: async () => response(0.61) });
   assert.deepEqual(await fallback.route(messages, { state, decide }), { model: options.targets.capable });
   assert.deepEqual(await fallback.route(messages, { decide }), {
     model: options.targets.efficient,
@@ -185,9 +181,9 @@ test("abort settles promptly, ignores late answers, and removes listeners", { ti
     await rejected;
     assert.equal(getEventListeners(controller.signal, "abort").length, 0);
     if (timing === "reject") pending.reject(new Error("late rejection"));
-    else pending.resolve(response(0.41));
+    else pending.resolve(response(0.61));
   }
   const controller = new AbortController();
-  await router.route(messages, { signal: controller.signal, decide: async () => response(0.4) });
+  await router.route(messages, { signal: controller.signal, decide: async () => response(0.6) });
   assert.equal(getEventListeners(controller.signal, "abort").length, 0);
 });

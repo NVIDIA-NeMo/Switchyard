@@ -392,6 +392,16 @@ impl RouteConfig {
 }
 
 impl DeploymentConfig {
+    /// Judges called through a decision target use the default decision settings
+    /// when the route omits a `decision` table.
+    pub(crate) fn infer_decision_judges(&mut self) {
+        for route in self.routes.values_mut() {
+            route
+                .algorithm
+                .infer_decision_judges(|name| self.decision_targets.contains_key(name));
+        }
+    }
+
     pub(crate) fn requires_target_admission(&self) -> bool {
         self.routes
             .values()
@@ -2434,6 +2444,78 @@ instructions = "candidate comparison"
                 valid
             );
         }
+    }
+
+    #[test]
+    fn decision_target_judges_use_default_decision_settings() -> RunnerResult<()> {
+        let source = format!(
+            r#"{VALID_CONFIG}
+[decision_clients.decisions]
+format = "openai_decisions"
+endpoint = "https://example.test/v1/decisions"
+api_key_env = "PATH"
+timeout_ms = 5000
+
+[decision_targets.judge]
+id = "decision/judge"
+decision_client = "decisions"
+
+[routes.judged]
+id = "switchyard/judged"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "strong"
+weak_target = "weak"
+
+[routes.staged]
+id = "switchyard/staged"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 1.0
+
+[routes.staged.classifier]
+target = "judge"
+
+[routes.composed]
+id = "switchyard/composed"
+type = "composite"
+
+[routes.composed.classifier]
+target = "judge"
+classify_trigger = "user_turn"
+
+[routes.composed.stage]
+capable_target = "strong"
+efficient_target = "weak"
+
+[routes.composed.efficient.classifier]
+target = "judge"
+"#
+        );
+        let factory = AlgorithmFactory::from_toml(&source)?;
+        let routes = &factory.config.routes;
+        for route in ["judged", "staged", "composed"] {
+            let judges: Vec<_> = routes[route].algorithm.classifier_targets().collect();
+            assert!(!judges.is_empty(), "{route}");
+            assert!(
+                judges
+                    .iter()
+                    .all(|(target, decision)| *target == "judge" && decision.is_some()),
+                "{route}"
+            );
+        }
+        // LLM judges keep their capability settings.
+        assert!(
+            routes["classifier"]
+                .algorithm
+                .classifier_targets()
+                .all(|(_, d)| d.is_none())
+        );
+        factory.build()?;
+        runner_from_toml(&source)?;
+        Ok(())
     }
 
     #[test]

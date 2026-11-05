@@ -1,8 +1,9 @@
 # Switchyard libsy for Node.js
 
-TypeScript bindings for routing algorithms. The host handles model and decision
-calls. `AlgorithmFactory` builds configured algorithms from deployment TOML;
-`CompositeRouter` provides the smaller composite routing API.
+TypeScript bindings for routing algorithms and buffered JSON translation.
+The host handles model and decision calls. `AlgorithmFactory` builds configured
+algorithms from deployment TOML; `CompositeRouter` provides the smaller composite
+routing API.
 
 Requires Node.js 22.19 or newer and the repository's Rust toolchain. The package
 is private. Its native addon is built for the local host. Linux is covered in CI.
@@ -106,7 +107,6 @@ const router = CompositeRouter.create({
   classifier: {
     classify_trigger: "user_turn",
     fail_open: false,
-    decision: { cutoff: 0.6 },
   },
   stage: { efficient_first_threshold: 0.5, capable_first_threshold: 0.2 },
 });
@@ -125,8 +125,8 @@ requests. `route` takes `RoutingMessage` values with text, tool calls, and tool
 results. Pass the current branch's conversation on each call.
 
 `decide` receives protocol JSON with message-array `input` and named `questions`.
-Questions and answer values use `{ type, data }` tags. The router supplies packaged
-instructions unless `classifier.decision.instructions` is set. A response looks
+Questions and answer values use `{ type, data }` tags. The router uses the
+packaged instructions and the `capable` and `efficient` choices. A response looks
 like this:
 
 ```ts
@@ -140,9 +140,7 @@ const response: DecisionResponse = {
 };
 ```
 
-The judge selects capable when `probabilities.capable` is above `cutoff`
-(default `0.6`). `choices` and `apply_cutoff_to` replace the default choices
-and the choice the cutoff applies to.
+The judge selects capable when `probabilities.capable` is above `0.6`.
 Stage tool signals then select the final model. `user_turn` judges new user
 messages; `new_session` judges when carried state has no tier.
 
@@ -167,3 +165,32 @@ tier or uses the stage default. An answer without a usable probability for the
 An aborted signal closes the Rust run and rejects promptly, including while
 `decide` is pending. Late callback results are ignored. Pass the same signal to
 your classifier client to cancel its work too.
+
+## Buffered JSON translation
+
+Translate complete OpenAI Chat Completions, OpenAI Responses, and Anthropic
+Messages bodies with the built-in codecs and default policy:
+
+```ts
+import { TranslationEngine, WireFormat } from "@switchyard/libsy";
+
+const engine = new TranslationEngine();
+const { request, diagnostics } = engine.decodeRequest(WireFormat.OPENAI_CHAT, {
+  model: "example",
+  messages: [{ role: "user", content: "Hello" }],
+});
+const { body } = engine.encodeRequest(WireFormat.ANTHROPIC_MESSAGES, request);
+```
+
+`decodeRequest` and `decodeResponse` return normalized JSON under `request` or
+`response`, plus `diagnostics`. `encodeRequest`, `encodeResponse`,
+`translateRequest`, and `translateResponse` return `body` and `diagnostics`.
+Inputs must be JSON objects. Translation failures raise `TranslationError` with
+`kind` and `details`; invalid normalized input has code `ERR_INVALID_REQUEST`.
+
+Calls retain no request context. To restore request-specific tool names, pass
+decoded `request.extensions` as the third argument to `encodeResponse` or the
+fourth argument to `translateResponse`. Decoded values also retain provider data
+for same-format replay, so editing normalized fields does not automatically
+replace that saved body. This API handles buffered JSON; HTTP transport and SSE
+streams remain with the caller.
