@@ -29,7 +29,7 @@
 <a href=#29 id=29 data-nosnippet>29</a>    sanitize_anthropic_tool_use_id,
 <a href=#30 id=30 data-nosnippet>30</a>};
 <a href=#31 id=31 data-nosnippet>31</a><span class="kw">use </span><span class="kw">crate</span>::util::{
-<a href=#32 id=32 data-nosnippet>32</a>    json_string, push_lossy, reject_responses_builtin_tool_item, stable_id, string_value,
+<a href=#32 id=32 data-nosnippet>32</a>    json_string, push_lossy, reject_responses_native_input_item, stable_id, string_value,
 <a href=#33 id=33 data-nosnippet>33</a>    validate_request_capabilities,
 <a href=#34 id=34 data-nosnippet>34</a>};
 <a href=#35 id=35 data-nosnippet>35</a><span class="kw">use </span>base64::{Engine <span class="kw">as _</span>, engine::general_purpose::STANDARD};
@@ -937,7 +937,7 @@
 <a href=#937 id=937 data-nosnippet>937</a>        <span class="kw">crate</span>::codecs::openai_media::validate_media(block, WireFormat::AnthropicMessages)<span class="question-mark">?</span>;
 <a href=#938 id=938 data-nosnippet>938</a>        <span class="kw">match </span>block {
 <a href=#939 id=939 data-nosnippet>939</a>            ContentBlock::Unknown { provider, raw } =&gt; {
-<a href=#940 id=940 data-nosnippet>940</a>                reject_responses_builtin_tool_item(provider, raw, WireFormat::AnthropicMessages)<span class="question-mark">?</span>;
+<a href=#940 id=940 data-nosnippet>940</a>                reject_responses_native_input_item(provider, raw, WireFormat::AnthropicMessages)<span class="question-mark">?</span>;
 <a href=#941 id=941 data-nosnippet>941</a>                push_lossy(
 <a href=#942 id=942 data-nosnippet>942</a>                    diagnostics,
 <a href=#943 id=943 data-nosnippet>943</a>                    policy,

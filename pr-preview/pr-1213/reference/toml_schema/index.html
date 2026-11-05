@@ -3011,8 +3011,8 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 <tr>
 <td><code>responses_reasoning</code></td>
 <td style="text-align: center;">No</td>
-<td><code>"preserve_encrypted"</code></td>
-<td>Responses reasoning replay: <code>"preserve_encrypted"</code> or <code>"drop"</code>. Only valid for <code>openai_responses</code>.</td>
+<td><code>"auto"</code></td>
+<td>Responses reasoning replay: <code>"auto"</code>, <code>"preserve_encrypted"</code>, <code>"preserve_plaintext"</code>, or <code>"drop"</code>. Only valid for <code>openai_responses</code>.</td>
 </tr>
 <tr>
 <td><code>fallback_on_rate_limit</code></td>
@@ -3041,14 +3041,30 @@ route reaches no upstream. A file without a <code>[targets]</code> table is reje
 </tbody>
 </table>
 <p>For <code>openai_responses</code>, <code>responses_reasoning</code> controls replay of reasoning
-history. Every client defaults to <code>"preserve_encrypted"</code>: reasoning items with
-non-empty <code>encrypted_content</code> or a stored reasoning <code>id</code> are retained with empty
-<code>content</code>. ID-only reasoning is removed when the request sets <code>store: false</code>.
-Switchyard's translated Anthropic reasoning is always removed.
-Reasoning without either is removed. Set <code>responses_reasoning = "drop"</code> explicitly for a backend
-that cannot consume provider reasoning. Both modes keep messages, tool
-calls and tool results. The setting is rejected on other client formats, even
-when no target uses the client. It is not inferred from the model name or URL.</p>
+history. Most configurations should leave it unset. The values are:</p>
+<ul>
+<li><code>"auto"</code> (default): choose per request from the target that serves it,
+  including fallback targets. Targets on <code>api.openai.com</code> or <code>*.openai.azure.com</code>
+  use <code>"preserve_encrypted"</code>. On other hosts, such as a shared gateway or proxy,
+  the choice comes from the last <code>/</code>-separated part of the target <code>id</code>. Names that
+  start with <code>gpt-</code> (except <code>gpt-oss</code>) or <code>codex-</code>, and o-series names such as
+  <code>o3</code> or <code>o4-mini</code>, use <code>"preserve_encrypted"</code>. All other targets use
+  <code>"preserve_plaintext"</code>.</li>
+<li><code>"preserve_encrypted"</code>: keep reasoning items with non-empty <code>encrypted_content</code>
+  or a stored reasoning <code>id</code>, and empty their <code>content</code>. ID-only reasoning is
+  removed when the request sets <code>store: false</code>. Switchyard's translated Anthropic
+  reasoning and plaintext-only reasoning are removed. OpenAI needs this.</li>
+<li><code>"preserve_plaintext"</code>: keep <code>summary</code> and <code>content</code> text unchanged and in place,
+  for any <code>store</code> value. Remove non-empty <code>encrypted_content</code>, because Switchyard
+  cannot tell which provider issued it. An item left with no text is removed. An
+  ID-only item is kept unless the request sets <code>store: false</code>.</li>
+<li><code>"drop"</code>: remove all reasoning items. Use it for a backend, such as llama.cpp,
+  that rejects reasoning from other providers.</li>
+</ul>
+<p>All modes keep messages, tool calls and tool results. Set an explicit value when
+<code>"auto"</code> picks the wrong mode, for example an Azure OpenAI deployment with a custom
+name behind a gateway. The setting is rejected on other client formats, even
+when no target uses the client.</p>
 <p>The TOML never contains the secret itself. <code>api_key_env</code> names a variable that
 must exist and be non-empty when the server loads.</p>
 <p>Cooldown is enabled by default for 5 seconds. Set <code>failure_cooldown_ms = 0</code> to disable it.
@@ -3311,7 +3327,7 @@ counts. Plain <code>decide</code> and <code>execute</code> retain task routing. 
 </span></code></pre></div>
 <p>All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ba32f4c44c4b6f6b148a0cc78743f45b92880b13/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a7679a5d6d5046ae246a679c22ebed4eb17f0e5f/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
 for collection and capacity safeguards.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
