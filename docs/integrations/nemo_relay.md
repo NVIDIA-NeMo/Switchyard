@@ -413,8 +413,10 @@ Payloads can contain sensitive task data. To mask configured provider keys,
 the plugin decodes the captured JSON, redacts it, and serializes the copy again.
 JSON strings, such as classifier content and tool arguments, are decoded too.
 Traversal is limited to 64 levels, including JSON encoded inside strings.
-Whitespace and escape spellings may change. If JSON-looking text cannot be
-decoded or the depth limit is exceeded, the body is omitted (`body: null`).
+Whitespace and escape spellings may change. Ordinary bracketed prose is kept
+and redacted as text. If JSON-looking text cannot be decoded and contains
+backslash escapes, or the depth limit is exceeded, the body is omitted
+(`body: null`). An invalid outer JSON body is also omitted when keys are configured.
 Captured data passes through Relay's normal event
 sanitizers and configured exporters. Personal data and other secrets require
 suitable sanitizers; see Relay's
