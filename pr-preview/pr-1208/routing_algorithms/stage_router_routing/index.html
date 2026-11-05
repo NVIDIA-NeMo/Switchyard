@@ -14,7 +14,7 @@
         <link rel="prev" href="../llm_classifier_routing/">
       
       
-        <link rel="next" href="../plan_execute_routing/">
+        <link rel="next" href="../subagent_routing/">
       
       
         
@@ -808,8 +808,6 @@
       
         
       
-        
-      
     
     
     
@@ -1094,6 +1092,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#plan-and-execute" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plan and execute
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#optional-custom-tool-semantics" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1185,34 +1194,6 @@
   
 </nav>
       
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../plan_execute_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Plan/Execute Routing
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -2767,6 +2748,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#plan-and-execute" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plan and execute
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#optional-custom-tool-semantics" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3055,7 +3047,7 @@ These are the ones that matter when you choose a threshold:</p>
 the capable side stays below 0.46. An error in the window removes the
 clean-production bonus, so with a hard error the efficient side reaches at most
 0.24. The unit test <code>scorer_ceilings_match_the_documented_values</code> in
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/782aa0454f8b97afdcf4117661dd5c542ad39f0e/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/f8def5d9bb138d66ae0a377d41c27bd3103c032e/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
 pins these values, so a change to the scorer fails CI until this table is
 updated.</p>
 <h3 id="reachable-scores-per-picker">Reachable scores per picker<a class="headerlink" href="#reachable-scores-per-picker" title="Permanent link">&para;</a></h3>
@@ -3350,15 +3342,46 @@ here. <code>classifier.mode = "capability"</code> is accepted and changes nothin
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>switchyard-server<span class="w"> </span>--config<span class="w"> </span>routes.toml<span class="w"> </span>--port<span class="w"> </span><span class="m">4000</span>
 </span></code></pre></div>
 <p>This is the recommended default: routing on tool signals alone, no classifier.</p>
+<h3 id="plan-and-execute">Plan and execute<a class="headerlink" href="#plan-and-execute" title="Permanent link">&para;</a></h3>
+<p>To start with the capable model and keep using the efficient model after a
+switch, add this route to the <a href="#minimal-route">minimal configuration</a>:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[routes.plan_execute]</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;switchyard/plan-execute&quot;</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;stage_router&quot;</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">capable_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;capable&quot;</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">efficient_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;efficient&quot;</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">picker</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;capable_first&quot;</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="n">confidence_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="n">capable_hold_turns</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">0</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="n">efficient_hold_turns</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">-1</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="n">capable_system_prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Inspect the task and plan before modifying files.&quot;</span>
+</span></code></pre></div>
+<p>With no tool history, Stage selects capable and adds the planning prompt.
+After successful writes, Stage can select efficient; critical failures can keep
+capable selected. A switch from capable to efficient starts a hold that keeps
+selecting efficient while the session state remains. Later tool errors do not
+end it. Only capable requests receive the planning prompt. See
+<a href="#how-it-works">How it works</a> for scoring and hold behavior.</p>
+<p>Send requests to <code>switchyard/plan-execute</code> with the same
+<code>x-switchyard-session-id</code> from the first planning request onward. Include the
+full conversation, including the plan, tool calls, and results. For the Responses
+API, send that history in <code>input</code> and omit both <code>previous_response_id</code> and
+<code>conversation</code>. Known continuation IDs bypass Stage even with full input
+history. Send <code>x-switchyard-session-final: true</code> when the shared session ends to
+clear all of its agents' state.</p>
+<p>When migrating from the removed <code>plan_execute</code> type, use this recipe and replace
+<code>planning_prompt</code> with <code>capable_system_prompt</code>. Stage has no exact equivalent
+for the old judged handoff or reasoning-to-text conversion; keep the plan in
+ordinary conversation text so the executor receives it.</p>
 <h3 id="optional-custom-tool-semantics">Optional: custom tool semantics<a class="headerlink" href="#optional-custom-tool-semantics" title="Permanent link">&para;</a></h3>
 <p>Extend the built-in coding vocabulary when an agent uses domain-specific tool
 names. Mappings are route-scoped, additive, and matched by exact name without
 regard to ASCII case:</p>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="k">[routes.stage.tool_semantics]</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">observe</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;KB_search&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;get_customer_by_phone&quot;</span><span class="p">]</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">mutate</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;send_payment_request&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;update_inventory&quot;</span><span class="p">]</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">plan</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;create_research_plan&quot;</span><span class="p">]</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">new</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;start_conversation&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;send_message_to_user&quot;</span><span class="p">]</span>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[routes.stage.tool_semantics]</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">observe</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;KB_search&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;get_customer_by_phone&quot;</span><span class="p">]</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">mutate</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;send_payment_request&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;update_inventory&quot;</span><span class="p">]</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">plan</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;create_research_plan&quot;</span><span class="p">]</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">new</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;start_conversation&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;send_message_to_user&quot;</span><span class="p">]</span>
 </span></code></pre></div>
 <p>The categories affect existing stage signals:</p>
 <ul>
@@ -3385,10 +3408,10 @@ request when tool signals decide its tier. Notes exist only in the forwarded
 request; they do not accumulate in the caller's conversation. The escalation
 note accompanies a signal-driven capable decision, and the optional de-escalation
 note accompanies a signal-driven efficient decision.</p>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">[routes.stage.handoff_notes]</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">escalation_note</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;the previous model was stalling; pick up the diagnosis&quot;</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1"># deescalation_note = &quot;...&quot;          # optional</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># only_on_wrong_signal_escalation = true  # default; held turns never receive notes</span>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[routes.stage.handoff_notes]</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">escalation_note</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;the previous model was stalling; pick up the diagnosis&quot;</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="c1"># deescalation_note = &quot;...&quot;          # optional</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># only_on_wrong_signal_escalation = true  # default; held turns never receive notes</span>
 </span></code></pre></div>
 <p>Classifier and picker-default decisions do not add handoff notes.</p>
 <h3 id="optional-llm-classifier-fallback">Optional: LLM classifier fallback<a class="headerlink" href="#optional-llm-classifier-fallback" title="Permanent link">&para;</a></h3>
@@ -3397,17 +3420,17 @@ note accompanies a signal-driven efficient decision.</p>
 <p>To judge ambiguous turns with a model call, add the block. The classifier runs
 when the scorer has no tool history or produces a score inside the closed
 ambiguous band:</p>
-<div class="language-toml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">[targets.stage_judge]</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai/gpt-4o-mini&quot;</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="k">[routes.stage.classifier]</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="n">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;stage_judge&quot;</span><span class="w">     </span><span class="c1"># judge-only; never a completion destination</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="n">base_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span><span class="w">       </span><span class="c1"># p_solve floor to route efficient; below this → capable</span>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="n">threshold_step</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.1</span><span class="w">       </span><span class="c1"># +0.1 for uncertain/unmatched; +0.2 for unsupported</span>
-</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="n">recent_turn_window</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="w">     </span><span class="c1"># trailing turns added to the opening task</span>
-</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="n">prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Estimate whether the efficient target can complete this request.&quot;</span>
-</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="n">response_format_type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;json_object&quot;</span><span class="w">  </span><span class="c1"># optional; default is &quot;json_schema&quot;</span>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">[targets.stage_judge]</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openai/gpt-4o-mini&quot;</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">llm_client</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;openrouter&quot;</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="k">[routes.stage.classifier]</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="n">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;stage_judge&quot;</span><span class="w">     </span><span class="c1"># judge-only; never a completion destination</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="n">base_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span><span class="w">       </span><span class="c1"># p_solve floor to route efficient; below this → capable</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="n">threshold_step</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.1</span><span class="w">       </span><span class="c1"># +0.1 for uncertain/unmatched; +0.2 for unsupported</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="n">recent_turn_window</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mi">3</span><span class="w">     </span><span class="c1"># trailing turns added to the opening task</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="n">prompt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;Estimate whether the efficient target can complete this request.&quot;</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="n">response_format_type</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;json_object&quot;</span><span class="w">  </span><span class="c1"># optional; default is &quot;json_schema&quot;</span>
 </span></code></pre></div>
 <p><code>prompt</code> replaces the packaged capability-classifier prompt. In the default
 <code>json_schema</code> mode, Switchyard sends the verdict schema through the
