@@ -305,14 +305,15 @@ can receive these records, but each output format presents them differently.
 | Output | What the current integration shows |
 | --- | --- |
 | ATIF | The request and response seen by the agent. Internal routing is not added as separate steps or included in `final_metrics`. Relay-managed ATIF files may retain the raw records under `extra.observed_events`. |
-| OpenTelemetry traces, including OpenInference | Relay's outer LLM span, nested `libsy.client_call` and `libsy.upstream_attempt` duration scopes, plus eligible routing marks. |
+| OpenTelemetry traces, including OpenInference | Relay's outer LLM span, nested `libsy.client_call`, `libsy.upstream_attempt`, and `libsy.decision_client_call` duration scopes, plus eligible routing marks. |
 | OpenTelemetry metrics | Switchyard request, routing-call, latency, token, and failure measurements. Combine the reported routing usage with Relay's answer cost to estimate the observed routed cost. |
 | OTLP logs | Non-metric Switchyard marks that meet the configured severity threshold. |
 
-The plugin captures two existing Switchyard spans. Each routing or answer LLM
+The plugin captures existing Switchyard spans. Each routing or answer LLM
 call becomes a `libsy.client_call` scope. Physical HTTP attempts and retries
 become `libsy.upstream_attempt` child scopes. Buffered calls close with the response;
-streaming calls close when the stream finishes, fails, or is dropped. The
+streaming calls close when the stream finishes, fails, or is dropped. Typed
+decision calls become `libsy.decision_client_call` scopes. The
 projection contains allowlisted routing metadata by default. Optional
 [routing payload capture](#inspect-classifier-and-judge-payloads) adds the final
 classifier/judge request and successful buffered response.
@@ -328,6 +329,7 @@ classification as `routing` or `answer`.
 | --- | --- | --- | --- |
 | Routing or answer model call | `libsy.client_call` scope | Relay's managed request scope | Starts with the Switchyard call and closes with the buffered response or terminal stream event. |
 | Physical provider request or retry | `libsy.upstream_attempt` scope | Its `libsy.client_call` scope | Starts before the HTTP attempt and closes on response, error, or cancellation. |
+| System One or OpenAI Decisions call | `libsy.decision_client_call` scope | Relay's managed request scope | Starts with the decision call and closes on response, error, or cancellation. |
 | Routing request, decision, overhead, or failure | Existing `switchyard.routing.*` mark | Active Relay scope at emission | Point-in-time mark using the existing outcome fields. |
 
 ### Inspect Classifier and Judge Payloads
@@ -337,7 +339,8 @@ is disabled by default. It is not a standalone Switchyard configuration option.
 Use it to inspect the final classifier/judge request, including its system
 prompt, task context, output schema, resolved model, and target body settings,
 plus its successful buffered response. This helps distinguish a poor verdict
-from missing task context.
+from missing task context. System One and OpenAI Decisions requests and
+successful buffered responses are supported too.
 
 Add these options to the existing `plugins.dynamic.config` table in your Relay
 `plugins.toml`, then restart the host:
@@ -386,6 +389,10 @@ Within the routed request's trace:
    for the selected and served model. The judge response contains the returned
    verdict; the decision mark records what Switchyard did with it.
 
+For System One or OpenAI Decisions, inspect the input and output on
+`libsy.decision_client_call` directly. The captured request uses the provider's
+final `state` or `input` field and encoded questions.
+
 For an [ATOF export](https://docs.nvidia.com/nemo/relay/configure-plugins/observability/atof),
 the request appears directly in the attempt start event's `data`, and the
 response in the matching end event's `data`. Their `uuid` values match;
@@ -393,19 +400,19 @@ response in the matching end event's `data`. Their `uuid` values match;
 captured requests with:
 
 ```bash
-jq 'select(.name == "libsy.upstream_attempt" and .scope_category == "start" and .data.body != null) | .data.body | fromjson' events.jsonl
+jq 'select((.name == "libsy.upstream_attempt" or .name == "libsy.decision_client_call") and .scope_category == "start" and .data.body != null) | .data.body | fromjson' events.jsonl
 ```
 
 Find omitted request or response bodies with:
 
 ```bash
-jq 'select(.name == "libsy.upstream_attempt" and .data.truncated == true) | {uuid, scope_category}' events.jsonl
+jq 'select((.name == "libsy.upstream_attempt" or .name == "libsy.decision_client_call") and .data.truncated == true) | {uuid, scope_category}' events.jsonl
 ```
 
 Capture follows routing-phase HTTP calls, which include LLM classifier/judge
-calls and may include other model calls used while deciding a route. It excludes
-completion-phase payloads, streamed response bodies, HTTP error bodies, and
-non-LLM decision-client payloads such as SystemOne. This option belongs to the
+calls, typed decision-client calls, and other model calls used while deciding a
+route. It excludes completion-phase payloads, streamed response bodies, and
+HTTP error bodies. This option belongs to the
 native Relay plugin; enabling standalone Switchyard TRACE logging does not
 enable payload capture.
 
@@ -439,6 +446,7 @@ flowchart LR
     llm["LLM call"]
     call["libsy.client_call<br/>routing or completion"]
     attempt["libsy.upstream_attempt<br/>one per HTTP attempt"]
+    decision_call["libsy.decision_client_call<br/>typed decision"]
     requested["mark:switchyard.routing.requested<br/>zero duration"]
     calls["mark:switchyard.routing.llm_call<br/>zero duration"]
     overhead["mark:switchyard.routing.overhead<br/>zero duration"]
@@ -447,6 +455,7 @@ flowchart LR
     agent --> llm
     llm --> call
     call --> attempt
+    llm --> decision_call
     agent --> requested
     agent --> calls
     agent --> overhead
@@ -537,7 +546,8 @@ Configure delivery through Relay's
 By default, Switchyard routing telemetry excludes request and response content.
 Enabling [routing payload capture](#inspect-classifier-and-judge-payloads) adds
 internal routing requests and successful buffered responses to
-`libsy.upstream_attempt` scopes. Routing marks remain payload-free.
+`libsy.upstream_attempt` and `libsy.decision_client_call` scopes. Routing marks
+remain payload-free.
 Relay's LLM events can capture request and response data according to Relay's
 [input and output event semantics](https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/events#input-and-output-payloads),
 independently of these Switchyard marks.

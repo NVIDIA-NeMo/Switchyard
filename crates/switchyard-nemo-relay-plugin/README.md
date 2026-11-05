@@ -231,11 +231,12 @@ marks. Call marks distinguish routing from answer calls; decisions distinguish
 selected from served models. Token metrics cover both call roles, while Relay
 retains ownership of the outer LLM lifecycle.
 
-The plugin also captures the existing `libsy.client_call` and
-`libsy.upstream_attempt` spans for each routed request. It replays completed
+The plugin also captures the existing `libsy.client_call`,
+`libsy.upstream_attempt`, and `libsy.decision_client_call` spans for each routed
+request. It replays completed
 spans beneath Relay's outer LLM scope with their original timestamps. The
 projection contains allowlisted routing metadata by default. To inspect the
-final classifier/judge request and buffered response, enable
+final classifier/judge or typed decision request and buffered response, enable
 [routing payload capture](../../docs/integrations/nemo_relay.md#inspect-classifier-and-judge-payloads)
 in the plugin configuration. Capture uses Relay's existing exporters and writes
 no payload files inside the plugin. It is disabled by default and omits bodies
