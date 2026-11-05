@@ -273,11 +273,11 @@ pub fn dimensions_from_signal(signal: &ToolSignals) -> CodingAgentDimensions {
 }
 
 /// Records one stage-router decision with bounded labels.
-pub(crate) fn record_routing_decision(source: DecisionSource, target_name: &str) {
+pub(crate) fn record_routing_decision(source: &str, target_name: &str) {
     meter().u64_counter(ROUTING_DECISIONS_METRIC).build().add(
         1,
         &[
-            KeyValue::new("decision_source", source.as_str()),
+            KeyValue::new("decision_source", source.to_string()),
             KeyValue::new("target_name", target_name.to_string()),
         ],
     );
@@ -534,6 +534,7 @@ pub struct StageClassifier {
     pub(crate) reset_on_user_turn: bool,
     signals: ToolSignalProcessor,
     handoff_notes: Option<HandoffNoteConfig>,
+    report_decisions: bool,
 }
 
 impl StageClassifier {
@@ -549,6 +550,7 @@ impl StageClassifier {
             reset_on_user_turn: false,
             signals: ToolSignalProcessor::default(),
             handoff_notes: None,
+            report_decisions: true,
         }
     }
 
@@ -582,6 +584,12 @@ impl StageClassifier {
     /// hand-back to the efficient tier when a de-escalation note is configured.
     pub fn with_handoff_notes(mut self, config: HandoffNoteConfig) -> Self {
         self.handoff_notes = Some(config);
+        self
+    }
+
+    /// Lets an enclosing router report the model after it resolves all signals.
+    pub(crate) fn defer_decision_reporting(mut self) -> Self {
+        self.report_decisions = false;
         self
     }
 
@@ -740,7 +748,9 @@ impl Classifier for StageClassifier {
                 // Errors if the held category has no runtime model: the hold must land
                 // somewhere. The provider model is what this metric records elsewhere.
                 let target = driver.first_model_for(&category)?.clone();
-                record_routing_decision(source, driver.provider_model(&target));
+                if self.report_decisions {
+                    record_routing_decision(source.as_str(), driver.provider_model(&target));
+                }
                 driver.set_evidence(serde_json::json!({"source": source.as_str()}));
                 return Ok((
                     Classification::Scores(vec![Score {
@@ -785,8 +795,11 @@ impl Classifier for StageClassifier {
                 {
                     Self::set_hold(state, &capable_hold_key, self.capable_hold_turns);
                 }
-                record_routing_decision(source, driver.provider_model(target));
-                if source == DecisionSource::Override
+                if self.report_decisions {
+                    record_routing_decision(source.as_str(), driver.provider_model(target));
+                }
+                if self.report_decisions
+                    && source == DecisionSource::Override
                     && let Some(reason) = override_reason(&signal)
                 {
                     tracing::info!(

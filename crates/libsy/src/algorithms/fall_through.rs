@@ -952,4 +952,35 @@ mod tests {
         assert!(states.contains_key("session-1"));
         assert!(!states.contains_key("session-2"));
     }
+
+    #[tokio::test]
+    async fn affinity_preserves_same_category_fallback_priority() -> Result<()> {
+        use crate::core::algorithm::RuntimeModels;
+        let affinity = Arc::new(crate::algorithms::util::affinity::AffinityRouter::new());
+        let router = Arc::new(
+            FallThrough::new()
+                .with_processor(affinity.clone())
+                .with_classifier(affinity)
+                .with_classifier(fixed(vec![Score::needing(vec![Category::Efficient], 1.0)])),
+        );
+        let models = Arc::new(RuntimeModels::new(
+            [
+                (Category::Any, target_set(&["strong", "fast-1", "fast-2"])),
+                (Category::Efficient, target_set(&["fast-1", "fast-2"])),
+            ]
+            .into(),
+        ));
+        for turn in 1..=2 {
+            let outcome = crate::drive(router.clone(), request(), models.clone(), |_| async {
+                unreachable!("this router makes no judge calls")
+            })
+            .await?;
+            assert_eq!(
+                outcome.selected_model_ids,
+                target_set(&["fast-1", "fast-2", "strong"]),
+                "turn {turn} must keep the selected category's alternate ahead of other tiers"
+            );
+        }
+        Ok(())
+    }
 }

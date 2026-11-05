@@ -636,7 +636,7 @@ resolved against the deployment's top-level `[pool]`. See
 | `signals.rules.capable` | No | `[]` | Case-insensitive substrings in the opening user task that require `capable`. Blank terms are ignored. |
 | `signals.rules.balanced` | No | `[]` | Case-insensitive substrings in the opening user task that require the custom `balanced` tag. |
 | `signals.rules.named.<tag>` | No | `[]` | Case-insensitive substrings that require a deployment-defined pool tag, allowing deterministic specialist routing without a judge call. |
-| `signals.tool_loop.picker` | Required with `tool_loop` | — | `efficient_first` or `capable_first`. Tag used when the signal is not confident. |
+| `signals.tool_loop.picker` | Required with `tool_loop` | — | When all signals abstain, `efficient_first` keeps `pool.default`; `capable_first` uses `capable`. Decisive signals take precedence. |
 | `signals.tool_loop.confidence_threshold` | Required with `tool_loop` | — | Lower confidence cutoff for a decisive pick. In `[0, 1]`. |
 | `signals.tool_loop.capable_score_threshold` | No | `0.55` | With a `balanced` provider, capable scores below this cutoff use that middle tier. In `[0, 1]`. Lower values select capable more often. |
 | `signals.tool_loop.recent_turn_window` | No | `3` | Trailing tool results the signal is computed over. |

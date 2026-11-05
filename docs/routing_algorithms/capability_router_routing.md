@@ -91,7 +91,7 @@ or `efficient` from them.
 
 | Key | Required | Default | Meaning |
 |---|:---:|---|---|
-| `picker` | Yes | — | `efficient_first`, or `capable_first` (experimental, unbenchmarked). Tag used when the signals are not confident. |
+| `picker` | Yes | — | `efficient_first` keeps `pool.default` when all signals abstain. `capable_first` (experimental, unbenchmarked) uses `capable` instead. A decisive signal takes precedence over either default. |
 | `confidence_threshold` | Yes | — | Corroboration a decisive pick needs. In `[0, 1]`. |
 | `capable_score_threshold` | No | `0.55` | With a balanced provider, capable scores below this cutoff use balanced. In `[0, 1]`. |
 | `recent_turn_window` | No | `3` | Trailing tool results the signal is computed over. |
@@ -112,7 +112,7 @@ bypasses scoring and keeps its first model instead.
 
 When the pool provides `balanced`, `tool_loop` uses three confidence bands:
 
-1. No decisive score falls back to `pool.default`, normally `efficient`.
+1. When all signals abstain, `efficient_first` uses `pool.default`, normally `efficient`. `capable_first` uses `capable` instead, including on the first request before any tool activity.
 2. A `capable` score below `capable_score_threshold` is changed to `balanced`.
 3. A `capable` score at or above that threshold stays `capable`.
 
@@ -166,6 +166,24 @@ and of any per-signal setting.
    session.
 
 `review`, when configured, skips all of this: it owns the whole turn itself.
+
+### Target eligibility
+
+When the route enables target eligibility, request requirements filter the pool
+before routing. Answer fallbacks use that same filtered pool. The remaining
+models must still provide `pool.default` and every capability the configured
+signals can require. Required judges must also qualify. A missing required
+capability or judge rejects the request before any model call.
+
+### Decision metrics
+
+`switchyard.stage_router.routing_decisions` records one decision after the pool
+and escalation retention choose the model. `target_name` is the selected target's
+provider model ID. Rules, picker defaults, escalation holds, and affinity replays
+carry their own `decision_source`. Tool-score histograms still describe the
+scorer's inputs and output, even when another signal wins. The decision counter
+describes the first routing candidate; provider execution may use an answer
+fallback if that candidate fails.
 
 ## Migrating from `composite`
 

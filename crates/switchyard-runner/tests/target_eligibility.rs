@@ -142,6 +142,64 @@ async fn configured_stage_keeps_answer_fallbacks_approved() {
 }
 
 #[tokio::test]
+async fn capability_pool_filters_answer_and_provider_failure_fallbacks() {
+    let server = MockServer::start().await;
+    let source = config(
+        &server.uri(),
+        r#"
+type = "capability_router"
+[routes.chat.signals.tool_loop]
+picker = "efficient_first"
+confidence_threshold = 0.5
+"#,
+        "",
+    );
+    let source = format!(
+        r#"{source}
+[pool]
+models = [
+  {{ target = "fast", provides = ["efficient"] }},
+  {{ target = "both_fast", provides = ["efficient"] }},
+  {{ target = "both_capable", provides = ["capable"] }},
+]
+default = "efficient"
+"#
+    );
+    let runner = Runner::from_toml(&source).expect("capability pool");
+    let route = runner.route("chat").expect("route");
+    let normal = route
+        .decide(request("normal", None))
+        .await
+        .expect("normal decision");
+    assert_eq!(normal.selected_model_ids[0].as_str(), "fast");
+    respond(&server, "approved/fast", ResponseTemplate::new(503), 1).await;
+    respond(
+        &server,
+        "approved/capable",
+        completion("approved/capable", "approved answer"),
+        1,
+    )
+    .await;
+    let outcome = route
+        .execute(
+            request("private", Some(&["private", "customer_data"])),
+            None,
+        )
+        .await
+        .expect("eligible pool fallback");
+    assert_eq!(outcome.selected_model.as_str(), "both_fast");
+    assert_eq!(
+        outcome.response.served_model().map(|model| model.as_str()),
+        Some("both_capable")
+    );
+    assert_eq!(
+        models_called(&server).await,
+        ["approved/fast", "approved/capable"]
+    );
+    server.verify().await;
+}
+
+#[tokio::test]
 async fn filtered_targets_sharing_a_model_keep_their_own_settings() {
     let server = MockServer::start().await;
     for (target, effort) in [("both_fast", "low"), ("both_capable", "high")] {

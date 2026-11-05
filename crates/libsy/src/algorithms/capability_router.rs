@@ -38,7 +38,7 @@ use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierCon
 use super::util::affinity::{
     AffinityRouter, ClassifyTrigger, evict_if_full, has_new_user_turn, is_user_turn,
 };
-use super::util::stage::{HandoffNoteConfig, PickerMode, StageClassifier};
+use super::util::stage::{HandoffNoteConfig, PickerMode, StageClassifier, record_routing_decision};
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignalProcessor};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier, Score};
@@ -55,7 +55,8 @@ const CAPABLE_SCORE_THRESHOLD: f64 = 0.55;
 /// fallback or per-tier prompt injection (those are a route-wide concern once
 /// `task` is a sibling signal rather than something `tool_loop` falls through to).
 pub struct ToolLoopSignalConfig {
-    /// Tier a turn defaults to when the scorer is not confident.
+    /// `CapableFirst` falls back to capable when all signals abstain;
+    /// `EfficientFirst` leaves the fallback to the pool default.
     pub mode: PickerMode,
     /// How much corroboration a decisive pick needs, in `[0.0, 1.0]`.
     pub confidence_threshold: f64,
@@ -98,6 +99,7 @@ pub struct CapabilityRouterConfig {
 struct ToolLoopSignal {
     processor: ToolSignalProcessor,
     classifier: StageClassifier,
+    mode: PickerMode,
 }
 
 struct RuleSignal {
@@ -489,11 +491,13 @@ fn build_tool_loop_signal(config: ToolLoopSignalConfig) -> Result<ToolLoopSignal
             ),
         });
     }
-    let mut classifier = StageClassifier::new(config.mode, config.confidence_threshold);
+    let mut classifier =
+        StageClassifier::new(config.mode, config.confidence_threshold).defer_decision_reporting();
     if let Some(notes) = config.handoff_notes {
         classifier = classifier.with_handoff_notes(notes);
     }
     Ok(ToolLoopSignal {
+        mode: config.mode,
         processor: ToolSignalProcessor {
             recent_window: config.recent_window.unwrap_or(DEFAULT_RECENT_WINDOW),
             tool_semantics: config.tool_semantics,
@@ -525,6 +529,7 @@ impl Algorithm for CapabilityRouter {
                 .await?
         {
             Self::replay_decision(affinity, &mut state, &mut request, &target, &driver).await?;
+            record_routing_decision("retained", driver.provider_model(&target));
             let fallback = self.fallback_models(&target);
             return Ok(RoutingOutcome::route_to(target, fallback, request));
         }
@@ -561,6 +566,20 @@ impl Algorithm for CapabilityRouter {
             }
         }
 
+        // A picker default is only a fallback. It must not compete with a rule,
+        // a judge verdict, or a decisive tool score.
+        if signals.is_empty()
+            && self
+                .tool_loop
+                .as_ref()
+                .is_some_and(|signal| signal.mode == PickerMode::CapableFirst)
+        {
+            signals.push((
+                Score::needing(vec![Category::Capable], 0.0),
+                Some(serde_json::json!({"source": "fall_open"})),
+            ));
+        }
+
         let scores: Vec<_> = signals.iter().map(|(score, _)| score.clone()).collect();
         let winner = Classification::Scores(scores.clone()).argmax(false)?;
         let mut evidence = signals
@@ -575,6 +594,13 @@ impl Algorithm for CapabilityRouter {
         }
         // Signals can write evidence while scoring. Only the winner explains the outcome;
         // judge consultations remain available separately in metadata.judgments.
+        record_routing_decision(
+            evidence
+                .get("source")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("pool_default"),
+            driver.provider_model(&target),
+        );
         driver.set_evidence(evidence);
 
         if let Some(affinity) = &self.affinity {
@@ -1557,6 +1583,89 @@ mod tests {
                 expected_source
             );
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn capable_first_picker_defaults_to_capable() -> Result<()> {
+        let mut router = Arc::into_inner(escalation_router(0)?).unwrap();
+        router.tool_loop = Some(build_tool_loop_signal(ToolLoopSignalConfig {
+            mode: PickerMode::CapableFirst,
+            confidence_threshold: 0.5,
+            recent_window: None,
+            tool_semantics: ToolSemantics::default(),
+            handoff_notes: None,
+        })?);
+        let recorder = Arc::new(Recorder::default());
+        let router = Arc::new(router);
+        for request in [Request::default(), turn_request(false)] {
+            let (selected, _) = test_drive_with_models(
+                router.clone(),
+                request,
+                three_level_runtime_models(),
+                recorder.serve(),
+            )
+            .await?;
+            assert_eq!(selected.as_str(), "strong");
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn capable_first_fallback_leaves_decisive_signals_in_control() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        *recorder.judge_p_solve.lock() = 0.9;
+        for (task, rule, request, expected) in [
+            (true, false, turn_request(false), "weak"),
+            (false, false, soft_failure_request(), "balanced"),
+            (false, true, turn_request(true), "balanced"),
+        ] {
+            let mut router = Arc::into_inner(combined_signal_router()?).unwrap();
+            router.tool_loop = Some(build_tool_loop_signal(ToolLoopSignalConfig {
+                mode: PickerMode::CapableFirst,
+                confidence_threshold: 0.2,
+                recent_window: None,
+                tool_semantics: ToolSemantics::default(),
+                handoff_notes: None,
+            })?);
+            if !task {
+                router.task = None;
+            }
+            if rule {
+                router.rules = Some(RuleSignal::new(
+                    RuleSignalConfig {
+                        capable: vec![],
+                        balanced: vec!["fix the build".into()],
+                        named: BTreeMap::new(),
+                    },
+                    &router.pool,
+                )?);
+            }
+            let (selected, _) = test_drive_with_models(
+                Arc::new(router),
+                request,
+                three_level_runtime_models(),
+                recorder.serve(),
+            )
+            .await?;
+            assert_eq!(selected.as_str(), expected);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn efficient_first_keeps_the_deployments_pool_default() -> Result<()> {
+        let mut router = Arc::into_inner(escalation_router(0)?).unwrap();
+        router.pool.default = "balanced".parse().unwrap();
+        let recorder = Arc::new(Recorder::default());
+        let (selected, _) = test_drive_with_models(
+            Arc::new(router),
+            turn_request(false),
+            three_level_runtime_models(),
+            recorder.serve(),
+        )
+        .await?;
+        assert_eq!(selected.as_str(), "balanced");
         Ok(())
     }
 }

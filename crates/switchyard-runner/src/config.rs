@@ -3600,4 +3600,65 @@ advisor_target = "advisor"
             ["tier_judge"]
         );
     }
+
+    fn capability_eligibility_config() -> String {
+        let source = auto_signals_config()
+            .replace(
+                "[routes.composed.signals.task]\njudge = \"tier_judge\"\nbase_threshold = 0.5\n",
+                "",
+            )
+            .replace(
+                "id = \"strong/model\"",
+                "id = \"strong/model\"\nlabels = ['private']",
+            )
+            .replace(
+                "id = \"weak/model\"",
+                "id = \"weak/model\"\nlabels = ['private']",
+            )
+            .replace(
+                "id = \"balanced/model\"",
+                "id = \"balanced/model\"\nlabels = ['private']",
+            );
+        format!("{source}\n[routes.composed.eligibility]\n")
+    }
+
+    #[tokio::test]
+    async fn capability_pool_filters_unapproved_optional_models() -> RunnerResult<()> {
+        let source = capability_eligibility_config();
+        let runner = Runner::from_toml(&source)?;
+        let route = runner.route("switchyard/hier").unwrap();
+        let unrestricted = route.decide(Request::default()).await?;
+        assert_eq!(unrestricted.selected_model_ids[0].as_str(), "weak");
+        let mut request = Request::default();
+        require_target_labels(&mut request, ["private"])?;
+        let outcome = route.decide(request).await?;
+        assert_eq!(
+            outcome.selected_model_ids,
+            [
+                ModelId::from("weak"),
+                ModelId::from("strong"),
+                ModelId::from("balanced")
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn capability_eligibility_requires_default_signal_tiers_and_judge() -> RunnerResult<()> {
+        let source = capability_eligibility_config();
+        for (source, expected) in [
+            (source.replace("id = \"weak/model\"\nlabels = ['private']", "id = \"weak/model\""), "pool default"),
+            (source.replace("id = \"strong/model\"\nlabels = ['private']", "id = \"strong/model\""), "Capable"),
+            (source.replace("[routes.composed.signals.tool_loop]",
+                "[routes.composed.signals.task]\njudge = 'tier_judge'\nbase_threshold = 0.5\n[routes.composed.signals.tool_loop]"), "required target tier_judge"),
+        ] {
+            let runner = Runner::from_toml(&source)?;
+            let mut request = Request::default();
+            require_target_labels(&mut request, ["private"])?;
+            let error = runner.route("switchyard/hier").unwrap().decide(request).await
+                .err().expect("missing required role must fail before model I/O").to_string();
+            assert!(error.contains(expected), "{error}");
+        }
+        Ok(())
+    }
 }

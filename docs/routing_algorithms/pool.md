@@ -35,7 +35,9 @@ the deployment. A route that does not use `capability_router` ignores it.
 
 1. Every configured signal scores the turn. The highest-confidence score wins;
    ties keep the first signal.
-2. If nothing scored, or the winner named no tag, `default` is used instead.
+2. If nothing scored, or the winner named no tag, `default` is used instead. A
+   `tool_loop` configured with `capable_first` supplies a capable fallback when
+   all signals abstain.
 3. The pool returns the first model, in declared order, that provides the
    winning tag.
 

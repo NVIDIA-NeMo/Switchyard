@@ -1065,6 +1065,10 @@ impl AlgorithmSpec {
                     models.restrict_to(allowed);
                 }
             }
+            Self::CapabilityRouter { pool, signals } if signals.review.is_none() => {
+                pool.models
+                    .retain(|model| allowed.contains(model.target.as_str()));
+            }
             _ => {}
         }
         if let Some(target) = restricted

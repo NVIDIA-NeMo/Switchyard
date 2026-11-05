@@ -107,7 +107,7 @@ impl Classifier for SourceStamp {
                     .find_map(|need| driver.models_for(need).first().cloned())
             });
             record_routing_decision(
-                self.source,
+                self.source.as_str(),
                 selected
                     .as_ref()
                     .map_or("unknown", |model| driver.provider_model(model).as_str()),

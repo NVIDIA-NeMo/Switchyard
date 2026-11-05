@@ -306,12 +306,12 @@ impl Classifier for AffinityRouter {
         }
         Ok((
             Classification::Scores(match assigned {
-                Some((target, _category)) => vec![Score {
+                Some((target, category)) => vec![Score {
                     confidence: 1.0,
                     // Pinned by literal model id, not by category: the retained
                     // model may have been chosen by an algorithm (e.g. a random
                     // draw) whose pick is not itself expressible as a category.
-                    needs: Vec::new(),
+                    needs: category.clone().into_iter().collect(),
                     pin: Some(target.clone()),
                 }],
                 None => Vec::new(),

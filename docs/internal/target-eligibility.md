@@ -52,6 +52,12 @@ Fixed-role routers keep their configured roles. Stage requires its efficient and
 capable targets to qualify; a judge must qualify too. An unapproved required role
 stops the request. This configuration does not search for replacement targets.
 
+Capability Router filters its shared model pool in declared order. Its default
+and every capability required by its signals must still have providers after
+filtering, and configured judges must qualify. Its completion fallbacks use the
+same filtered pool. Review-only routes retain their fixed executor and advisor
+roles.
+
 ## Rust API
 
 The host attaches labels to the normalized request, then executes the route:
