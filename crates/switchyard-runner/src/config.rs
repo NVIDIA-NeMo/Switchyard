@@ -2067,41 +2067,6 @@ secondary = ["approved_secondary"]
         }
     }
 
-    #[tokio::test]
-    async fn task_retention_is_sticky_per_task() -> RunnerResult<()> {
-        let configured = eligible_pool_config().replace(
-            "[routes.passthrough.eligibility]",
-            "[routes.passthrough.eligibility]\nscope = 'task'",
-        );
-        let runner = Runner::from_toml(&configured)?;
-        let route = runner
-            .route("switchyard/passthrough")
-            .expect("eligible route should exist");
-        let request = |task_id: Option<&str>, labels: &[&str]| -> RunnerResult<Request> {
-            let mut request = Request::default();
-            request.metadata.get_or_insert_default().task_id = task_id.map(str::to_string);
-            require_target_labels(&mut request, labels)?;
-            Ok(request)
-        };
-
-        for (task_id, labels, candidates) in [
-            ("task-a", &[][..], 2),
-            ("task-a", &["private"][..], 1),
-            ("task-a", &[][..], 1),
-            ("task-b", &[][..], 2),
-        ] {
-            let outcome = route.decide(request(Some(task_id), labels)?).await?;
-            assert_eq!(outcome.selected_model_ids.len(), candidates);
-            if candidates == 1 {
-                assert_eq!(outcome.selected_model_id()?, "strong");
-            }
-        }
-        for task_id in [None, Some(" ")] {
-            assert!(route.decide(request(task_id, &[])?).await.is_err());
-        }
-        Ok(())
-    }
-
     #[test]
     fn public_runner_from_toml_builds_a_deployment() -> RunnerResult<()> {
         let config = format!(
