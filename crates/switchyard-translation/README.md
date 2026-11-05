@@ -122,6 +122,15 @@ let policy = TranslationPolicy {
 };
 ```
 
+## Read Responses conversation turns
+
+Use `switchyard_translation::conversation(&request)` to read grouped assistant
+turns for routing or another API. The view combines reasoning and parallel tool
+calls and returns inline instructions separately. It temporarily clones native
+Responses messages; requests without native item metadata use borrowed slices.
+Edit `LlmRequest.messages` directly when changing native history. Indexes in the
+grouped view do not refer to the original items.
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See the

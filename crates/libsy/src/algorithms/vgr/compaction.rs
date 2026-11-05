@@ -41,11 +41,11 @@ const EARLY_SECTION_BUDGET: usize = 2_500;
 const NARRATION_BUDGET: usize = 200;
 const RECENT_USER_TEXTS: usize = 2;
 
-/// Condenses everything after the task message and records how, so later
-/// requests of this user turn can be rewritten identically.
+/// This helper condenses conversation after the task message and retains inline instructions.
+/// Later requests of this user turn reuse the same recorded summary.
 ///
-/// Returns `false`, leaving the request untouched, when there is no task
-/// message followed by work from the efficient tier.
+/// This helper returns `false` and leaves the request unchanged when no task
+/// message is followed by work from the efficient tier.
 pub(super) fn compact(request: &mut Request, state: &mut State, note: &str) -> bool {
     let messages = &request.llm_request.messages;
     let start = turn_start(request);
@@ -54,7 +54,10 @@ pub(super) fn compact(request: &mut Request, state: &mut State, note: &str) -> b
     };
     let head = start + task + 1;
     let cut = messages.len();
-    if cut <= head {
+    if !messages[head..cut]
+        .iter()
+        .any(|message| !matches!(message.role, Role::System | Role::Developer))
+    {
         return false;
     }
     let mut summary = digest(&messages[head..cut]);
@@ -121,10 +124,14 @@ fn recorded(state: &State, request: &Request) -> Option<(usize, usize, String)> 
 
 fn rewrite(request: &mut Request, head: usize, cut: usize, summary: &str) {
     let messages = &mut request.llm_request.messages;
-    messages[head - 1].content.push(ContentBlock::Text {
-        text: summary.to_string(),
-    });
-    messages.drain(head..cut);
+    messages[head - 1].content.push(ContentBlock::text(summary));
+    // Inline instructions and their metadata must survive replacement of the surrounding history.
+    let instructions = messages[head..cut]
+        .iter()
+        .filter(|message| matches!(message.role, Role::System | Role::Developer))
+        .cloned()
+        .collect::<Vec<_>>();
+    messages.splice(head..cut, instructions);
     drop_exact_replay(request);
 }
 
@@ -156,7 +163,7 @@ fn result_text(result: &ToolResult) -> String {
         .content
         .iter()
         .map(|part| match part {
-            ContentBlock::Text { text } => text.as_str(),
+            ContentBlock::Text { text, .. } => text.as_str(),
             _ => "[non-text content]",
         })
         .collect::<Vec<_>>()
@@ -170,10 +177,10 @@ fn digest(messages: &[Message]) -> String {
     for message in messages {
         for block in &message.content {
             match block {
-                ContentBlock::Text { text } if message.role == Role::Assistant => {
+                ContentBlock::Text { text, .. } if message.role == Role::Assistant => {
                     narration.push(text.as_str());
                 }
-                ContentBlock::Text { text } if message.role == Role::User => {
+                ContentBlock::Text { text, .. } if message.role == Role::User => {
                     user_text.push(clip_mid(text, RECENT_RESULT_BUDGET, 0.5));
                 }
                 ContentBlock::ToolCall(call) => steps.push(Step {
@@ -274,6 +281,7 @@ mod tests {
 
     fn call(id: &str, command: &str) -> Message {
         Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![ContentBlock::ToolCall(ToolCall {
                 id: id.into(),
@@ -285,10 +293,11 @@ mod tests {
 
     fn result(id: &str, text: &str) -> Message {
         Message {
+            responses: None,
             role: Role::Tool,
             content: vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: id.into(),
-                content: vec![ContentBlock::Text { text: text.into() }],
+                content: vec![ContentBlock::text(text)],
                 is_error: None,
             })],
         }
@@ -441,6 +450,7 @@ mod tests {
     #[test]
     fn batched_results_are_paired_by_tool_call_id() {
         let calls = Message {
+            responses: None,
             role: Role::Assistant,
             content: ["a", "b"]
                 .into_iter()
@@ -455,6 +465,7 @@ mod tests {
         };
         for order in [["a", "b"], ["b", "a"]] {
             let results = Message {
+                responses: None,
                 role: Role::Tool,
                 content: order
                     .into_iter()
@@ -462,6 +473,7 @@ mod tests {
                         ContentBlock::ToolResult(ToolResult {
                             tool_call_id: id.into(),
                             content: vec![ContentBlock::Text {
+                                responses: None,
                                 text: format!("output_{id}"),
                             }],
                             is_error: Some(id == "b"),

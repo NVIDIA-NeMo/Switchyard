@@ -27,16 +27,11 @@ serde_json = "1"
 ## Simple request
 
 ```rust
-use switchyard_protocol::{ContentBlock, LlmRequest, Message, Role};
+use switchyard_protocol::{LlmRequest, Message, Role};
 
 let request = LlmRequest {
     model: Some("provider/model".into()),
-    messages: vec![Message {
-        role: Role::User,
-        content: vec![ContentBlock::Text {
-            text: "Explain tail latency".into(),
-        }],
-    }],
+    messages: vec![Message::text(Role::User, "Explain tail latency")],
     ..LlmRequest::default()
 };
 
@@ -61,9 +56,7 @@ let request = Request {
         model: Some("provider/model".into()),
         instructions: vec![InstructionBlock {
             role: Role::System,
-            content: vec![ContentBlock::Text {
-                text: "Answer with concise operational guidance.".into(),
-            }],
+            content: vec![ContentBlock::text("Answer with concise operational guidance.")],
         }],
         messages: vec![Message::text(Role::User, "Why is p99 latency rising?")],
         tools: vec![ToolDefinition {
@@ -98,6 +91,26 @@ let request = Request {
 
 assert_eq!(request.llm_request.tools[0].function().map(|tool| tool.name.as_str()), Some("lookup_metric"));
 ```
+
+## Responses request history
+
+Decoded Responses requests retain native input items as ordered messages,
+including inline system and developer messages. Top-level `instructions` remain
+separate. `Message.responses` retains item fields such as `id` and assistant
+`phase`, including whether `phase` was missing, null, or supplied with a value.
+The item `id` stays separate from the `call_id` that pairs a tool call with its
+output. Text blocks retain their own metadata, so moving or editing a block
+keeps that metadata with the block.
+This metadata survives serialization and reconstruction after saved request
+bodies are cleared. Reconstruction uses the current role and content for edited
+fields. Edited reasoning does not reuse the original encrypted content or item ID.
+
+The translation crate provides `conversation(&LlmRequest)` for routing and APIs
+that need grouped turns. The request owns the native history and its metadata.
+
+Use `Message::text` and `ContentBlock::text` to create plain text without native
+metadata. Rust struct literals for `Message` and `ContentBlock::Text` must now
+include `responses`; set it to `None` for content created without that metadata.
 
 ## Response forms
 

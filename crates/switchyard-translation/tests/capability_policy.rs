@@ -72,6 +72,7 @@ fn request_for(case: CapabilityCase) -> LlmRequest {
     };
     if let Some(content) = content {
         request.messages.push(Message {
+            responses: None,
             role: Role::User,
             content: vec![content],
         });

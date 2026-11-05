@@ -4,27 +4,29 @@
 use http::HeaderMap;
 use switchyard_protocol::{ContentBlock, LlmRequest, Message, Role};
 
-/// Normalizes current and historical compaction signals, preserving explicit IR annotations.
+/// This function detects current and historical compaction while preserving explicit annotations.
 pub fn normalize_compaction(request: &mut LlmRequest, headers: Option<&HeaderMap>) {
     let is_compaction = headers
         .and_then(|headers| headers.get("x-codex-turn-metadata"))
         .and_then(|value| serde_json::from_slice::<serde_json::Value>(value.as_bytes()).ok())
         .is_some_and(|metadata| metadata["request_kind"] == "compaction");
-    request.has_compaction |= request
+    // Both scans skip inline instructions so they cannot hide a trigger or count as a summary.
+    let messages = request
         .messages
         .iter()
+        .filter(|message| !matches!(message.role, Role::System | Role::Developer));
+    request.has_compaction |= messages
+        .clone()
         .flat_map(|message| &message.content)
         .any(|block| match block {
-            ContentBlock::Text { text } => {
+            ContentBlock::Text { text, .. } => {
                 let text = text.to_lowercase();
                 text.contains("session is being continued") || has_hermes_marker(&text)
             }
             _ => false,
         });
     request.is_compaction |= is_compaction
-        || request
-            .messages
-            .iter()
+        || messages
             .rev()
             .find(|message| !is_environment_update(message))
             .is_some_and(|message| message.role == Role::User && is_compaction_message(message));
@@ -34,7 +36,7 @@ fn is_environment_update(message: &Message) -> bool {
     message.role == Role::User
         && !message.content.is_empty()
         && message.content.iter().all(|block| {
-            matches!(block, ContentBlock::Text { text } if text.trim()
+            matches!(block, ContentBlock::Text { text, .. } if text.trim()
             .strip_prefix("<environment_context>")
             .and_then(|context| context.split_once("</environment_context>"))
             .is_some_and(|(_, rest)| rest.trim().is_empty()))
@@ -59,7 +61,7 @@ fn is_compaction_block(block: &ContentBlock) -> bool {
             raw.get("type").and_then(serde_json::Value::as_str),
             Some("compaction" | "context_compaction" | "compaction_trigger")
         ),
-        ContentBlock::Text { text } => {
+        ContentBlock::Text { text, .. } => {
             let text = text.trim().to_ascii_lowercase();
             text.starts_with("another language model started to solve this problem and produced a summary of its thinking process.")
                 || text.starts_with("this session is being continued from a previous conversation that ran out of context.")

@@ -101,6 +101,7 @@ let mut request = request;
 request.llm_request.messages.extend([
     Message {
         role: Role::Assistant,
+        responses: None,
         content: vec![ContentBlock::ToolCall(ToolCall {
             id: "c1".into(),
             name: "bash".into(),
@@ -109,13 +110,12 @@ request.llm_request.messages.extend([
     },
     Message {
         role: Role::User,
+        responses: None,
         content: vec![ContentBlock::ToolResult(ToolResult {
             // The result refers to the tool call above by its ID.
             tool_call_id: "c1".into(),
             is_error: Some(true),
-            content: vec![ContentBlock::Text {
-                text: "MemoryError: cannot allocate memory\nKilled".into(),
-            }],
+            content: vec![ContentBlock::text("MemoryError: cannot allocate memory\nKilled")],
         })],
     },
 ]);

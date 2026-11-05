@@ -106,6 +106,7 @@ fn tool_use_stop_turn() -> Response {
             outputs: vec![ResponseOutput {
                 role: Role::Assistant,
                 content: vec![ContentBlock::Text {
+                    responses: None,
                     text: "calling a tool".to_string(),
                 }],
                 url_citations: Vec::new(),
@@ -473,7 +474,7 @@ async fn over_cap_consult_flags_truncation_to_the_reviewer() {
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Text { text } => Some(text.as_str()),
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect();
@@ -916,6 +917,7 @@ async fn pattern_trigger_matches_on_tool_call_turns() {
                 role: Role::Assistant,
                 content: vec![
                     ContentBlock::Text {
+                        responses: None,
                         text: "task_complete: true".to_string(),
                     },
                     ContentBlock::ToolCall(ToolCall {
@@ -959,10 +961,12 @@ async fn min_tool_results_defers_gate() {
     let with_result = request(vec![
         Message::text(Role::User, "build X"),
         Message {
+            responses: None,
             role: Role::User,
             content: vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "t1".to_string(),
                 content: vec![ContentBlock::Text {
+                    responses: None,
                     text: "ok".to_string(),
                 }],
                 is_error: None,
@@ -987,6 +991,7 @@ async fn min_tool_results_counts_batched_result_blocks() {
         ContentBlock::ToolResult(ToolResult {
             tool_call_id: id.to_string(),
             content: vec![ContentBlock::Text {
+                responses: None,
                 text: "ok".to_string(),
             }],
             is_error: None,
@@ -995,6 +1000,7 @@ async fn min_tool_results_counts_batched_result_blocks() {
     let batched = request(vec![
         Message::text(Role::User, "build X"),
         Message {
+            responses: None,
             role: Role::User,
             content: vec![tool_result("t1"), tool_result("t2")],
         },
@@ -1271,6 +1277,7 @@ async fn consult_request_shape() {
     assert_eq!(
         consult.instructions[0].content,
         vec![ContentBlock::Text {
+            responses: None,
             text: REVIEWER_SYSTEM_PROMPT.to_string()
         }]
     );
@@ -1296,6 +1303,7 @@ async fn consult_transcript_includes_system_instructions() {
     gated.llm_request.instructions = vec![InstructionBlock {
         role: Role::System,
         content: vec![ContentBlock::Text {
+            responses: None,
             text: "the deliverable must be a CSV".to_string(),
         }],
     }];

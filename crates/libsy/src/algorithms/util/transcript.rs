@@ -105,7 +105,7 @@ pub(super) fn collect_text(
 ) {
     for block in content {
         match block {
-            ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
+            ContentBlock::Text { text, .. } | ContentBlock::Refusal { text } => {
                 parts.push(without_duplicated_terminus_commands(text, tool_commands));
             }
             ContentBlock::ToolCall(call) => {
@@ -126,9 +126,11 @@ mod tests {
     #[test]
     fn message_text_keeps_tool_calls_and_results() {
         let call = Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![
                 ContentBlock::Text {
+                    responses: None,
                     text: "running it".to_string(),
                 },
                 ContentBlock::ToolCall(ToolCall {
@@ -143,10 +145,12 @@ mod tests {
         assert!(text.contains(r#"tool_call bash({"cmd":"ls"})"#), "{text}");
 
         let result = Message {
+            responses: None,
             role: Role::Tool,
             content: vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "call-1".to_string(),
                 content: vec![ContentBlock::Text {
+                    responses: None,
                     text: "no such file".to_string(),
                 }],
                 is_error: Some(true),
@@ -161,9 +165,11 @@ mod tests {
         let first_command = "grep -n bug app.py\n";
         let second_command = "sed -n '1,80p' app.py\n";
         let message = Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![
                 ContentBlock::Text {
+                    responses: None,
                     text: format!(
                         "Before\n```json\n{}\n```\nAfter",
                         json!({
@@ -212,9 +218,11 @@ mod tests {
             .to_string()
         };
         let message = Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![
                 ContentBlock::Text {
+                    responses: None,
                     text: format!(
                         "First {} second {} repeated {}",
                         batch(first_command),
@@ -252,13 +260,21 @@ mod tests {
         })
         .to_string();
         let without_tool_call = Message {
+            responses: None,
             role: Role::Assistant,
-            content: vec![ContentBlock::Text { text: text.clone() }],
+            content: vec![ContentBlock::Text {
+                responses: None,
+                text: text.clone(),
+            }],
         };
         let mismatched_tool_call = Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![
-                ContentBlock::Text { text },
+                ContentBlock::Text {
+                    responses: None,
+                    text,
+                },
                 ContentBlock::ToolCall(ToolCall {
                     id: "call-1".to_string(),
                     name: "bash_command".to_string(),
@@ -287,9 +303,11 @@ mod tests {
         let first_command = "grep -n bug app.py\n";
         let second_command = "sed -n '1,80p' app.py\n";
         let message = Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![
                 ContentBlock::Text {
+                    responses: None,
                     text: json!({
                         "commands": [
                             {"keystrokes": first_command},
@@ -318,9 +336,11 @@ mod tests {
     fn message_text_keeps_duplicate_commands_without_one_tool_call_each() {
         let command = "grep -n bug app.py\n";
         let message = Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![
                 ContentBlock::Text {
+                    responses: None,
                     text: json!({
                         "commands": [
                             {"keystrokes": command},

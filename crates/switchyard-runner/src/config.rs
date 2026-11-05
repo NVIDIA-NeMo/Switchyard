@@ -15,7 +15,8 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    OpenAiDecisionClient, ResponsesReasoningPolicy, SystemOneClient, TranslatingLlmClient,
+    OpenAiDecisionClient, ResponsesCompatibility, ResponsesReasoningPolicy, SystemOneClient,
+    TranslatingLlmClient,
 };
 use switchyard_protocol::{
     LlmClientError, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat,
@@ -864,6 +865,13 @@ impl DeploymentConfig {
 
         for (name, client_config) in &self.llm_clients {
             validate_value("llm client name", name)?;
+            if client_config.responses_compatibility.is_some()
+                && !matches!(client_config.format, ClientFormat::OpenAiResponses)
+            {
+                return Err(RunnerError::configuration(format!(
+                    "llm client {name} responses_compatibility is only valid for openai_responses"
+                )));
+            }
             if client_config.responses_reasoning.is_some()
                 && !matches!(client_config.format, ClientFormat::OpenAiResponses)
             {
@@ -926,6 +934,9 @@ impl DeploymentConfig {
                     None,
                 )
                 .with_responses_reasoning(client_config.responses_reasoning.unwrap_or_default())
+                .with_responses_compatibility(
+                    client_config.responses_compatibility.unwrap_or_default(),
+                )
                 .with_provider_model(target.id.clone()),
             );
         }
@@ -1296,6 +1307,7 @@ struct LlmClientConfig {
     /// Deadline in milliseconds for all attempts and the complete response. Unset is unbounded.
     timeout_ms: Option<u64>,
     responses_reasoning: Option<ResponsesReasoningPolicy>,
+    responses_compatibility: Option<ResponsesCompatibility>,
 }
 
 #[derive(Debug, Deserialize)]

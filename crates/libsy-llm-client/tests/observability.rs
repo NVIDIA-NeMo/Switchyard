@@ -725,6 +725,7 @@ async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard
     let request = Request {
         llm_request: LlmRequest {
             messages: vec![Message {
+                responses: None,
                 role: Role::User,
                 content: vec![ContentBlock::Reasoning {
                     text: "provider reasoning".to_string(),
@@ -1278,6 +1279,7 @@ async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Res
             messages: vec![
                 Message::text(Role::User, "fix the build"),
                 Message {
+                    responses: None,
                     role: Role::Assistant,
                     content: vec![ContentBlock::ToolCall(ToolCall {
                         id: "call_1".to_string(),
@@ -1286,10 +1288,12 @@ async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Res
                     })],
                 },
                 Message {
+                    responses: None,
                     role: Role::Tool,
                     content: vec![ContentBlock::ToolResult(ToolResult {
                         tool_call_id: "call_1".to_string(),
                         content: vec![ContentBlock::Text {
+                            responses: None,
                             text: "fatal runtime error: out of memory".to_string(),
                         }],
                         is_error: Some(true),

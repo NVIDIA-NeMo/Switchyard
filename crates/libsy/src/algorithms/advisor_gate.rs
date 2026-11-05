@@ -381,15 +381,15 @@ impl AdvisorGate {
         review_tail: Option<&str>,
         trigger: &'static str,
     ) -> Result<ConsultOutcome> {
-        // The advisor reviews the FULL transcript: system/developer content is
-        // normalized out of `messages` into `instructions`, so prepend it back
-        // as leading messages (identical {role, content} shape) — the task
-        // constraints the verdict must check against usually live there.
+        // The advisor needs instructions as well as conversation content to check the task.
+        // Top-level instructions precede the messages in this transcript.
+        // Native Responses inline instructions retain their positions within the messages.
         let transcript_messages: Vec<Message> = base
             .llm_request
             .instructions
             .iter()
             .map(|block| Message {
+                responses: None,
                 role: block.role,
                 content: block.content.clone(),
             })
@@ -519,6 +519,7 @@ impl AdvisorGate {
                 instructions: vec![InstructionBlock {
                     role: Role::System,
                     content: vec![ContentBlock::Text {
+                        responses: None,
                         text: self.config.reviewer_system_prompt.clone(),
                     }],
                 }],

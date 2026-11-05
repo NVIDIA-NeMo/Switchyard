@@ -151,7 +151,11 @@ impl FormatCodec for AnthropicMessagesCodec {
                     &mut diagnostics,
                     policy,
                 )?;
-                request.messages.push(Message { role, content });
+                request.messages.push(Message {
+                    role,
+                    content,
+                    responses: None,
+                });
             }
         }
         request.tools = decode_anthropic_tools(body.get("tools"));
@@ -202,15 +206,18 @@ impl FormatCodec for AnthropicMessagesCodec {
         request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
+        let mut diagnostics = Vec::new();
+        crate::codecs::common::check_responses_metadata_loss(
+            request,
+            WireFormat::AnthropicMessages,
+            &mut diagnostics,
+            policy,
+        )?;
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::AnthropicMessages, policy)
         {
-            return Ok(EncodedRequest {
-                body,
-                diagnostics: Vec::new(),
-            });
+            return Ok(EncodedRequest { body, diagnostics });
         }
-        let mut diagnostics = Vec::new();
         validate_request_capabilities(request, &mut diagnostics, policy)?;
         let allowed = crate::codecs::common::allowed_function_tools(request)?;
         let (tools, tool_choice) = allowed.as_ref().map_or(
@@ -221,12 +228,15 @@ impl FormatCodec for AnthropicMessagesCodec {
         if let Some(model) = &request.model {
             body.insert("model".to_string(), Value::String(model.clone()));
         }
-        let system_text = request
+        let conversation = crate::conversation(request);
+        let system_text = conversation
             .instructions
             .iter()
             .flat_map(|instruction| instruction.content.iter())
             .filter_map(|block| match block {
-                ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } | ContentBlock::Refusal { text } => {
+                    Some(text.as_str())
+                }
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -238,7 +248,7 @@ impl FormatCodec for AnthropicMessagesCodec {
         body.insert(
             "messages".to_string(),
             Value::Array(encode_anthropic_messages(
-                &request.messages,
+                &conversation.messages,
                 &mut diagnostics,
                 policy,
             )?),
@@ -369,9 +379,7 @@ impl FormatCodec for AnthropicMessagesCodec {
             }
         }
         if content.is_empty() {
-            content.push(ContentBlock::Text {
-                text: String::new(),
-            });
+            content.push(ContentBlock::text(String::new()));
         }
         let response = AggLlmResponse {
             id: body
@@ -589,9 +597,7 @@ fn strip_anthropic_unsupported_constraints(value: &mut Value) -> bool {
 // Decodes Anthropic's `system` field into instruction blocks.
 fn decode_anthropic_system(value: &Value) -> Result<Option<Vec<ContentBlock>>> {
     match value {
-        Value::String(text) if !text.is_empty() => {
-            Ok(Some(vec![ContentBlock::Text { text: text.clone() }]))
-        }
+        Value::String(text) if !text.is_empty() => Ok(Some(vec![ContentBlock::text(text.clone())])),
         Value::String(_) | Value::Null => Ok(None),
         Value::Array(blocks) => {
             let mut content = Vec::new();
@@ -604,7 +610,7 @@ fn decode_anthropic_system(value: &Value) -> Result<Option<Vec<ContentBlock>>> {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    content.push(ContentBlock::Text { text });
+                    content.push(ContentBlock::text(text));
                 }
             }
             Ok((!content.is_empty()).then_some(content))
@@ -625,10 +631,8 @@ fn decode_anthropic_content(
     policy: &TranslationPolicy,
 ) -> Result<Vec<ContentBlock>> {
     match value {
-        Value::String(text) => Ok(vec![ContentBlock::Text { text: text.clone() }]),
-        Value::Null => Ok(vec![ContentBlock::Text {
-            text: String::new(),
-        }]),
+        Value::String(text) => Ok(vec![ContentBlock::text(text.clone())]),
+        Value::Null => Ok(vec![ContentBlock::text(String::new())]),
         Value::Array(blocks) => {
             let mut content = Vec::new();
             for (index, block) in blocks.iter().enumerate() {
@@ -649,15 +653,13 @@ fn decode_anthropic_content(
                 )?);
             }
             if content.is_empty() {
-                content.push(ContentBlock::Text {
-                    text: String::new(),
-                });
+                content.push(ContentBlock::text(String::new()));
             }
             Ok(content)
         }
-        other => Ok(vec![ContentBlock::Text {
-            text: string_value(other).unwrap_or_default(),
-        }]),
+        other => Ok(vec![ContentBlock::text(
+            string_value(other).unwrap_or_default(),
+        )]),
     }
 }
 
@@ -670,13 +672,13 @@ fn decode_anthropic_content_block(
     policy: &TranslationPolicy,
 ) -> Result<Vec<ContentBlock>> {
     Ok(match block.get("type").and_then(Value::as_str) {
-        Some("text") => vec![ContentBlock::Text {
-            text: block
+        Some("text") => vec![ContentBlock::text(
+            block
                 .get("text")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_string(),
-        }],
+        )],
         Some("thinking") => vec![ContentBlock::Reasoning {
             text: block
                 .get("thinking")
@@ -740,19 +742,19 @@ fn decode_anthropic_content_block(
 // Preserves supported Anthropic tool-result blocks in the neutral IR.
 fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
     match value {
-        Value::String(text) => vec![ContentBlock::Text { text: text.clone() }],
+        Value::String(text) => vec![ContentBlock::text(text.clone())],
         Value::Array(blocks) => {
             let mut content = Vec::new();
             for block in blocks {
                 if let Some(block) = block.as_object() {
                     match block.get("type").and_then(Value::as_str) {
-                        Some("text") => content.push(ContentBlock::Text {
-                            text: block
+                        Some("text") => content.push(ContentBlock::text(
+                            block
                                 .get("text")
                                 .and_then(Value::as_str)
                                 .unwrap_or_default()
                                 .to_string(),
-                        }),
+                        )),
                         Some("image") => content.push(ContentBlock::Image {
                             source: ImageSource::Raw(Value::Object(block.clone())),
                         }),
@@ -768,12 +770,8 @@ fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
             }
             content
         }
-        Value::Null => vec![ContentBlock::Text {
-            text: String::new(),
-        }],
-        other => vec![ContentBlock::Text {
-            text: json_string(other),
-        }],
+        Value::Null => vec![ContentBlock::text(String::new())],
+        other => vec![ContentBlock::text(json_string(other))],
     }
 }
 
@@ -1039,7 +1037,7 @@ fn encode_one_anthropic_response_block(block: &ContentBlock) -> Result<Vec<Value
 // Encodes a single normalized content block into Anthropic block JSON.
 fn encode_one_anthropic_block(block: &ContentBlock) -> Result<Vec<Value>> {
     Ok(match block {
-        ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
+        ContentBlock::Text { text, .. } | ContentBlock::Refusal { text } => {
             vec![json!({"type": "text", "text": text})]
         }
         ContentBlock::Reasoning {

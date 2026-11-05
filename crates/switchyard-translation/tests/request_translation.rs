@@ -86,9 +86,7 @@ fn anthropic_server_tools_survive_request_reconstruction() -> TestResult {
             function.description = Some("Updated edit description".into());
             request.instructions.push(InstructionBlock {
                 role: Role::System,
-                content: vec![ContentBlock::Text {
-                    text: "Plan first.".into(),
-                }],
+                content: vec![ContentBlock::text("Plan first.")],
             });
             request.preservation.requests.clear();
             let output = engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
@@ -166,9 +164,7 @@ fn openai_chat_rejects_mcp_history_before_text_only_returns() {
             messages: vec![Message {
                 role,
                 content: vec![
-                    ContentBlock::Text {
-                        text: "Keep this text".into(),
-                    },
+                    ContentBlock::text("Keep this text"),
                     ContentBlock::Mcp(McpContent::Listing {
                         server_name: "inventory".into(),
                         id: None,
@@ -176,6 +172,7 @@ fn openai_chat_rejects_mcp_history_before_text_only_returns() {
                         error: None,
                     }),
                 ],
+                responses: None,
             }],
             ..LlmRequest::default()
         };
@@ -1279,7 +1276,6 @@ fn anthropic_visible_text_survives_tool_history_to_responses() -> TestResult {
             {
                 "type": "function_call_output",
                 "call_id": "toolu_status",
-                "name": "lookup",
                 "output": "ready"
             }
         ])
@@ -2580,7 +2576,8 @@ fn responses_reasoning_item_merges_into_next_assistant_message_for_openai_chat()
             {
                 "role": "assistant",
                 "content": "Let me check.",
-                "reasoning": "Reading."
+                "reasoning": "Reading.",
+                "reasoning_details": [body["input"][1]]
             }
         ])
     );
@@ -2673,8 +2670,7 @@ fn openai_chat_encrypted_reasoning_details_retain_fallback() -> TestResult {
     Ok(())
 }
 
-// Verifies merged reasoning re-emerges as a Responses reasoning item ahead of
-// the turn's function call when encoding back to the Responses format.
+// Native reasoning and tool items retain their supplied fields during reconstruction.
 #[test]
 fn responses_reasoning_items_round_trip_through_decode_and_encode() -> TestResult {
     let engine = TranslationEngine::default();
@@ -2710,29 +2706,7 @@ fn responses_reasoning_items_round_trip_through_decode_and_encode() -> TestResul
         )?
         .body;
 
-    let input = output["input"].as_array().ok_or("input is not an array")?;
-    let item_types = input
-        .iter()
-        .map(|item| item["type"].as_str().unwrap_or_default())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        item_types,
-        vec![
-            "message",
-            "reasoning",
-            "function_call",
-            "function_call_output"
-        ]
-    );
-    assert_eq!(
-        input[1]["summary"],
-        json!([{"type": "summary_text", "text": "Simple ls."}])
-    );
-    assert!(input[1].get("content").is_none());
-    assert_eq!(input[2]["call_id"], "call-ls");
-    // Outputs carry the paired call's name for upstreams (Kimi K3) that
-    // resolve tool results by name rather than by call order.
-    assert_eq!(input[3]["name"], "shell");
+    assert_eq!(output["input"], body["input"]);
     Ok(())
 }
 
@@ -2792,10 +2766,9 @@ fn responses_encrypted_reasoning_replays_without_input_content() -> TestResult {
     Ok(())
 }
 
-// Verifies an empty non-encrypted reasoning item is omitted instead of being
-// replayed as an empty assistant message.
+// An empty reasoning item still belongs to the caller's native history.
 #[test]
-fn responses_empty_reasoning_without_encrypted_content_is_omitted() -> TestResult {
+fn responses_empty_reasoning_without_encrypted_content_is_preserved() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy {
         preservation: switchyard_translation::PreservationPolicy::Disabled,
@@ -2819,14 +2792,7 @@ fn responses_empty_reasoning_without_encrypted_content_is_omitted() -> TestResul
         )?
         .body;
 
-    let input = output["input"].as_array().ok_or("input is not an array")?;
-    let item_types = input
-        .iter()
-        .map(|item| item["type"].as_str().unwrap_or_default())
-        .collect::<Vec<_>>();
-    assert_eq!(item_types, vec!["message", "message"]);
-    assert_eq!(input[0]["role"], "user");
-    assert_eq!(input[1]["role"], "user");
+    assert_eq!(output["input"], body["input"]);
     Ok(())
 }
 
@@ -4147,10 +4113,9 @@ fn responses_file_without_source_is_rejected_by_anthropic() {
     }
 }
 
-// Verifies parallel tool calls serialize as adjacent call/output pairs so
-// upstreams that resolve tool outputs by adjacency match the right call.
+// Native Responses keeps parallel calls and outputs in the order supplied.
 #[test]
-fn responses_parallel_tool_calls_pair_with_their_outputs() -> TestResult {
+fn responses_parallel_tool_calls_keep_native_order() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy {
         preservation: switchyard_translation::PreservationPolicy::Disabled,
@@ -4185,8 +4150,8 @@ fn responses_parallel_tool_calls_pair_with_their_outputs() -> TestResult {
         pairs,
         vec![
             ("function_call", "call-a"),
-            ("function_call_output", "call-a"),
             ("function_call", "call-b"),
+            ("function_call_output", "call-a"),
             ("function_call_output", "call-b"),
         ]
     );
@@ -4341,12 +4306,15 @@ fn responses_lite_additional_tools_item_is_the_tool_list() -> TestResult {
         .collect::<Vec<_>>();
     assert_eq!(names, vec!["exec", "update_plan"]);
     assert!(
-        !decoded.request.messages.iter().any(|message| {
-            message
-                .content
-                .iter()
-                .any(|block| matches!(block, switchyard_protocol::ContentBlock::Unknown { .. }))
-        }),
+        !switchyard_translation::conversation(&decoded.request)
+            .messages
+            .iter()
+            .any(|message| {
+                message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, switchyard_protocol::ContentBlock::Unknown { .. }))
+            }),
         "the additional_tools item must not become a conversation message"
     );
 
@@ -4443,15 +4411,13 @@ fn responses_lite_additional_tools_survive_a_single_text_input() -> TestResult {
     assert_eq!(input[0]["tools"], tools);
     assert_eq!(input.len(), 2, "{same}");
     assert_eq!(input[1]["role"], "user");
-    assert_eq!(input[1]["content"], "List files");
+    assert_eq!(input[1]["content"], body["input"][1]["content"]);
     Ok(())
 }
 
-// Parallel freeform calls must pair with their `custom_tool_call_output` items the same way
-// function calls do (#664), so upstreams that resolve outputs by adjacency see call, output,
-// call, output.
+// Native Responses keeps parallel custom calls and outputs in the order supplied.
 #[test]
-fn responses_parallel_custom_tool_calls_pair_with_their_outputs() -> TestResult {
+fn responses_parallel_custom_tool_calls_keep_native_order() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy {
         preservation: switchyard_translation::PreservationPolicy::Disabled,
@@ -4487,8 +4453,8 @@ fn responses_parallel_custom_tool_calls_pair_with_their_outputs() -> TestResult 
         pairs,
         vec![
             ("custom_tool_call", "call-a"),
-            ("custom_tool_call_output", "call-a"),
             ("custom_tool_call", "call-b"),
+            ("custom_tool_call_output", "call-a"),
             ("custom_tool_call_output", "call-b"),
         ]
     );

@@ -66,10 +66,12 @@ mod tests {
                     Message::text(Role::User, "build X"),
                     Message::text(Role::Assistant, "working"),
                     Message {
+                        responses: None,
                         role: Role::User,
                         content: vec![ContentBlock::ToolResult(ToolResult {
                             tool_call_id: "t1".to_string(),
                             content: vec![ContentBlock::Text {
+                                responses: None,
                                 text: "ok".to_string(),
                             }],
                             is_error: None,
@@ -90,6 +92,7 @@ mod tests {
                 role: Role::Assistant,
                 content: vec![
                     ContentBlock::Text {
+                        responses: None,
                         text: "running a tool".to_string(),
                     },
                     ContentBlock::ToolCall(ToolCall {

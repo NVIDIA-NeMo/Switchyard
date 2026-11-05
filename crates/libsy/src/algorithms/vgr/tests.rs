@@ -20,6 +20,7 @@ pub(super) fn request(messages: Vec<Message>) -> Request {
 
 pub(super) fn call(id: &str) -> Message {
     Message {
+        responses: None,
         role: Role::Assistant,
         content: vec![ContentBlock::ToolCall(ToolCall {
             id: id.into(),
@@ -31,10 +32,14 @@ pub(super) fn call(id: &str) -> Message {
 
 pub(super) fn result(id: &str, text: &str) -> Message {
     Message {
+        responses: None,
         role: Role::Tool,
         content: vec![ContentBlock::ToolResult(ToolResult {
             tool_call_id: id.into(),
-            content: vec![ContentBlock::Text { text: text.into() }],
+            content: vec![ContentBlock::Text {
+                responses: None,
+                text: text.into(),
+            }],
             is_error: None,
         })],
     }
@@ -137,6 +142,7 @@ fn missing_or_unrepresentable_evidence_fails_closed() {
     assert_eq!(branch(&request(Vec::new()), "done", None), Branch::Unknown);
 
     let image = request(vec![Message {
+        responses: None,
         role: Role::User,
         content: vec![ContentBlock::Image {
             source: ImageSource::Url {
@@ -192,10 +198,12 @@ fn trajectory_labels_agree_with_tool_failure_counts() {
             Message::text(Role::User, "check the task"),
             call("c1"),
             Message {
+                responses: None,
                 role: Role::Tool,
                 content: vec![ContentBlock::ToolResult(ToolResult {
                     tool_call_id: "c1".into(),
                     content: vec![ContentBlock::Text {
+                        responses: None,
                         text: output.into(),
                     }],
                     is_error,

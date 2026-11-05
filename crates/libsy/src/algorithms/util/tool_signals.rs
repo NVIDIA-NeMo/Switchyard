@@ -1055,8 +1055,8 @@ fn extract_tool_signals_with_window_and_semantics(
     semantics: &ToolSemantics,
     current_user_turn: bool,
 ) -> ToolSignals {
-    // Read the decoded conversation, including preserved built-in tool outputs.
-    let messages = &request.llm_request.messages;
+    let conversation = switchyard_translation::conversation(&request.llm_request);
+    let messages = &conversation.messages;
     let boundary = if current_user_turn {
         messages.iter().rposition(is_user_turn)
     } else {
@@ -1297,7 +1297,7 @@ fn command_text(value: &Value) -> Option<String> {
 /// Text carried by a content block, ignoring the non-textual kinds.
 fn text_of(block: &ContentBlock) -> Option<&str> {
     match block {
-        ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text.as_str()),
+        ContentBlock::Text { text, .. } | ContentBlock::Refusal { text } => Some(text.as_str()),
         _ => None,
     }
 }
@@ -1767,6 +1767,7 @@ mod tests {
     // assistant message with a single named tool call
     fn tc(name: &str) -> Message {
         Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![ContentBlock::ToolCall(ToolCall {
                 id: String::new(),
@@ -1779,6 +1780,7 @@ mod tests {
     // assistant Bash message carrying `command`
     fn bash(command: &str) -> Message {
         Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![ContentBlock::ToolCall(ToolCall {
                 id: String::new(),
@@ -1791,10 +1793,12 @@ mod tests {
     // a tool result message (goes in a user-role message, as in Anthropic's normalised form)
     fn tr(text: &str) -> Message {
         Message {
+            responses: None,
             role: Role::User,
             content: vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: String::new(),
                 content: vec![ContentBlock::Text {
+                    responses: None,
                     text: text.to_string(),
                 }],
                 is_error: None,
@@ -2100,6 +2104,7 @@ mod tests {
     #[test]
     fn retrieved_file_contents_are_ignored() {
         let call = |id: &str, name: &str, arguments: Value| Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![ContentBlock::ToolCall(ToolCall {
                 id: id.to_string(),
@@ -2108,10 +2113,12 @@ mod tests {
             })],
         };
         let result = |id: &str, text: &str| Message {
+            responses: None,
             role: Role::User,
             content: vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: id.to_string(),
                 content: vec![ContentBlock::Text {
+                    responses: None,
                     text: text.to_string(),
                 }],
                 is_error: None,
@@ -2261,6 +2268,7 @@ mod tests {
                 "error": null,
             });
             let call = Message {
+                responses: None,
                 role: Role::Assistant,
                 content: vec![ContentBlock::ToolCall(ToolCall {
                     id: String::new(),
@@ -2415,6 +2423,7 @@ mod tests {
                         let mut raw = raw.clone();
                         raw["call_id"] = json!(call_id);
                         Message {
+                            responses: None,
                             role: Role::User,
                             content: vec![ContentBlock::Unknown {
                                 provider: WireFormat::OpenAiResponses.into(),
@@ -2453,6 +2462,7 @@ mod tests {
             for index in 0..3 {
                 success["call_id"] = json!(format!("success_{index}"));
                 request.llm_request.messages.push(Message {
+                    responses: None,
                     role: Role::User,
                     content: vec![ContentBlock::Unknown {
                         provider: WireFormat::OpenAiResponses.into(),
@@ -2484,9 +2494,11 @@ mod tests {
             Message::text(Role::User, "do something"),
             Message::text(Role::Assistant, "working"),
             Message {
+                responses: None,
                 role: Role::User,
                 content: vec![
                     result(vec![ContentBlock::Text {
+                        responses: None,
                         text: "ok".to_string(),
                     }]),
                     result(Vec::new()),
@@ -2535,6 +2547,7 @@ mod tests {
 
     fn exec_command(cmd: Value) -> Message {
         Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![ContentBlock::ToolCall(ToolCall {
                 id: String::new(),
@@ -2860,6 +2873,7 @@ mod tests {
         ];
         for arguments in arguments {
             let call = Message {
+                responses: None,
                 role: Role::Assistant,
                 content: vec![ContentBlock::ToolCall(ToolCall {
                     id: String::new(),
