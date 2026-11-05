@@ -264,9 +264,20 @@ impl FormatCodec for OpenAiResponsesCodec {
             );
         }
         // An Anthropic request's raw reasoning is its `thinking` object, which Responses
-        // does not accept; only the effort derived from it is kept.
+        // does not accept. Keep whether thinking is disabled and the effort derived from it.
         let mut reasoning = if is_anthropic_request(request) {
-            Map::new()
+            let mut reasoning = Map::new();
+            if request
+                .reasoning
+                .raw
+                .as_ref()
+                .and_then(|thinking| thinking.get("type"))
+                .and_then(Value::as_str)
+                == Some("disabled")
+            {
+                reasoning.insert("effort".to_string(), json!("none"));
+            }
+            reasoning
         } else {
             request
                 .reasoning

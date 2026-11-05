@@ -727,8 +727,8 @@ fn anthropic_thinking_budget_maps_to_openai_effort_bands() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = normalized_policy();
     for (budget, effort) in [
-        (9500, "xhigh"),
-        (9499, "high"),
+        (10000, "high"),
+        (9500, "high"),
         (8000, "high"),
         (7999, "medium"),
         (5000, "medium"),
@@ -778,7 +778,7 @@ fn anthropic_thinking_controls_to_chat_effort() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = normalized_policy();
     for (thinking, output_config, expected) in [
-        (json!({"type": "disabled"}), None, Some("none")),
+        (json!({"type": "disabled"}), None, None),
         (
             json!({"type": "adaptive"}),
             Some(json!({"effort": "low"})),

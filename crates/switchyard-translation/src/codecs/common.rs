@@ -19,14 +19,15 @@ pub(crate) fn is_anthropic_request(request: &LlmRequest) -> bool {
     request.extensions.fields.get(ANTHROPIC_REQUEST_KEY) == Some(&Value::Bool(true))
 }
 
-// Budget share of `max_tokens` at or above which each effort applies, in percent.
-const BUDGET_EFFORT_BANDS: [(u64, &str); 3] = [(95, "xhigh"), (80, "high"), (50, "medium")];
+// Budget share of `max_tokens` at or above which each effort applies, in percent. The bands stop
+// at `high` because every OpenAI reasoning model accepts low, medium and high.
+const BUDGET_EFFORT_BANDS: [(u64, &str); 2] = [(80, "high"), (50, "medium")];
 
 /// Returns the OpenAI reasoning effort for an Anthropic request.
 ///
-/// An explicit `output_config.effort` wins. Otherwise `thinking.type == "disabled"` maps to
-/// `none`, and a legacy `enabled` budget maps to an effort band by its share of `max_tokens`.
-/// The budget mapping is approximate, so it records a lossy-conversion diagnostic.
+/// An explicit `output_config.effort` wins. Otherwise a legacy `enabled` budget maps to an effort
+/// band by its share of `max_tokens`. The budget mapping is approximate, so it records a
+/// lossy-conversion diagnostic.
 pub(crate) fn openai_effort_for_request(
     request: &LlmRequest,
     diagnostics: &mut Vec<TranslationDiagnostic>,
@@ -39,7 +40,6 @@ pub(crate) fn openai_effort_for_request(
         return Ok(None);
     };
     match thinking.get("type").and_then(Value::as_str) {
-        Some("disabled") => Ok(Some("none".to_string())),
         Some("enabled") => {
             let budget = thinking.get("budget_tokens").and_then(Value::as_u64);
             let (Some(budget), Some(max_tokens)) = (budget, request.output.max_output_tokens)
