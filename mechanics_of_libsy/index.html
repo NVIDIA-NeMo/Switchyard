@@ -2777,7 +2777,7 @@ shared interface is
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/client/trait.RoutedDecisionClient.html"><code>RoutedDecisionClient</code></a>.
 The algorithm applies its routing policy to the answer. The decision response is
 distinct from the final conversational answer.</p>
-<p>A decision request contains shared <code>context</code> and named questions. Each
+<p>A decision request contains shared <code>input</code> and named questions. Each
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/decision/struct.DecisionQuestion.html"><code>question</code></a>
 declares its expected answer shape: Boolean, choice among options, or score on a
 rubric. The client's
@@ -2789,7 +2789,7 @@ uses the same question IDs.</p>
 request like this in <code>call.request</code>:</p>
 <div class="language-rust highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kd">let</span><span class="w"> </span><span class="n">request</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="n">DecisionRequest</span><span class="w"> </span><span class="p">{</span>
 </span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">    </span><span class="n">model</span><span class="p">:</span><span class="w"> </span><span class="nb">Some</span><span class="p">(</span><span class="s">&quot;Judge&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">()),</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="n">context</span><span class="p">:</span><span class="w"> </span><span class="nc">serde_json</span><span class="p">::</span><span class="n">json</span><span class="o">!</span><span class="p">({</span><span class="s">&quot;task&quot;</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Fix the failing tests.&quot;</span><span class="p">}),</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="n">input</span><span class="p">:</span><span class="w"> </span><span class="nc">serde_json</span><span class="p">::</span><span class="n">json</span><span class="o">!</span><span class="p">({</span><span class="s">&quot;task&quot;</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Fix the failing tests.&quot;</span><span class="p">}),</span>
 </span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">    </span><span class="n">questions</span><span class="p">:</span><span class="w"> </span><span class="nc">BTreeMap</span><span class="p">::</span><span class="n">from</span><span class="p">([(</span>
 </span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="w">        </span><span class="s">&quot;needs_capable&quot;</span><span class="p">.</span><span class="n">into</span><span class="p">(),</span>
 </span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">        </span><span class="n">DecisionQuestion</span><span class="w"> </span><span class="p">{</span>
@@ -2904,7 +2904,7 @@ Only calls requested concurrently by the algorithm can overlap. The returned
 <code>outcome</code> is handled as shown in <a href="#stepdone"><code>Step::Done</code></a>.</p>
 <p>For a ready-made version, see
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_libsy/fn.drive.html"><code>libsy::drive</code></a>
-and its <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ec15e52142e239dc1a4d78432678321b02a054f4/crates/libsy/src/core/algorithm.rs#L593">reference execution loop</a>.</p>
+and its <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/abd759dbe301718c34ce0821e027c4cbacc62fda/crates/libsy/src/core/algorithm.rs#L593">reference execution loop</a>.</p>
 <p>If the algorithm stops waiting, <code>respond</code> drops that call's work future. The
 explicit drops stop the remaining handlers and abort the algorithm task. Returning
 an error or cancelling the enclosing future also drops these local values. Your
