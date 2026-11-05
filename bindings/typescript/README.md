@@ -47,7 +47,6 @@ const router = CompositeRouter.create({
   classifier: {
     classify_trigger: "user_turn",
     fail_open: false,
-    decision: { cutoff: 0.6 },
   },
   stage: { efficient_first_threshold: 0.5, capable_first_threshold: 0.2 },
 });
@@ -66,8 +65,8 @@ requests. `route` takes `RoutingMessage` values with text, tool calls, and tool
 results. Pass the current branch's conversation on each call.
 
 `decide` receives protocol JSON with message-array `input` and named `questions`.
-Questions and answer values use `{ type, data }` tags. The router supplies packaged
-instructions unless `classifier.decision.instructions` is set. A response looks
+Questions and answer values use `{ type, data }` tags. The router uses the
+packaged instructions and the `capable` and `efficient` choices. A response looks
 like this:
 
 ```ts
@@ -81,9 +80,7 @@ const response: DecisionResponse = {
 };
 ```
 
-The judge selects capable when `probabilities.capable` is above `cutoff`
-(default `0.6`). `choices` and `apply_cutoff_to` replace the default choices
-and the choice the cutoff applies to.
+The judge selects capable when `probabilities.capable` is above `0.6`.
 Stage tool signals then select the final model. `user_turn` judges new user
 messages; `new_session` judges when carried state has no tier.
 

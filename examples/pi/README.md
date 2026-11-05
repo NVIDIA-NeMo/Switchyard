@@ -5,7 +5,7 @@ user turns. Switchyard's composite algorithm uses that answer and recent tool
 activity to select a completion model. Thinking stays `medium`.
 
 The fixed policy selects the capable tier when the classifier's `capable`
-probability exceeds 0.4. Exactly 0.4 selects efficient. Stage routing then picks
+probability exceeds 0.6. Exactly 0.6 selects efficient. Stage routing then picks
 the model on every request, using the classifier's tier as its fallback. Its
 efficient-first and capable-first thresholds are 0.5 and 0.2. A tool failure can
 escalate to the capable model, with a two-request hold during recovery.

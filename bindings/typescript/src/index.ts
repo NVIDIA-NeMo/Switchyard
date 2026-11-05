@@ -13,15 +13,6 @@ export interface CompositeOptions {
   classifier: {
     classify_trigger: "user_turn" | "new_session";
     fail_open: boolean;
-    decision: {
-      /** Defaults to 0.6. */
-      cutoff?: number;
-      instructions?: string;
-      /** Defaults to the `capable` and `efficient` choices. */
-      choices?: { id: string; description: string }[];
-      /** Defaults to `capable`. */
-      apply_cutoff_to?: string;
-    };
   };
   stage: {
     efficient_first_threshold: number;

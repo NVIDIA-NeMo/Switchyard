@@ -22,9 +22,10 @@ impl AlgorithmFactory {
     /// Parses deployment TOML without resolving credentials or constructing provider clients.
     /// Invalid TOML returns a configuration error; routing settings are checked by [`Self::build`].
     pub fn from_toml(source: &str) -> Result<Self, RunnerError> {
-        let config = toml::from_str(source).map_err(|error| {
+        let mut config: DeploymentConfig = toml::from_str(source).map_err(|error| {
             RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
         })?;
+        config.infer_decision_judges();
         Ok(Self { config })
     }
 

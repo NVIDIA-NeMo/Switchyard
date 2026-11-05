@@ -753,6 +753,15 @@ impl StageClassifierConfig {
         }
     }
 
+    fn infer_decision(
+        &mut self,
+        infer: &mut impl FnMut(&str, &mut Option<DecisionJudgeRouteConfig>),
+    ) {
+        if matches!(self.mode, None | Some(ClassifierMode::Capability)) {
+            infer(&self.target, &mut self.decision);
+        }
+    }
+
     fn stage_fallback(
         &self,
         route_name: &str,
@@ -912,6 +921,40 @@ impl AlgorithmSpec {
                 .filter_map(|profile| profile.classifier.as_ref())
                 .map(|c| (c.target.as_str(), c.decision.as_ref())),
         )
+    }
+
+    /// Gives capability judges default decision settings when their target is a decision target.
+    pub(crate) fn infer_decision_judges(&mut self, is_decision_target: impl Fn(&str) -> bool) {
+        let mut infer = |target: &str, decision: &mut Option<DecisionJudgeRouteConfig>| {
+            if is_decision_target(target) {
+                decision.get_or_insert_with(Default::default);
+            }
+        };
+        match self {
+            Self::LlmClassifier { config }
+                if matches!(config.classifier_mode(), ClassifierMode::Capability) =>
+            {
+                infer(&config.classifier_target, &mut config.decision);
+            }
+            Self::StageRouter {
+                classifier: Some(classifier),
+                ..
+            } => classifier.infer_decision(&mut infer),
+            Self::Composite {
+                classifier,
+                efficient,
+                capable,
+                ..
+            } => {
+                classifier.infer_decision(&mut infer);
+                for profile in [efficient, capable].into_iter().flatten() {
+                    if let Some(classifier) = &mut profile.classifier {
+                        classifier.infer_decision(&mut infer);
+                    }
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Judge targets that must be decision targets.

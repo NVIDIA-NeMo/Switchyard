@@ -146,12 +146,10 @@ decision_client = "decisions"
 [routes.switchyard.classifier]
 target = "judge"
 classify_trigger = "user_turn"
-
-[routes.switchyard.classifier.decision]
-cutoff = 0.6
 ```
 
-The judge must be a decision target.
+The judge must be a decision target. Switchyard then uses the default decision
+settings. Add a `[routes.switchyard.classifier.decision]` table to change them.
 See the [decision client reference](../reference/toml_schema.md#decision_clientsname)
 for OpenAI Decisions configuration.
 
