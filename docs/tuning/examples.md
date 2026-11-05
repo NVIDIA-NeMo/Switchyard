@@ -48,11 +48,12 @@ cost, retries, and task success together. See the
 [stage-router guide](../routing_algorithms/stage_router_routing.md#pickers) for
 profile and threshold details.
 
-**Handoff notes can break cache reuse across turns.** They are added only to the forwarded
-request, so later requests can omit the note and break reuse of the cached
-continuation. A fix is planned for a future release. Leave `handoff_notes`
-unconfigured for this cost comparison; see
-[handoff notes](../routing_algorithms/stage_router_routing.md#optional-handoff-notes).
+**Handoff notes are an optional tuning control.** Use failures on calibration
+tasks to choose the notes, then validate them on held-out tasks.
+Keep the notes fixed while comparing profiles, thresholds, or hold turns. Measure
+task success and total cost, including retries and cache charges. See
+[handoff notes](../routing_algorithms/stage_router_routing.md#optional-handoff-notes)
+for configuration and cache behavior.
 
 ### Split the benchmark and collect baselines
 

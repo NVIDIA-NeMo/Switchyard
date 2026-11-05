@@ -60,11 +60,19 @@ pub fn append_note(request: &mut LlmRequest, note: &str) {
 /// This function prepends a system prompt and updates supported preserved provider bodies.
 /// It removes bodies it cannot edit so encoding rebuilds them from the updated request.
 pub fn prepend_system_prompt(request: &mut LlmRequest, prompt: &str) {
+    // An empty instruction preserves an explicit empty field until a prompt replaces it.
+    // Removing it here prevents reconstruction from adding an extra separator after the prompt.
+    if matches!(request.instructions.as_slice(), [InstructionBlock { content, .. }]
+        if matches!(content.as_slice(), [ContentBlock::Text { text, .. }] if text.is_empty()))
+    {
+        request.instructions.clear();
+    }
     request.instructions.insert(
         0,
         InstructionBlock {
             role: Role::System,
             content: vec![ContentBlock::Text {
+                responses: None,
                 text: prompt.to_string(),
             }],
         },

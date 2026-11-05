@@ -95,6 +95,7 @@ pub(crate) fn turn_request(failed: bool) -> Request {
             messages: vec![
                 Message::text(Role::User, "fix the build"),
                 Message {
+                    responses: None,
                     role: Role::Assistant,
                     content: vec![ContentBlock::ToolCall(ToolCall {
                         id: "call_1".to_string(),
@@ -103,10 +104,12 @@ pub(crate) fn turn_request(failed: bool) -> Request {
                     })],
                 },
                 Message {
+                    responses: None,
                     role: Role::Tool,
                     content: vec![ContentBlock::ToolResult(ToolResult {
                         tool_call_id: "call_1".to_string(),
                         content: vec![ContentBlock::Text {
+                            responses: None,
                             text: content.to_string(),
                         }],
                         is_error: Some(failed),

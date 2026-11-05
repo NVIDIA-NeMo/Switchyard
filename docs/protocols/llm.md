@@ -31,7 +31,7 @@ let request = Request {
     llm_request: LlmRequest {
         instructions: vec![InstructionBlock {
             role: Role::System,
-            content: vec![ContentBlock::Text { text: "Answer briefly.".into() }],
+            content: vec![ContentBlock::text("Answer briefly.")],
         }],
         messages: vec![Message::text(Role::User, "Explain tail latency.")],
         ..LlmRequest::default()

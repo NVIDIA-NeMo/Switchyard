@@ -125,7 +125,7 @@ impl FormatCodec for OpenAiChatCodec {
                     let text = content
                         .iter()
                         .filter_map(|block| match block {
-                            ContentBlock::Text { text } => Some(text.as_str()),
+                            ContentBlock::Text { text, .. } => Some(text.as_str()),
                             _ => None,
                         })
                         .collect::<Vec<_>>()
@@ -139,9 +139,10 @@ impl FormatCodec for OpenAiChatCodec {
                         role: Role::User,
                         content: vec![ContentBlock::ToolResult(ToolResult {
                             tool_call_id,
-                            content: vec![ContentBlock::Text { text }],
+                            content: vec![ContentBlock::text(text)],
                             is_error: message.get("is_error").and_then(Value::as_bool),
                         })],
+                        responses: None,
                     });
                     continue;
                 }
@@ -152,7 +153,11 @@ impl FormatCodec for OpenAiChatCodec {
                             .push(InstructionBlock { role, content });
                     }
                     Role::User | Role::Assistant | Role::Tool => {
-                        request.messages.push(Message { role, content });
+                        request.messages.push(Message {
+                            role,
+                            content,
+                            responses: None,
+                        });
                     }
                 }
             }
@@ -191,15 +196,18 @@ impl FormatCodec for OpenAiChatCodec {
         request: &LlmRequest,
         policy: &TranslationPolicy,
     ) -> Result<EncodedRequest> {
+        let mut diagnostics = Vec::new();
+        crate::codecs::common::check_responses_metadata_loss(
+            request,
+            WireFormat::OpenAiChat,
+            &mut diagnostics,
+            policy,
+        )?;
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::OpenAiChat, policy)
         {
-            return Ok(EncodedRequest {
-                body,
-                diagnostics: Vec::new(),
-            });
+            return Ok(EncodedRequest { body, diagnostics });
         }
-        let mut diagnostics = Vec::new();
         validate_request_capabilities(request, &mut diagnostics, policy)?;
         let allowed = match &request.tool_choice {
             Some(ToolChoice::Raw(choice))
@@ -220,17 +228,22 @@ impl FormatCodec for OpenAiChatCodec {
         }
 
         let mut messages = Vec::new();
-        for instruction in &request.instructions {
+        let conversation = crate::conversation(request);
+        for instruction in conversation.instructions.iter() {
+            let content = text_from_blocks(&instruction.content, "\n\n");
+            if content.is_empty() {
+                continue;
+            }
             let role = match instruction.role {
                 Role::Developer => "developer",
                 _ => "system",
             };
             messages.push(json!({
                 "role": role,
-                "content": text_from_blocks(&instruction.content, "\n\n"),
+                "content": content,
             }));
         }
-        for message in &request.messages {
+        for message in conversation.messages.iter() {
             messages.extend(encode_message_to_openai(message, &mut diagnostics, policy)?);
         }
         body.insert("messages".to_string(), Value::Array(messages));
@@ -555,10 +568,8 @@ pub(crate) fn decode_openai_content(
 ) -> Result<Vec<ContentBlock>> {
     let path = path.into();
     match content {
-        Value::Null => Ok(vec![ContentBlock::Text {
-            text: String::new(),
-        }]),
-        Value::String(text) => Ok(vec![ContentBlock::Text { text: text.clone() }]),
+        Value::Null => Ok(vec![ContentBlock::text(String::new())]),
+        Value::String(text) => Ok(vec![ContentBlock::text(text.clone())]),
         Value::Array(blocks) => {
             let mut content = Vec::new();
             for (index, block) in blocks.iter().enumerate() {
@@ -572,13 +583,13 @@ pub(crate) fn decode_openai_content(
                 };
                 match block.get("type").and_then(Value::as_str) {
                     Some("text") | Some("input_text") | Some("output_text") => {
-                        content.push(ContentBlock::Text {
-                            text: block
+                        content.push(ContentBlock::text(
+                            block
                                 .get("text")
                                 .and_then(Value::as_str)
                                 .unwrap_or_default()
                                 .to_string(),
-                        });
+                        ));
                     }
                     Some("refusal") => {
                         content.push(ContentBlock::Refusal {
@@ -609,16 +620,14 @@ pub(crate) fn decode_openai_content(
                 }
             }
             if content.is_empty() {
-                Ok(vec![ContentBlock::Text {
-                    text: String::new(),
-                }])
+                Ok(vec![ContentBlock::text(String::new())])
             } else {
                 Ok(content)
             }
         }
-        other => Ok(vec![ContentBlock::Text {
-            text: string_value(other).unwrap_or_default(),
-        }]),
+        other => Ok(vec![ContentBlock::text(
+            string_value(other).unwrap_or_default(),
+        )]),
     }
 }
 
@@ -902,6 +911,7 @@ fn push_pending_openai_message(
     let message = Message {
         role,
         content: std::mem::take(pending_content),
+        responses: None,
     };
     out.push(encode_message_without_tool_results_to_openai(
         &message,
@@ -1058,7 +1068,7 @@ fn copy_openai_chat_request_extensions(
 
 // Detects placeholder empty text generated while decoding assistant tool calls.
 fn is_empty_text_only(content: &[ContentBlock]) -> bool {
-    matches!(content, [ContentBlock::Text { text }] if text.is_empty())
+    matches!(content, [ContentBlock::Text { text, .. }] if text.is_empty())
 }
 
 /// Encodes normalized content into OpenAI Chat content JSON.
@@ -1106,7 +1116,7 @@ pub(crate) fn encode_openai_content(
     for block in content {
         crate::codecs::openai_media::validate_media(block, WireFormat::OpenAiChat)?;
         match block {
-            ContentBlock::Text { text } => blocks.push(json!({"type": "text", "text": text})),
+            ContentBlock::Text { text, .. } => blocks.push(json!({"type": "text", "text": text})),
             ContentBlock::Refusal { text } => blocks.push(json!({"type": "text", "text": text})),
             ContentBlock::Image { source } => match openai_image_part(source) {
                 Some(part) => blocks.push(part),

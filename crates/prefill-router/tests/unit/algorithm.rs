@@ -183,10 +183,12 @@ async fn tool_result_after_the_person_is_walked_past_not_skipped() -> libsy::Res
             Message::text(Role::User, "follow-up task"),
             Message::text(Role::Assistant, "calling a tool"),
             Message {
+                responses: None,
                 role: Role::User,
                 content: vec![ContentBlock::ToolResult(ToolResult {
                     tool_call_id: "call-1".to_string(),
                     content: vec![ContentBlock::Text {
+                        responses: None,
                         text: "tool output".to_string(),
                     }],
                     is_error: None,
@@ -236,10 +238,12 @@ async fn routes_on_latest_user_text_and_reuses_decision_for_tool_steps() -> libs
             Message::text(Role::User, "follow-up task"),
             Message::text(Role::Assistant, "calling a tool"),
             Message {
+                responses: None,
                 role: Role::User,
                 content: vec![ContentBlock::ToolResult(ToolResult {
                     tool_call_id: "call-1".to_string(),
                     content: vec![ContentBlock::Text {
+                        responses: None,
                         text: "tool output".to_string(),
                     }],
                     is_error: None,

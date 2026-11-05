@@ -202,10 +202,11 @@ pub(crate) struct EscalationInput {
 
 impl ClassifierInput for EscalationInput {
     fn build_messages(&self, _state: &State, request: &Request) -> Vec<Message> {
+        let conversation = switchyard_translation::conversation(&request.llm_request);
         let summary = summarize_for_judge(
-            &request.llm_request.instructions,
-            &request.llm_request.messages,
-            conversation_turn(request),
+            &conversation.instructions,
+            &conversation.messages,
+            conversation_turn(&conversation.messages),
             self.phase,
             &self.config,
         );
@@ -323,12 +324,9 @@ fn build_contract(
 /// message is this turn — no `+ 1`. Counting the caller's request instead would report the
 /// turn after the one under judgement.
 ///
-/// Messages are already normalized by `switchyard-protocol`, so this needs no
-/// per-format branching.
-pub(crate) fn conversation_turn(request: &Request) -> usize {
-    request
-        .llm_request
-        .messages
+/// Callers pass the conversation view so native Responses items share assistant turns.
+pub(crate) fn conversation_turn(messages: &[Message]) -> usize {
+    messages
         .iter()
         .filter(|message| message.role == Role::Assistant)
         .count()
@@ -387,7 +385,7 @@ fn summarize_for_judge(
     }
 
     for message in messages {
-        let text = message_text(message);
+        let text = message_text(message.role, &message.content);
         match message.role {
             Role::System | Role::Developer => instruction_anchors.push(format!(
                 "[{}] {}",
@@ -550,6 +548,7 @@ mod tests {
         assert_eq!(
             built.llm_request.instructions[0].content.as_slice(),
             &[ContentBlock::Text {
+                responses: None,
                 text: PROMPT_TEMPLATE.to_string()
             }]
         );
@@ -611,7 +610,12 @@ mod tests {
                 .llm_request
                 .messages
                 .push(Message::text(Role::Assistant, "this turn's reply"));
-            assert_eq!(conversation_turn(&judged), turn);
+            assert_eq!(
+                conversation_turn(
+                    &switchyard_translation::conversation(&judged.llm_request).messages
+                ),
+                turn
+            );
         }
     }
 
@@ -671,7 +675,7 @@ mod tests {
             let built = judge.build_request(&State::default(), &request_at_turn(None, 1));
             let system_prompt = built.llm_request.instructions[0].content.iter().find_map(
                 |content| match content {
-                    ContentBlock::Text { text } => Some(text.as_str()),
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
                     _ => None,
                 },
             );

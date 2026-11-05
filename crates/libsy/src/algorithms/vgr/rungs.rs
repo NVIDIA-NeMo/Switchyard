@@ -90,9 +90,7 @@ pub(super) fn build_request(
         llm_request: LlmRequest {
             instructions: vec![InstructionBlock {
                 role: Role::System,
-                content: vec![ContentBlock::Text {
-                    text: question.system_prompt(),
-                }],
+                content: vec![ContentBlock::text(question.system_prompt())],
             }],
             messages: vec![Message::text(Role::User, judged_text)],
             output: OutputParams {
@@ -145,7 +143,9 @@ pub(super) fn build_verdict_request(
         .into_iter()
         .flat_map(|output| &output.content)
         .filter_map(|block| match block {
-            ContentBlock::Reasoning { text, .. } | ContentBlock::Text { text } => Some(text.trim()),
+            ContentBlock::Reasoning { text, .. } | ContentBlock::Text { text, .. } => {
+                Some(text.trim())
+            }
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -171,19 +171,39 @@ pub(super) fn build_verdict_request(
 
 /// Stable history messages let llama.cpp reuse its cache before the proposed turn.
 pub(super) fn turn_view(request: &Request, proposed: &AggLlmResponse) -> Vec<Message> {
-    let turns: Vec<Turn> = request
-        .llm_request
+    let conversation = switchyard_translation::conversation(&request.llm_request);
+    let mut turns: Vec<Turn> = conversation
         .instructions
         .iter()
         .map(|instruction| Turn {
             role: instruction.role,
             text: content_text(&instruction.content).0,
         })
-        .chain(request.llm_request.messages.iter().map(|message| Turn {
-            role: message.role,
-            text: message_text(message),
-        }))
         .collect();
+    for message in conversation.messages.iter() {
+        if message.content.is_empty() {
+            turns.push(Turn {
+                role: message.role,
+                text: String::new(),
+            });
+        }
+        // Contiguous assistant blocks stay together so message_text can remove
+        // command batches duplicated by structured tool calls.
+        for content in message.content.chunk_by(|left, right| {
+            matches!(left, ContentBlock::ToolResult(_))
+                == matches!(right, ContentBlock::ToolResult(_))
+        }) {
+            let role = if matches!(content[0], ContentBlock::ToolResult(_)) {
+                Role::Tool
+            } else {
+                message.role
+            };
+            turns.push(Turn {
+                role,
+                text: message_text(role, content),
+            });
+        }
+    }
     let system_index = turns.iter().position(|turn| turn.role == Role::System);
     let first_user_index = turns.iter().position(|turn| turn.role == Role::User);
 
@@ -249,7 +269,7 @@ fn proposed_line(proposed: &AggLlmResponse) -> String {
     {
         for block in &output.content {
             match block {
-                ContentBlock::Text { text } if !text.trim().is_empty() => {
+                ContentBlock::Text { text, .. } if !text.trim().is_empty() => {
                     fragments.push(redact(text));
                 }
                 ContentBlock::ToolCall(call) => fragments.push(format!(
@@ -350,7 +370,7 @@ fn assistant_text(output: &ResponseOutput) -> Option<String> {
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Text { text } => Some(text.as_str()),
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -366,7 +386,7 @@ mod tests {
         AggLlmResponse {
             outputs: vec![ResponseOutput {
                 role: Role::Assistant,
-                content: vec![ContentBlock::Text { text: text.into() }],
+                content: vec![ContentBlock::text(text)],
                 url_citations: Vec::new(),
                 stop_reason,
             }],

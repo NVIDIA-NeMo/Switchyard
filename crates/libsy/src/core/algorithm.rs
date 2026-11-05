@@ -394,7 +394,7 @@ impl AnswerSummary {
         }) && response.outputs.iter().any(|output| {
             output.role == switchyard_protocol::Role::Assistant
                 && output.content.iter().any(
-                    |block| matches!(block, ContentBlock::Text { text } if !text.trim().is_empty()),
+                    |block| matches!(block, ContentBlock::Text { text, .. } if !text.trim().is_empty()),
                 )
         });
         Self { final_reply }
@@ -976,7 +976,10 @@ mod tests {
         answer.outputs.push(tool);
         assert!(!AnswerSummary::of(&answer).final_reply);
         answer.outputs.pop();
-        answer.outputs[0].content = vec![ContentBlock::Text { text: "  ".into() }];
+        answer.outputs[0].content = vec![ContentBlock::Text {
+            responses: None,
+            text: "  ".into(),
+        }];
         assert!(!AnswerSummary::of(&answer).final_reply);
         assert!(!AnswerSummary::of(&AggLlmResponse::default()).final_reply);
     }

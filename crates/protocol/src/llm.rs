@@ -48,6 +48,61 @@ pub struct Message {
     pub role: Role,
     /// Ordered message content.
     pub content: Vec<ContentBlock>,
+    /// This metadata retains native Responses fields outside `role` and `content`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub responses: Option<ResponsesItemMetadata>,
+}
+
+/// This enum records how a Responses item represented its content or tool output.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponsesContentKind {
+    /// The item omitted its `content` or `output` field.
+    #[default]
+    Missing,
+    /// The item supplied an explicit null.
+    Null,
+    /// The item supplied one string.
+    String,
+    /// The item supplied an ordered array of content blocks.
+    Array,
+    /// The request supplied its entire `input` as one string.
+    InputString,
+}
+
+/// Native item fields stay with their message when the conversation is edited.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ResponsesItemMetadata {
+    /// These fields retain item data outside the decoded role, content, and tool call.
+    pub fields: Map<String, Value>,
+    /// This value records the original content or tool output representation.
+    pub content_kind: ResponsesContentKind,
+}
+
+impl fmt::Debug for ResponsesItemMetadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResponsesItemMetadata")
+            .field("fields", &self.fields.keys())
+            .field("content_kind", &self.content_kind)
+            .finish()
+    }
+}
+
+/// Native text-block fields stay attached when blocks are edited or reordered.
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ResponsesTextMetadata {
+    /// These fields retain block data outside the decoded text value.
+    pub fields: Map<String, Value>,
+}
+
+impl fmt::Debug for ResponsesTextMetadata {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ResponsesTextMetadata")
+            .field("fields", &self.fields.keys())
+            .finish()
+    }
 }
 
 impl Message {
@@ -55,7 +110,8 @@ impl Message {
     pub fn text(role: Role, text: impl Into<String>) -> Self {
         Self {
             role,
-            content: vec![ContentBlock::Text { text: text.into() }],
+            content: vec![ContentBlock::text(text)],
+            responses: None,
         }
     }
 
@@ -65,7 +121,7 @@ impl Message {
             .content
             .iter()
             .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
                 ContentBlock::Refusal { text } => Some(text.as_str()),
                 _ => None,
             })
@@ -86,6 +142,9 @@ pub enum ContentBlock {
     Text {
         /// Text value.
         text: String,
+        /// This metadata retains native Responses fields, including the block type.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        responses: Option<ResponsesTextMetadata>,
     },
     /// Model reasoning or thinking content.
     Reasoning {
@@ -136,6 +195,16 @@ pub enum ContentBlock {
         /// Exact provider block.
         raw: Value,
     },
+}
+
+impl ContentBlock {
+    /// This constructor creates plain text without provider metadata.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text {
+            text: text.into(),
+            responses: None,
+        }
+    }
 }
 
 /// Image payload forms supported by the conversation model.

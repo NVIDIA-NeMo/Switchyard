@@ -60,6 +60,7 @@ fn clear_streak(state: &mut State) {
 
 fn assistant_message(response: &AggLlmResponse) -> Message {
     Message {
+        responses: None,
         role: Role::Assistant,
         content: response
             .first_output()
@@ -674,7 +675,7 @@ mod tests {
                     .first()
                     .and_then(|instruction| {
                         instruction.content.iter().find_map(|block| match block {
-                            ContentBlock::Text { text } => Some(text.clone()),
+                            ContentBlock::Text { text, .. } => Some(text.clone()),
                             _ => None,
                         })
                     });

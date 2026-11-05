@@ -3,18 +3,17 @@
 
 //! Plain-text message rendering shared by routing judges.
 
-use switchyard_protocol::{ContentBlock, Message, Role};
+use switchyard_protocol::{ContentBlock, Role};
 
-/// Flattens a message to plain text, tool calls and tool results included.
+/// This helper renders content as plain text, including tool calls and results.
 ///
-/// [`Message::text_content`] is deliberately not used here: it keeps only text and refusal
-/// blocks, which would erase exactly the repeated-command signal the judge's loop detection
-/// relies on.
-pub(crate) fn message_text(message: &Message) -> String {
+/// [`switchyard_protocol::Message::text_content`] omits the tool calls and results
+/// that judges need for loop detection. For assistant content, this helper removes
+/// Terminus command batches duplicated by structured tool calls.
+pub(crate) fn message_text(role: Role, content: &[ContentBlock]) -> String {
     let mut parts = Vec::new();
-    let terminus_commands = if message.role == Role::Assistant {
-        message
-            .content
+    let terminus_commands = if role == Role::Assistant {
+        content
             .iter()
             .filter_map(|block| match block {
                 ContentBlock::ToolCall(call) if call.name == "bash_command" => call
@@ -27,7 +26,7 @@ pub(crate) fn message_text(message: &Message) -> String {
     } else {
         Vec::new()
     };
-    collect_text(&message.content, &mut parts, &terminus_commands);
+    collect_text(content, &mut parts, &terminus_commands);
     parts.join(" ")
 }
 
@@ -105,7 +104,7 @@ pub(super) fn collect_text(
 ) {
     for block in content {
         match block {
-            ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
+            ContentBlock::Text { text, .. } | ContentBlock::Refusal { text } => {
                 parts.push(without_duplicated_terminus_commands(text, tool_commands));
             }
             ContentBlock::ToolCall(call) => {
@@ -126,9 +125,11 @@ mod tests {
     #[test]
     fn message_text_keeps_tool_calls_and_results() {
         let call = Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![
                 ContentBlock::Text {
+                    responses: None,
                     text: "running it".to_string(),
                 },
                 ContentBlock::ToolCall(ToolCall {
@@ -138,21 +139,23 @@ mod tests {
                 }),
             ],
         };
-        let text = message_text(&call);
+        let text = message_text(call.role, &call.content);
         assert!(text.contains("running it"), "{text}");
         assert!(text.contains(r#"tool_call bash({"cmd":"ls"})"#), "{text}");
 
         let result = Message {
+            responses: None,
             role: Role::Tool,
             content: vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "call-1".to_string(),
                 content: vec![ContentBlock::Text {
+                    responses: None,
                     text: "no such file".to_string(),
                 }],
                 is_error: Some(true),
             })],
         };
-        assert_eq!(message_text(&result), "no such file");
+        assert_eq!(message_text(result.role, &result.content), "no such file");
     }
 
     /// A raw command batch fully mirrored by structured tool calls is emptied in the judge view.
@@ -161,9 +164,11 @@ mod tests {
         let first_command = "grep -n bug app.py\n";
         let second_command = "sed -n '1,80p' app.py\n";
         let message = Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![
                 ContentBlock::Text {
+                    responses: None,
                     text: format!(
                         "Before\n```json\n{}\n```\nAfter",
                         json!({
@@ -188,7 +193,7 @@ mod tests {
             ],
         };
 
-        let text = message_text(&message);
+        let text = message_text(message.role, &message.content);
 
         assert!(text.contains("inspect the reported file"), "{text}");
         assert!(text.contains("Before"), "{text}");
@@ -212,9 +217,11 @@ mod tests {
             .to_string()
         };
         let message = Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![
                 ContentBlock::Text {
+                    responses: None,
                     text: format!(
                         "First {} second {} repeated {}",
                         batch(first_command),
@@ -235,7 +242,7 @@ mod tests {
             ],
         };
 
-        let text = message_text(&message);
+        let text = message_text(message.role, &message.content);
 
         assert_eq!(text.matches(r#""commands":[]"#).count(), 2, "{text}");
         assert_eq!(text.matches("grep -n bug app.py").count(), 2, "{text}");
@@ -252,13 +259,21 @@ mod tests {
         })
         .to_string();
         let without_tool_call = Message {
+            responses: None,
             role: Role::Assistant,
-            content: vec![ContentBlock::Text { text: text.clone() }],
+            content: vec![ContentBlock::Text {
+                responses: None,
+                text: text.clone(),
+            }],
         };
         let mismatched_tool_call = Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![
-                ContentBlock::Text { text },
+                ContentBlock::Text {
+                    responses: None,
+                    text,
+                },
                 ContentBlock::ToolCall(ToolCall {
                     id: "call-1".to_string(),
                     name: "bash_command".to_string(),
@@ -268,13 +283,13 @@ mod tests {
         };
 
         assert_eq!(
-            message_text(&without_tool_call)
+            message_text(without_tool_call.role, &without_tool_call.content)
                 .matches("grep -n bug app.py")
                 .count(),
             1
         );
         assert_eq!(
-            message_text(&mismatched_tool_call)
+            message_text(mismatched_tool_call.role, &mismatched_tool_call.content)
                 .matches("grep -n bug app.py")
                 .count(),
             1
@@ -287,9 +302,11 @@ mod tests {
         let first_command = "grep -n bug app.py\n";
         let second_command = "sed -n '1,80p' app.py\n";
         let message = Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![
                 ContentBlock::Text {
+                    responses: None,
                     text: json!({
                         "commands": [
                             {"keystrokes": first_command},
@@ -306,7 +323,7 @@ mod tests {
             ],
         };
 
-        let text = message_text(&message);
+        let text = message_text(message.role, &message.content);
 
         assert_eq!(text.matches("grep -n bug app.py").count(), 2, "{text}");
         assert_eq!(text.matches("sed -n '1,80p' app.py").count(), 1, "{text}");
@@ -318,9 +335,11 @@ mod tests {
     fn message_text_keeps_duplicate_commands_without_one_tool_call_each() {
         let command = "grep -n bug app.py\n";
         let message = Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![
                 ContentBlock::Text {
+                    responses: None,
                     text: json!({
                         "commands": [
                             {"keystrokes": command},
@@ -337,7 +356,7 @@ mod tests {
             ],
         };
 
-        let text = message_text(&message);
+        let text = message_text(message.role, &message.content);
 
         assert_eq!(text.matches("grep -n bug app.py").count(), 3, "{text}");
         assert!(!text.contains(r#""commands":[]"#), "{text}");

@@ -57,7 +57,7 @@ pub(crate) fn is_user_turn(message: &Message) -> bool {
 }
 
 fn is_environment_context(block: &ContentBlock) -> bool {
-    matches!(block, ContentBlock::Text { text } if text.trim()
+    matches!(block, ContentBlock::Text { text, .. } if text.trim()
         .strip_prefix("<environment_context>")
         .and_then(|context| context.split_once("</environment_context>"))
         .is_some_and(|(_, rest)| rest.trim().is_empty()))
@@ -73,7 +73,10 @@ pub(crate) fn has_new_user_turn(messages: &[Message]) -> bool {
     messages
         .iter()
         .rev()
-        .find(|message| !is_environment_update(message))
+        .find(|message| {
+            !matches!(message.role, Role::System | Role::Developer)
+                && !is_environment_update(message)
+        })
         .is_some_and(is_user_turn)
 }
 
@@ -358,6 +361,7 @@ mod tests {
         )));
         let mut mixed = Message::text(Role::User, context);
         mixed.content.push(ContentBlock::Text {
+            responses: None,
             text: "fix the parser".into(),
         });
         assert!(is_user_turn(&mixed));
@@ -370,6 +374,8 @@ mod tests {
                 has_new_user_turn(&[
                     Message::text(role, "follow-up"),
                     Message::text(Role::User, context),
+                    Message::text(Role::System, "Keep the task focused."),
+                    Message::text(Role::Developer, "Verify the result."),
                 ]),
                 expected
             );
@@ -670,9 +676,11 @@ mod tests {
         };
         let text_only = request(Message::text(Role::User, "Implement the parser."));
         let text_with_reasoning = request(Message {
+            responses: None,
             role: Role::User,
             content: vec![
                 ContentBlock::Text {
+                    responses: None,
                     text: "Implement the parser.".to_string(),
                 },
                 ContentBlock::Reasoning {
@@ -937,6 +945,7 @@ mod tests {
         // A tool continuation holds the assignment, so no judge call.
         let mut continued = opening.clone();
         continued.llm_request.messages.push(Message {
+            responses: None,
             role: Role::User,
             content: vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "call-1".to_string(),
@@ -983,6 +992,7 @@ mod tests {
         // The new turn's tool continuation is not held on the earlier turn's model.
         let mut continued = spoke.clone();
         continued.llm_request.messages.push(Message {
+            responses: None,
             role: Role::User,
             content: vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "call-1".to_string(),

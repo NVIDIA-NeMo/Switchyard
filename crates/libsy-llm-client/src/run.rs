@@ -932,6 +932,11 @@ impl ClientRouter {
             .preservation
             .requests
             .contains_key(&responses_format)
+            || request
+                .llm_request
+                .messages
+                .iter()
+                .any(|message| message.responses.is_some())
             || fields.contains_key("previous_response_id")
             || fields.contains_key("conversation");
         if !responses_request && !self.inner.track_provider_state {
@@ -1076,6 +1081,7 @@ impl ClientRouter {
         }
         let mut segment = input.messages.to_vec();
         segment.extend(response.outputs.iter().map(|output| Message {
+            responses: None,
             role: output.role,
             content: output.content.clone(),
         }));
@@ -1543,7 +1549,7 @@ mod tests {
             .iter()
             .flat_map(|instruction| &instruction.content)
             .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect()
@@ -1966,7 +1972,7 @@ mod tests {
         let clients = ClientRouter::new(HashMap::from([(ModelId::from("weak"), client)]));
         let models = to_category_map(&["weak"]);
 
-        let seed = Request {
+        let mut seed = Request {
             llm_request: switchyard_translation::decode_request(
                 WireFormat::OpenAiResponses,
                 &json!({
@@ -1983,6 +1989,8 @@ mod tests {
             raw_request: None,
             metadata: None,
         };
+        // Native item metadata must identify the Responses source after saved bodies are cleared.
+        seed.llm_request.preservation.requests.clear();
         let (_, response) = run(
             Arc::new(switchyard_libsy::Passthrough),
             clients.clone(),
@@ -2135,10 +2143,12 @@ mod tests {
             .fields
             .insert("previous_response_id".to_string(), json!("msg_stream"));
         follow.llm_request.messages = vec![Message {
+            responses: None,
             role: Role::Tool,
             content: vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "toolu_stream".to_string(),
                 content: vec![ContentBlock::Text {
+                    responses: None,
                     text: "ready".to_string(),
                 }],
                 is_error: None,

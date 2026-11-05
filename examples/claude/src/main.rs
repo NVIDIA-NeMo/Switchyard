@@ -251,7 +251,7 @@ impl RoutedLlmClient for NativeClassifier {
             .iter()
             .flat_map(|b| &b.content)
             .filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>()

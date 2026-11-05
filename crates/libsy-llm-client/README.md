@@ -286,6 +286,14 @@ fn build_multi_format_client(
   are retained and opaque `encrypted_content` is removed. Switchyard's translated
   Anthropic reasoning payload is always removed. Set `Drop` for a backend that
   cannot consume provider reasoning. Messages and tool history are retained.
+- `ModelConfig::with_responses_compatibility` selects Responses tool adaptations.
+  The default `Native` leaves namespaces, item order, and output fields unchanged.
+  `FlatTools` joins function namespaces and names with `__` in history, tool
+  definitions, and tool choice. `Kimi` also pairs outputs with matching calls
+  and adds the call name when the output has no name. Pairing stops at an
+  intervening message; outputs without a local call remain in place. These
+  adaptations run after translation and body overrides. The backend's required
+  mode requires an explicit setting; Switchyard does not infer it from model names.
 - `HttpBackendConfig::failure_cooldown` skips completion calls to a backend briefly
   after an exhausted transient failure. Zero disables it. State is shared per model
   within the client. Calls resume when the cooldown expires. Deployment TOML defaults

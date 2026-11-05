@@ -92,15 +92,15 @@ impl TaskClassifierVerdict {
     }
 }
 
-/// Keeps the opening task and the last `recent_turn_window` turns after it. A
-/// window of `0` keeps the task alone.
+/// This helper keeps the opening task and the last `recent_turn_window` turns after it.
+/// A window of `0` keeps no turns after the task.
 ///
-/// Inbound decoders normalize client system and developer content into
-/// `LlmRequest::instructions`, so it never reaches this list.
+/// The classifier passes the grouped conversation view, which separates native
+/// inline instructions from messages. Direct callers can still supply system
+/// and developer messages; this helper retains them before the task.
 ///
-/// Selects by reference and clones only what survives — a coding-agent
-/// conversation carries every tool result, so cloning it whole to keep a window
-/// would copy the transcript on each judged turn.
+/// This helper selects by reference and clones only retained messages. The
+/// conversation view may already have cloned native Responses messages to group them.
 fn trim_messages(messages: &[Message], recent_turn_window: usize) -> Vec<Message> {
     let is_instruction = |message: &Message| matches!(message.role, Role::System | Role::Developer);
     let mut kept: Vec<&Message> = messages.iter().filter(|m| is_instruction(m)).collect();
@@ -179,6 +179,7 @@ fn task_messages(messages: &[Message]) -> Vec<Message> {
         .into_iter()
         .flatten()
         .map(|message| Message {
+            responses: None,
             role: Role::User,
             content: message
                 .content
@@ -198,11 +199,12 @@ struct TaskInput {
 impl TaskInput {
     /// Selects conversation content without adding judge instructions.
     fn messages(&self, request: &Request) -> Vec<Message> {
+        let conversation = switchyard_translation::conversation(&request.llm_request);
         // The default preserves the whole-task anchor and latest user update. A
         // configured window widens that to the surrounding conversation.
         let mut messages = match self.recent_turn_window {
-            Some(window) => trim_messages(&request.llm_request.messages, window),
-            None => task_messages(&request.llm_request.messages),
+            Some(window) => trim_messages(&conversation.messages, window),
+            None => task_messages(&conversation.messages),
         };
         // Reasoning is provider-private and not required to classify the task. Some
         // upstreams also reject an unsigned reasoning item replayed without the
@@ -1053,7 +1055,7 @@ mod tests {
                                 .first()
                                 .and_then(|instruction| {
                                     instruction.content.iter().find_map(|b| {
-                                        if let ContentBlock::Text { text } = b {
+                                        if let ContentBlock::Text { text, .. } = b {
                                             Some(text.clone())
                                         } else {
                                             None
@@ -1561,6 +1563,7 @@ mod tests {
         };
         let mut request = classify_session_request();
         request.llm_request.messages.push(Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![
                 ContentBlock::Reasoning {
@@ -1569,6 +1572,7 @@ mod tests {
                     details: vec![],
                 },
                 ContentBlock::Text {
+                    responses: None,
                     text: "visible progress".into(),
                 },
             ],
@@ -2156,6 +2160,7 @@ mod tests {
 
     fn tool_call(id: &str) -> Message {
         Message {
+            responses: None,
             role: Role::Assistant,
             content: vec![ContentBlock::ToolCall(ToolCall {
                 id: id.to_string(),
@@ -2167,10 +2172,12 @@ mod tests {
 
     fn tool_result(id: &str) -> Message {
         Message {
+            responses: None,
             role: Role::Tool,
             content: vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: id.to_string(),
                 content: vec![ContentBlock::Text {
+                    responses: None,
                     text: "tool output".to_string(),
                 }],
                 is_error: None,
@@ -2188,6 +2195,7 @@ mod tests {
         result.role = Role::User;
         let mut mixed = result.clone();
         mixed.content.push(ContentBlock::Text {
+            responses: None,
             text: "latest follow-up".to_string(),
         });
         let input = TaskInput {
@@ -2335,6 +2343,7 @@ mod tests {
             Message::text(Role::System, "client instructions"),
             Message::text(Role::User, "initial task"),
             Message {
+                responses: None,
                 role: Role::Assistant,
                 content: vec![
                     ContentBlock::Reasoning {
@@ -2343,6 +2352,7 @@ mod tests {
                         details: Vec::new(),
                     },
                     ContentBlock::Text {
+                        responses: None,
                         text: "visible answer".to_string(),
                     },
                 ],
@@ -2350,6 +2360,7 @@ mod tests {
             tool_call("call-1"),
             tool_result("call-1"),
             Message {
+                responses: None,
                 role: Role::Assistant,
                 content: vec![ContentBlock::Reasoning {
                     text: "reasoning-only turn".to_string(),

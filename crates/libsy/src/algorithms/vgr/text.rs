@@ -57,7 +57,7 @@ pub(super) fn content_text(content: &[ContentBlock]) -> (String, bool) {
     let mut unsupported = false;
     for block in content {
         match block {
-            ContentBlock::Text { text } | ContentBlock::Refusal { text } => parts.push(text),
+            ContentBlock::Text { text, .. } | ContentBlock::Refusal { text } => parts.push(text),
             ContentBlock::ToolCall(_)
             | ContentBlock::ToolResult(_)
             | ContentBlock::Reasoning { .. } => {}
@@ -68,6 +68,7 @@ pub(super) fn content_text(content: &[ContentBlock]) -> (String, bool) {
 }
 
 pub(super) fn turns(request: &Request) -> (Vec<Turn>, bool) {
+    let conversation = switchyard_translation::conversation(&request.llm_request);
     let mut flattened = Vec::new();
     let mut unsupported = false;
     let mut push = |role: Role, content: &[ContentBlock]| {
@@ -75,10 +76,10 @@ pub(super) fn turns(request: &Request) -> (Vec<Turn>, bool) {
         unsupported |= block_unsupported;
         flattened.push(Turn { role, text });
     };
-    for InstructionBlock { role, content } in &request.llm_request.instructions {
+    for InstructionBlock { role, content } in conversation.instructions.iter() {
         push(*role, content);
     }
-    for Message { role, content } in &request.llm_request.messages {
+    for Message { role, content, .. } in conversation.messages.iter() {
         push(*role, content);
     }
     (flattened, unsupported)
@@ -106,7 +107,7 @@ pub(super) fn newest_prompt_is_blank(request: &Request) -> bool {
         .find(|message| message.role == Role::User)
         .is_none_or(|message| {
             message.content.iter().all(|block| match block {
-                ContentBlock::Text { text } => text.chars().all(|c| {
+                ContentBlock::Text { text, .. } => text.chars().all(|c| {
                     c.is_whitespace()
                         || matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}')
                 }),
@@ -129,10 +130,10 @@ pub(super) fn starts_user_turn(messages: &[Message], index: usize) -> bool {
     let (Some(message), Some(previous)) = (
         messages.get(index),
         messages.get(..index).and_then(|previous| {
-            previous
-                .iter()
-                .rev()
-                .find(|message| !is_environment_update(message))
+            previous.iter().rev().find(|message| {
+                !matches!(message.role, Role::System | Role::Developer)
+                    && !is_environment_update(message)
+            })
         }),
     ) else {
         return false;
@@ -145,12 +146,20 @@ pub(super) fn starts_user_turn(messages: &[Message], index: usize) -> bool {
             .any(|block| matches!(block, ContentBlock::ToolCall(_)))
 }
 
-/// The current turn's start, using the initiator header for the newest message.
+/// This helper finds the current turn's start, using the initiator header for the newest message.
+/// It returns an index into the original messages so compaction can edit native history.
 pub(super) fn turn_start(request: &Request) -> usize {
     let messages = &request.llm_request.messages;
+    let newest = messages
+        .iter()
+        .rposition(|message| {
+            !matches!(message.role, Role::System | Role::Developer)
+                && !is_environment_update(message)
+        })
+        .unwrap_or(0);
     let end = match initiated_by_user(request) {
-        Some(true) => return messages.len().saturating_sub(1),
-        Some(false) => messages.len().saturating_sub(1),
+        Some(true) => return newest,
+        Some(false) => newest,
         None => messages.len(),
     };
     (0..end)
@@ -246,7 +255,7 @@ pub(super) fn tool_result_failed(result: &ToolResult) -> bool {
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text),
+            ContentBlock::Text { text, .. } | ContentBlock::Refusal { text } => Some(text),
             _ => None,
         })
         .map(String::as_str)

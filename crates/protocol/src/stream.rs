@@ -225,7 +225,7 @@ impl AggLlmResponse {
         for (output_index, output) in self.outputs.into_iter().enumerate() {
             for block in output.content {
                 match block {
-                    ContentBlock::Text { text } => {
+                    ContentBlock::Text { text, .. } => {
                         chunks.push(LlmResponseChunk::TextDelta {
                             index: output_index,
                             text,
@@ -466,7 +466,10 @@ impl ResponseAccumulator {
             });
         }
         if !self.text.is_empty() {
-            content.push(ContentBlock::Text { text: self.text });
+            content.push(ContentBlock::Text {
+                responses: None,
+                text: self.text,
+            });
         }
         for call in self.tool_calls.into_values() {
             content.push(ContentBlock::ToolCall(ToolCall {
@@ -559,6 +562,7 @@ mod tests {
         assert_eq!(
             agg.outputs[0].content,
             vec![ContentBlock::Text {
+                responses: None,
                 text: "Hello".to_string()
             }]
         );
@@ -611,6 +615,7 @@ mod tests {
         assert_eq!(
             aggregate.outputs[0].content,
             vec![ContentBlock::Text {
+                responses: None,
                 text: "hello".to_string()
             }]
         );
@@ -715,6 +720,7 @@ mod tests {
                     details: Vec::new(),
                 },
                 ContentBlock::Text {
+                    responses: None,
                     text: "answer".to_string(),
                 },
             ]
@@ -729,6 +735,7 @@ mod tests {
             outputs: vec![ResponseOutput {
                 role: Role::Assistant,
                 content: vec![ContentBlock::Text {
+                    responses: None,
                     text: "hello".to_string(),
                 }],
                 url_citations: Vec::new(),

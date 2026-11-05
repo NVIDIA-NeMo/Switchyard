@@ -255,7 +255,7 @@ async fn a_typed_follow_up_answer_is_judged_on_the_answer_itself() -> Result<()>
                         .first()
                         .and_then(|block| block.content.first())
                         .and_then(|block| match block {
-                            ContentBlock::Text { text } => Some(text.clone()),
+                            ContentBlock::Text { text, .. } => Some(text.clone()),
                             _ => None,
                         })
                         .unwrap_or_default();
@@ -1137,7 +1137,7 @@ async fn default_verification_asks_capable_evidence_then_answer() -> Result<()> 
                                 .iter()
                                 .flat_map(|block| &block.content)
                                 .any(|block| {
-                                    matches!(block, ContentBlock::Text { text }
+                                    matches!(block, ContentBlock::Text { text, .. }
                                     if text.starts_with("You are a strict answer verifier"))
                                 });
                             seen.lock().push(is_answer);

@@ -5,8 +5,72 @@
 
 use serde_json::{Map, Value};
 
+use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
-use crate::llm::{ContentBlock, LlmRequest, Tool, ToolChoice};
+use crate::format::WireFormat;
+use crate::llm::{ContentBlock, LlmRequest, Role, Tool, ToolChoice};
+use crate::policy::TranslationPolicy;
+use crate::util::push_lossy;
+
+/// This check reports metadata loss or rejects conversion before grouping can discard the fields.
+pub(crate) fn check_responses_metadata_loss(
+    request: &LlmRequest,
+    target: WireFormat,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<()> {
+    let mut has_conversation = false;
+    for message in &request.messages {
+        let Some(metadata) = &message.responses else {
+            has_conversation = true;
+            continue;
+        };
+        if metadata.fields.get("type").and_then(Value::as_str) == Some("additional_tools") {
+            continue;
+        }
+        if metadata.fields.contains_key("phase") {
+            push_lossy(
+                diagnostics,
+                policy,
+                format!("Responses assistant phase is not supported by {target}"),
+            )?;
+        }
+        // Reasoning item IDs live in the block's details and can survive Chat conversion.
+        let loses_reasoning_id = target != WireFormat::OpenAiChat
+            && message.content.iter().any(|block| {
+                matches!(block, ContentBlock::Reasoning { details, .. }
+                    if details.iter().any(|item| item.get("id").is_some()))
+            });
+        if metadata.fields.contains_key("id") || loses_reasoning_id {
+            push_lossy(
+                diagnostics,
+                policy,
+                format!(
+                    "Responses item id is not supported by {target}; tool call_id remains separate"
+                ),
+            )?;
+        }
+        if matches!(message.role, Role::System | Role::Developer) {
+            if has_conversation {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    format!("Responses inline instruction position changes when encoding {target}"),
+                )?;
+            }
+            if message.role == Role::Developer && target == WireFormat::AnthropicMessages {
+                push_lossy(
+                    diagnostics,
+                    policy,
+                    "Responses developer instructions become Anthropic system instructions",
+                )?;
+            }
+        } else {
+            has_conversation = true;
+        }
+    }
+    Ok(())
+}
 
 // Internal provenance survives mutations that invalidate exact request replay.
 pub(crate) const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
@@ -100,7 +164,7 @@ pub(crate) fn text_from_blocks(content: &[ContentBlock], separator: &str) -> Str
     content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Text { text } => Some(text.as_str()),
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
             ContentBlock::Refusal { text } => Some(text.as_str()),
             ContentBlock::Unknown { raw, .. } => raw.as_str(),
             _ => None,

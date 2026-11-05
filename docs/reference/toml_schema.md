@@ -55,6 +55,7 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. A route's forwarding clients must use one credential family unless they all use the same scheme, host, and port, such as one LLM gateway. |
 | `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
 | `responses_reasoning` | No | `"auto"` | Responses reasoning replay: `"auto"`, `"preserve_encrypted"`, `"preserve_plaintext"`, or `"drop"`. Only valid for `openai_responses`. |
+| `responses_compatibility` | No | `"native"` | This setting selects `"native"`, `"flat_tools"`, or `"kimi"` tool handling for `openai_responses` clients. |
 | `fallback_on_rate_limit` | No | `true` | Try another completion candidate after an upstream HTTP 429 exhausts retries. Set to `false` to return the 429 instead. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
 | `failure_cooldown_ms` | No | `5000` (5 seconds) | Skip a backend for this many milliseconds after an exhausted transient completion failure. Zero disables it. |
@@ -85,6 +86,20 @@ All modes keep messages, tool calls and tool results. Set an explicit value when
 `"auto"` picks the wrong mode, for example an Azure OpenAI deployment with a custom
 name behind a gateway. The setting is rejected on other client formats, even
 when no target uses the client.
+
+`responses_compatibility = "native"` leaves tool namespaces, item order, and
+output fields unchanged. Use `"flat_tools"` for a backend that requires flat
+function names. Switchyard joins each function namespace and name with `__` in
+history, tool definitions, and tool choice. Use `"kimi"` for a backend that also
+requires each tool output immediately after its call and a `name` on the output.
+Switchyard retains existing output names and adds missing names from matching
+calls. Pairing stops at an intervening message. Outputs without a local call
+remain in place, including outputs whose calls are stored upstream.
+
+These adaptations run after request translation and target body overrides.
+Switchyard rejects unknown values and use with other client formats when building
+the configuration, even when no target uses the client. Select the mode your
+backend requires; Switchyard does not infer it from a model name or URL.
 
 The TOML never contains the secret itself. `api_key_env` names a variable that
 must exist and be non-empty when the server loads.

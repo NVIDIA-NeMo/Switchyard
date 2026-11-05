@@ -68,6 +68,7 @@ pub struct ModelConfig {
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
     responses_reasoning: crate::ResponsesReasoningPolicy,
+    responses_compatibility: crate::ResponsesCompatibility,
 }
 
 impl ModelConfig {
@@ -84,7 +85,15 @@ impl ModelConfig {
             default_backend,
             other_backends,
             responses_reasoning: crate::ResponsesReasoningPolicy::default(),
+            responses_compatibility: crate::ResponsesCompatibility::default(),
         }
+    }
+
+    /// This method selects the Responses request changes required by the model's provider.
+    #[must_use]
+    pub fn with_responses_compatibility(mut self, policy: crate::ResponsesCompatibility) -> Self {
+        self.responses_compatibility = policy;
+        self
     }
 
     /// Sets how Responses reasoning items are replayed to this model.
@@ -362,9 +371,6 @@ impl TranslatingLlmClient {
         // the upstream always sees the provider model.
         let upstream_model = self.provider_model(model);
         set_json_model(&mut body, upstream_model);
-        if matches!(backend, Backend::OpenAiResponses(_)) {
-            sanitize_openai_responses_provider_body(&mut body);
-        }
         // Strip before `merge_extra_body` so a target can reinstate either field
         // deliberately via `extra_body`.
         if matches!(backend, Backend::Anthropic(_)) {
@@ -374,6 +380,11 @@ impl TranslatingLlmClient {
         omit_configured_body_fields(&mut body, backend.omit_body_fields());
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::OpenAiResponses(_)) {
+            self.model_to_config
+                .get(model)
+                .map(|config| config.responses_compatibility)
+                .unwrap_or_default()
+                .normalize(&mut body);
             self.model_to_config
                 .get(model)
                 .map(|config| config.responses_reasoning)
@@ -1172,126 +1183,6 @@ fn rejects_template_options(error: &LlmClientError) -> bool {
             ]
             .iter()
             .any(|phrase| message.contains(phrase)))
-}
-
-const CODEX_NAMESPACE_SEPARATOR: &str = "__";
-
-/// Rewrites a Responses body into the shape OpenAI-compatible providers accept.
-///
-/// Codex extends Responses with namespace containers and namespaced function calls, and
-/// OpenAI-compatible providers expect a flat Responses tool namespace.
-fn sanitize_openai_responses_provider_body(body: &mut Value) {
-    let Value::Object(object) = body else {
-        return;
-    };
-    sanitize_openai_responses_input_for_provider(object.get_mut("input"));
-    sanitize_openai_responses_tools_for_provider(object.get_mut("tools"));
-    sanitize_openai_responses_tool_choice_for_provider(object.get_mut("tool_choice"));
-}
-
-fn sanitize_openai_responses_input_for_provider(input: Option<&mut Value>) {
-    let Some(Value::Array(items)) = input else {
-        return;
-    };
-    for item in items {
-        let Some(object) = item.as_object_mut() else {
-            continue;
-        };
-        if object.get("type").and_then(Value::as_str) == Some("function_call") {
-            qualify_responses_function_name(object);
-        }
-    }
-}
-
-fn sanitize_openai_responses_tools_for_provider(tools: Option<&mut Value>) {
-    let Some(Value::Array(tools)) = tools else {
-        return;
-    };
-    let mut flat_tools = Vec::with_capacity(tools.len());
-    for tool in std::mem::take(tools) {
-        push_sanitized_openai_responses_tool(&mut flat_tools, tool);
-    }
-    *tools = flat_tools;
-}
-
-fn push_sanitized_openai_responses_tool(out: &mut Vec<Value>, tool: Value) {
-    let Value::Object(mut object) = tool else {
-        out.push(tool);
-        return;
-    };
-    if object.get("type").and_then(Value::as_str) == Some("namespace") {
-        let namespace = object
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let Some(Value::Array(children)) = object.remove("tools") else {
-            out.push(Value::Object(object));
-            return;
-        };
-        for child in children {
-            push_sanitized_namespaced_tool(out, &namespace, child);
-        }
-        return;
-    }
-    ensure_responses_function_tool_description(&mut object);
-    out.push(Value::Object(object));
-}
-
-fn push_sanitized_namespaced_tool(out: &mut Vec<Value>, namespace: &str, tool: Value) {
-    let Value::Object(mut object) = tool else {
-        out.push(tool);
-        return;
-    };
-    if object.get("type").and_then(Value::as_str) == Some("function") {
-        qualify_responses_function_name_with_namespace(&mut object, namespace);
-        ensure_responses_function_tool_description(&mut object);
-    }
-    out.push(Value::Object(object));
-}
-
-fn sanitize_openai_responses_tool_choice_for_provider(tool_choice: Option<&mut Value>) {
-    let Some(Value::Object(object)) = tool_choice else {
-        return;
-    };
-    if object.get("type").and_then(Value::as_str) == Some("function") {
-        qualify_responses_function_name(object);
-    }
-}
-
-fn qualify_responses_function_name(object: &mut Map<String, Value>) {
-    let namespace = object
-        .remove("namespace")
-        .and_then(|value| value.as_str().map(ToOwned::to_owned));
-    let Some(namespace) = namespace.as_deref() else {
-        return;
-    };
-    qualify_responses_function_name_with_namespace(object, namespace);
-}
-
-fn qualify_responses_function_name_with_namespace(
-    object: &mut Map<String, Value>,
-    namespace: &str,
-) {
-    if namespace.is_empty() {
-        return;
-    }
-    let Some(name) = object.get("name").and_then(Value::as_str) else {
-        return;
-    };
-    let prefix = format!("{namespace}{CODEX_NAMESPACE_SEPARATOR}");
-    if name.starts_with(&prefix) {
-        return;
-    }
-    object.insert("name".to_string(), Value::String(format!("{prefix}{name}")));
-}
-
-fn ensure_responses_function_tool_description(object: &mut Map<String, Value>) {
-    if object.get("type").and_then(Value::as_str) == Some("function")
-        && !matches!(object.get("description"), Some(Value::String(_)))
-    {
-        object.insert("description".to_string(), Value::String(String::new()));
-    }
 }
 
 // Drops fields accepted by OpenAI-like APIs but rejected by Anthropic Messages.
@@ -4063,7 +3954,13 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = TranslatingLlmClient::new(&responses_map(&format!("{}/v1", server.uri())))?;
+        let models = responses_map(&format!("{}/v1", server.uri()))
+            .into_iter()
+            .map(|model| {
+                model.with_responses_compatibility(crate::ResponsesCompatibility::FlatTools)
+            })
+            .collect::<Vec<_>>();
+        let client = TranslatingLlmClient::new(&models)?;
         let parameters = json!({"type": "object", "properties": {"q": {"type": "string"}}});
         let raw = json!({
             "model": "client-facing",
