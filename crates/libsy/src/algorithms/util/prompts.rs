@@ -7,7 +7,7 @@ use switchyard_protocol::Request;
 
 /// This helper appends temporary guidance and updates preserved provider bodies.
 pub fn append_note(request: &mut Request, note: &str) {
-    request.llm_request.append_note(note);
+    switchyard_translation::append_note(&mut request.llm_request, note);
 }
 
 /// This helper clears preserved bodies and the note count after other conversation edits.
@@ -79,9 +79,10 @@ mod tests {
                 WireFormat::AnthropicMessages => expected["messages"][1]["content"].as_array_mut().ok_or("content")?.push(json!({"type":"text","text":"Reassess the failure."})),
             }
             assert_eq!(encoded, expected, "{format}: only the note may change");
-            request
-                .llm_request
-                .prepend_system_prompt("Use the capable tier.");
+            switchyard_translation::prepend_system_prompt(
+                &mut request.llm_request,
+                "Use the capable tier.",
+            );
             let edited = engine
                 .encode_request(format, &request.llm_request, &policy)?
                 .body;

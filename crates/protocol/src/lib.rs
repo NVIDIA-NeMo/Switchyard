@@ -14,7 +14,6 @@ pub mod infra;
 pub mod llm;
 pub mod metadata;
 pub mod model_id;
-mod request_edit;
 pub mod stream;
 
 pub use category::*;

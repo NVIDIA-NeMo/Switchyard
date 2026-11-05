@@ -2073,7 +2073,7 @@ mod tests {
                 original["previous_response_id"] = json!("resp_previous");
             }
             let mut request = observed_translation::decode_request(format, &original).unwrap();
-            request.append_note("note");
+            switchyard_translation::append_note(&mut request, "note");
             let mut body = observed_translation::encode_request(&request, format).unwrap();
             enable_openai_guidance_caching(&mut body, format, &"azure/openai/gpt-6-luna".into(), 1);
             let field = if item.get("output").is_some() {

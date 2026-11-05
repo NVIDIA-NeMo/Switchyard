@@ -338,7 +338,7 @@ pub fn prepare_request_for_target(
     let target = target.to_string();
     request.model = Some(target.clone());
     if let Some(prompt) = prompt {
-        request.prepend_system_prompt(prompt);
+        crate::prepend_system_prompt(request, prompt);
     }
     request.preservation.requests.retain(|format, body| {
         if ![
