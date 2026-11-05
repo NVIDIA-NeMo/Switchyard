@@ -720,6 +720,49 @@ fn openai_chat_mixed_reasoning_and_content_stream_in_reasoning_first_order() -> 
     Ok(())
 }
 
+// vLLM v0.11.1 through v0.15.1 copy each reasoning delta into both `reasoning` and
+// the deprecated `reasoning_content`; the text must be decoded once.
+#[test]
+fn openai_chat_reasoning_sent_under_both_field_names_streams_once() -> TestResult {
+    let engine = TranslationEngine::default();
+    for target in [WireFormat::AnthropicMessages, WireFormat::OpenAiResponses] {
+        let mut state = StreamTranslationState::new(WireFormat::OpenAiChat, target);
+        let mut events = Vec::new();
+        for delta in [
+            json!({"role": "assistant", "content": "", "reasoning_content": null}),
+            json!({"reasoning": "คิด", "reasoning_content": "คิด"}),
+            json!({"content": "สวัสดี", "reasoning_content": null}),
+        ] {
+            let chunk = json!({
+                "id": "chatcmpl-test",
+                "object": "chat.completion.chunk",
+                "model": "typhoon",
+                "choices": [{"index": 0, "delta": delta, "finish_reason": null}]
+            });
+            events.extend(engine.translate_event(
+                &mut state,
+                WireFormat::OpenAiChat,
+                target,
+                &chunk,
+            )?);
+        }
+        let reasoning: String = events
+            .iter()
+            .filter_map(|event| {
+                if event["type"] == "response.reasoning_summary_text.delta"
+                    || event["type"] == "response.reasoning_text.delta"
+                {
+                    event["delta"].as_str()
+                } else {
+                    event["delta"]["thinking"].as_str()
+                }
+            })
+            .collect();
+        assert_eq!(reasoning, "คิด", "{target:?}");
+    }
+    Ok(())
+}
+
 // Verifies Anthropic usage and stop events become terminal OpenAI chunks.
 #[test]
 fn anthropic_stream_usage_and_stop_translate_to_openai_chunks() -> TestResult {
@@ -1249,9 +1292,13 @@ fn openai_chat_reasoning_stream_fields_do_not_become_anthropic_text() -> TestRes
     events.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
 
     let serialized = serde_json::to_string(&events)?;
-    assert!(serialized.contains("private reasoning"));
-    assert!(serialized.contains("private reasoning content"));
     assert!(!serialized.contains("reasoning_content"));
+    // `reasoning_content` wins when both fields are set, matching the buffered decoder.
+    let thinking: String = events
+        .iter()
+        .filter_map(|event| event["delta"]["thinking"].as_str())
+        .collect();
+    assert_eq!(thinking, "private reasoning content");
     assert!(events.iter().any(|event| {
         event["type"] == "content_block_start"
             && event["content_block"]["type"] == "thinking"
