@@ -9,8 +9,15 @@ dependency. Native builds can use the C ABI instead.
 
 ## Installation
 
-Requires Go 1.25+ and the repository's Rust toolchain to build the WASM guest.
-This is a source-only module. From a checkout of this repository, build the guest
+Requires Go 1.25+. Published Go modules include the matching WASM guest and
+supported native archives, so consumers do not need Rust or a separate download.
+See [Distribution candidates and releases](#distribution-candidates-and-releases)
+for versioned installation and vendoring. Until a Go release is published, use
+the source-build steps below.
+
+### Building from source
+
+Source checkouts also require the repository's Rust toolchain. Build the guest
 before compiling the Go package:
 
 ```sh
@@ -40,7 +47,7 @@ cargo build -p switchyard-ffi --release --locked
 
 Native builds link `target/release/libswitchyard_ffi.a` into the Go host artifact.
 The native path still requires cgo and platform system libraries.
-Native artifacts are not downloaded or published by this package.
+Source builds do not download native artifacts.
 
 The native backend uses the `switchyard_native` build tag and does not need the
 WASM binary. These commands build locally; they do not publish artifacts.
@@ -168,10 +175,10 @@ Before merging changes, run the checks above with the latest patch of the
 declared minimum and the latest stable Go. Raise the minimum only when the
 binding or a dependency needs newer Go, and call out that change.
 
-## Distribution candidates
+## Distribution candidates and releases
 
-The **Go distribution candidates** workflow builds a self-contained module for
-review, not a public Go release. It includes the WASM guest, C header, native
+The **Go distributions** workflow builds a self-contained module for
+review. It includes the WASM guest, C header, native
 Linux amd64/arm64 archives, licenses, source revision, and checksums. It tests
 the packaged module from a separate application and empty module cache, without
 Rust or a local `replace`. Native tests also exercise the shared-plugin host.
@@ -188,8 +195,43 @@ Python and Rust versions. The corresponding Go tag would be
 `bindings/go/vX.Y.Z`. The C ABI generation remains independent of that version.
 Python alpha releases are not mapped to a new Go release scheme by this workflow.
 
-Nothing creates or pushes tags, creates GitHub Releases, or publishes modules.
-The files remain temporary Actions artifacts. A later publishing change must
-place the packaged files in the tagged Git tree; uploading a ZIP alone does not
-make it available through the public Go module proxy. Generated binaries are
-not committed on development branches.
+PR checks and default manual runs are artifact-only. They do not create tags or
+publish packages. Source builds still use the steps above.
+
+### Publishing
+
+Go releases use the same stable version as Switchyard. Before the first release,
+maintainers must create a GitHub environment named `go-release` with required
+reviewers and allow the publisher to create `bindings/go/v*` tags. An environment
+without required reviewers is rejected. The Python release path is unchanged.
+The source release tag must contain this workflow and its helpers. Confirm that
+the shipped Rust libraries have the required third-party license notices before
+approving publication.
+
+After an approved root release such as `v0.4.0` is published on GitHub, run:
+
+```sh
+gh workflow run go-packaging.yml --ref v0.4.0 \
+  -f release_candidate=true -f publish=true
+```
+
+Both consumer checks must pass before environment approval can release the
+publishing job. It commits the exact tested module files, including the WASM
+guest and Linux amd64/arm64 native archives, on a child of the source release.
+Only `bindings/go/v0.4.0` is pushed. Neither `main` nor the root tag changes.
+Re-running with identical contents is a no-op; a different package for an
+existing Go tag is rejected. The binaries remain in Git at the release commit.
+After publication, Go's public download path must return the same module
+checksum as the tested candidate.
+
+Users can then install without Rust or a separate download:
+
+```sh
+go get github.com/NVIDIA-NeMo/Switchyard/bindings/go@v0.4.0
+CGO_ENABLED=0 go build ./...
+go mod vendor
+CGO_ENABLED=0 go build -mod=vendor ./...
+```
+
+`v0.4.0` is an example, not a claim that this Go version is already published.
+Native builds still require cgo, a C compiler, and compatible system libraries.
