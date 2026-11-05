@@ -101,7 +101,19 @@ Metrics use the `switchyard` meter scope. The tables use OTel instrument names.
 | `switchyard.routing_overhead_ms` | Histogram | `algorithm` | LLM client driver's time to obtain a successful routing outcome, including judge calls but excluding any subsequent answer call. |
 | `switchyard.classifier_fail_open` | Counter | `judge_model`, `reason` | Judge failures that caused classification to proceed without a verdict. |
 | `switchyard.upstream_attempts` | Counter | `outcome`, `code` | HTTP attempts, including retries, made by the translating client. |
+| `switchyard.upstream_headers_latency_ms` | Histogram | `model` | Time from dispatch of each upstream HTTP attempt to response headers. Includes retries and non-2xx responses; attempts without headers have no sample. |
 | `switchyard.router_retry_recovered` | Counter | none | Upstream operations that succeeded after a retry. |
+
+The HTTP server also records `switchyard.first_stream_event_latency_ms` with a
+`model` label. It measures from arrival of a streaming request to the first
+framed downstream SSE event being ready, including routing and translation.
+Error frames count. A stream with no event beyond Chat's `[DONE]` sentinel has
+no sample. For a streaming request abandoned before a response is returned,
+the server's 499 log records `preanswer_wait_ms` and
+`first_stream_event_observed=false`. This wait is censored by the disconnect,
+not a completed first-event latency. The upstream attempt log identifies whether
+it was waiting for headers or its first decoded event when it stopped; it also
+includes the caller's correlation ID when one was supplied.
 
 Algorithm/call `outcome` is `ok` or `error`. HTTP attempt `outcome` is `ok` for
 2xx, `retryable_error` for 408/429/5xx or failures without a status, and

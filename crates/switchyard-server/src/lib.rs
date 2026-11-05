@@ -1193,6 +1193,7 @@ async fn handle_llm_request(
         response_model,
         request_extensions,
         Arc::clone(&state.redactor),
+        started.0,
     ) {
         Ok(response) => response,
         Err(error) => return server_error(error.to_string()),
@@ -1293,6 +1294,7 @@ impl RequestLogContext {
     // No model served it, so there is no selected model and no response status.
     fn emit_cancelled(self) {
         metrics::record_client_disconnect();
+        let wait_ms = self.started.elapsed().as_secs_f64() * 1_000.0;
         tracing::event!(
             target: "switchyard_server::request",
             Level::WARN,
@@ -1303,7 +1305,9 @@ impl RequestLogContext {
             streaming = self.streaming,
             session_id = self.session_id.as_deref(),
             correlation_id = self.correlation_id.as_deref(),
-            handling_duration_ms = self.started.elapsed().as_secs_f64() * 1_000.0,
+            handling_duration_ms = wait_ms,
+            preanswer_wait_ms = self.streaming.then_some(wait_ms),
+            first_stream_event_observed = self.streaming.then_some(false),
             error = "client disconnected before a response was written",
             "LLM request cancelled"
         );
@@ -2217,6 +2221,24 @@ target = "judge"
             events[0].message.contains("cancelled"),
             "{:?}",
             events[0].message
+        );
+    }
+
+    #[test]
+    fn cancelled_stream_reports_a_censored_preanswer_wait() {
+        let events = captured_events(|| {
+            let mut context = request_log_context();
+            context.streaming = true;
+            context.started -= Duration::from_millis(50);
+            drop(RequestLogGuard(Some(context)));
+        });
+
+        assert_eq!(events.len(), 1);
+        assert!(events[0].message.contains("preanswer_wait_ms="));
+        assert!(
+            events[0]
+                .message
+                .contains("first_stream_event_observed=false")
         );
     }
 

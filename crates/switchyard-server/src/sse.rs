@@ -5,6 +5,7 @@
 
 use std::convert::Infallible;
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::response::sse::{Event, Sse};
 use futures_util::Stream;
@@ -23,10 +24,12 @@ pub(crate) fn frame_stream(
     stream: RawEventStream,
     target_format: WireFormat,
     redactor: Arc<Redactor>,
+    first_event_timing: Option<(Instant, String)>,
 ) -> Sse<SseFrameStream> {
     let framed = async_stream::stream! {
         let mut stream = stream;
         let mut failed = false;
+        let mut first_event_timing = first_event_timing;
         while let Some(item) = futures_util::StreamExt::next(&mut stream).await {
             let event = match item {
                 Ok(value) => match frame_event(target_format, value, &redactor) {
@@ -61,6 +64,9 @@ pub(crate) fn frame_stream(
                     error_event(target_format, error.to_string(), &redactor)
                 }
             };
+            if let Some((started, model)) = first_event_timing.take() {
+                crate::metrics::record_first_stream_event_latency(&model, started.elapsed());
+            }
             yield Ok(event);
             if failed {
                 break;
@@ -134,6 +140,7 @@ fn error_event(target_format: WireFormat, message: String, redactor: &Redactor) 
 #[cfg(test)]
 mod tests {
     use std::error::Error;
+    use std::time::Duration;
 
     use axum::{body::to_bytes, response::IntoResponse};
     use futures_util::stream;
@@ -151,11 +158,59 @@ mod tests {
             stream,
             WireFormat::OpenAiChat,
             Arc::new(Redactor::default()),
+            None,
         )
         .into_response();
         Ok(String::from_utf8(
             to_bytes(response.into_body(), usize::MAX).await?.to_vec(),
         )?)
+    }
+
+    #[tokio::test]
+    async fn first_framed_event_records_latency_but_an_empty_stream_does_not() -> TestResult {
+        let registry = crate::metrics::registry().map_err(std::io::Error::other)?;
+        for (model, events) in [
+            ("first-frame-observed", vec![Ok(json!({"id": "first"}))]),
+            ("empty-frame-unobserved", Vec::new()),
+        ] {
+            let stream: RawEventStream = Box::pin(stream::iter(events));
+            let response = frame_stream(
+                stream,
+                WireFormat::OpenAiChat,
+                Arc::new(Redactor::default()),
+                Some((
+                    Instant::now() - Duration::from_millis(75),
+                    model.to_string(),
+                )),
+            )
+            .into_response();
+            let _ = to_bytes(response.into_body(), usize::MAX).await?;
+        }
+
+        let family = registry
+            .gather()
+            .into_iter()
+            .find(|family| family.name() == "switchyard_first_stream_event_latency_ms")
+            .ok_or("missing first-event histogram")?;
+        let observed = family
+            .get_metric()
+            .iter()
+            .find(|metric| {
+                metric
+                    .get_label()
+                    .iter()
+                    .any(|label| label.name() == "model" && label.value() == "first-frame-observed")
+            })
+            .ok_or("missing observed model")?;
+        assert_eq!(observed.get_histogram().get_sample_count(), 1);
+        assert!(observed.get_histogram().get_sample_sum() >= 75.0);
+        assert!(!family.get_metric().iter().any(|metric| {
+            metric
+                .get_label()
+                .iter()
+                .any(|label| label.name() == "model" && label.value() == "empty-frame-unobserved")
+        }));
+        Ok(())
     }
 
     #[tokio::test]
@@ -269,6 +324,7 @@ mod tests {
             stream,
             WireFormat::AnthropicMessages,
             Arc::new(Redactor::default()),
+            None,
         )
         .into_response();
         let body = String::from_utf8(to_bytes(response.into_body(), usize::MAX).await?.to_vec())?;

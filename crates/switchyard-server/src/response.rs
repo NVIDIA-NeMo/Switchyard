@@ -5,6 +5,7 @@
 
 use std::error::Error;
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::Json;
 use axum::response::{IntoResponse, Response as HttpResponse};
@@ -25,6 +26,7 @@ pub(crate) fn into_http_response(
     served_model: Option<String>,
     request_extensions: ProviderExtensions,
     redactor: Arc<crate::redaction::Redactor>,
+    started: Instant,
 ) -> Result<HttpResponse, BoxError> {
     match response.llm_response {
         LlmResponse::Agg(response) => {
@@ -37,13 +39,22 @@ pub(crate) fn into_http_response(
             Ok(Json(body).into_response())
         }
         LlmResponse::Stream(stream) => {
+            let observed_model = served_model
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
             let events = encode_stream_with_extensions(
                 stream,
                 target_format,
                 served_model,
                 &request_extensions,
             )?;
-            Ok(frame_stream(events, target_format, redactor).into_response())
+            Ok(frame_stream(
+                events,
+                target_format,
+                redactor,
+                Some((started, observed_model)),
+            )
+            .into_response())
         }
     }
 }

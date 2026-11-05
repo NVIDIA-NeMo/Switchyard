@@ -146,6 +146,21 @@ async fn upstream_chat(
     }
 
     let model = body["model"].as_str().unwrap_or("unknown").to_string();
+    if prompt == "delay-headers" && body["stream"] == true {
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    }
+    if prompt == "delay-first-event" && body["stream"] == true {
+        let stream = async_stream::stream! {
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            yield Ok::<Event, Infallible>(Event::default().data(json!({
+                "id": "chatcmpl-delayed",
+                "model": model,
+                "choices": [{"index": 0, "delta": {"content": "ready"}}]
+            }).to_string()));
+            yield Ok(Event::default().data("[DONE]"));
+        };
+        return Sse::new(stream).into_response();
+    }
     if model == "model/rate-limited" {
         return (
             if prompt == "unavailable" {
@@ -1399,6 +1414,7 @@ async fn metrics_exposes_switchyard_otel_instruments() -> TestResult {
         ("switchyard_completion_tokens_total", 2.0),
         ("switchyard_cached_tokens_total", 7.0),
         ("switchyard_total_latency_ms_count", 1.0),
+        ("switchyard_upstream_headers_latency_ms_count", 2.0),
     ] {
         assert_eq!(
             metric_delta(seeded, metrics, name, &[("model", MODEL)]),
@@ -5338,6 +5354,100 @@ fn first_sse_event(body: &str) -> Option<Value> {
         .filter_map(|line| line.strip_prefix("data: "))
         .filter(|data| *data != "[DONE]")
         .find_map(|data| serde_json::from_str(data).ok())
+}
+
+#[tokio::test]
+async fn streaming_phase_metrics_separate_header_wait_from_first_event_wait() -> TestResult {
+    let (_upstream, app) = test_app(&[
+        ("route/fast", &["model/phase-fast"]),
+        ("route/headers", &["model/phase-headers"]),
+        ("route/event", &["model/phase-event"]),
+        ("route/anthropic", &["model/phase-anthropic"]),
+    ])
+    .await?;
+    let before = send(&app, "GET", "/metrics", None)
+        .await?
+        .text()?
+        .to_string();
+    for (route, prompt, path) in [
+        ("route/fast", "fast", "/v1/chat/completions"),
+        ("route/headers", "delay-headers", "/v1/chat/completions"),
+        ("route/event", "delay-first-event", "/v1/chat/completions"),
+        ("route/anthropic", "delay-first-event", "/v1/messages"),
+    ] {
+        let mut body = json!({
+            "model": route,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": true
+        });
+        if path == "/v1/messages" {
+            body["max_tokens"] = json!(32);
+        }
+        let response = send(&app, "POST", path, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::OK, "{route}");
+        assert!(first_sse_event(response.text()?).is_some(), "{route}");
+    }
+    let after = send(&app, "GET", "/metrics", None)
+        .await?
+        .text()?
+        .to_string();
+
+    for model in [
+        "model/phase-fast",
+        "model/phase-headers",
+        "model/phase-event",
+        "model/phase-anthropic",
+    ] {
+        for name in [
+            "switchyard_upstream_headers_latency_ms_count",
+            "switchyard_first_stream_event_latency_ms_count",
+        ] {
+            assert_eq!(
+                metric_delta(&before, &after, name, &[("model", model)]),
+                Some(1.0),
+                "{name} for {model}"
+            );
+        }
+    }
+    let headers_wait = metric_delta(
+        &before,
+        &after,
+        "switchyard_upstream_headers_latency_ms_sum",
+        &[("model", "model/phase-headers")],
+    )
+    .ok_or("missing delayed header sample")?;
+    assert!(headers_wait >= 100.0, "header wait was {headers_wait} ms");
+
+    let event_headers = metric_delta(
+        &before,
+        &after,
+        "switchyard_upstream_headers_latency_ms_sum",
+        &[("model", "model/phase-event")],
+    )
+    .ok_or("missing event-case header sample")?;
+    let event_ready = metric_delta(
+        &before,
+        &after,
+        "switchyard_first_stream_event_latency_ms_sum",
+        &[("model", "model/phase-event")],
+    )
+    .ok_or("missing delayed event sample")?;
+    assert!(
+        event_ready - event_headers >= 100.0,
+        "first event {event_ready} ms, headers {event_headers} ms"
+    );
+    let anthropic_ready = metric_delta(
+        &before,
+        &after,
+        "switchyard_first_stream_event_latency_ms_sum",
+        &[("model", "model/phase-anthropic")],
+    )
+    .ok_or("missing Anthropic event sample")?;
+    assert!(
+        anthropic_ready >= 100.0,
+        "Anthropic first event was {anthropic_ready} ms"
+    );
+    Ok(())
 }
 
 #[tokio::test]

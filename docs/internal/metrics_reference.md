@@ -52,6 +52,17 @@ Each histogram emits `_bucket`, `_sum`, and `_count` series. Use
 |---|---|---|
 | `switchyard_model_call_latency_ms{model}` | histogram | Successful final routed-call latency. |
 | `switchyard_total_latency_ms{model}` | histogram | End-to-end latency for successful routed responses. For streaming responses this is full-turn time, **not** time-to-first-token. |
+| `switchyard_upstream_headers_latency_ms{model}` | histogram | Time from dispatching one upstream HTTP attempt until its response headers arrive. Includes non-2xx responses and retries. Attempts that never receive headers have no sample. |
+| `switchyard_first_stream_event_latency_ms{model}` | histogram | Time from accepting a streaming client request until its first framed downstream SSE event is ready. Includes routing, upstream header wait, and first-event wait. Error events count; an empty stream with only the Chat `[DONE]` sentinel does not. |
+
+An abandoned upstream attempt logs its pending `phase` as `upstream_headers` or
+`upstream_first_event`, with elapsed time, model, and any caller correlation ID. This can be correlated with
+the server's 499 request log to identify where a client disconnected before a
+response was returned. A retry deadline can also abandon an attempt, so the
+attempt log alone does not establish that the client disconnected.
+For a streaming 499, the request log also records `preanswer_wait_ms` and
+`first_stream_event_observed=false`. The wait is right-censored by the disconnect:
+it is not a time-to-first-event sample.
 
 ## Routing overhead (global, no model label)
 
