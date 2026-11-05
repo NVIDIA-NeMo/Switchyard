@@ -46,18 +46,18 @@ fn is_compaction_message(message: &Message) -> bool {
     for block in &message.content {
         match block {
             ContentBlock::Image { .. } => {}
-            _ if is_compaction_summary(block) => has_summary = true,
+            _ if is_compaction_block(block) => has_summary = true,
             _ => return false,
         }
     }
     has_summary
 }
 
-fn is_compaction_summary(block: &ContentBlock) -> bool {
+fn is_compaction_block(block: &ContentBlock) -> bool {
     match block {
         ContentBlock::Unknown { raw, .. } => matches!(
             raw.get("type").and_then(serde_json::Value::as_str),
-            Some("compaction" | "context_compaction")
+            Some("compaction" | "context_compaction" | "compaction_trigger")
         ),
         ContentBlock::Text { text } => {
             let text = text.trim().to_ascii_lowercase();

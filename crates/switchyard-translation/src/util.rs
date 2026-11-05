@@ -100,7 +100,7 @@ pub fn push_lossy(
 }
 
 // These Responses history items are valid only as top-level `input` items.
-pub(crate) fn is_responses_builtin_tool_item(item: &Value) -> bool {
+pub(crate) fn is_responses_native_input_item(item: &Value) -> bool {
     matches!(
         item.get("type").and_then(Value::as_str),
         Some(
@@ -111,18 +111,19 @@ pub(crate) fn is_responses_builtin_tool_item(item: &Value) -> bool {
                 | "computer_call"
                 | "computer_call_output"
                 | "image_generation_call"
+                | "compaction_trigger"
         )
     )
 }
 
-// Prevent provider-specific tool history from being downgraded to target-visible prose.
-pub(crate) fn reject_responses_builtin_tool_item(
+// Prevent provider-specific input from being downgraded to target-visible prose.
+pub(crate) fn reject_responses_native_input_item(
     provider: &FormatId,
     item: &Value,
     target: WireFormat,
 ) -> Result<()> {
     if provider.as_str() == WireFormat::OpenAiResponses.as_str()
-        && is_responses_builtin_tool_item(item)
+        && is_responses_native_input_item(item)
     {
         return Err(TranslationError::UnsupportedTranslation {
             from: WireFormat::OpenAiResponses.into(),
