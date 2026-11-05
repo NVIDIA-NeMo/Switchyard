@@ -4193,43 +4193,32 @@ fn responses_parallel_tool_calls_pair_with_their_outputs() -> TestResult {
     Ok(())
 }
 
-// Verifies Codex `compaction_trigger` marker items never reach the upstream.
 #[test]
-fn responses_codex_compaction_markers_are_stripped() -> TestResult {
+fn responses_codex_compaction_trigger_survives_round_trip() -> TestResult {
     let engine = TranslationEngine::default();
-    let policy = TranslationPolicy {
-        preservation: switchyard_translation::PreservationPolicy::Disabled,
-        ..TranslationPolicy::default()
-    };
     let body = json!({
         "model": "gpt-5",
         "input": [
             {"type": "message", "role": "user", "content": "Continue"},
-            {"type": "compaction_trigger"},
-            {"type": "function_call", "name": "shell", "call_id": "call-a", "arguments": "{}"},
-            {"type": "function_call_output", "call_id": "call-a", "output": "ok"}
-        ]
+            {"type": "compaction_trigger"}
+        ],
+        "stream": true
     });
-
-    let output = engine
-        .translate_request(
-            WireFormat::OpenAiResponses,
-            WireFormat::OpenAiResponses,
-            &body,
-            &policy,
-        )?
-        .body;
-
-    let types = output["input"]
-        .as_array()
-        .ok_or("input is not an array")?
-        .iter()
-        .filter_map(|item| item["type"].as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        types,
-        vec!["message", "function_call", "function_call_output"]
-    );
+    for policy in [TranslationPolicy::default(), normalized_policy()] {
+        let request = engine
+            .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+            .request;
+        assert!(request.is_compaction);
+        assert!(!request.has_compaction);
+        let output = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+        assert_eq!(output.body["input"][1], body["input"][1]);
+        for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+            assert!(matches!(
+                engine.encode_request(target, &request, &policy),
+                Err(TranslationError::UnsupportedTranslation { .. })
+            ));
+        }
+    }
     Ok(())
 }
 

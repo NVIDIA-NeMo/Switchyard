@@ -29,7 +29,7 @@ use crate::util::{
     sanitize_anthropic_tool_use_id,
 };
 use crate::util::{
-    json_string, push_lossy, reject_responses_builtin_tool_item, stable_id, string_value,
+    json_string, push_lossy, reject_responses_native_input_item, stable_id, string_value,
     validate_request_capabilities,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -937,7 +937,7 @@ fn encode_anthropic_content_with_policy(
         crate::codecs::openai_media::validate_media(block, WireFormat::AnthropicMessages)?;
         match block {
             ContentBlock::Unknown { provider, raw } => {
-                reject_responses_builtin_tool_item(provider, raw, WireFormat::AnthropicMessages)?;
+                reject_responses_native_input_item(provider, raw, WireFormat::AnthropicMessages)?;
                 push_lossy(
                     diagnostics,
                     policy,

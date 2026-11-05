@@ -37,7 +37,7 @@ quality, see [Examples](../tuning/examples.md).
 | [Task](llm_classifier_routing.md) | `llm_classifier`, `mode = "capability"` | A judge reads the task before the turn is served and picks the strong or weak model. |
 | [Execution](stage_router_routing.md) | `stage_router` | Tool results from the last few turns pick the capable or efficient model for each turn. |
 | [Composite](composite_routing.md) | `composite` | A judge picks the starting tier at each user turn. Execution runs the turns in between. |
-| [Plan/Execute](plan_execute_routing.md) | `plan_execute` | The capable model plans. The first file edit hands the session to the efficient model. |
+| [Plan/Execute](stage_router_routing.md#plan-and-execute) | `stage_router` with `picker = "capable_first"` | The capable model plans. Stage can switch to efficient based on tool results, then hold that tier for the rest of the session. |
 | [Escalation](escalation_router_routing.md) | `llm_classifier`, `mode = "escalation"` | The weak model serves until a judge reports the same failure on consecutive turns. Then the session latches to the strong model. |
 | [Custom](llm_classifier_routing.md#custom-multi-target-routing) | `llm_classifier`, `mode = "custom"` | Your own judge prompt and schema choose among any number of targets. |
 | [Advisor Gate](advisor_gate_routing.md) | `advisor` | One executor serves every turn. A stronger advisor reviews its plans and "done" claims. |
@@ -57,7 +57,7 @@ quality, see [Examples](../tuning/examples.md).
 | `llm_classifier`, escalation | A judge's view of the finished weak turn | One judge call per unlatched turn | Latches once. Reversible with de-escalation. | Required to latch. Without it, `confirmations = 1` escalates single turns only. | An unreadable verdict keeps the current tier. A failed judge call stops the request in the server. | [Terminal-Bench 2.1 results](../benchmarks.md#terminal-bench-21) with the [checked-in profile](../../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml), and a [public report](https://www.langchain.com/blog/switchyard-agent-routing-benchmark) | That profile |
 | `llm_classifier`, custom | Your judge's verdict | One judge call per trigger | Per trigger | Optional. Needed to retain a verdict. | `default_target` | [tau2 profiles](../../benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml) | That profile |
 | `composite` | A judge at each user turn, tool results in between | One judge call per user turn or session | Every request, with a per-user-turn default | Required, or `message_hash_fallback` | Last tier, else efficient | Not benchmarked | [Composite Routing](composite_routing.md#configuration) |
-| `plan_execute` | The first edit or write tool call | None | Once per session | Recommended. Latches the handoff. | Stays on the planner | [DeepSWE results](../benchmarks.md#deepswe) with the [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml) | That profile |
+| `stage_router`, plan/execute settings | Stage scores recent tool results. | Stage makes no classifier calls. | Stage holds efficient after a switch. | A stable ID is required from the first planning request to retain the hold. | Stage selects capable. | This configuration has no published results. The [historical Plan/Execute results](../benchmarks.md#deepswe) used the removed implementation. | See [Plan/Execute with Stage](stage_router_routing.md#plan-and-execute). |
 | `advisor` | The executor's terminal turn | One advisor review per gated turn, up to `max_reviews` | Never. One executor serves. | Scopes the review budget | An unreadable verdict or a failed advisor call lets the buffered executor turn through (`fail_open`, default `true`). `fail_open = false` stops the request. | [DeepSWE results](../benchmarks.md#deepswe) with the [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) | That profile |
 | `vgr` | Evidence about an efficient candidate | Verifier and judge calls | Per final answer | See [the page](vgr_routing.md) | Capable tier | Not benchmarked. Planned for 0.4.0. | [`examples/vgr-local-servers.toml`](../../examples/vgr-local-servers.toml) |
 | `prefill_router` | Hidden states of the prompt | Encoder inference, no provider call | Every request | Not required | Checkpoint output | Experimental. No checkpoint is supplied. | [Schema example](../reference/toml_schema.md#prefill_router) |
@@ -86,10 +86,9 @@ These cases apply across strategies:
 
 - **Requests carry no session ID.** Escalation never latches, at any
   `confirmations`. Composite cannot retain the tier. Task with `user_turn` or
-  `new_session` judges every request. Plan/Execute needs the first edit to stay
-  in the request history. Execution keeps no capable hold. Send
-  `x-switchyard-session-id`, or use a strategy that decides from the request
-  alone.
+  `new_session` judges every request. Plan/Execute and Execution retain no
+  tier holds. Send `x-switchyard-session-id`, or use a strategy that decides
+  from the request alone.
 - **Both tiers resolve to the same model, or the efficient model is the stronger
   one.** Routing then only adds cost. Run the
   [inverted-pair check](model_selection.md#check-for-an-inverted-pair) first.
@@ -101,7 +100,7 @@ These cases apply across strategies:
   Plan/Execute read. See
   [Responses continuations by ID](llm_classifier_routing.md#responses-continuations-by-id)
   and the
-  [Plan/Execute history requirement](plan_execute_routing.md#responses-api-history-requirement).
+  [Plan/Execute history requirement](stage_router_routing.md#plan-and-execute).
 - **A judge that cannot return schema-valid JSON.** Task then sends every request
   to the strong target, Execution falls back to the picker default, and
   escalation never latches. When the provider rejects the judge request
