@@ -10,8 +10,12 @@ A target must carry every required label. Extra labels are fine, and label names
 have no built-in meaning. Existing provider connections are omitted below.
 
 ```toml
-[targets.public]
-id = "cloud-model"
+[targets.fast]
+id = "cloud-small-model"
+llm_client = "cloud"
+
+[targets.capable]
+id = "cloud-large-model"
 llm_client = "cloud"
 
 [targets.approved_fast]
@@ -26,12 +30,19 @@ labels = ["private", "customer_data"]
 
 [routes.assistant]
 id = "switchyard/assistant"
-type = "random"
-targets = ["public", "approved_fast", "approved_capable"]
+type = "stage_router"
+efficient_target = "fast"
+capable_target = "capable"
+picker = "efficient_first"
+confidence_threshold = 0.6
 
 [routes.assistant.eligibility]
 require_explicit_requirements = true
 scope = "request"
+
+[routes.assistant.eligibility.target_alternatives]
+fast = ["approved_fast"]
+capable = ["approved_capable"]
 ```
 
 - `targets.<name>.labels` declares approvals; default `[]`.
@@ -42,15 +53,23 @@ scope = "request"
   needs a collection; an explicitly empty one counts.
 - `scope` is `"request"`, the default and only supported value. Requirements
   cover this request and its internal model calls.
+- `target_alternatives` maps configured target names to ordered alternatives;
+  default `{}`. Keys name targets, not router roles. Alternatives must preserve
+  target kind.
 
-The example's unrestricted pool contains all three targets. Requiring `private`
-keeps the two approved targets. Requiring both labels keeps the same two;
-requiring an unsupported label fails before any provider call. There is no table
-of accepted combinations.
+Switchyard prefers the original target when it carries every required label.
+Otherwise, it uses the first listed alternative that qualifies. Resolution is
+one step: it does not follow another target's alternatives. If no eligible target
+can fill a required role, the request fails before any provider call.
 
-Fixed-role routers keep their configured roles. Stage requires its efficient and
-capable targets to qualify; a judge must qualify too. An unapproved required role
-stops the request. This configuration does not search for replacement targets.
+In the example, empty requirements keep `fast` and `capable`. Requiring `private`
+selects `approved_fast` and `approved_capable`. Requiring both labels selects the
+same two; requiring an unsupported label fails closed. There is no table of
+accepted combinations. Model pools are filtered by the same label requirements.
+
+Stage's efficient and capable roles remain distinct, and any configured judge
+must also qualify. Alternatives resolve approvals before execution; they are not
+a runtime fallback list. The algorithm keeps its existing answer fallback rules.
 
 ## Rust API
 
@@ -76,14 +95,14 @@ requests, even when they carry the same task ID.
 ```mermaid
 flowchart TD
     H["Trusted host: request + required labels"] --> A["Runner checks requirements"]
-    A --> P["Filter configured pools; check required roles"]
+    A --> P["Resolve eligible roles; filter configured pools"]
     P -->|"no valid setup"| E["Error: no provider call"]
     P --> R["Existing routing algorithm"]
     R --> G["libsy checks allowed model IDs"]
     G --> C["LLM client executes approved calls and fallbacks"]
 ```
 
-Runner owns label matching and reuses setups that keep the same configured
+Runner owns label matching and reuses setups that resolve to the same configured
 targets. Each setup keeps its algorithm, clients, model groups and auxiliary
 targets together. Required judges, typed decisions, answer fallbacks and auxiliary
 calls must qualify. Provider codecs keep their existing translation role.
