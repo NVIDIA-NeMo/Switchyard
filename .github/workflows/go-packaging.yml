@@ -162,14 +162,15 @@ jobs:
           (cd "$work/dependencies" && GOMODCACHE="$work/seed" GOSUMDB=sum.golang.org go mod download)
           cp -R "$work/seed/cache/download/." "$work/proxy/"
           cp -R "$package_dir/proxy/." "$work/proxy/"
-          export PATH="$(go env GOROOT)/bin:/usr/bin:/bin"
+          go_root=$(go env GOROOT)
+          export PATH="$go_root/bin:/usr/bin:/bin"
           if command -v cargo || command -v rustc; then
               echo "Rust must not be available in the consumer test" >&2
               exit 1
           fi
           unset CGO_CFLAGS CGO_CPPFLAGS CGO_CXXFLAGS CGO_LDFLAGS
           export GOMODCACHE="$work/cache" GOPROXY="file://$work/proxy" GOSUMDB=off
-          export GOPRIVATE= GONOPROXY= GONOSUMDB=
+          export GOPRIVATE='' GONOPROXY='' GONOSUMDB=''
           cd "$work/consumer"
           unzip -p "$archive" "$module@$version/testdata/consumer/main.go" > main.go
           go mod init switchyard-consumer.invalid/check
