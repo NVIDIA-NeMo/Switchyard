@@ -197,12 +197,12 @@ struct ResolvedLlmTarget<'a> {
 }
 
 type LaneTargets<'a> = BTreeMap<&'a str, ResolvedLlmTarget<'a>>;
-type TargetOverrides = BTreeMap<String, String>;
+type TargetOverrides<'a> = BTreeMap<&'a str, &'a str>;
 type LaneDecisions<'a> = BTreeMap<&'a str, ResolvedDecisionTarget<'a>>;
 
 // Replacements bind logical names once; mappings never chain.
-fn bound_target<'a>(name: &'a str, overrides: &'a TargetOverrides) -> &'a str {
-    overrides.get(name).map_or(name, String::as_str)
+fn bound_target<'a>(name: &'a str, overrides: &TargetOverrides<'a>) -> &'a str {
+    overrides.get(name).copied().unwrap_or(name)
 }
 
 fn callable_targets(algorithm: &AlgorithmSpec) -> BTreeSet<&str> {
@@ -258,7 +258,7 @@ impl EligibleLanes {
             }) {
                 allowed.insert(*name);
                 if target != *name {
-                    overrides.insert((*name).to_owned(), target.to_owned());
+                    overrides.insert(*name, target);
                 }
             }
         }
@@ -747,7 +747,7 @@ impl DeploymentConfig {
     fn resolve_lane_targets<'a>(
         &'a self,
         algorithm: &'a AlgorithmSpec,
-        overrides: &TargetOverrides,
+        overrides: &TargetOverrides<'_>,
     ) -> RunnerResult<LaneTargets<'a>> {
         let decisions = algorithm.decision_target_names();
         callable_targets(algorithm)
@@ -776,7 +776,7 @@ impl DeploymentConfig {
         &'a self,
         route_name: &str,
         algorithm: &'a AlgorithmSpec,
-        overrides: &TargetOverrides,
+        overrides: &TargetOverrides<'_>,
         clients: &'a BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
     ) -> RunnerResult<LaneDecisions<'a>> {
         algorithm
