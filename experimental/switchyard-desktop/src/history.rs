@@ -38,6 +38,24 @@ pub struct Entry {
     pub cost: Option<switchyard_costs::RecordedCost>,
 }
 
+/// Outcome-only records describe routing, not additional model calls or usage.
+pub(crate) fn parse_entry(line: &[u8]) -> serde_json::Result<Option<Entry>> {
+    match serde_json::from_slice(line) {
+        Ok(entry) => Ok(Some(entry)),
+        Err(error) => {
+            let is_outcome =
+                serde_json::from_slice::<serde_json::Value>(line).is_ok_and(|record| {
+                    record
+                        .get("outcome")
+                        .is_some_and(serde_json::Value::is_object)
+                        && record.get("ts").is_none()
+                        && record.get("model").is_none()
+                });
+            if is_outcome { Ok(None) } else { Err(error) }
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct History {
     pub entries: Vec<Entry>,
@@ -100,8 +118,8 @@ fn parse(bytes: &[u8], truncated: bool) -> History {
         if !line.ends_with(b"\n") {
             break;
         }
-        match serde_json::from_slice::<Entry>(line) {
-            Ok(entry)
+        match parse_entry(line) {
+            Ok(Some(entry))
                 if !entry.model.trim().is_empty()
                     && chrono::DateTime::parse_from_rfc3339(&entry.ts).is_ok() =>
             {
@@ -111,6 +129,7 @@ fn parse(bytes: &[u8], truncated: bool) -> History {
                 }
                 entries.push_back(entry);
             }
+            Ok(None) => {}
             _ => result.skipped += 1,
         }
     }
@@ -135,6 +154,26 @@ impl History {
 #[cfg(test)]
 mod tests {
     use super::{MAX_BYTES, MAX_RECORDS, load};
+
+    #[test]
+    fn ignores_outcomes_without_counting_them_as_unreadable_calls() {
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("routing.jsonl");
+        let outcome = r#"{"session_id":"s","outcome":{"ts":"2026-10-08T12:00:00Z","route_id":"smart","judgments":[]}}"#;
+        let first = r#"{"ts":"2026-10-08T12:00:00Z","model":"luna"}"#;
+        let second = r#"{"ts":"2026-10-08T12:00:01Z","model":"astra"}"#;
+        std::fs::write(
+            &path,
+            format!("{outcome}\n{first}\n{outcome}\nnot json\n{second}\n{outcome}\n"),
+        )
+        .expect("write log");
+        let history = load(&path).expect("history");
+        assert_eq!(history.entries.len(), 2);
+        assert_eq!(history.entries[0].model, "luna");
+        assert_eq!(history.entries[1].model, "astra");
+        assert_eq!(history.skipped, 1);
+        assert!(!history.limited);
+    }
 
     #[test]
     fn retains_recent_records_and_complete_byte_limited_records() {
