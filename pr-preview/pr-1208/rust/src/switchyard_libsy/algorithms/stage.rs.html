@@ -98,7 +98,7 @@
 <a href=#98 id=98 data-nosnippet>98</a>        <span class="kw">let </span>(classification, served) = <span class="self">self</span>.inner.score(state, request, driver).<span class="kw">await</span><span class="question-mark">?</span>;
 <a href=#99 id=99 data-nosnippet>99</a>        <span class="comment">// An abstaining classifier passes the turn on, so it is not its to claim.
 <a href=#100 id=100 data-nosnippet>100</a>        </span><span class="kw">if let </span><span class="prelude-val">Some</span>(winner) = classification.argmax(<span class="bool-val">false</span>)<span class="question-mark">? </span>{
-<a href=#101 id=101 data-nosnippet>101</a>            record_routing_decision(<span class="self">self</span>.source, <span class="kw-2">&amp;</span>winner.target);
+<a href=#101 id=101 data-nosnippet>101</a>            record_routing_decision(<span class="self">self</span>.source, driver.provider_model(<span class="kw-2">&amp;</span>winner.target));
 <a href=#102 id=102 data-nosnippet>102</a>            driver.set_evidence_if_empty(<span class="macro">serde_json::json!</span>({
 <a href=#103 id=103 data-nosnippet>103</a>                <span class="string">"source"</span>: <span class="self">self</span>.source.as_str(),
 <a href=#104 id=104 data-nosnippet>104</a>            }));
