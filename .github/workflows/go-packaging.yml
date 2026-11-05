@@ -1,16 +1,22 @@
-name: Go distribution candidates
+name: Go distributions
 
 on:
   pull_request:
     paths:
       - .github/workflows/go-packaging.yml
       - scripts/release/package_go_bindings.py
+      - scripts/release/publish_go_bindings.py
       - tests/test_go_binding_packaging.py
+      - tests/test_go_binding_publication.py
       - bindings/go/**
   workflow_dispatch:
     inputs:
       release_candidate:
-        description: Require an existing stable Switchyard release tag; artifacts only.
+        description: Require an existing stable Switchyard release tag.
+        type: boolean
+        default: false
+      publish:
+        description: Publish the tested Go module. Requires release_candidate and a protected go-release environment.
         type: boolean
         default: false
 
@@ -28,13 +34,37 @@ jobs:
   version:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      source: ${{ steps.version.outputs.source }}
+      version: ${{ steps.version.outputs.version }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
           fetch-depth: 0
       - name: Validate version policy
-        run: python3 scripts/release/package_go_bindings.py --mode "$PACKAGE_MODE" --print-version
+        id: version
+        env:
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          version=$(python3 scripts/release/package_go_bindings.py --mode "$PACKAGE_MODE" --print-version)
+          if [ "$PUBLISH" = true ] && { [ "$PACKAGE_MODE" != release ] || [ "$GITHUB_REF" != "refs/tags/$version" ]; }; then
+            echo 'Publication requires release_candidate=true and running on the matching stable root tag.' >&2
+            exit 1
+          fi
+          printf 'version=%s\nsource=%s\n' "$version" "$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+      - name: Check publication prerequisites
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,isPrerelease --jq '.isDraft or .isPrerelease')" = false
+          test "$(gh api "repos/$GITHUB_REPOSITORY/environments/go-release" \
+            --jq 'any(.protection_rules[]; .type == "required_reviewers" and (.reviewers | length) > 0)')" = true
 
   build:
     needs: version
@@ -195,3 +225,61 @@ jobs:
               done
           done
           echo "Packaged bindings passed without Rust or a local replace: $work"
+
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.repository == 'NVIDIA-NeMo/Switchyard' }}
+    needs: [version, consumer]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: go-release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.version.outputs.source }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: go-distribution-candidate
+          path: ${{ runner.temp }}/package
+      - name: Verify checksums
+        working-directory: ${{ runner.temp }}/package
+        run: sha256sum -c SHA256SUMS
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: bindings/go/go.mod
+          cache: false
+      - name: Record tested module checksum
+        id: candidate
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          GOWORK: "off"
+          GOTOOLCHAIN: local
+          GOPROXY: file://${{ runner.temp }}/package/proxy
+          GOSUMDB: "off"
+          GOMODCACHE: ${{ runner.temp }}/candidate-module-cache
+        working-directory: ${{ runner.temp }}
+        run: |
+          sum=$(go mod download -json "github.com/NVIDIA-NeMo/Switchyard/bindings/go@$VERSION" | jq -er .Sum)
+          printf 'sum=%s\n' "$sum" >> "$GITHUB_OUTPUT"
+      - name: Publish immutable Go tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh auth setup-git
+          python3 scripts/release/publish_go_bindings.py "$RUNNER_TEMP/package" --push
+      - name: Check public module resolution
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          EXPECTED_SUM: ${{ steps.candidate.outputs.sum }}
+          GOWORK: "off"
+          GOTOOLCHAIN: local
+          GOPROXY: https://proxy.golang.org,direct
+          GOSUMDB: sum.golang.org
+          GOMODCACHE: ${{ runner.temp }}/published-module-cache
+        working-directory: ${{ runner.temp }}
+        run: |
+          sum=$(go mod download -json "github.com/NVIDIA-NeMo/Switchyard/bindings/go@$VERSION" | jq -er .Sum)
+          test "$sum" = "$EXPECTED_SUM"
