@@ -808,8 +808,6 @@
       
         
       
-        
-      
     
     
     
@@ -1111,34 +1109,6 @@
     
   
     Execution (Stage Router)
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../plan_execute_routing/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Plan/Execute Routing
   
 
     
@@ -2750,7 +2720,7 @@ it with <code>type = "llm_classifier"</code> and <code>mode = "capability"</code
 <a href="#custom-multi-target-routing">custom routing</a> across two or more targets, and
 <a href="#direct-selection">direct selection</a> by an external decision service.</p>
 <p>For a task-level decision-model example with structured instructions, see the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/cf95f086147c3cb496dce55071607922903bf0d4/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev routing profile</a>.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d00e9c41d8a9c404868ec6fa4b9d25d810debc2f/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev routing profile</a>.</p>
 <h2 id="configure-a-classifier-route">Configure a classifier route<a class="headerlink" href="#configure-a-classifier-route" title="Permanent link">&para;</a></h2>
 <p>This example uses the packaged classifier prompt as intended: it estimates
 whether the weak target can complete the task, and keeps the first routing
@@ -2840,7 +2810,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/cf95f086147c3cb496dce55071607922903bf0d4/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/d00e9c41d8a9c404868ec6fa4b9d25d810debc2f/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
