@@ -12,6 +12,8 @@ The first 16 inputs are `new_user_turn`, `task_bytes`, `change_task`, `analysis_
 
 Features use at most 32 recent messages and eight content blocks per message. Copied recent text has a 64 KiB aggregate limit and a 4 KiB limit per string. A cached task excerpt has an 8 KiB aggregate limit. Long text excerpts preserve their beginning and end. New user tasks clear old mutation evidence. The runtime already has the parsed request, so these bounds apply to feature extraction rather than HTTP parsing or the worker model's context.
 
+Tool arguments may arrive as an object or a JSON string. String arguments are validated as borrowed raw values before decoding a bounded command prefix. Truncating the JSON before parsing would hide long edits. Validation can scan the full argument string, while copied command text stays within the same limits. Replays must retain the argument representation used by the live request.
+
 State retains the last selection, whether the current task has mutated files, and the bounded task excerpt. It is scoped by the runtime session and agent identity. A cold scorer joining a conversation after the task has left the recent window has no cached task excerpt. Tool results and command names provide approximate signals. Truncation can omit relevant evidence.
 
 The forward computation is:
@@ -23,6 +25,8 @@ selected = argmax(utilities)
 ```
 
 Ties select the first target. Scores express preferences, not calibrated success probabilities. `cost_weight` adjusts relative preference. It does not enforce a dollar budget, predict future token use, or guarantee monotonic total trajectory cost. Evidence includes the inputs, activations, utilities, and selected index.
+
+Enable `RUST_LOG=info,switchyard.weight_space=debug,switchyard.routing_usage=debug` to capture live decision vectors alongside usage. Decision events contain numeric features and activations, without prompt text. Use captured vectors to check that live feature extraction matches offline reconstruction.
 
 ## Running the experiment
 

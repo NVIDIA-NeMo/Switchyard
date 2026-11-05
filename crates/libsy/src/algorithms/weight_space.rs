@@ -304,10 +304,12 @@ impl Classifier for WeightSpaceClassifier {
         }
         let trace = self.decide(state, request);
         let target = self.targets[trace.selected].clone();
-        driver.set_evidence(serde_json::json!({
+        let evidence = serde_json::json!({
             "source": "weight_space", "schema_version": 1,
             "cost_weight": self.cost_weight, "trace": trace,
-        }));
+        });
+        tracing::debug!(target: "switchyard.weight_space", evidence = %evidence, "Weight space decision");
+        driver.set_evidence(evidence);
         Ok((
             Classification::Scores(vec![Score {
                 target,
@@ -436,6 +438,92 @@ fn bounded_excerpt(text: &str, remaining: &mut usize, truncated: &mut bool) -> S
     excerpt
 }
 
+#[derive(Deserialize)]
+struct RawCommandArguments<'a> {
+    #[serde(borrow)]
+    command: Option<&'a serde_json::value::RawValue>,
+    #[serde(borrow)]
+    cmd: Option<&'a serde_json::value::RawValue>,
+}
+
+fn bounded_command(
+    arguments: &serde_json::Value,
+    remaining: &mut usize,
+    truncated: &mut bool,
+) -> String {
+    if let serde_json::Value::String(text) = arguments {
+        let Ok(args) = serde_json::from_str::<RawCommandArguments<'_>>(text) else {
+            return String::new();
+        };
+        return args
+            .command
+            .or(args.cmd)
+            .map(|raw| bounded_json_string(raw.get(), remaining, truncated))
+            .unwrap_or_default();
+    }
+    let command = arguments
+        .get("command")
+        .or_else(|| arguments.get("cmd"))
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    bounded_text(command, remaining, truncated)
+}
+
+// RawValue validates the JSON while borrowing the potentially large payload.
+fn bounded_json_string(raw: &str, remaining: &mut usize, truncated: &mut bool) -> String {
+    if !raw.starts_with('"') {
+        return String::new();
+    }
+    let limit = (*remaining).min(4096);
+    let bytes = raw.as_bytes();
+    let mut end = 1;
+    let mut decoded_len = 0;
+    while end < raw.len() - 1 {
+        let (encoded, decoded) = if bytes[end] == b'\\' {
+            if bytes.get(end + 1) == Some(&b'u') {
+                let Some(hex) = raw.get(end + 2..end + 6) else {
+                    return String::new();
+                };
+                let Ok(unit) = u16::from_str_radix(hex, 16) else {
+                    return String::new();
+                };
+                if (0xd800..=0xdbff).contains(&unit) {
+                    let low = raw
+                        .get(end + 8..end + 12)
+                        .and_then(|hex| u16::from_str_radix(hex, 16).ok());
+                    if raw.get(end + 6..end + 8) != Some("\\u")
+                        || !low.is_some_and(|unit| (0xdc00..=0xdfff).contains(&unit))
+                    {
+                        return String::new();
+                    }
+                    (12, 4)
+                } else if let Some(character) = char::from_u32(u32::from(unit)) {
+                    (6, character.len_utf8())
+                } else {
+                    return String::new();
+                }
+            } else {
+                (2, 1)
+            }
+        } else {
+            let Some(character) = raw[end..].chars().next() else {
+                break;
+            };
+            (character.len_utf8(), character.len_utf8())
+        };
+        if decoded_len + decoded > limit {
+            break;
+        }
+        decoded_len += decoded;
+        end += encoded;
+    }
+    *truncated |= end < raw.len() - 1;
+    let prefix = format!("{}\"", &raw[..end]);
+    let text = serde_json::from_str::<String>(&prefix).unwrap_or_default();
+    *remaining -= text.len();
+    text
+}
+
 fn bounded_block(
     block: &ContentBlock,
     remaining: &mut usize,
@@ -450,27 +538,11 @@ fn bounded_block(
         ContentBlock::Text { text } => Some(ContentBlock::Text {
             text: bounded_excerpt(text, remaining, truncated),
         }),
-        ContentBlock::ToolCall(call) => {
-            let parsed;
-            let args = match &call.arguments {
-                serde_json::Value::String(text) => {
-                    let text = bounded_text(text, remaining, truncated);
-                    parsed = serde_json::from_str(&text).unwrap_or_default();
-                    &parsed
-                }
-                value => value,
-            };
-            let command = args
-                .get("command")
-                .or_else(|| args.get("cmd"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            Some(ContentBlock::ToolCall(ToolCall {
-                arguments: serde_json::json!({"command": bounded_text(command, remaining, truncated)}),
-                name: bounded_text(&call.name, remaining, truncated),
-                id: bounded_text(&call.id, remaining, truncated),
-            }))
-        }
+        ContentBlock::ToolCall(call) => Some(ContentBlock::ToolCall(ToolCall {
+            arguments: serde_json::json!({"command": bounded_command(&call.arguments, remaining, truncated)}),
+            name: bounded_text(&call.name, remaining, truncated),
+            id: bounded_text(&call.id, remaining, truncated),
+        })),
         ContentBlock::ToolResult(result) => {
             let content = result
                 .content
@@ -582,6 +654,60 @@ mod tests {
         assert!(bounded.truncated);
         let encoded = serde_json::to_string(&bounded.request.llm_request).expect("serialize");
         assert!(encoded.len() < 20_000);
+    }
+
+    #[test]
+    fn long_string_encoded_edits_match_object_arguments() -> Result<()> {
+        let command = format!(
+            "apply_patch <<'PATCH'\n{}\nPATCH",
+            "an edit with 🙂 and \\\"quotes\\\"\n".repeat(1000)
+        );
+        for key in ["cmd", "command"] {
+            let arguments = serde_json::json!({key: command, "unused": "x".repeat(100_000)});
+            let mut req = request();
+            req.llm_request.messages.push(Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolCall(ToolCall {
+                    id: "edit".into(),
+                    name: "exec_command".into(),
+                    arguments: arguments.clone(),
+                })],
+            });
+            let object_trace = classifier(0.0)?.trace(&State::default(), &req);
+            let ContentBlock::ToolCall(call) = &mut req.llm_request.messages[1].content[0] else {
+                panic!("expected tool call");
+            };
+            call.arguments = serde_json::Value::String(arguments.to_string());
+            let string_trace = classifier(0.0)?.trace(&State::default(), &req);
+            assert_eq!(object_trace.inputs[14], 1.0);
+            assert_eq!(string_trace.inputs, object_trace.inputs);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn json_command_prefix_matches_decoded_utf8_bounds() {
+        let raw_cases = [
+            serde_json::to_string(&"aé🙂\\\"\n".repeat(2000)).expect("encode"),
+            format!("\"{}\"", r"\u0061\u00e9\ud83d\ude42\n".repeat(2000)),
+            r#""short \"quoted\" command""#.to_string(),
+            "\"\"".to_string(),
+        ];
+        for raw in raw_cases {
+            let decoded: String = serde_json::from_str(&raw).expect("valid JSON string");
+            for budget in [0, 1, 2, 3, 4, 5, 6, 7, 4095, 4096, 10000] {
+                let mut expected_budget = budget;
+                let mut actual_budget = budget;
+                let mut expected_truncated = false;
+                let mut actual_truncated = false;
+                let expected =
+                    bounded_text(&decoded, &mut expected_budget, &mut expected_truncated);
+                let actual = bounded_json_string(&raw, &mut actual_budget, &mut actual_truncated);
+                assert_eq!(actual, expected);
+                assert_eq!(actual_budget, expected_budget);
+                assert_eq!(actual_truncated, expected_truncated);
+            }
+        }
     }
 
     #[test]
