@@ -2296,6 +2296,158 @@ async fn in_flight_gauge_clears_when_a_run_is_abandoned() -> switchyard_libsy::R
     Ok(())
 }
 
+#[tokio::test]
+async fn routing_buffer_failure_preserves_real_attempt_and_parent_usage()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const MODEL: &str = "obs-routing-failure-usage";
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(concat!(
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"synthetic failure\"},\"usage\":{\"input_tokens\":11,\"output_tokens\":3}}}\n\n"
+        ), "text/event-stream"))
+        .expect(1)
+        .mount(&server).await;
+    let client = Arc::new(TranslatingLlmClient::new(&[ModelConfig::new(
+        MODEL,
+        Backend::OpenAiResponses(HttpBackendConfig {
+            base_url: server.uri(),
+            api_key: None,
+            forward_auth: false,
+            extra_headers: Default::default(),
+            extra_body: Default::default(),
+            omit_body_fields: Default::default(),
+            reasoning_effort: None,
+            max_retries: 1,
+            failure_cooldown: Duration::ZERO,
+            timeout: None,
+        }),
+        None,
+    )])?);
+    let algorithm = Arc::new(RoutingCallAlgo {
+        name: "obs-routing-failure-usage-algo".into(),
+        target: MODEL.into(),
+    });
+    let mut request = request_with_metadata("routing-failure", "routing-failure");
+    request.llm_request.stream = true;
+    assert!(run(algorithm, client, request).await.is_err());
+    let spans = store.spans();
+    for (name, field) in [
+        ("libsy.client_call", "selected_model"),
+        ("libsy.upstream_attempt", "model"),
+    ] {
+        let span = find_span(&spans, name, field, MODEL);
+        assert_eq!(
+            span.fields
+                .get("gen_ai.usage.input_tokens")
+                .map(String::as_str),
+            Some("11")
+        );
+        assert_eq!(
+            span.fields
+                .get("gen_ai.usage.output_tokens")
+                .map(String::as_str),
+            Some("3")
+        );
+        assert_eq!(
+            span.fields.get("outcome").map(String::as_str),
+            Some("error")
+        );
+    }
+    assert_eq!(
+        spans
+            .iter()
+            .filter(|s| s.name == "libsy.upstream_attempt"
+                && s.fields.get("model").is_some_and(|m| m == MODEL))
+            .count(),
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn retries_and_fallback_keep_separate_models_and_attempt_ordinals()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const WEAK: &str = "obs-attempt-fallback-weak";
+    const STRONG: &str = "obs-attempt-fallback-strong";
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(|request: &wiremock::Request| {
+        let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+        if body["model"] == WEAK {
+            ResponseTemplate::new(503).insert_header("retry-after", "0")
+                .set_body_json(json!({"error":{"message":"synthetic failure"},"usage":{"prompt_tokens":11,"completion_tokens":3,"cost":0.02}}))
+        } else {
+            ResponseTemplate::new(200).set_body_json(json!({
+                "id":"fallback", "model":STRONG,
+                "choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":7,"completion_tokens":2,"cost":0.03}
+            }))
+        }
+    }).expect(3).mount(&server).await;
+    let backend = Backend::OpenAiChat(HttpBackendConfig {
+        base_url: server.uri(),
+        api_key: None,
+        forward_auth: false,
+        extra_headers: Default::default(),
+        extra_body: Default::default(),
+        omit_body_fields: Default::default(),
+        reasoning_effort: None,
+        max_retries: 1,
+        failure_cooldown: Duration::ZERO,
+        timeout: None,
+    });
+    let client = Arc::new(TranslatingLlmClient::new(&[
+        ModelConfig::new(WEAK, backend.clone(), None),
+        ModelConfig::new(STRONG, backend, None),
+    ])?);
+    let algorithm = Arc::new(SingleCallAlgo {
+        name: "obs-attempt-fallback-algo".into(),
+        target_set: vec![WEAK.into(), STRONG.into()],
+        metadata: None,
+    });
+    let (model, response) = run(
+        algorithm,
+        client,
+        request_with_metadata("fallback", "fallback"),
+    )
+    .await?;
+    assert_eq!(model.as_str(), WEAK);
+    assert_eq!(response.served_model().unwrap().as_str(), STRONG);
+    let spans = store.spans();
+    for (model, count, cost) in [(WEAK, 2, "0.02"), (STRONG, 1, "0.03")] {
+        let attempts: Vec<_> = spans
+            .iter()
+            .filter(|s| {
+                s.name == "libsy.upstream_attempt"
+                    && s.fields.get("model").is_some_and(|m| m == model)
+            })
+            .collect();
+        assert_eq!(attempts.len(), count);
+        let mut ordinals = Vec::new();
+        for attempt in attempts {
+            ordinals.push(attempt.fields["attempt"].parse::<usize>()?);
+            assert_eq!(attempt.fields["switchyard.usage.provider_cost_usd"], cost);
+        }
+        ordinals.sort();
+        assert_eq!(ordinals, (1..=count).collect::<Vec<_>>());
+        assert_eq!(
+            find_span(&spans, "libsy.client_call", "selected_model", model).fields["switchyard.accounting.attempts"],
+            count.to_string()
+        );
+    }
+    Ok(())
+}
+
 /// Routing keys remain distinct while both routing-time and answer metrics aggregate by provider.
 #[tokio::test]
 async fn target_aliases_preserve_provider_model_metric_labels() -> switchyard_libsy::Result<()> {
@@ -2432,5 +2584,143 @@ async fn target_aliases_preserve_provider_model_metric_labels() -> switchyard_li
             Some(2)
         );
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn host_decision_accounting_records_invocations_instead_of_questions()
+-> switchyard_libsy::Result<()> {
+    use switchyard_protocol::{
+        DecisionKind, DecisionQuestion, DecisionRequest, DecisionResponse, RoutedDecisionClient,
+    };
+    const MODEL: &str = "obs-host-decision-model";
+    const ALGORITHM: &str = "obs-host-decision-algo";
+    struct DecisionAlgo;
+    #[async_trait]
+    impl Algorithm for DecisionAlgo {
+        fn name(&self) -> &str {
+            ALGORITHM
+        }
+        async fn route(
+            self: Arc<Self>,
+            driver: Driver,
+            request: Request,
+        ) -> switchyard_libsy::Result<RoutingOutcome> {
+            for _ in 0..2 {
+                let questions = ["first", "second"]
+                    .into_iter()
+                    .map(|id| {
+                        (
+                            id.into(),
+                            DecisionQuestion {
+                                instructions: json!("private question"),
+                                kind: DecisionKind::Boolean {
+                                    true_description: None,
+                                    false_description: None,
+                                },
+                            },
+                        )
+                    })
+                    .collect();
+                driver
+                    .call_decision(
+                        DecisionRequest {
+                            model: None,
+                            context: json!("private context"),
+                            questions,
+                        },
+                        MODEL.into(),
+                    )
+                    .await?;
+            }
+            Ok(RoutingOutcome::route_to("answer".into(), vec![], request))
+        }
+    }
+    struct DecisionClient;
+    #[async_trait]
+    impl RoutedDecisionClient for DecisionClient {
+        async fn call(&self, request: DecisionRequest) -> Result<DecisionResponse, LlmClientError> {
+            assert_eq!(request.questions.len(), 2);
+            Ok(DecisionResponse {
+                id: Some("host-decision-id".into()),
+                model: None,
+                answers: Default::default(),
+                usage: Usage {
+                    input_tokens: Some(6),
+                    output_tokens: Some(2),
+                    provider_cost: Some(0.01),
+                    ..Default::default()
+                },
+            })
+        }
+    }
+    let _guard = serialize_test().lock().await;
+    let (store, exporter, provider, _, _) = telemetry();
+    let clients = ClientRouter::single_with_decision_clients(
+        Arc::new(UsageClient {
+            usage: Usage::default(),
+        }),
+        [(
+            ModelId::from(MODEL),
+            Arc::new(DecisionClient) as Arc<dyn RoutedDecisionClient>,
+        )]
+        .into(),
+    );
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let seen = observations.clone();
+    switchyard_llm_client::run(
+        Arc::new(DecisionAlgo),
+        clients,
+        request_with_metadata("host-decision-session", "host-decision-correlation"),
+        Arc::new(RuntimeModels::default()),
+        Some(Arc::new(move |event| seen.lock().push(event))),
+    )
+    .await?;
+    let spans = store.spans();
+    let host: Vec<_> = spans
+        .iter()
+        .filter(|s| {
+            s.name == "libsy.decision_client_call"
+                && s.fields
+                    .get("selected_model")
+                    .is_some_and(|model| model == MODEL)
+        })
+        .collect();
+    assert_eq!(host.len(), 2);
+    for span in host {
+        assert_eq!(span.fields["switchyard.accounting.unit"], "decision_call");
+        assert_eq!(
+            span.fields["switchyard.accounting.usage_status"],
+            "complete"
+        );
+        assert_eq!(span.fields["gen_ai.usage.input_tokens"], "6");
+        assert_eq!(span.fields["switchyard.usage.provider_cost_usd"], "0.01");
+        assert_eq!(
+            span.fields["gen_ai.conversation.id"],
+            "host-decision-session"
+        );
+        assert!(!format!("{span:?}").contains("private question"));
+    }
+    assert_eq!(
+        observations
+            .lock()
+            .iter()
+            .filter(|o| matches!(o, RunObservation::DecisionCall(_)))
+            .count(),
+        2
+    );
+    let snapshots = flushed_metrics(exporter, provider);
+    assert_eq!(
+        u64_counter_value(
+            &snapshots,
+            "switchyard.decision_calls",
+            &[
+                ("algorithm", ALGORITHM),
+                ("selected_model", MODEL),
+                ("outcome", "ok")
+            ]
+        ),
+        Some(2)
+    );
     Ok(())
 }

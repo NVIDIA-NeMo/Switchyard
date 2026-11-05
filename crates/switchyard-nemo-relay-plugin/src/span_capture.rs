@@ -22,6 +22,7 @@ use tracing_subscriber::registry::LookupSpan;
 
 const CLIENT_CALL: &str = "libsy.client_call";
 const UPSTREAM_ATTEMPT: &str = "libsy.upstream_attempt";
+const DECISION_CALL: &str = "libsy.decision_client_call";
 const PAYLOAD_TARGET: &str = "switchyard.payload";
 const MAX_PAYLOAD_REDACTION_DEPTH: usize = 64;
 
@@ -200,28 +201,15 @@ impl CapturedSpan {
     }
 
     pub(crate) fn emit(self, runtime: &PluginRuntime) -> Result<(), String> {
-        let mut metadata = Json::Object(self.fields);
-        let output = self.payloads.response.or_else(|| {
-            if self.name == CLIENT_CALL {
-                response_data(&metadata)
-            } else {
-                None
-            }
-        });
-        if let Some(session_id) = metadata.get("gen_ai.conversation.id").cloned() {
-            metadata["session_id"] = session_id;
-        }
-        if let Some(status) = span_status(&metadata) {
-            metadata["otel.status_code"] = status["otel.status_code"].clone();
-        }
-        let input = self.payloads.request.or_else(|| {
-            metadata
-                .get("gen_ai.request.model")
-                .map(|model| serde_json::json!({"model": model}))
-        });
+        let (scope_type, metadata, input, output) = self.projection();
+        let decision = self.name == DECISION_CALL;
         let mut scope = runtime.scope_at(
-            self.name,
-            relay_scope_type(self.name),
+            if decision {
+                "libsy.decision_call"
+            } else {
+                self.name
+            },
+            scope_type,
             None,
             Some(&metadata),
             input.as_ref(),
@@ -234,6 +222,70 @@ impl CapturedSpan {
         let close_result = scope.close_at(output.as_ref(), Some(&metadata), self.ended_at);
         child_result.and(close_result)
     }
+
+    fn projection(&self) -> (ScopeType, Json, Option<Json>, Option<Json>) {
+        let mut metadata = Json::Object(self.fields.clone());
+        if let Some(session) = metadata.get("gen_ai.conversation.id").cloned() {
+            metadata["session_id"] = session;
+        }
+        if let Some(status) = span_status(&metadata) {
+            metadata["otel.status_code"] = status["otel.status_code"].clone();
+        }
+        let unit = metadata
+            .get("switchyard.accounting.unit")
+            .and_then(Json::as_str);
+        let summary = unit == Some("summary");
+        let attempt = unit == Some("completion_attempt");
+        let decision = unit == Some("decision_call");
+        let scope_type = if summary {
+            ScopeType::Custom
+        } else if attempt || decision {
+            ScopeType::Llm
+        } else {
+            relay_scope_type(self.name)
+        };
+        let input = request_data(&metadata, self.payloads.request.as_ref());
+        let output = if summary {
+            metadata["switchyard.accounting.attempt_records"] = Json::from(
+                self.children
+                    .iter()
+                    .filter(|child| {
+                        child
+                            .fields
+                            .get("switchyard.accounting.unit")
+                            .and_then(Json::as_str)
+                            == Some("completion_attempt")
+                    })
+                    .count(),
+            );
+            None
+        } else if attempt || decision || self.name == CLIENT_CALL {
+            // Debug payloads supplement accounting, rather than replacing its usage.
+            let mut output = response_data(&metadata);
+            if let Some(payload) = &self.payloads.response {
+                let value = output.get_or_insert_with(|| serde_json::json!({}));
+                if let (Some(target), Some(source)) = (value.as_object_mut(), payload.as_object()) {
+                    target.extend(source.clone());
+                }
+            }
+            output
+        } else {
+            self.payloads.response.clone()
+        };
+        (scope_type, metadata, input, output)
+    }
+}
+
+// Preserve the requested model alongside an optional debug payload.
+fn request_data(fields: &Json, payload: Option<&Json>) -> Option<Json> {
+    let mut input = payload.cloned().unwrap_or_else(|| serde_json::json!({}));
+    if let Some(model) = fields
+        .get("gen_ai.request.model")
+        .or_else(|| fields.get("selected_model"))
+    {
+        input["model"] = model.clone();
+    }
+    (!input.as_object()?.is_empty()).then_some(input)
 }
 
 fn redact_captured_json(value: Json, redactor: &ProviderKeyRedactor, depth: usize) -> Option<Json> {
@@ -291,9 +343,17 @@ fn response_data(fields: &Json) -> Option<Json> {
             output.insert(target.into(), value.clone());
         }
     }
+    if !output.contains_key("model")
+        && let Some(model) = fields
+            .get("gen_ai.request.model")
+            .or_else(|| fields.get("selected_model"))
+    {
+        output.insert("model".into(), model.clone());
+    }
     let mut usage = Map::new();
     for (source, target) in [
         ("gen_ai.usage.output_tokens", "output_tokens"),
+        ("gen_ai.usage.reasoning.output_tokens", "reasoning_tokens"),
         (
             "gen_ai.usage.cache_read.input_tokens",
             "cache_read_input_tokens",
@@ -306,6 +366,12 @@ fn response_data(fields: &Json) -> Option<Json> {
         if let Some(value) = fields.get(source) {
             usage.insert(target.into(), value.clone());
         }
+    }
+    if let Some(cost) = fields.get("switchyard.usage.provider_cost_usd") {
+        usage.insert(
+            "cost".into(),
+            serde_json::json!({"total": cost, "currency": "USD", "source": "provider_reported"}),
+        );
     }
     if let Some(value) = fields.get("gen_ai.usage.cache_creation_1h.input_tokens") {
         usage.insert(
@@ -336,8 +402,8 @@ fn response_data(fields: &Json) -> Option<Json> {
     if output.is_empty() {
         return None;
     }
-    // Relay decodes scope output with provider codecs. A content-free Messages
-    // response preserves separate cache-read and cache-creation token counts.
+    // A consumer can decode this content-free Messages response with Relay's
+    // codec, preserving separate cache-read and cache-creation token counts.
     output.insert("type".into(), Json::String("message".into()));
     output.insert("role".into(), Json::String("assistant".into()));
     output.insert("content".into(), Json::Array(Vec::new()));
@@ -506,7 +572,11 @@ impl Visit for FieldVisitor<'_> {
 }
 
 fn captures(metadata: &Metadata<'_>) -> bool {
-    metadata.target() == "libsy" && matches!(metadata.name(), CLIENT_CALL | UPSTREAM_ATTEMPT)
+    metadata.target() == "libsy"
+        && matches!(
+            metadata.name(),
+            CLIENT_CALL | UPSTREAM_ATTEMPT | DECISION_CALL
+        )
 }
 
 fn relay_scope_type(name: &str) -> ScopeType {
@@ -521,11 +591,20 @@ fn relay_scope_type(name: &str) -> ScopeType {
 fn is_safe_field(name: &str) -> bool {
     matches!(
         name,
-        "algorithm"
+        "switchyard.accounting.unit"
+            | "switchyard.accounting.attempts"
+            | "switchyard.accounting.usage_status"
+            | "switchyard.accounting.charge_source"
+            | "switchyard.usage.total_tokens"
+            | "switchyard.usage.provider_cost_usd"
+            | "algorithm"
             | "switchyard.candidate"
             | "switchyard.candidate_count"
             | "switchyard.call_phase"
             | "selected_model"
+            | "task_id"
+            | "turn_id"
+            | "correlation_id"
             | "gen_ai.request.model"
             | "gen_ai.request.stream"
             | "gen_ai.request.temperature"
@@ -1002,3 +1081,11 @@ mod tests {
         assert_eq!(attempt.fields["outcome"], "cancelled");
     }
 }
+
+#[cfg(test)]
+#[path = "attempt_tests.rs"]
+mod attempt_tests;
+
+#[cfg(test)]
+#[path = "decision_tests.rs"]
+mod decision_tests;

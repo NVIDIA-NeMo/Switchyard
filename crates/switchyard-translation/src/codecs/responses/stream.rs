@@ -324,19 +324,35 @@ fn decode_responses_stream(
             out.push(LlmResponseChunk::MessageStop { reason });
             out
         }
-        // Carries the Anthropic spelling because every encoder already maps it.
-        Some("response.incomplete") => vec![LlmResponseChunk::MessageStop {
-            reason: Some("max_tokens".to_string()),
-        }],
-        Some("response.failed") => vec![LlmResponseChunk::StreamError {
-            message: event
+        Some(kind @ ("response.incomplete" | "response.failed")) => {
+            let mut out = Vec::new();
+            if let Some(value) = event
                 .get("response")
-                .and_then(|response| response.get("error"))
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or("unknown Responses stream error")
-                .to_string(),
-        }],
+                .and_then(|response| response.get("usage"))
+                .and_then(Value::as_object)
+            {
+                let usage = responses_usage(value);
+                state.usage = usage.clone();
+                state.saw_backend_usage = true;
+                out.push(LlmResponseChunk::Usage(usage));
+            }
+            out.push(if kind == "response.incomplete" {
+                LlmResponseChunk::MessageStop {
+                    reason: Some("max_tokens".into()),
+                }
+            } else {
+                LlmResponseChunk::StreamError {
+                    message: event
+                        .get("response")
+                        .and_then(|response| response.get("error"))
+                        .and_then(|error| error.get("message"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("unknown Responses stream error")
+                        .to_string(),
+                }
+            });
+            out
+        }
         Some("error") => vec![LlmResponseChunk::StreamError {
             message: event
                 .get("message")
@@ -1196,7 +1212,11 @@ fn responses_usage(usage: &serde_json::Map<String, Value>) -> Usage {
         total_tokens: usage
             .get("total_tokens")
             .and_then(Value::as_u64)
-            .or_else(|| Some(aggregate_input_tokens.unwrap_or(0) + output_tokens.unwrap_or(0))),
+            .or_else(|| {
+                aggregate_input_tokens
+                    .zip(output_tokens)
+                    .map(|(input, output)| input + output)
+            }),
         reasoning_tokens: usage
             .get("output_tokens_details")
             .and_then(|details| details.get("reasoning_tokens"))

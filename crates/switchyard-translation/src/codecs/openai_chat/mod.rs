@@ -10,3 +10,5 @@ pub use buffered::OpenAiChatCodec;
 pub use stream::OpenAiChatStreamCodec;
 
 pub(crate) use buffered::{decode_file_source, decode_image_source};
+
+pub(crate) use buffered::decode_openai_usage;

@@ -68,3 +68,16 @@ pub trait FormatCodec: Send + Sync {
         policy: &TranslationPolicy,
     ) -> Result<EncodedResponse>;
 }
+
+/// Extracts reported usage independently of generation success or content validity.
+///
+/// Only the provider's top-level usage object is inspected. Missing or invalid
+/// counters remain unknown; the response is not accepted as a successful result.
+pub fn response_usage(body: &Value, format: crate::WireFormat) -> crate::Usage {
+    let usage = body.get("usage");
+    match format {
+        crate::WireFormat::OpenAiChat => openai_chat::decode_openai_usage(usage),
+        crate::WireFormat::OpenAiResponses => responses::decode_responses_usage(usage),
+        crate::WireFormat::AnthropicMessages => anthropic::decode_anthropic_usage(usage),
+    }
+}
