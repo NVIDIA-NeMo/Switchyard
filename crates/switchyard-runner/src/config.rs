@@ -292,11 +292,12 @@ impl EligibleLanes {
         if matches!(algorithm, AlgorithmSpec::Random { .. }) && !overrides.is_empty() {
             let mut models = BTreeSet::new();
             for name in algorithm.routing_target_names() {
-                if !models.insert(targets[name].name) {
+                let target = targets[name].name;
+                if !models.insert(target) {
                     return Err(LlmClientError::InvalidRequest {
-                        message:
-                            "alternatives collapse distinct random targets onto the same target"
-                                .into(),
+                        message: format!(
+                            "random route alternatives map multiple pool entries to target {target}; use distinct targets"
+                        ),
                     }
                     .into());
                 }
@@ -1860,7 +1861,7 @@ evidence = {{}}
                 config.replace("weak = ['approved_weak']", "weak = ['strong']"),
                 "required target weak",
             ),
-            (random, "collapse distinct random targets"),
+            (random, "multiple pool entries to target approved_weak"),
         ] {
             let runner = Runner::from_toml(&source)?;
             let mut request = Request::default();
