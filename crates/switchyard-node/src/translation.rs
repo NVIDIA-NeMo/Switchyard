@@ -98,12 +98,19 @@ impl NativeTranslationEngine {
         source: String,
         target: String,
         body_json: String,
+        request_extensions_json: Option<String>,
     ) -> napi::Result<String> {
         let body: Value = parse(&body_json)?;
-        translation_output(self.inner.translate_response(
+        let extensions: ProviderExtensions = request_extensions_json
+            .as_deref()
+            .map(parse)
+            .transpose()?
+            .unwrap_or_default();
+        translation_output(self.inner.translate_response_with_extensions(
             source.as_str(),
             target.as_str(),
             &body,
+            &extensions,
             &self.policy,
         ))
     }

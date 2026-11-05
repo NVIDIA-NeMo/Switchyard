@@ -131,8 +131,9 @@ const { body } = engine.encodeRequest(WireFormat.ANTHROPIC_MESSAGES, request);
 Inputs must be JSON objects. Translation failures raise `TranslationError` with
 `kind` and `details`; invalid normalized input has code `ERR_INVALID_REQUEST`.
 
-Calls retain no request context. Pass decoded `request.extensions` as the third
-argument to `encodeResponse` when restoring request-specific tool names. Decoded
-values also retain provider data for same-format replay, so editing normalized
-fields does not automatically replace that saved body. This API handles buffered
-JSON; HTTP transport and SSE streams remain with the caller.
+Calls retain no request context. To restore request-specific tool names, pass
+decoded `request.extensions` as the third argument to `encodeResponse` or the
+fourth argument to `translateResponse`. Decoded values also retain provider data
+for same-format replay, so editing normalized fields does not automatically
+replace that saved body. This API handles buffered JSON; HTTP transport and SSE
+streams remain with the caller.

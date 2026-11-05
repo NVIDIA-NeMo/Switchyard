@@ -24,7 +24,7 @@ interface NativeTranslationEngine {
   decodeResponse(source: string, body: string): string;
   encodeResponse(target: string, response: string, requestExtensions: string | null): string;
   translateRequest(source: string, target: string, body: string): string;
-  translateResponse(source: string, target: string, body: string): string;
+  translateResponse(source: string, target: string, body: string, requestExtensions: string | null): string;
 }
 
 const native: { NativeTranslationEngine: new () => NativeTranslationEngine } =
@@ -80,11 +80,16 @@ export class TranslationEngine {
     return this.#call(() => this.#native.translateRequest(source, target, json(body)));
   }
 
-  /** Translate a complete provider response, returning its body and diagnostics. */
-  translateResponse(source: WireFormat | string, target: WireFormat | string, body: Record<string, unknown>): {
-    body: Record<string, unknown>; diagnostics: unknown[];
-  } {
-    return this.#call(() => this.#native.translateResponse(source, target, json(body)));
+  /** Translate a response, optionally restoring tool details from request extensions. */
+  translateResponse(
+    source: WireFormat | string,
+    target: WireFormat | string,
+    body: Record<string, unknown>,
+    requestExtensions?: Record<string, unknown> | null,
+  ): { body: Record<string, unknown>; diagnostics: unknown[] } {
+    return this.#call(() => this.#native.translateResponse(
+      source, target, json(body), requestExtensions == null ? null : json(requestExtensions),
+    ));
   }
 
   #call<T>(run: () => string): T {

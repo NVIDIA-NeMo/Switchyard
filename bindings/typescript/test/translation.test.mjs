@@ -47,30 +47,35 @@ test("buffered methods accept plain JSON objects across the three formats", () =
   }
 });
 
-test("response encoding restores request tool extensions only when supplied", () => {
+test("response encoding and translation restore request tool extensions only when supplied", () => {
   const engine = new TranslationEngine();
   const { request } = engine.decodeRequest(WireFormat.OPENAI_RESPONSES, {
     input: "Search documentation and list files",
     tools: [{ type: "namespace", name: "mcp__docs", tools: [{ type: "function", name: "search", parameters: {} }] }],
   });
-  const { response } = engine.decodeResponse(WireFormat.OPENAI_CHAT, {
+  const wireResponse = {
     id: "response-1", model: "example", choices: [{ message: {
       role: "assistant", tool_calls: [
         { id: "call-1", type: "function", function: { name: "mcp__docs__search", arguments: '{"query":"streaming"}' } },
       ],
     }, finish_reason: "tool_calls" }],
-  });
-  const plain = engine.encodeResponse(WireFormat.OPENAI_RESPONSES, response);
-  assert.equal(plain.body.output[0].name, "mcp__docs__search");
-  assert.equal(plain.body.output[0].namespace, undefined);
-  const restored = engine.encodeResponse(
-    WireFormat.OPENAI_RESPONSES, response, JSON.parse(JSON.stringify(request.extensions)),
-  );
-  assert.deepEqual(restored.diagnostics, []);
-  const [search] = restored.body.output;
-  assert.equal(search.name, "search");
-  assert.equal(search.namespace, "mcp__docs");
-  assert.deepEqual(engine.encodeResponse(WireFormat.OPENAI_RESPONSES, response), plain);
+  };
+  const { response } = engine.decodeResponse(WireFormat.OPENAI_CHAT, wireResponse);
+  for (const convert of [
+    (...extensions) => engine.encodeResponse(WireFormat.OPENAI_RESPONSES, response, ...extensions),
+    (...extensions) => engine.translateResponse(WireFormat.OPENAI_CHAT, WireFormat.OPENAI_RESPONSES, wireResponse, ...extensions),
+  ]) {
+    const plain = convert();
+    assert.equal(plain.body.output[0].name, "mcp__docs__search");
+    assert.equal(plain.body.output[0].namespace, undefined);
+    const restored = convert(JSON.parse(JSON.stringify(request.extensions)));
+    assert.deepEqual(restored.diagnostics, []);
+    const [search] = restored.body.output;
+    assert.equal(search.name, "search");
+    assert.equal(search.namespace, "mcp__docs");
+    for (const extensions of [undefined, null, {}]) assert.deepEqual(convert(extensions), plain);
+    assert.deepEqual(convert(), plain);
+  }
 });
 
 test("diagnostics and structured translation errors match the Python boundary", () => {
