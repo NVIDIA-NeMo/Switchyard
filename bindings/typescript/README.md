@@ -45,12 +45,17 @@ the factory rejects them.
 
 The iterator yields Python-compatible routing steps:
 
-- `Step.CallModel`: serve `call.request` using `call.models`, then pass a Promise
+- `Step.CallModel`: serve `call.request` using `call.models[0]`, then pass a Promise
   of `LlmResponse.Agg` or `LlmResponse.Stream` to `call.respond`.
 - `Step.CallDecision`: serve `call.request` using `call.model`, then pass a
   Promise of `DecisionResponse` to `call.respond`.
 - `Step.Done`: read the selected models, rewritten requests, optional response,
   and metadata from `step.outcome`.
+
+For routing-time model calls, use only the first candidate and pass failures to
+`call.respond` or `call.fail`. The reply has no field for the actual served logical
+target. When `Step.Done` has no response, the host may try `outcome.selected_model_ids`
+in order to serve the final answer, applying the outcome's requests.
 
 Model calls and selected models use logical target names from the TOML.
 Decision calls use configured provider IDs. The host owns provider settings,
