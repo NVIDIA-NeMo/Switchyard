@@ -1,5 +1,9 @@
 # Switchyard libsy for Node.js
 
+`Runner` loads deployment TOML and checks trusted target requirements before routing.
+`CompositeRouter` exposes host-driven algorithms without Runner's target policy.
+The host serves final completions in both APIs.
+
 TypeScript bindings for composite routing. Rust builds a Decision request and uses
 the caller's answer with local tool signals to select a model. The caller handles
 classifier calls, completion requests, and branch state.
@@ -90,20 +94,64 @@ Store `selection.state` when present and pass it as `options.state` on the next
 request on the same branch. Keep the previous state when the property is absent.
 Treat `CompositeState` as opaque. It carries the judge's tier and stage holds.
 
+## Configured Runner
+
+```ts
+import { readFileSync } from "node:fs";
+import { Runner } from "@switchyard/libsy";
+
+const runner = Runner.fromToml(readFileSync("routes.toml", "utf8"));
+const outcome = await runner.decide({
+  model: "switchyard/coding",
+  messages: [{ role: "user", content: [{ type: "text", text: "Summarize the account notes." }] }],
+}, {
+  requiredLabels: ["private", "customer_data"],
+  taskId: "renewal-42",
+});
+```
+
+The trusted host supplies requirements and an authenticated task ID, not values
+copied from an agent's request body. Targets declare their approved `labels`;
+`eligibility.target_alternatives` supplies ordered replacements for router roles.
+Runner checks those requirements before any routing-time model call. Its native
+clients serve those calls, including judges; the host serves final completions.
+
+Omitted `requiredLabels` leaves requirements unspecified. `[]` supplies an explicit
+empty set. Task scope accumulates requirements in this Runner instance; later
+empty arrays cannot clear them. `require_explicit_requirements = true` requires
+an array on every turn. Switchyard does not classify the data.
+
+`RunnerDecideOptions` names the options; `RunnerDecision` names the result.
+`selectedModelIds` contains approved target names in fallback order. `request` is
+the rewritten selected request; `fallbackRequest`, when present, is the shared
+fallback request. A `candidateRequests[model]` entry takes precedence over both
+and preserves that candidate's own instructions. The host resolves each target
+to its deployment and sets the provider model ID for that attempt. It must stay
+within the returned candidates. `response` is a
+buffered normalized answer if routing already produced one, otherwise `null`.
+
+Input is normalized protocol JSON, not a raw provider request. The input model
+names a configured route; output models are configured target names. Reuse the Runner to
+retain task requirements. This binding does not accept session headers or carry
+per-run libsy state between calls. `Runner.decide` does not accept host client
+callbacks or a cancellation signal; it uses configured client timeouts.
+
 ## Errors and cancellation
 
 | Code | Meaning |
 | --- | --- |
-| `ERR_CONFIG` | Invalid composite options |
-| `ERR_INVALID_REQUEST` | Invalid messages, state, or decision response JSON |
+| `ERR_CONFIG` | Invalid composite options or Runner TOML |
+| `ERR_INVALID_REQUEST` | Invalid input or unsatisfied target requirements |
 | `ERR_ROUTING` | The algorithm or classifier call failed |
 | `ABORT_ERR` | Routing was cancelled; the error name is `AbortError` |
 
-A rejected `decide` call follows `classifier.fail_open`. With `false`, routing
+A rejected `CompositeRouter` callback follows `classifier.fail_open`. With `false`, routing
 fails with the original error as `cause`. With `true`, routing keeps the previous
 tier or uses the stage default. An answer without a usable probability for the
 `apply_cutoff_to` choice (`capable` by default) follows the same policy.
+Runner admission failures always reject before routing.
 
 An aborted signal closes the Rust run and rejects promptly, including while
 `decide` is pending. Late callback results are ignored. Pass the same signal to
 your classifier client to cancel its work too.
+This cancellation applies to `CompositeRouter.route`, not `Runner.decide`.

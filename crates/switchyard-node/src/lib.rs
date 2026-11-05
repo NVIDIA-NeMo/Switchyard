@@ -3,6 +3,8 @@
 
 //! Composite routing with caller-owned decision calls and state.
 
+mod runner;
+
 use std::future::ready;
 use std::sync::Arc;
 

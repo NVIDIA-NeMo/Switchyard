@@ -95,7 +95,14 @@ interface NativeComposite {
   start(messages: string, state: string | null): NativeRun;
 }
 
-const native: { NativeComposite: new (options: string) => NativeComposite } =
+interface NativeRunner {
+  decide(request: string, requiredLabels: readonly string[] | null, taskId: string | null): Promise<string>;
+}
+
+const native: {
+  NativeComposite: new (options: string) => NativeComposite;
+  NativeRunner: new (source: string) => NativeRunner;
+} =
   createRequire(import.meta.url)("./switchyard.node");
 
 function abortError(): Error {
@@ -188,6 +195,69 @@ export class CompositeRouter {
     } finally {
       signal?.removeEventListener("abort", onAbort);
       run?.close();
+    }
+  }
+}
+
+/** Switchyard-normalized request JSON, not a raw provider body.
+ * Input model is a route ID; decision.request.model is the selected target name.
+ */
+export interface RoutingRequest {
+  model: string;
+  [key: string]: unknown;
+}
+
+export interface RunnerDecision {
+  /** Approved target names in fallback order, with the selected target first. */
+  selectedModelIds: string[];
+  request: RoutingRequest;
+  /** Alternate request for fallbacks; the host sets model to the candidate it calls. */
+  fallbackRequest: RoutingRequest | null;
+  /** Candidate-specific request rewrites, keyed by configured target name. */
+  candidateRequests: Record<string, RoutingRequest>;
+  /** Buffered normalized response when the algorithm already produced an answer. */
+  response: Record<string, unknown> | null;
+  metadata: { outcomeId: string; algorithm: string; evidence: unknown } | null;
+}
+
+export interface RunnerDecideOptions {
+  /** Omit for unspecified requirements; [] supplies explicitly empty requirements. */
+  requiredLabels?: readonly string[];
+  /** Trusted task identity used by task-scoped requirements. */
+  taskId?: string;
+}
+
+/** Configured routing with native routing-time clients and host-owned completions. */
+export class Runner {
+  readonly #native: NativeRunner;
+
+  private constructor(source: string) {
+    this.#native = new native.NativeRunner(source);
+  }
+
+  static fromToml(source: string): Runner {
+    try {
+      return new Runner(source);
+    } catch (error) {
+      throw publicError(error);
+    }
+  }
+
+  /** Apply trusted requirements, then route through the same Runner used by Rust hosts. */
+  async decide(request: RoutingRequest, options: RunnerDecideOptions = {}): Promise<RunnerDecision> {
+    try {
+      const { requiredLabels, taskId } = options;
+      if (requiredLabels !== undefined && (!Array.isArray(requiredLabels)
+        || requiredLabels.some((label) => typeof label !== "string"))) {
+        throw new Error("ERR_INVALID_REQUEST: requiredLabels must be an array of strings");
+      }
+      if (taskId !== undefined && typeof taskId !== "string") {
+        throw new Error("ERR_INVALID_REQUEST: taskId must be a string");
+      }
+      const outcome = await this.#native.decide(json(request), requiredLabels ?? null, taskId ?? null);
+      return JSON.parse(outcome);
+    } catch (error) {
+      throw publicError(error);
     }
   }
 }
