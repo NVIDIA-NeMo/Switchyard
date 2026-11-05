@@ -95,7 +95,12 @@ impl RoutingLog {
             reasoning_tokens: usage.reasoning_tokens,
             total_tokens: usage.prompt_tokens.saturating_add(usage.completion_tokens),
         };
-        self.append_record(&record)
+        self.append_record(&record)?;
+        if tracing::enabled!(target: "switchyard.routing_usage", tracing::Level::DEBUG) {
+            let record = serde_json::to_string(&record).map_err(std::io::Error::other)?;
+            tracing::debug!(target: "switchyard.routing_usage", record = %record, "Routing usage recorded");
+        }
+        Ok(())
     }
 
     pub(crate) fn append_outcome(
@@ -437,6 +442,53 @@ fn routing_log_error(path: &Path, error: std::io::Error) -> ServerError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_usage_event_preserves_the_durable_cache_record() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let path = directory.path().join("routing.jsonl");
+        let capture_path = directory.path().join("server.log");
+        let capture = fs::File::create(&capture_path).expect("capture log");
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || capture.try_clone().expect("clone capture"))
+            .finish();
+        let mut log = RoutingLog::new(&path).expect("routing log");
+        let mut usage = Usage {
+            input_tokens: Some(10),
+            output_tokens: Some(7),
+            ..Default::default()
+        };
+        usage.set_cached_input_tokens(90);
+        usage.set_cache_creation_input_tokens(5);
+        tracing::subscriber::with_default(subscriber, || {
+            log.append(
+                RoutingLogContext::from_metadata(&Metadata {
+                    session_id: Some("session".to_string()),
+                    ..Default::default()
+                })
+                .with_route("route", "weight_space"),
+                "efficient",
+                "gpt-6-luna",
+                Some("efficient"),
+                &usage,
+            )
+            .expect("append");
+        });
+        let captured = fs::read_to_string(capture_path).expect("captured event");
+        let (_, record) = captured.split_once("record=").expect("record field");
+        let emitted: serde_json::Value = serde_json::from_str(record.trim()).expect("event json");
+        let durable: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(path).expect("durable log"))
+                .expect("durable json");
+        assert_eq!(emitted, durable);
+        assert_eq!(emitted["prompt_tokens"], 105);
+        assert_eq!(emitted["cached_tokens"], 90);
+        assert_eq!(emitted["cache_creation_tokens"], 5);
+        assert_eq!(emitted["completion_tokens"], 7);
+    }
 
     /// Missing, empty, and non-text origin headers remain absent even with a User-Agent.
     #[test]

@@ -428,6 +428,15 @@ pub enum AlgorithmSpec {
         /// Makes the sequence of choices repeatable.
         seed: Option<u64>,
     },
+    /// Evaluates an explicit neural policy locally over bounded request features.
+    WeightSpace {
+        /// Target names in checkpoint output order.
+        targets: Vec<String>,
+        /// Immutable policy weights and relative cost preferences.
+        weights: libsy::WeightSpaceWeights,
+        /// Penalty applied to the checkpoint cost preferences.
+        cost_weight: f64,
+    },
     /// Sends every request to one target.
     Passthrough {
         /// Target that serves the request.
@@ -999,7 +1008,9 @@ impl AlgorithmSpec {
     pub fn routing_target_names(&self) -> Vec<&str> {
         match self {
             Self::Noop { .. } => Vec::new(),
-            Self::Random { targets, .. } => targets.iter().map(String::as_str).collect(),
+            Self::Random { targets, .. } | Self::WeightSpace { targets, .. } => {
+                targets.iter().map(String::as_str).collect()
+            }
             Self::Passthrough {
                 target, subagents, ..
             } => {
@@ -1144,7 +1155,9 @@ impl AlgorithmSpec {
     fn runtime_model_names(&self, route_name: &str) -> AlgorithmResult<RuntimeModelNames> {
         let parent = match self {
             Self::Noop { .. } => HashMap::new(),
-            Self::Random { targets, .. } | Self::PrefillRouter { targets, .. } => {
+            Self::Random { targets, .. }
+            | Self::WeightSpace { targets, .. }
+            | Self::PrefillRouter { targets, .. } => {
                 category_models([(Category::Any, targets.clone())])
             }
             Self::Passthrough { target, .. } => {
@@ -1278,6 +1291,7 @@ impl AlgorithmSpec {
             )),
             Self::Noop { .. }
             | Self::Random { .. }
+            | Self::WeightSpace { .. }
             | Self::Passthrough { .. }
             | Self::PlanExecute { .. }
             | Self::LlmClassifier { .. }
@@ -1791,6 +1805,24 @@ fn build_algorithm(
 ) -> AlgorithmResult<Arc<dyn Algorithm>> {
     match config {
         AlgorithmSpec::Noop { .. } => Ok(Arc::new(Noop {})),
+        AlgorithmSpec::WeightSpace {
+            targets: names,
+            weights,
+            cost_weight,
+        } => {
+            let models = names
+                .iter()
+                .map(|name| resolve_target_model_id(route_name, name, targets))
+                .collect::<AlgorithmResult<Vec<_>>>()?;
+            let algorithm = libsy::WeightSpaceRouter::new(models, weights.clone(), *cost_weight)
+                .map_err(|error| {
+                    AlgorithmConfigError::with_source(
+                        format!("weight_space route {route_name}: {error}"),
+                        error,
+                    )
+                })?;
+            Ok(Arc::new(algorithm))
+        }
         AlgorithmSpec::Random {
             targets: names,
             weights,

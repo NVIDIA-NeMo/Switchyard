@@ -52,4 +52,9 @@ pub use algorithms::util::stage::{
     set_fall_open,
 };
 
+pub use algorithms::weight_space::{
+    WEIGHT_SPACE_FEATURES, WeightSpaceClassifier, WeightSpaceRouter, WeightSpaceTrace,
+    WeightSpaceWeights,
+};
+
 mod observability;

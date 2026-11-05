@@ -19,6 +19,7 @@ pub mod rand;
 pub mod stage;
 pub mod subagent;
 pub mod vgr;
+pub mod weight_space;
 
 pub mod util;
 

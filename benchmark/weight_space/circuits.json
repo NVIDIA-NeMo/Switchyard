@@ -1,0 +1,43 @@
+{
+  "features": [
+    "new_user_turn",
+    "task_bytes",
+    "change_task",
+    "analysis_task",
+    "history_depth",
+    "recent_turns",
+    "severity",
+    "repeated_failure",
+    "recovery",
+    "mutation_share",
+    "observation_share",
+    "planning_share",
+    "tests_passed",
+    "unknown_streak",
+    "has_mutated",
+    "truncated",
+    "previous_efficient",
+    "previous_capable"
+  ],
+  "neurons": [
+    "initial_planning",
+    "continue_planning",
+    "unresolved_error",
+    "repeated_failure",
+    "failing_edits",
+    "clean_execution",
+    "recovered_execution",
+    "verified_execution",
+    "unproductive_commands",
+    "replanning",
+    "simple_start",
+    "efficient_continuity",
+    "recover_before_handback"
+  ],
+  "targets": [
+    "efficient",
+    "capable"
+  ],
+  "status": "Development revision 2, live task performance unvalidated",
+  "revision": "Ignore isolated soft errors in three escalation circuits and recalibrate initial planning after task excerpt scope correction"
+}
