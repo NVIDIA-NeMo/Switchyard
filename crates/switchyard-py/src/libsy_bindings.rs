@@ -1067,6 +1067,7 @@ impl PyConfiguredAlgorithm {
     }
 
     /// Yield host-owned model and decision calls for a normalized request.
+    /// `required_labels` and `task_id` require `build_configured()`.
     /// Omitted labels mean no assessment; an empty collection supplies no new requirements.
     /// The host authorizes `task_id`, which overrides any task ID in `headers`.
     /// Libsy's per-run `State` is not carried forward, as in `Algorithm.run_stream`.
@@ -1081,19 +1082,19 @@ impl PyConfiguredAlgorithm {
     ) -> PyResult<PyRunStream> {
         let headers = headers.map(from_python).transpose()?;
         let mut request = request_from_python(request, headers)?;
-        if let Some(task_id) = task_id {
-            request.metadata.get_or_insert_default().task_id = Some(task_id);
-        }
         match &self.inner {
             ConfiguredBackend::Bare { algorithm, models } => {
-                if required_labels.is_some() {
+                if required_labels.is_some() || task_id.is_some() {
                     return Err(py_libsy_error(
-                        "target requirements require AlgorithmFactory.build_configured()",
+                        "target requirements or task IDs require AlgorithmFactory.build_configured()",
                     ));
                 }
                 Ok(PyRunStream::new(algorithm, request, Arc::clone(models)))
             }
             ConfiguredBackend::Governed(algorithm) => {
+                if let Some(task_id) = task_id {
+                    request.metadata.get_or_insert_default().task_id = Some(task_id);
+                }
                 if let Some(labels) = required_labels {
                     require_target_labels(&mut request, labels).map_err(py_libsy_error)?;
                 }
