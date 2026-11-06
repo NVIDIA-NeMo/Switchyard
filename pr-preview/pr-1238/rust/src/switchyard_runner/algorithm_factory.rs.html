@@ -49,120 +49,116 @@
 <a href=#49 id=49 data-nosnippet>49</a>        <span class="self">self</span>.config
 <a href=#50 id=50 data-nosnippet>50</a>            .build_algorithms()
 <a href=#51 id=51 data-nosnippet>51</a>            .map(|entry| {
-<a href=#52 id=52 data-nosnippet>52</a>                <span class="kw">let </span>(<span class="kw">_</span>, config, algorithm) = entry<span class="question-mark">?</span>;
-<a href=#53 id=53 data-nosnippet>53</a>                <span class="prelude-val">Ok</span>((config.id.to_string(), algorithm))
+<a href=#52 id=52 data-nosnippet>52</a>                <span class="kw">let </span>setup = entry<span class="question-mark">?</span>;
+<a href=#53 id=53 data-nosnippet>53</a>                <span class="prelude-val">Ok</span>((setup.config.id.to_string(), (setup.algorithm, setup.models)))
 <a href=#54 id=54 data-nosnippet>54</a>            })
 <a href=#55 id=55 data-nosnippet>55</a>            .collect()
 <a href=#56 id=56 data-nosnippet>56</a>    }
 <a href=#57 id=57 data-nosnippet>57</a>
-<a href=#58 id=58 data-nosnippet>58</a>    <span class="doccomment">/// Builds reusable routes that check target requirements before yielding model calls.
-<a href=#59 id=59 data-nosnippet>59</a>    ///
-<a href=#60 id=60 data-nosnippet>60</a>    /// Keys are configured route IDs. The host executes all yielded calls and final answer
-<a href=#61 id=61 data-nosnippet>61</a>    /// candidates, including their prompts, provider settings, credentials and transport.
-<a href=#62 id=62 data-nosnippet>62</a>    /// No provider clients are constructed and no credential values are read.
-<a href=#63 id=63 data-nosnippet>63</a>    </span><span class="kw">pub fn </span>build_configured(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;BTreeMap&lt;String, ConfiguredAlgorithm&gt;, RunnerError&gt; {
-<a href=#64 id=64 data-nosnippet>64</a>        <span class="self">self</span>.config.validate()<span class="question-mark">?</span>;
-<a href=#65 id=65 data-nosnippet>65</a>        <span class="self">self</span>.config.validate_target_approvals()<span class="question-mark">?</span>;
-<a href=#66 id=66 data-nosnippet>66</a>        <span class="self">self</span>.config
-<a href=#67 id=67 data-nosnippet>67</a>            .build_algorithms()
-<a href=#68 id=68 data-nosnippet>68</a>            .map(|entry| {
-<a href=#69 id=69 data-nosnippet>69</a>                <span class="kw">let </span>(name, route, (algorithm, <span class="kw-2">mut </span>models)) = entry<span class="question-mark">?</span>;
-<a href=#70 id=70 data-nosnippet>70</a>                <span class="kw">let </span>policy = <span class="self">self</span>.config.eligibility_policy(name);
-<a href=#71 id=71 data-nosnippet>71</a>                <span class="kw">if </span>policy.is_some() {
-<a href=#72 id=72 data-nosnippet>72</a>                    <span class="self">self</span>.config.validate_decision_models(name)<span class="question-mark">?</span>;
-<a href=#73 id=73 data-nosnippet>73</a>                    models = models.with_target_restriction();
-<a href=#74 id=74 data-nosnippet>74</a>                }
-<a href=#75 id=75 data-nosnippet>75</a>                <span class="prelude-val">Ok</span>((
-<a href=#76 id=76 data-nosnippet>76</a>                    route.id.to_string(),
-<a href=#77 id=77 data-nosnippet>77</a>                    ConfiguredAlgorithm {
-<a href=#78 id=78 data-nosnippet>78</a>                        standard: AlgorithmSetup {
-<a href=#79 id=79 data-nosnippet>79</a>                            algorithm,
-<a href=#80 id=80 data-nosnippet>80</a>                            models: Arc::new(models),
-<a href=#81 id=81 data-nosnippet>81</a>                        },
-<a href=#82 id=82 data-nosnippet>82</a>                        eligibility: policy.map(|policy| ConfiguredEligibility {
-<a href=#83 id=83 data-nosnippet>83</a>                            policy,
-<a href=#84 id=84 data-nosnippet>84</a>                            deployment: Arc::clone(<span class="kw-2">&amp;</span><span class="self">self</span>.config),
-<a href=#85 id=85 data-nosnippet>85</a>                            route_name: name.to_owned(),
-<a href=#86 id=86 data-nosnippet>86</a>                            setups: Mutex::default(),
-<a href=#87 id=87 data-nosnippet>87</a>                        }),
-<a href=#88 id=88 data-nosnippet>88</a>                    },
-<a href=#89 id=89 data-nosnippet>89</a>                ))
-<a href=#90 id=90 data-nosnippet>90</a>            })
-<a href=#91 id=91 data-nosnippet>91</a>            .collect()
-<a href=#92 id=92 data-nosnippet>92</a>    }
-<a href=#93 id=93 data-nosnippet>93</a>}
-<a href=#94 id=94 data-nosnippet>94</a>
-<a href=#95 id=95 data-nosnippet>95</a><span class="attr">#[derive(Clone)]
-<a href=#96 id=96 data-nosnippet>96</a></span><span class="kw">struct </span>AlgorithmSetup {
-<a href=#97 id=97 data-nosnippet>97</a>    algorithm: Arc&lt;<span class="kw">dyn </span>Algorithm&gt;,
-<a href=#98 id=98 data-nosnippet>98</a>    models: Arc&lt;RuntimeModels&gt;,
-<a href=#99 id=99 data-nosnippet>99</a>}
-<a href=#100 id=100 data-nosnippet>100</a>
-<a href=#101 id=101 data-nosnippet>101</a><span class="kw">struct </span>ConfiguredEligibility {
-<a href=#102 id=102 data-nosnippet>102</a>    policy: EligibilityPolicy,
-<a href=#103 id=103 data-nosnippet>103</a>    deployment: Arc&lt;DeploymentConfig&gt;,
-<a href=#104 id=104 data-nosnippet>104</a>    route_name: String,
-<a href=#105 id=105 data-nosnippet>105</a>    setups: Mutex&lt;BTreeMap&lt;TargetBindings, AlgorithmSetup&gt;&gt;,
-<a href=#106 id=106 data-nosnippet>106</a>}
-<a href=#107 id=107 data-nosnippet>107</a>
-<a href=#108 id=108 data-nosnippet>108</a><span class="kw">impl </span>ConfiguredEligibility {
-<a href=#109 id=109 data-nosnippet>109</a>    <span class="kw">fn </span>select(
-<a href=#110 id=110 data-nosnippet>110</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#111 id=111 data-nosnippet>111</a>        request: <span class="kw-2">&amp;</span>Request,
-<a href=#112 id=112 data-nosnippet>112</a>        standard: <span class="kw-2">&amp;</span>AlgorithmSetup,
-<a href=#113 id=113 data-nosnippet>113</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;AlgorithmSetup, RunnerError&gt; {
-<a href=#114 id=114 data-nosnippet>114</a>        <span class="kw">let </span>requirements = <span class="self">self</span>.policy.admit(request)<span class="question-mark">?</span>;
-<a href=#115 id=115 data-nosnippet>115</a>        <span class="kw">let </span><span class="prelude-val">Some</span>(bindings) = <span class="self">self
-<a href=#116 id=116 data-nosnippet>116</a>            </span>.deployment
-<a href=#117 id=117 data-nosnippet>117</a>            .resolve_target_bindings(<span class="kw-2">&amp;</span><span class="self">self</span>.route_name, requirements.required_labels())<span class="question-mark">?
-<a href=#118 id=118 data-nosnippet>118</a>        </span><span class="kw">else </span>{
-<a href=#119 id=119 data-nosnippet>119</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(standard.clone());
-<a href=#120 id=120 data-nosnippet>120</a>        };
-<a href=#121 id=121 data-nosnippet>121</a>        <span class="comment">// Building a setup is synchronous; no model I/O occurs under the lock.
-<a href=#122 id=122 data-nosnippet>122</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>setups = <span class="self">self</span>.setups.lock();
-<a href=#123 id=123 data-nosnippet>123</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(setup) = setups.get(<span class="kw-2">&amp;</span>bindings) {
-<a href=#124 id=124 data-nosnippet>124</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(setup.clone());
-<a href=#125 id=125 data-nosnippet>125</a>        }
-<a href=#126 id=126 data-nosnippet>126</a>        <span class="kw">if </span>setups.len() &gt;= MAX_ELIGIBLE_LANES {
-<a href=#127 id=127 data-nosnippet>127</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(LlmClientError::TemporarilyUnavailable.into());
-<a href=#128 id=128 data-nosnippet>128</a>        }
-<a href=#129 id=129 data-nosnippet>129</a>        <span class="kw">let </span>(algorithm, models) = <span class="self">self
-<a href=#130 id=130 data-nosnippet>130</a>            </span>.deployment
-<a href=#131 id=131 data-nosnippet>131</a>            .build_bound_algorithm(<span class="kw-2">&amp;</span><span class="self">self</span>.route_name, <span class="kw-2">&amp;</span>bindings)<span class="question-mark">?</span>;
-<a href=#132 id=132 data-nosnippet>132</a>        <span class="kw">let </span>setup = AlgorithmSetup {
-<a href=#133 id=133 data-nosnippet>133</a>            algorithm,
-<a href=#134 id=134 data-nosnippet>134</a>            models: Arc::new(models),
-<a href=#135 id=135 data-nosnippet>135</a>        };
-<a href=#136 id=136 data-nosnippet>136</a>        setups.insert(bindings, setup.clone());
-<a href=#137 id=137 data-nosnippet>137</a>        <span class="prelude-val">Ok</span>(setup)
-<a href=#138 id=138 data-nosnippet>138</a>    }
-<a href=#139 id=139 data-nosnippet>139</a>}
-<a href=#140 id=140 data-nosnippet>140</a>
-<a href=#141 id=141 data-nosnippet>141</a><span class="doccomment">/// A reusable algorithm that checks target requirements before host-owned model calls.
-<a href=#142 id=142 data-nosnippet>142</a></span><span class="kw">pub struct </span>ConfiguredAlgorithm {
-<a href=#143 id=143 data-nosnippet>143</a>    standard: AlgorithmSetup,
-<a href=#144 id=144 data-nosnippet>144</a>    eligibility: <span class="prelude-ty">Option</span>&lt;ConfiguredEligibility&gt;,
-<a href=#145 id=145 data-nosnippet>145</a>}
-<a href=#146 id=146 data-nosnippet>146</a>
-<a href=#147 id=147 data-nosnippet>147</a><span class="kw">impl </span>ConfiguredAlgorithm {
-<a href=#148 id=148 data-nosnippet>148</a>    <span class="doccomment">/// Checks requirements before returning model or Decision work for the host to execute.
-<a href=#149 id=149 data-nosnippet>149</a>    ///
-<a href=#150 id=150 data-nosnippet>150</a>    /// Invalid requirements or unavailable approved targets return an error without starting
-<a href=#151 id=151 data-nosnippet>151</a>    /// the algorithm. Requires a Tokio runtime. Reuse this handle to retain task requirements
-<a href=#152 id=152 data-nosnippet>152</a>    /// and algorithm-owned state; `state` supplies libsy's separate per-run routing state.
-<a href=#153 id=153 data-nosnippet>153</a>    /// The host must keep final answer attempts within the returned candidates.
-<a href=#154 id=154 data-nosnippet>154</a>    </span><span class="kw">pub fn </span>run_stream(<span class="kw-2">&amp;</span><span class="self">self</span>, request: Request, state: State) -&gt; <span class="prelude-ty">Result</span>&lt;StepStream, RunnerError&gt; {
-<a href=#155 id=155 data-nosnippet>155</a>        <span class="kw">let </span>setup = <span class="kw">match </span><span class="kw-2">&amp;</span><span class="self">self</span>.eligibility {
-<a href=#156 id=156 data-nosnippet>156</a>            <span class="prelude-val">Some</span>(eligibility) =&gt; eligibility.select(<span class="kw-2">&amp;</span>request, <span class="kw-2">&amp;</span><span class="self">self</span>.standard)<span class="question-mark">?</span>,
-<a href=#157 id=157 data-nosnippet>157</a>            <span class="prelude-val">None </span><span class="kw">if </span>has_target_requirements(<span class="kw-2">&amp;</span>request) =&gt; {
-<a href=#158 id=158 data-nosnippet>158</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(LlmClientError::InvalidRequest {
-<a href=#159 id=159 data-nosnippet>159</a>                    message: <span class="string">"route does not accept target requirements"</span>.into(),
-<a href=#160 id=160 data-nosnippet>160</a>                }
-<a href=#161 id=161 data-nosnippet>161</a>                .into());
-<a href=#162 id=162 data-nosnippet>162</a>            }
-<a href=#163 id=163 data-nosnippet>163</a>            <span class="prelude-val">None </span>=&gt; <span class="self">self</span>.standard.clone(),
-<a href=#164 id=164 data-nosnippet>164</a>        };
-<a href=#165 id=165 data-nosnippet>165</a>        <span class="prelude-val">Ok</span>(setup.algorithm.run_stream(request, setup.models, state))
-<a href=#166 id=166 data-nosnippet>166</a>    }
-<a href=#167 id=167 data-nosnippet>167</a>}
+<a href=#58 id=58 data-nosnippet>58</a>    <span class="doccomment">/// Builds reusable algorithms keyed by route ID that check target requirements.
+<a href=#59 id=59 data-nosnippet>59</a>    /// The host handles model/Decision calls, approved answer/fallback targets, prompts,
+<a href=#60 id=60 data-nosnippet>60</a>    /// provider settings, credentials and transport. No provider clients are built or credentials read.
+<a href=#61 id=61 data-nosnippet>61</a>    </span><span class="kw">pub fn </span>build_configured(<span class="kw-2">&amp;</span><span class="self">self</span>) -&gt; <span class="prelude-ty">Result</span>&lt;BTreeMap&lt;String, ConfiguredAlgorithm&gt;, RunnerError&gt; {
+<a href=#62 id=62 data-nosnippet>62</a>        <span class="self">self</span>.config.validate()<span class="question-mark">?</span>;
+<a href=#63 id=63 data-nosnippet>63</a>        <span class="self">self</span>.config.validate_target_approvals()<span class="question-mark">?</span>;
+<a href=#64 id=64 data-nosnippet>64</a>        <span class="self">self</span>.config
+<a href=#65 id=65 data-nosnippet>65</a>            .build_algorithms()
+<a href=#66 id=66 data-nosnippet>66</a>            .map(|entry| {
+<a href=#67 id=67 data-nosnippet>67</a>                <span class="kw">let </span><span class="kw-2">mut </span>setup = entry<span class="question-mark">?</span>;
+<a href=#68 id=68 data-nosnippet>68</a>                <span class="kw">let </span>policy = <span class="self">self</span>.config.eligibility_policy(setup.route_name);
+<a href=#69 id=69 data-nosnippet>69</a>                <span class="kw">if </span>policy.is_some() {
+<a href=#70 id=70 data-nosnippet>70</a>                    <span class="self">self</span>.config.validate_decision_models(setup.route_name)<span class="question-mark">?</span>;
+<a href=#71 id=71 data-nosnippet>71</a>                    setup.models = setup.models.with_target_restriction();
+<a href=#72 id=72 data-nosnippet>72</a>                }
+<a href=#73 id=73 data-nosnippet>73</a>                <span class="prelude-val">Ok</span>((
+<a href=#74 id=74 data-nosnippet>74</a>                    setup.config.id.to_string(),
+<a href=#75 id=75 data-nosnippet>75</a>                    ConfiguredAlgorithm {
+<a href=#76 id=76 data-nosnippet>76</a>                        standard: AlgorithmSetup {
+<a href=#77 id=77 data-nosnippet>77</a>                            algorithm: setup.algorithm,
+<a href=#78 id=78 data-nosnippet>78</a>                            models: Arc::new(setup.models),
+<a href=#79 id=79 data-nosnippet>79</a>                        },
+<a href=#80 id=80 data-nosnippet>80</a>                        eligibility: policy.map(|policy| ConfiguredEligibility {
+<a href=#81 id=81 data-nosnippet>81</a>                            policy,
+<a href=#82 id=82 data-nosnippet>82</a>                            deployment: Arc::clone(<span class="kw-2">&amp;</span><span class="self">self</span>.config),
+<a href=#83 id=83 data-nosnippet>83</a>                            route_name: setup.route_name.to_owned(),
+<a href=#84 id=84 data-nosnippet>84</a>                            setups: Mutex::default(),
+<a href=#85 id=85 data-nosnippet>85</a>                        }),
+<a href=#86 id=86 data-nosnippet>86</a>                    },
+<a href=#87 id=87 data-nosnippet>87</a>                ))
+<a href=#88 id=88 data-nosnippet>88</a>            })
+<a href=#89 id=89 data-nosnippet>89</a>            .collect()
+<a href=#90 id=90 data-nosnippet>90</a>    }
+<a href=#91 id=91 data-nosnippet>91</a>}
+<a href=#92 id=92 data-nosnippet>92</a>
+<a href=#93 id=93 data-nosnippet>93</a><span class="attr">#[derive(Clone)]
+<a href=#94 id=94 data-nosnippet>94</a></span><span class="kw">struct </span>AlgorithmSetup {
+<a href=#95 id=95 data-nosnippet>95</a>    algorithm: Arc&lt;<span class="kw">dyn </span>Algorithm&gt;,
+<a href=#96 id=96 data-nosnippet>96</a>    models: Arc&lt;RuntimeModels&gt;,
+<a href=#97 id=97 data-nosnippet>97</a>}
+<a href=#98 id=98 data-nosnippet>98</a>
+<a href=#99 id=99 data-nosnippet>99</a><span class="kw">struct </span>ConfiguredEligibility {
+<a href=#100 id=100 data-nosnippet>100</a>    policy: EligibilityPolicy,
+<a href=#101 id=101 data-nosnippet>101</a>    deployment: Arc&lt;DeploymentConfig&gt;,
+<a href=#102 id=102 data-nosnippet>102</a>    route_name: String,
+<a href=#103 id=103 data-nosnippet>103</a>    setups: Mutex&lt;BTreeMap&lt;TargetBindings, AlgorithmSetup&gt;&gt;,
+<a href=#104 id=104 data-nosnippet>104</a>}
+<a href=#105 id=105 data-nosnippet>105</a>
+<a href=#106 id=106 data-nosnippet>106</a><span class="kw">impl </span>ConfiguredEligibility {
+<a href=#107 id=107 data-nosnippet>107</a>    <span class="kw">fn </span>select(
+<a href=#108 id=108 data-nosnippet>108</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#109 id=109 data-nosnippet>109</a>        request: <span class="kw-2">&amp;</span>Request,
+<a href=#110 id=110 data-nosnippet>110</a>        standard: <span class="kw-2">&amp;</span>AlgorithmSetup,
+<a href=#111 id=111 data-nosnippet>111</a>    ) -&gt; <span class="prelude-ty">Result</span>&lt;AlgorithmSetup, RunnerError&gt; {
+<a href=#112 id=112 data-nosnippet>112</a>        <span class="kw">let </span>requirements = <span class="self">self</span>.policy.admit(request)<span class="question-mark">?</span>;
+<a href=#113 id=113 data-nosnippet>113</a>        <span class="kw">let </span><span class="prelude-val">Some</span>(bindings) = <span class="self">self
+<a href=#114 id=114 data-nosnippet>114</a>            </span>.deployment
+<a href=#115 id=115 data-nosnippet>115</a>            .select_eligible_targets(<span class="kw-2">&amp;</span><span class="self">self</span>.route_name, requirements.required_labels())<span class="question-mark">?
+<a href=#116 id=116 data-nosnippet>116</a>        </span><span class="kw">else </span>{
+<a href=#117 id=117 data-nosnippet>117</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(standard.clone());
+<a href=#118 id=118 data-nosnippet>118</a>        };
+<a href=#119 id=119 data-nosnippet>119</a>        <span class="comment">// No model I/O under this lock.
+<a href=#120 id=120 data-nosnippet>120</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>setups = <span class="self">self</span>.setups.lock();
+<a href=#121 id=121 data-nosnippet>121</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(setup) = setups.get(<span class="kw-2">&amp;</span>bindings) {
+<a href=#122 id=122 data-nosnippet>122</a>            <span class="kw">return </span><span class="prelude-val">Ok</span>(setup.clone());
+<a href=#123 id=123 data-nosnippet>123</a>        }
+<a href=#124 id=124 data-nosnippet>124</a>        <span class="kw">if </span>setups.len() &gt;= MAX_ELIGIBLE_LANES {
+<a href=#125 id=125 data-nosnippet>125</a>            <span class="kw">return </span><span class="prelude-val">Err</span>(LlmClientError::TemporarilyUnavailable.into());
+<a href=#126 id=126 data-nosnippet>126</a>        }
+<a href=#127 id=127 data-nosnippet>127</a>        <span class="kw">let </span>(algorithm, models) = <span class="self">self
+<a href=#128 id=128 data-nosnippet>128</a>            </span>.deployment
+<a href=#129 id=129 data-nosnippet>129</a>            .build_bound_algorithm(<span class="kw-2">&amp;</span><span class="self">self</span>.route_name, <span class="kw-2">&amp;</span>bindings)<span class="question-mark">?</span>;
+<a href=#130 id=130 data-nosnippet>130</a>        <span class="kw">let </span>setup = AlgorithmSetup {
+<a href=#131 id=131 data-nosnippet>131</a>            algorithm,
+<a href=#132 id=132 data-nosnippet>132</a>            models: Arc::new(models),
+<a href=#133 id=133 data-nosnippet>133</a>        };
+<a href=#134 id=134 data-nosnippet>134</a>        setups.insert(bindings, setup.clone());
+<a href=#135 id=135 data-nosnippet>135</a>        <span class="prelude-val">Ok</span>(setup)
+<a href=#136 id=136 data-nosnippet>136</a>    }
+<a href=#137 id=137 data-nosnippet>137</a>}
+<a href=#138 id=138 data-nosnippet>138</a>
+<a href=#139 id=139 data-nosnippet>139</a><span class="doccomment">/// A reusable algorithm with target requirement checks.
+<a href=#140 id=140 data-nosnippet>140</a></span><span class="kw">pub struct </span>ConfiguredAlgorithm {
+<a href=#141 id=141 data-nosnippet>141</a>    standard: AlgorithmSetup,
+<a href=#142 id=142 data-nosnippet>142</a>    eligibility: <span class="prelude-ty">Option</span>&lt;ConfiguredEligibility&gt;,
+<a href=#143 id=143 data-nosnippet>143</a>}
+<a href=#144 id=144 data-nosnippet>144</a>
+<a href=#145 id=145 data-nosnippet>145</a><span class="kw">impl </span>ConfiguredAlgorithm {
+<a href=#146 id=146 data-nosnippet>146</a>    <span class="doccomment">/// Checks requirements before yielding model or Decision calls.
+<a href=#147 id=147 data-nosnippet>147</a>    /// Invalid requirements or unavailable approved targets fail before the algorithm starts.
+<a href=#148 id=148 data-nosnippet>148</a>    /// Requires Tokio. Reuse the handle to retain task requirements and algorithm-owned state;
+<a href=#149 id=149 data-nosnippet>149</a>    /// `state` is per-run routing state. Answer/fallback attempts must stay within returned candidates.
+<a href=#150 id=150 data-nosnippet>150</a>    </span><span class="kw">pub fn </span>run_stream(<span class="kw-2">&amp;</span><span class="self">self</span>, request: Request, state: State) -&gt; <span class="prelude-ty">Result</span>&lt;StepStream, RunnerError&gt; {
+<a href=#151 id=151 data-nosnippet>151</a>        <span class="kw">let </span>setup = <span class="kw">match </span><span class="kw-2">&amp;</span><span class="self">self</span>.eligibility {
+<a href=#152 id=152 data-nosnippet>152</a>            <span class="prelude-val">Some</span>(eligibility) =&gt; eligibility.select(<span class="kw-2">&amp;</span>request, <span class="kw-2">&amp;</span><span class="self">self</span>.standard)<span class="question-mark">?</span>,
+<a href=#153 id=153 data-nosnippet>153</a>            <span class="prelude-val">None </span><span class="kw">if </span>has_target_requirements(<span class="kw-2">&amp;</span>request) =&gt; {
+<a href=#154 id=154 data-nosnippet>154</a>                <span class="kw">return </span><span class="prelude-val">Err</span>(LlmClientError::InvalidRequest {
+<a href=#155 id=155 data-nosnippet>155</a>                    message: <span class="string">"route does not accept target requirements"</span>.into(),
+<a href=#156 id=156 data-nosnippet>156</a>                }
+<a href=#157 id=157 data-nosnippet>157</a>                .into());
+<a href=#158 id=158 data-nosnippet>158</a>            }
+<a href=#159 id=159 data-nosnippet>159</a>            <span class="prelude-val">None </span>=&gt; <span class="self">self</span>.standard.clone(),
+<a href=#160 id=160 data-nosnippet>160</a>        };
+<a href=#161 id=161 data-nosnippet>161</a>        <span class="prelude-val">Ok</span>(setup.algorithm.run_stream(request, setup.models, state))
+<a href=#162 id=162 data-nosnippet>162</a>    }
+<a href=#163 id=163 data-nosnippet>163</a>}
 </code></pre></div></section></main></body></html>
