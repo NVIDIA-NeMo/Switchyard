@@ -3,11 +3,15 @@
 
 //! Configured factories enforce target requirements before host-owned calls.
 
+use std::collections::BTreeMap;
+
 use futures_util::StreamExt;
 use libsy::{RoutingOutcome, State, Step, StepStream};
 use serde_json::json;
 use switchyard_protocol::{LlmResponse, Request, Response, text_request, text_response};
-use switchyard_runner::{AlgorithmFactory, Runner, require_target_labels};
+use switchyard_runner::{AlgorithmFactory, Runner, require_target_labels, route_targets};
+use wiremock::matchers::{body_partial_json, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const MISSING_KEY: &str = "SWITCHYARD_FACTORY_TEST_KEY_THAT_IS_NOT_SET";
 const STAGE: &str = "type = 'stage_router'\nefficient_target = 'fast'\ncapable_target = 'capable'\npicker = 'efficient_first'\nconfidence_threshold = 0.6";
@@ -129,6 +133,70 @@ async fn configured_factory_matches_runner_without_reading_credentials() {
     }
 }
 
+#[tokio::test]
+async fn host_resolves_alternatives_from_the_configured_handle() {
+    let standard = MockServer::start().await;
+    let approved = MockServer::start().await;
+    for (server, client) in [(&standard, "standard"), (&approved, "approved")] {
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_partial_json(json!({"model": "shared-model"})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"client": client})))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+    let clients = BTreeMap::from([("standard", standard.uri()), ("approved", approved.uri())]);
+    let source = deployment("request", STAGE, "");
+    let configured = AlgorithmFactory::from_toml(&source)
+        .unwrap()
+        .build_configured()
+        .unwrap();
+    let route = &configured["switchyard/coding"];
+    assert_eq!(route.target_models().len(), 6);
+    let roles = route_targets(&source).unwrap();
+    assert_eq!(
+        roles[0]
+            .answer_targets
+            .iter()
+            .map(|target| target.name.as_str())
+            .collect::<Vec<_>>(),
+        ["capable", "fast"]
+    );
+    assert!(roles[0].judge_targets.is_empty());
+
+    let http = reqwest::Client::new();
+    for (labels, expected) in [(&[] as &[&str], "standard"), (&["private"], "approved")] {
+        let selected = outcome(
+            route
+                .run_stream(request(None, Some(labels)), State::default())
+                .unwrap(),
+        )
+        .await;
+        let target = &route.target_models()[&selected.selected_model_ids[0]];
+        let response: serde_json::Value = http
+            .post(format!(
+                "{}/v1/chat/completions",
+                clients[target.client.as_str()]
+            ))
+            .json(&json!({
+                "model": target.id,
+                "messages": [{"role": "user", "content": "Summarize these notes."}]
+            }))
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(response["client"], expected);
+    }
+    standard.verify().await;
+    approved.verify().await;
+}
+
 #[test]
 fn invalid_requirements_fail_before_a_stream_is_created() {
     let configured = AlgorithmFactory::from_toml(&deployment("task", STAGE, ""))
@@ -209,7 +277,8 @@ async fn approved_judges_are_served_by_the_host() {
                 .unwrap()
                 .build_configured()
                 .unwrap();
-        let mut stream = configured["switchyard/coding"]
+        let route = &configured["switchyard/coding"];
+        let mut stream = route
             .run_stream(
                 request(None, Some(&["private", "customer_data"])),
                 State::default(),
@@ -219,6 +288,9 @@ async fn approved_judges_are_served_by_the_host() {
             Step::CallModel(call) => {
                 assert!(!decision);
                 assert_eq!(call.models, ["approved_judge"]);
+                let target = &route.target_models()[&call.models[0]];
+                assert_eq!(target.client, "approved");
+                assert_eq!(target.id, "approved_judge");
                 let response = Response {
                     llm_response: LlmResponse::Agg(text_response(
                         None,
@@ -235,6 +307,9 @@ async fn approved_judges_are_served_by_the_host() {
                 assert!(decision);
                 assert_eq!(call.model, "decision/approved");
                 assert_eq!(call.request.model.as_ref(), Some(&call.model));
+                let target = &route.target_models()[&call.model];
+                assert_eq!(target.client, "scoring");
+                assert_eq!(target.id, call.model);
                 let response = serde_json::from_value(json!({
                     "answers": {
                         "route": {

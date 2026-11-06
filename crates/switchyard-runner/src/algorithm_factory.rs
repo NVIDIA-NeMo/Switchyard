@@ -8,11 +8,11 @@ use std::sync::Arc;
 
 use libsy::{Algorithm, RuntimeModels, State, StepStream};
 use parking_lot::Mutex;
-use switchyard_protocol::{LlmClientError, Request};
+use switchyard_protocol::{LlmClientError, ModelId, Request};
 
-use crate::RunnerError;
 use crate::config::{DeploymentConfig, MAX_ELIGIBLE_LANES, TargetBindings};
 use crate::eligibility::{EligibilityPolicy, has_target_requirements};
+use crate::{RunnerError, TargetModel};
 
 pub(crate) type AlgorithmAndModels = (Arc<dyn Algorithm>, RuntimeModels);
 
@@ -74,6 +74,7 @@ impl AlgorithmFactory {
                 Ok((
                     setup.config.id.to_string(),
                     ConfiguredAlgorithm {
+                        target_models: self.config.route_target_models(setup.route_name)?,
                         standard: AlgorithmSetup {
                             algorithm: setup.algorithm,
                             models: Arc::new(setup.models),
@@ -141,9 +142,17 @@ impl ConfiguredEligibility {
 pub struct ConfiguredAlgorithm {
     standard: AlgorithmSetup,
     eligibility: Option<ConfiguredEligibility>,
+    target_models: BTreeMap<ModelId, TargetModel>,
 }
 
 impl ConfiguredAlgorithm {
+    /// All possible call targets, including judges, subagents and ordered alternatives.
+    /// Keys are LLM target names or Decision provider model IDs, matching emitted calls.
+    /// This is a lookup, not an eligible pool; execute only returned call/outcome candidates.
+    pub fn target_models(&self) -> &BTreeMap<ModelId, TargetModel> {
+        &self.target_models
+    }
+
     /// Checks requirements before yielding model or Decision calls.
     /// Invalid requirements or unavailable approved targets fail before the algorithm starts.
     /// Requires Tokio. Reuse the handle to retain task requirements and algorithm-owned state;

@@ -433,6 +433,51 @@ impl DeploymentConfig {
         ))
     }
 
+    pub(crate) fn route_target_models(
+        &self,
+        route_name: &str,
+    ) -> RunnerResult<BTreeMap<ModelId, TargetModel>> {
+        let route = self
+            .routes
+            .get(route_name)
+            .ok_or_else(|| RunnerError::configuration(format!("unknown route {route_name}")))?;
+        route
+            .callable_target_names()
+            .into_iter()
+            .chain(
+                route
+                    .eligibility
+                    .iter()
+                    .flat_map(|config| config.target_alternatives.values().flatten())
+                    .map(String::as_str),
+            )
+            .map(|name| {
+                if let Some(target) = self.decision_targets.get(name) {
+                    Ok((
+                        target.id.clone(),
+                        TargetModel {
+                            client: target.decision_client.clone(),
+                            id: target.id.clone(),
+                        },
+                    ))
+                } else {
+                    let target = self.targets.get(name).ok_or_else(|| {
+                        RunnerError::configuration(format!(
+                            "route {route_name} references unknown target {name}"
+                        ))
+                    })?;
+                    Ok((
+                        ModelId::from(name),
+                        TargetModel {
+                            client: target.llm_client.clone(),
+                            id: target.id.clone(),
+                        },
+                    ))
+                }
+            })
+            .collect()
+    }
+
     /// None keeps the standard setup; Some contains eligible target mappings.
     /// An empty selection never falls back to standard targets.
     pub(crate) fn select_eligible_targets(
