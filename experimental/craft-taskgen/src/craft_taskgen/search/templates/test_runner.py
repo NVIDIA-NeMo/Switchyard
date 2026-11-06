@@ -10,8 +10,6 @@ Writes reward float to /logs/verifier/reward.txt and detailed metrics to
 /logs/verifier/reward.json.
 """
 
-from __future__ import annotations  # noqa: I001
-
 import json
 import os
 import sys
@@ -19,7 +17,6 @@ import urllib.error
 import urllib.request
 from collections import Counter
 from datetime import datetime
-
 
 # ---------------------------------------------------------------------------
 # Scoring primitives (copied from src/scoring/primitives.py)
@@ -201,7 +198,7 @@ def llm_judge_assertions(assertions: list[str], explanation: str) -> float:
 
     api_key = os.environ.get("JUDGE_API_KEY") or os.environ.get("OPENAI_API_KEY", "")
     base_url = os.environ.get("JUDGE_BASE_URL") or os.environ.get("OPENAI_BASE_URL", "")
-    model = os.environ.get("JUDGE_MODEL", "aws/anthropic/bedrock-claude-sonnet-4-6")
+    model = os.environ.get("JUDGE_MODEL", "claude-sonnet-4-6")
 
     if not api_key or not base_url:
         print(

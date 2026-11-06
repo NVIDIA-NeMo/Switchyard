@@ -40,9 +40,12 @@ Three entry paths cover almost all use:
 
 ## Gateway-only LLM routing
 
-Every `claude -p` invocation is pinned to the NVIDIA LiteLLM gateway
-(`ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` from `.env`). OAuth fallback
-via `~/.claude` is disabled.
+Every `claude -p` invocation uses the endpoint configured with
+`ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` in `.env`. OAuth fallback
+via `~/.claude` is disabled. Direct API calls use `OPENAI_BASE_URL` and
+`OPENAI_API_KEY`. Set these endpoints in your environment or local `.env` file.
+The shipped profiles use public model names; change them to the IDs your
+endpoint serves.
 
 Enforcement (see `src/craft_taskgen/gateway.py::build_gateway_env`):
 
@@ -52,9 +55,8 @@ Enforcement (see `src/craft_taskgen/gateway.py::build_gateway_env`):
   is pinned to the profile's `llm_step_model`.
 - `CLAUDE_CODE_OAUTH_TOKEN` is stripped from the child process env;
   telemetry and attribution-header traffic are disabled.
-- `craft-taskgen-preflight --check-endpoints` verifies the gateway
-  responded by asserting the `modelUsage` key is gateway-shaped
-  (e.g. `azure/anthropic/claude-opus-4-6`).
+- `craft-taskgen-preflight --check-endpoints` runs Claude with those settings
+  and checks that `modelUsage` names the configured model.
 
 Always run `craft-taskgen-preflight --check-endpoints --profile <profile>`
 before a bulk run.
@@ -64,9 +66,8 @@ before a bulk run.
 Three layers of verification cover the gateway-only path:
 
 1. **Preflight positive check** — `craft-taskgen-preflight --check-endpoints`
-   makes a live `claude -p` call and asserts the response's `modelUsage`
-   key is gateway-shaped (contains `/`). A bare alias like `opus` or
-   `claude-opus-4-6` would indicate a non-gateway route and FAIL the check.
+   makes a live `claude -p` call and checks that every reported model matches
+   `llm_step_model`. Model names may be bare or contain provider prefixes.
 
 2. **Guardrail unit test** — `tests/test_pipeline.py::test_run_claude_raises_without_gateway_env`
    asserts that `run_claude` raises `RuntimeError` if `ANTHROPIC_API_KEY` /
@@ -92,7 +93,7 @@ Three layers of verification cover the gateway-only path:
            conn.close()
 
    threading.Thread(target=loop, daemon=True).start()
-   env = build_gateway_env("aws/anthropic/bedrock-claude-opus-4-6")
+   env = build_gateway_env("claude-opus-4-6")
    env["ANTHROPIC_API_KEY"] = "sk-fake"
    env["ANTHROPIC_BASE_URL"] = f"http://127.0.0.1:{port}"
    subprocess.run(["claude", "-p", "hi"], env=env, timeout=15)
@@ -427,7 +428,7 @@ Each machine records its hostname, user, full CLI args, and candidate file list 
 
 ### Prerequisites (one-time)
 
-1. `.env` populated (`ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_API_BASE`).
+1. Populate `.env` with `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `OPENAI_API_KEY`, and `OPENAI_BASE_URL`.
 2. Docker daemon running with ≥8 GB available to containers (preflight enforces a `memory_mb >= 8192` floor on every `task.toml`).
 3. A built task suite directory (e.g. `harbor-tasks/craft-taskgen-v2b/`).
 
@@ -439,7 +440,7 @@ Gateway-routed baseline against a task suite:
 scripts/run-baselines.sh \
     --tasks-dir ~/projects/craft-bench/harbor-tasks/craft-taskgen-v2b \
     --agent opencode \
-    --model aws/anthropic/bedrock-claude-haiku-4-5 \
+    --model claude-haiku-4-5 \
     --n-tasks 3
 ```
 
@@ -481,14 +482,6 @@ Each run writes:
 To summarize a finished run see `scripts/summarize_baseline.py` (tools track) or `scripts/summarize_search_baseline.py` (search track), both of which support `--csv` for per-trial output.
 
 For the reasoning-effort matrix and the version-pin rationale (Claude Code 2.1.118), see [`docs/runbooks/baseline-reproducibility.md`](docs/runbooks/baseline-reproducibility.md).
-
-### Published results
-
-Live results are surfaced on the internal GitLab Pages site:
-
-- **Leaderboard** — K=5 End-to-End numbers with CIs (claude-code, codex, opencode + a few model picks).
-- **Planner × Implementer matrix** — K=1, n=92, lift in pp vs no-plan baseline.
-- **Agent × Open-Model matrix** — K=1, n=92. Same 92 tasks across {opencode, openhands-sdk, qwen-coder, pi} × {Qwen-3.6-35B-A3B, GLM-5.1, Nemotron-3 Ultra (EA), Claude Haiku 4.5}. Rows are open models; columns are agents with pinned versions. Cells are Resolved%. Data: [`site/data/harness_x_model.json`](site/data/harness_x_model.json).
 
 ## Search Pipeline
 

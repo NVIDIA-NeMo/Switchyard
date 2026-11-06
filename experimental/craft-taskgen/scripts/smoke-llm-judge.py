@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Smoke test for llm_judge against the real NVIDIA gateway.
+"""This script tests llm_judge against the configured gateway.
 
 Exercises each model we plan to use, with a simple schema, and reports
 latency + token counts. Also tries to trigger the parse-retry path by
@@ -9,8 +9,6 @@ crafting a schema that an ambiguous prompt will likely miss on first try.
 
 Run: `uv run python scripts/smoke-llm-judge.py` after `uv sync`.
 """
-
-from __future__ import annotations
 
 import asyncio
 import os
@@ -41,9 +39,9 @@ RUBRIC_LIKE_SCHEMA = {
 }
 
 MODELS: list[tuple[str, str]] = [
-    ("Opus 4.6", "aws/anthropic/bedrock-claude-opus-4-6"),
-    ("GPT-5.4", "us/azure/openai/gpt-5.4"),
-    ("Gemini-3.1-Pro", "gcp/google/gemini-3.1-pro-preview"),
+    ("Opus 4.6", "claude-opus-4-6"),
+    ("GPT-5.4", "gpt-5.4"),
+    ("Gemini-3.1-Pro", "gemini-3.1-pro-preview"),
 ]
 
 SIMPLE_PROMPT = (

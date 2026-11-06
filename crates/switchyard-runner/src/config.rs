@@ -1097,6 +1097,13 @@ impl DeploymentConfig {
                     "llm client {name} responses_reasoning is only valid for openai_responses"
                 )));
             }
+            if client_config.strip_anthropic_tool_strict.is_some()
+                && !matches!(client_config.format, ClientFormat::AnthropicMessages)
+            {
+                return Err(RunnerError::configuration(format!(
+                    "llm client {name} strip_anthropic_tool_strict is only valid for anthropic_messages"
+                )));
+            }
             let backend = build_backend(
                 name,
                 client_config,
@@ -1152,7 +1159,10 @@ impl DeploymentConfig {
                     None,
                 )
                 .with_responses_reasoning(client_config.responses_reasoning.unwrap_or_default())
-                .with_provider_model(target.id.clone()),
+                .with_provider_model(target.id.clone())
+                .with_strip_anthropic_tool_strict(
+                    client_config.strip_anthropic_tool_strict.unwrap_or(false),
+                ),
             );
         }
 
@@ -1522,6 +1532,7 @@ struct LlmClientConfig {
     /// Deadline in milliseconds for all attempts and the complete response. Unset is unbounded.
     timeout_ms: Option<u64>,
     responses_reasoning: Option<ResponsesReasoningPolicy>,
+    strip_anthropic_tool_strict: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3594,6 +3605,121 @@ target = "azure"
         };
         assert_eq!(primary.max_retries, MAX_CONFIGURED_RETRIES);
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn anthropic_tool_strict_setting_reaches_the_upstream_request()
+    -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "msg_1", "type": "message", "role": "assistant", "model": "weak/model",
+                "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1}
+            })))
+            .expect(3)
+            .mount(&server)
+            .await;
+        for (setting, strips) in [
+            ("", false),
+            ("strip_anthropic_tool_strict = false", false),
+            ("strip_anthropic_tool_strict = true", true),
+        ] {
+            let configured = format!(
+                r#"schema_version = 1
+
+[llm_clients.anthropic]
+format = "anthropic_messages"
+base_url = {:?}
+{setting}
+
+[targets.weak]
+id = "weak/model"
+llm_client = "anthropic"
+
+[routes.direct]
+id = "direct"
+type = "passthrough"
+target = "weak"
+"#,
+                server.uri(),
+            );
+            let config: DeploymentConfig = toml::from_str(&configured)?;
+            let clients = config.build_clients(&mut Vec::new())?;
+            let client = clients.get("anthropic").ok_or("missing client")?;
+            client.call_rewrite_model_raw(
+                json!({"model": "weak", "max_tokens": 7,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "tools": [{"name": "lookup", "input_schema": {"type": "object"}, "strict": true}]}),
+                None, None, WireFormat::AnthropicMessages,
+            ).await?;
+            let requests = server.received_requests().await.ok_or("missing requests")?;
+            let body: Value = serde_json::from_slice(&requests.last().ok_or("no request")?.body)?;
+            // The alias must resolve before the request reaches the endpoint.
+            assert_eq!(body["model"], "weak/model");
+            assert_eq!(
+                body["tools"][0].get("strict").is_none(),
+                strips,
+                "{setting}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn anthropic_tool_strict_setting_rejects_invalid_types_and_formats() {
+        for value in ["\"true\"", "1", "[]"] {
+            let invalid = format!(
+                r#"schema_version = 1
+
+[llm_clients.anthropic]
+format = "anthropic_messages"
+base_url = "https://example.test"
+strip_anthropic_tool_strict = {value}
+
+[targets.weak]
+id = "weak/model"
+llm_client = "anthropic"
+
+[routes.direct]
+id = "direct"
+type = "passthrough"
+target = "weak"
+"#
+            );
+            assert!(matches!(
+                runner_from_toml(&invalid),
+                Err(RunnerError::Configuration { message, .. }) if message.contains("expected a boolean")
+            ));
+        }
+        for format in ["openai_chat", "openai_responses"] {
+            for value in [false, true] {
+                // An unused client must still reject an option for the wrong format.
+                let invalid = format!(
+                    r#"schema_version = 1
+[targets]
+
+[llm_clients.unused]
+format = {format:?}
+base_url = "https://example.test"
+strip_anthropic_tool_strict = {value}
+
+[routes.noop]
+id = "noop"
+type = "noop"
+"#
+                );
+                assert!(matches!(
+                    runner_from_toml(&invalid),
+                    Err(RunnerError::Configuration { message, .. })
+                        if message == "llm client unused strip_anthropic_tool_strict is only valid for anthropic_messages"
+                ));
+            }
+        }
     }
 
     #[test]

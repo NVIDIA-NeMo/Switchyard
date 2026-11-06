@@ -64,8 +64,8 @@ def _write_fake_docker(bin_dir: Path) -> Path:
     docker = bin_dir / "docker"
     docker.write_text(
         "#!/usr/bin/env bash\n"
-        "if [[ -n \"${FAKE_DOCKER_LOG:-}\" ]]; then\n"
-        "    printf '%s\\n' \"$*\" >> \"${FAKE_DOCKER_LOG}\"\n"
+        'if [[ -n "${FAKE_DOCKER_LOG:-}" ]]; then\n'
+        '    printf \'%s\\n\' "$*" >> "${FAKE_DOCKER_LOG}"\n'
         "fi\n"
         "exit 0\n"
     )
@@ -145,7 +145,7 @@ printf '%s\\n' {shlex.quote(str(harbor_site))}
 
 def _run_baseline(
     tmp_path: Path,
-    *args: str,
+    args: list[str],
     env: dict[str, str] | None = None,
     include_dataset: bool = True,
     fake_server: bool = False,
@@ -247,7 +247,7 @@ def _write_closed_book_dataset(path: Path) -> Path:
 
 
 def test_direct_mode_requires_model(tmp_path: Path) -> None:
-    result = _run_baseline(tmp_path, "--dry-run")
+    result = _run_baseline(tmp_path, ["--dry-run"])
 
     assert result.returncode != 0
     assert "--model is required when running direct upstream" in result.stderr
@@ -256,21 +256,20 @@ def test_direct_mode_requires_model(tmp_path: Path) -> None:
 def test_direct_mode_defaults_to_openrouter_upstream_without_switchyard(tmp_path: Path) -> None:
     result = _run_baseline(
         tmp_path,
-        "--model",
-        "openai/gpt-5.2",
-        "--agent",
-        "codex",
-        "--dry-run",
+        ["--model", "openai/gpt-5.2", "--agent", "codex", "--dry-run"],
     )
 
     assert result.returncode == 0, result.stderr
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
     assert _option_value(harbor, "--model") == "openai/gpt-5.2"
     agent_env = _option_values(harbor, "--ae")
-    ca_env_prefixes = ("SSL_CERT_FILE=", "REQUESTS_CA_BUNDLE=", "CURL_CA_BUNDLE=", "GIT_SSL_CAINFO=")
-    assert not any(
-        value.startswith(ca_env_prefixes) for value in agent_env
+    ca_env_prefixes = (
+        "SSL_CERT_FILE=",
+        "REQUESTS_CA_BUNDLE=",
+        "CURL_CA_BUNDLE=",
+        "GIT_SSL_CAINFO=",
     )
+    assert not any(value.startswith(ca_env_prefixes) for value in agent_env)
     assert "server_preset: direct" in result.stdout
     assert "server_mode:   direct" in result.stdout
     assert "upstream_url:  https://openrouter.ai/api/v1" in result.stdout
@@ -283,11 +282,7 @@ def test_direct_mode_defaults_to_openrouter_upstream_without_switchyard(tmp_path
 def test_direct_mode_uses_generic_upstream_key_when_set(tmp_path: Path) -> None:
     result = _run_baseline(
         tmp_path,
-        "--model",
-        "provider/model",
-        "--agent",
-        "codex",
-        "--dry-run",
+        ["--model", "provider/model", "--agent", "codex", "--dry-run"],
         env={
             "UPSTREAM_API_KEY": "upstream-test",  # pragma: allowlist secret
             "UPSTREAM_BASE_URL": "https://provider.example/v1",
@@ -302,9 +297,7 @@ def test_direct_mode_uses_generic_upstream_key_when_set(tmp_path: Path) -> None:
 def test_direct_mode_requires_selected_api_key_env(tmp_path: Path) -> None:
     result = _run_baseline(
         tmp_path,
-        "--model",
-        "openai/gpt-5.2",
-        "--dry-run",
+        ["--model", "openai/gpt-5.2", "--dry-run"],
         env={"OPENROUTER_API_KEY": ""},
     )
 
@@ -315,11 +308,7 @@ def test_direct_mode_requires_selected_api_key_env(tmp_path: Path) -> None:
 def test_direct_mode_rejects_server_only_options(tmp_path: Path) -> None:
     result = _run_baseline(
         tmp_path,
-        "--model",
-        "openai/gpt-5.2",
-        "--server-extra",
-        "--log-level=debug",
-        "--dry-run",
+        ["--model", "openai/gpt-5.2", "--server-extra", "--log-level=debug", "--dry-run"],
     )
 
     assert result.returncode != 0
@@ -327,9 +316,7 @@ def test_direct_mode_rejects_server_only_options(tmp_path: Path) -> None:
 
     result = _run_baseline(
         tmp_path,
-        "--route-model",
-        "tb-lite-random-routing",
-        "--dry-run",
+        ["--route-model", "tb-lite-random-routing", "--dry-run"],
     )
 
     assert result.returncode != 0
@@ -339,11 +326,7 @@ def test_direct_mode_rejects_server_only_options(tmp_path: Path) -> None:
 def test_legacy_routing_profiles_are_rejected(tmp_path: Path) -> None:
     result = _run_baseline(
         tmp_path,
-        "--routing-profiles",
-        str(tmp_path / "routes.yaml"),
-        "--model",
-        "switchyard",
-        "--dry-run",
+        ["--routing-profiles", str(tmp_path / "routes.yaml"), "--model", "switchyard", "--dry-run"],
     )
 
     assert result.returncode != 0
@@ -354,13 +337,15 @@ def test_legacy_routing_profiles_are_rejected(tmp_path: Path) -> None:
 def test_dry_run_claude_code_opus_defaults_high_reasoning(tmp_path: Path) -> None:
     result = _run_baseline(
         tmp_path,
-        "--server-config",
-        str(REPO / "benchmark" / "server-configs" / "tb-lite-single-opus-4-7.toml"),
-        "--route-model",
-        "tb-lite-single-opus-4-7",
-        "--agent",
-        "claude-code",
-        "--dry-run",
+        [
+            "--server-config",
+            str(REPO / "benchmark" / "server-configs" / "tb-lite-single-opus-4-7.toml"),
+            "--route-model",
+            "tb-lite-single-opus-4-7",
+            "--agent",
+            "claude-code",
+            "--dry-run",
+        ],
     )
 
     assert result.returncode == 0, result.stderr
@@ -376,13 +361,15 @@ def test_dry_run_claude_code_opus_defaults_high_reasoning(tmp_path: Path) -> Non
 def test_dry_run_codex_gpt_defaults_high_reasoning(tmp_path: Path) -> None:
     result = _run_baseline(
         tmp_path,
-        "--server-config",
-        str(REPO / "benchmark" / "server-configs" / "tb-lite-single-gpt-5-5.toml"),
-        "--route-model",
-        "tb-lite-single-gpt-5-5",
-        "--agent",
-        "codex",
-        "--dry-run",
+        [
+            "--server-config",
+            str(REPO / "benchmark" / "server-configs" / "tb-lite-single-gpt-5-5.toml"),
+            "--route-model",
+            "tb-lite-single-gpt-5-5",
+            "--agent",
+            "codex",
+            "--dry-run",
+        ],
     )
 
     assert result.returncode == 0, result.stderr
@@ -404,20 +391,24 @@ def test_dry_run_explicit_empty_reasoning_omits_kwarg(tmp_path: Path) -> None:
 
     result = _run_baseline(
         tmp_path,
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--agent",
-        "claude-code",
-        "--reasoning-effort",
-        "",
-        "--dry-run",
+        [
+            "--server-config",
+            str(profile),
+            "--route-model",
+            "tb-lite-random-routing",
+            "--agent",
+            "claude-code",
+            "--reasoning-effort",
+            "",
+            "--dry-run",
+        ],
     )
 
     assert result.returncode == 0, result.stderr
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
-    assert not any(value.startswith("reasoning_effort=") for value in _option_values(harbor, "--ak"))
+    assert not any(
+        value.startswith("reasoning_effort=") for value in _option_values(harbor, "--ak")
+    )
     assert not any(value.startswith("thinking=") for value in _option_values(harbor, "--ak"))
     assert "reasoning:     unset" in result.stdout
 
@@ -427,15 +418,17 @@ def test_dry_run_explicit_reasoning_overrides_default(tmp_path: Path) -> None:
 
     result = _run_baseline(
         tmp_path,
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--agent",
-        "claude-code",
-        "--reasoning-effort",
-        "medium",
-        "--dry-run",
+        [
+            "--server-config",
+            str(profile),
+            "--route-model",
+            "tb-lite-random-routing",
+            "--agent",
+            "claude-code",
+            "--reasoning-effort",
+            "medium",
+            "--dry-run",
+        ],
     )
 
     assert result.returncode == 0, result.stderr
@@ -449,19 +442,21 @@ def test_dry_run_explicit_claude_thinking_overrides_adaptive_default(tmp_path: P
 
     result = _run_baseline(
         tmp_path,
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--agent",
-        "claude-code",
-        "--reasoning-effort",
-        "high",
-        "--harbor-extra",
-        "--ak",
-        "--harbor-extra",
-        "thinking=disabled",
-        "--dry-run",
+        [
+            "--server-config",
+            str(profile),
+            "--route-model",
+            "tb-lite-random-routing",
+            "--agent",
+            "claude-code",
+            "--reasoning-effort",
+            "high",
+            "--harbor-extra",
+            "--ak",
+            "--harbor-extra",
+            "thinking=disabled",
+            "--dry-run",
+        ],
     )
 
     assert result.returncode == 0, result.stderr
@@ -475,11 +470,7 @@ def test_harbor_path_is_required(tmp_path: Path) -> None:
 
     result = _run_baseline(
         tmp_path,
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--dry-run",
+        ["--server-config", str(profile), "--route-model", "tb-lite-random-routing", "--dry-run"],
         include_dataset=False,
     )
 
@@ -494,15 +485,17 @@ def test_closed_book_dataset_rejects_unpatched_harbor(tmp_path: Path) -> None:
 
     result = _run_baseline(
         tmp_path,
-        "--harbor-path",
-        str(dataset),
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--harbor-python",
-        str(fake_python),
-        "--dry-run",
+        [
+            "--harbor-path",
+            str(dataset),
+            "--server-config",
+            str(profile),
+            "--route-model",
+            "tb-lite-random-routing",
+            "--harbor-python",
+            str(fake_python),
+            "--dry-run",
+        ],
         include_dataset=False,
     )
 
@@ -518,11 +511,7 @@ def test_dry_run_server_config_uses_rust_switchyard_server(tmp_path: Path) -> No
 
     result = _run_baseline(
         tmp_path,
-        "--server-config",
-        str(profile),
-        "--model",
-        "tb-lite-random-routing",
-        "--dry-run",
+        ["--server-config", str(profile), "--model", "tb-lite-random-routing", "--dry-run"],
     )
 
     assert result.returncode == 0, result.stderr
@@ -543,11 +532,13 @@ def test_foreground_server_run_collects_rust_stats_endpoint(tmp_path: Path) -> N
 
     result = _run_baseline(
         tmp_path,
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--foreground",
+        [
+            "--server-config",
+            str(profile),
+            "--route-model",
+            "tb-lite-random-routing",
+            "--foreground",
+        ],
         fake_server=True,
         env={"FAKE_DOCKER_LOG": str(docker_log)},
     )
@@ -568,11 +559,7 @@ def test_dry_run_route_model_alias_uses_rust_switchyard_server(tmp_path: Path) -
 
     result = _run_baseline(
         tmp_path,
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--dry-run",
+        ["--server-config", str(profile), "--route-model", "tb-lite-random-routing", "--dry-run"],
     )
 
     assert result.returncode == 0, result.stderr
@@ -589,13 +576,15 @@ def test_dry_run_server_config_honors_explicit_harbor_model(tmp_path: Path) -> N
 
     result = _run_baseline(
         tmp_path,
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--harbor-model",
-        "openai/custom-route-label",
-        "--dry-run",
+        [
+            "--server-config",
+            str(profile),
+            "--route-model",
+            "tb-lite-random-routing",
+            "--harbor-model",
+            "openai/custom-route-label",
+            "--dry-run",
+        ],
     )
 
     assert result.returncode == 0, result.stderr
@@ -608,15 +597,17 @@ def test_dry_run_harbor_extra(tmp_path: Path) -> None:
 
     result = _run_baseline(
         tmp_path,
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--harbor-extra",
-        "--include-task-name=hello",
-        "--harbor-extra",
-        "--no-upload",
-        "--dry-run",
+        [
+            "--server-config",
+            str(profile),
+            "--route-model",
+            "tb-lite-random-routing",
+            "--harbor-extra",
+            "--include-task-name=hello",
+            "--harbor-extra",
+            "--no-upload",
+            "--dry-run",
+        ],
     )
 
     assert result.returncode == 0, result.stderr
@@ -634,15 +625,17 @@ def test_dry_run_harbor_path_uses_local_dataset_and_closed_book_artifact(
 
     result = _run_baseline(
         tmp_path,
-        "--harbor-path",
-        str(dataset),
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--agent",
-        "codex",
-        "--dry-run",
+        [
+            "--harbor-path",
+            str(dataset),
+            "--server-config",
+            str(profile),
+            "--route-model",
+            "tb-lite-random-routing",
+            "--agent",
+            "codex",
+            "--dry-run",
+        ],
         include_dataset=False,
     )
 
@@ -677,17 +670,19 @@ def test_dry_run_open_book_uses_proxy_topology_without_tool_disables(tmp_path: P
 
     result = _run_baseline(
         tmp_path,
-        "--harbor-path",
-        str(dataset),
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--agent",
-        "codex",
-        "--book-mode",
-        "open",
-        "--dry-run",
+        [
+            "--harbor-path",
+            str(dataset),
+            "--server-config",
+            str(profile),
+            "--route-model",
+            "tb-lite-random-routing",
+            "--agent",
+            "codex",
+            "--book-mode",
+            "open",
+            "--dry-run",
+        ],
         include_dataset=False,
     )
 
@@ -709,19 +704,21 @@ def test_dry_run_claude_closed_book_merges_disallowed_tools(tmp_path: Path) -> N
 
     result = _run_baseline(
         tmp_path,
-        "--harbor-path",
-        str(dataset),
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--agent",
-        "claude-code",
-        "--harbor-extra",
-        "--ak",
-        "--harbor-extra",
-        "disallowed_tools=Bash",
-        "--dry-run",
+        [
+            "--harbor-path",
+            str(dataset),
+            "--server-config",
+            str(profile),
+            "--route-model",
+            "tb-lite-random-routing",
+            "--agent",
+            "claude-code",
+            "--harbor-extra",
+            "--ak",
+            "--harbor-extra",
+            "disallowed_tools=Bash",
+            "--dry-run",
+        ],
         include_dataset=False,
     )
 
@@ -737,21 +734,23 @@ def test_dry_run_opencode_closed_book_disables_webfetch(tmp_path: Path) -> None:
 
     result = _run_baseline(
         tmp_path,
-        "--harbor-path",
-        str(dataset),
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--agent",
-        "opencode",
-        "--dry-run",
+        [
+            "--harbor-path",
+            str(dataset),
+            "--server-config",
+            str(profile),
+            "--route-model",
+            "tb-lite-random-routing",
+            "--agent",
+            "opencode",
+            "--dry-run",
+        ],
         include_dataset=False,
     )
 
     assert result.returncode == 0, result.stderr
     harbor = _line_argv(result.stdout, "HARBOR_CMD: ")
-    assert _option_value(harbor, "--model") == "nvidia/tb-lite-random-routing"
+    assert _option_value(harbor, "--model") == "gateway/tb-lite-random-routing"
     assert "version=1.18.3" in _option_values(harbor, "--ak")
     assert "OPENCODE_DISABLE_WEBFETCH=1" in _option_values(harbor, "--ae")
 
@@ -761,15 +760,17 @@ def test_dry_run_pi_uses_switchyard_label_pin_and_thinking(tmp_path: Path) -> No
 
     result = _run_baseline(
         tmp_path,
-        "--server-config",
-        str(profile),
-        "--model",
-        "tb-lite-random-routing",
-        "--agent",
-        "pi",
-        "--reasoning-effort",
-        "high",
-        "--dry-run",
+        [
+            "--server-config",
+            str(profile),
+            "--model",
+            "tb-lite-random-routing",
+            "--agent",
+            "pi",
+            "--reasoning-effort",
+            "high",
+            "--dry-run",
+        ],
     )
 
     assert result.returncode == 0, result.stderr
@@ -789,13 +790,15 @@ def test_task_list_file_expands_to_include_task_name(tmp_path: Path) -> None:
 
     result = _run_baseline(
         tmp_path,
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--task-list-file",
-        str(task_list),
-        "--dry-run",
+        [
+            "--server-config",
+            str(profile),
+            "--route-model",
+            "tb-lite-random-routing",
+            "--task-list-file",
+            str(task_list),
+            "--dry-run",
+        ],
     )
 
     assert result.returncode == 0, result.stderr
@@ -811,11 +814,7 @@ def test_dry_run_uses_harbor_bin_override(tmp_path: Path) -> None:
 
     result = _run_baseline(
         tmp_path,
-        "--server-config",
-        str(profile),
-        "--route-model",
-        "tb-lite-random-routing",
-        "--dry-run",
+        ["--server-config", str(profile), "--route-model", "tb-lite-random-routing", "--dry-run"],
         env={"HARBOR_BIN": str(expected_harbor)},
     )
 

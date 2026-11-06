@@ -15,10 +15,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PATH="/root/.local/bin:/root/.opencode/bin:$PATH"
 
 RUN mkdir -p /etc/codex && cat > /etc/codex/config.toml << 'EOF'
-model_provider = "nvidia_gateway"
+model_provider = "gateway"
 
-[model_providers.nvidia_gateway]
-name = "NVIDIA LiteLLM Gateway"
+[model_providers.gateway]
+name = "Configured Gateway"
 base_url = "{gateway_base_url}"
 env_key = "OPENAI_API_KEY"
 wire_api = "responses"

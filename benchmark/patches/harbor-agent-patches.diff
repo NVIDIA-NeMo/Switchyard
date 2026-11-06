@@ -56,9 +56,9 @@
 +        # Without this, the prepended header causes ~90% slower inference.
 +        env["CLAUDE_CODE_ATTRIBUTION_HEADER"] = "0"
 +        env["CLAUDE_CODE_ENABLE_TELEMETRY"] = "0"
-+        # NVIDIA gateway rejects the `context_management` beta field that
-+        # claude-code >=2.1.114 injects; disabling experimental betas keeps
-+        # the outbound request compatible.
++        # Claude Code >=2.1.114 can send the context_management beta field.
++        # Some endpoints reject this field.
++        # Disabling experimental betas omits it from the request.
 +        env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
 +
          # Allow bypassPermissions mode when running as root inside containers
@@ -139,11 +139,11 @@
 -        model = self.model_name.split("/")[-1]
 +        model = self.model_name
 +
-+        # Load the custom model catalog so gateway-routed models (azure/openai/...)
-+        # are recognized by codex as reasoning-capable. Without this, codex drops
-+        # reasoning.effort from the Responses API payload on unknown slugs.
-+        # Path is taken from CODEX_MODEL_CATALOG_JSON env var; if unset or the
-+        # file does not exist, no catalog is injected (reasoning may be absent).
++        # The custom catalog tells Codex which configured models support reasoning.
++        # Codex omits reasoning.effort from Responses requests for unknown model IDs.
++        # CODEX_MODEL_CATALOG_JSON identifies the catalog file on the host.
++        # An unset variable or missing file leaves reasoning support undeclared.
++        # The catalog must include the exact model ID sent to the endpoint.
 +        _catalog_json = ""
 +        _catalog_path = self._get_env("CODEX_MODEL_CATALOG_JSON")
 +        if _catalog_path and Path(_catalog_path).is_file():
@@ -157,14 +157,14 @@
              env["OPENAI_BASE_URL"] = openai_base_url
 
          # codex 0.118.0 only honors openai_base_url from config.toml, not the env var.
-+        # Full nvidia_gateway provider block so wire_api=responses is set; required
-+        # for NVIDIA/vLLM gateway routing (bare openai_base_url drops reasoning.effort).
-+        # Closed-book toggle: prepend `web_search = "disabled"` BEFORE the
-+        # [model_providers.nvidia_gateway] section. TOML scope rules mean any
-+        # bare key after a [section] header belongs to that section, so writing
-+        # web_search after the provider block makes it a (silently ignored)
-+        # provider field instead of the top-level codex config the
-+        # resolve_web_search_mode() reader expects.
++        # The gateway provider block selects wire_api=responses for this endpoint.
++        # Codex needs the provider config to send Responses reasoning settings.
++        # The closed-book setting web_search must precede [model_providers.gateway].
++        # TOML assigns keys after a section header to that section.
++        # Writing web_search after this header would make it a provider field.
++        # Codex reads web_search from the top-level config.
++        # resolve_web_search_mode() ignores a provider-level web_search field.
++        # The prefix below keeps the optional setting at the top level.
          config_toml_block = ""
          if openai_base_url:
 +            web_search_prefix = ""
@@ -176,9 +176,9 @@
 -                "TOML"
 +                '\ncat >>"$CODEX_HOME/config.toml" <<EOF2\n'
 +                f"{web_search_prefix}"
-+                'model_provider = "nvidia_gateway"\n'
-+                "[model_providers.nvidia_gateway]\n"
-+                'name = "NVIDIA Gateway"\n'
++                'model_provider = "gateway"\n'
++                "[model_providers.gateway]\n"
++                'name = "Gateway"\n'
 +                'base_url = "${OPENAI_BASE_URL}"\n'
 +                'env_key = "OPENAI_API_KEY"\n'
 +                'wire_api = "responses"\n'
@@ -299,11 +299,11 @@
                  # opencode reads baseURL from provider.options, not the provider root.
                  # See: https://github.com/anomalyco/opencode config.ts ProviderConfig schema.
                  provider_config.setdefault("options", {})["baseURL"] = base_url
-+            # Custom "nvidia" (gateway) and "vllm" (local) providers both
-+            # use @ai-sdk/openai-compatible to call /v1/chat/completions
-+            # instead of /v1/responses. Required for endpoints that don't
-+            # support the OpenAI Responses API.
-+            if provider in ("nvidia", "vllm"):
++            # The gateway and vllm providers use @ai-sdk/openai-compatible.
++            # This client calls /v1/chat/completions for the configured endpoint.
++            # Endpoints that lack /v1/responses need the Chat Completions API.
++            # Both provider names must select the same client here.
++            if provider in ("gateway", "vllm"):
 +                provider_config["npm"] = "@ai-sdk/openai-compatible"
 +                # Literal ${VAR} placeholders expanded inside the container at
 +                # write-time via heredoc so the container's env wins.
@@ -388,7 +388,7 @@
          elif provider == "openai":
              keys.append("OPENAI_API_KEY")
              keys.append("OPENAI_BASE_URL")
-+        elif provider in ("nvidia", "vllm"):
++        elif provider in ("gateway", "vllm"):
 +            keys.extend(["OPENAI_API_KEY", "OPENAI_BASE_URL"])
          elif provider == "opencode":
              keys.append("OPENCODE_API_KEY")

@@ -11,7 +11,7 @@
 #   scripts/run-baselines.sh \
 #       --tasks-dir ~/projects/craft-bench/harbor-tasks/craft-taskgen-v1a \
 #       --agent opencode \
-#       --model aws/anthropic/bedrock-claude-haiku-4-5 \
+#       --model claude-haiku-4-5 \
 #       --backend gateway \
 #       --n-tasks 3
 #
@@ -54,7 +54,7 @@ kill hint, then exits.
 Required:
   --tasks-dir PATH          Task dataset directory (e.g. harbor-tasks/craft-taskgen-v1a)
   --agent NAME              One of: claude-code, codex, opencode, openhands-sdk, qwen-coder, pi
-  --model ID                Model ID passed to harbor --model (e.g. azure/anthropic/claude-opus-4-6)
+  --model ID                Model ID passed to harbor --model (e.g. claude-opus-4-6)
 
 Optional:
   --backend gateway|vllm    Inference backend (default: gateway)
@@ -75,7 +75,7 @@ Examples:
   Gateway:
     scripts/run-baselines.sh \
         --tasks-dir ~/projects/craft-bench/harbor-tasks/craft-taskgen-v1a \
-        --agent opencode --model aws/anthropic/bedrock-claude-haiku-4-5 \
+        --agent opencode --model claude-haiku-4-5 \
         --n-tasks 3
 
   vLLM (requires VLLM_BASE_URL in env):
@@ -150,35 +150,20 @@ if [[ "$BACKEND" != "gateway" && "$BACKEND" != "vllm" ]]; then
     exit 1
 fi
 
-# The `nvidia/` / `vllm/` prefixes are opencode-internal dispatch tokens
-# (they tell opencode to load @ai-sdk/openai-compatible); they are not
-# part of the model identity the endpoint sees. If a user passes either
-# form on --model (legacy or explicit), strip it so every downstream
-# consumer — preflight, reasoning_defaults lookup, sampling-family
-# match, manifest — sees the canonical slug. The launcher re-adds the
-# appropriate prefix when constructing harbor's --model (below).
+# Opencode uses gateway/ and vllm/ to select its HTTP provider. Strip one
+# explicit dispatch prefix before recording the model ID or choosing defaults.
 if [[ "$AGENT" == "opencode" ]]; then
-    # Strip the dispatch prefix only when it isn't actually the
-    # canonical gateway vendor prefix. Gateway-vendor-prefixed slugs are
-    # `aws/...`, `azure/...`, `openai/...` (Anthropic, Azure, etc.); the
-    # `nvidia/...` and `vllm/...` here are opencode-internal dispatch
-    # tokens that need stripping. nvidia-hosted models also start with
-    # `nvidia/` (e.g. `nvidia/qwen/qwen3.6-35b-a3b`), so detect them by
-    # the SECOND segment: if it's a known gateway-vendor prefix, the
-    # leading `nvidia/` is a legacy dispatch token and we strip; if it
-    # isn't (e.g. `nvidia/qwen`, `nvidia/zai-org`, `nvidia/nvidia`), the
-    # whole slug IS the canonical name and must be preserved.
-    if [[ "$MODEL" == nvidia/aws/* || "$MODEL" == nvidia/azure/* || "$MODEL" == nvidia/openai/* ]]; then
-        MODEL="${MODEL#nvidia/}"
+    if [[ "$MODEL" == gateway/* ]]; then
+        MODEL="${MODEL#gateway/}"
     elif [[ "$MODEL" == vllm/* ]]; then
         MODEL="${MODEL#vllm/}"
     fi
 fi
 
 # openhands-sdk: the SDK adapter passes self.model_name straight to LiteLLM,
-# which interprets the first slug segment as a provider name (aws/, azure/,
-# nvidia/) and demands provider-specific creds. To route through an
-# OpenAI-compatible endpoint (NVIDIA gateway or local vLLM) we prepend
+# which interprets the first model ID segment as a provider name and demands
+# provider-specific credentials. To route through an
+# OpenAI-compatible endpoint (configured gateway or local vLLM) we prepend
 # `openai/` so LiteLLM treats the full slug as opaque against LLM_BASE_URL.
 # Strip if the user already wrote it; we re-add below.
 if [[ "$AGENT" == "openhands-sdk" && "$MODEL" == openai/* ]]; then
@@ -187,12 +172,12 @@ fi
 
 # Harbor's opencode agent splits --model at the first `/` and uses the left
 # segment as the provider key; the remainder is the model ID that actually
-# goes on the wire. The patched opencode.py treats both `nvidia` and `vllm`
+# goes on the wire. The patched opencode.py treats both `gateway` and `vllm`
 # as openai-compatible providers (different base URLs; same wire protocol).
 HARBOR_MODEL="$MODEL"
 if [[ "$AGENT" == "opencode" ]]; then
     if [[ "$BACKEND" == "gateway" ]]; then
-        HARBOR_MODEL="nvidia/$MODEL"
+        HARBOR_MODEL="gateway/$MODEL"
     elif [[ "$BACKEND" == "vllm" ]]; then
         HARBOR_MODEL="vllm/$MODEL"
     fi
@@ -200,18 +185,13 @@ fi
 if [[ "$AGENT" == "openhands-sdk" ]]; then
     HARBOR_MODEL="openai/$MODEL"
 fi
-# pi: harbor's patched pi.py recognizes `nvidia` as a custom
+# pi: harbor's patched pi.py recognizes `gateway` as a custom
 # openai-completions provider (writes per-model models.json at run time
-# pointing at OPENAI_BASE_URL). The launcher prepends `nvidia/` as the
+# pointing at OPENAI_BASE_URL). The launcher prepends `gateway/` as the
 # pi-side dispatch token; pi.py strips it before sending on the wire,
 # so the gateway sees the canonical slug.
-if [[ "$AGENT" == "pi" && "$MODEL" == nvidia/* ]]; then
-    # User wrote --model nvidia/...; we still need to prepend another
-    # nvidia/ for pi's dispatch. Don't strip — just prepend below.
-    :
-fi
 if [[ "$AGENT" == "pi" ]]; then
-    HARBOR_MODEL="nvidia/$MODEL"
+    HARBOR_MODEL="gateway/$MODEL"
 fi
 
 TS=$(date +%Y%m%d-%H%M%S)
@@ -239,13 +219,14 @@ if [[ -f .env ]]; then
     unset _envline _envkey _envval
 fi
 
-# Pin the in-container LLM judge to the NVIDIA gateway independent of the
-# agent's endpoint. Captured BEFORE the vllm branch rewrites OPENAI_*, so the
-# task.toml verifier.env block (which reads ${JUDGE_BASE_URL}/${JUDGE_API_KEY})
-# keeps pointing at the gateway even when the agent is routed to local vLLM.
-# Explicit JUDGE_* overrides win; otherwise fall back to OPENAI_API_BASE /
-# OPENAI_BASE_URL / OPENAI_API_KEY from .env.
-export JUDGE_BASE_URL="${JUDGE_BASE_URL:-${OPENAI_API_BASE:-${OPENAI_BASE_URL:-}}}"
+# OPENAI_BASE_URL takes precedence over the legacy OPENAI_API_BASE alias.
+export OPENAI_BASE_URL="${OPENAI_BASE_URL:-${OPENAI_API_BASE:-}}"
+
+# The judge uses the configured gateway even when the agent uses local vLLM.
+# The launcher captures the judge settings before configuring the vLLM agent endpoint.
+# The task.toml verifier.env block reads JUDGE_BASE_URL and JUDGE_API_KEY.
+# Explicit JUDGE_* values win; otherwise, the judge uses the OpenAI endpoint and key.
+export JUDGE_BASE_URL="${JUDGE_BASE_URL:-${OPENAI_BASE_URL:-}}"
 export JUDGE_API_KEY="${JUDGE_API_KEY:-${OPENAI_API_KEY:-}}"
 
 # Codex only emits reasoning tokens when it recognizes the model slug as
@@ -351,7 +332,7 @@ if [[ "$IS_SANITY_AGENT" -eq 0 ]]; then
         # codex / openhands via _get_env). Only non-secret base URLs are
         # forwarded explicitly.
         _add_env ANTHROPIC_BASE_URL "${ANTHROPIC_BASE_URL:-}"
-        _add_env OPENAI_BASE_URL "${OPENAI_API_BASE:-${OPENAI_BASE_URL:-}}"
+        _add_env OPENAI_BASE_URL "${OPENAI_BASE_URL:-}"
         _add_env CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC 1
         _add_env CLAUDE_CODE_ATTRIBUTION_HEADER 0
         _add_env CLAUDE_CODE_ENABLE_TELEMETRY 0
@@ -365,7 +346,7 @@ if [[ "$IS_SANITY_AGENT" -eq 0 ]]; then
             # into os.environ (read via _get_env) instead of --agent-env so it
             # stays off the process argv; LLM_BASE_URL is not secret.
             export LLM_API_KEY="${OPENAI_API_KEY:-}"
-            _add_env LLM_BASE_URL "${OPENAI_API_BASE:-${OPENAI_BASE_URL:-}}"
+            _add_env LLM_BASE_URL "${OPENAI_BASE_URL:-}"
         fi
         if [[ "$AGENT" == "qwen-coder" ]]; then
             # Harbor's QwenCode agent reads OPENAI_MODEL inside the container
@@ -517,7 +498,7 @@ if [[ -n "$EFFORT" ]]; then
             ;;
         openhands-sdk)
             # SDK adapter doesn't take reasoning_effort as a kwarg. Reasoning
-            # for models like Nemotron-Ultra is configured at the endpoint
+            # for models with server-side reasoning is configured at the endpoint
             # (vLLM reasoning-parser plugin). Effort here is a no-op.
             REASONING_NOTES="openhands-sdk: no effort kwarg (reasoning is endpoint-side)"
             ;;
@@ -783,7 +764,7 @@ fi
 
 # Manifest base_url: the endpoint THIS agent actually talks to. vllm
 # backend goes to VLLM_BASE_URL; claude-code talks to ANTHROPIC_BASE_URL;
-# codex and opencode talk to OPENAI_BASE_URL (even through the NVIDIA
+# codex and opencode talk to OPENAI_BASE_URL (even through a configured
 # gateway, since that's the route their SDKs hit). Using a single
 # priority-ordered fallback would mis-record codex's endpoint as
 # ANTHROPIC_BASE_URL whenever both are set.
@@ -792,7 +773,7 @@ if [[ "$BACKEND" == "vllm" ]]; then
 elif [[ "$AGENT" == "claude-code" ]]; then
     MANIFEST_BASE_URL="${ANTHROPIC_BASE_URL:-}"
 else
-    MANIFEST_BASE_URL="${OPENAI_API_BASE:-${OPENAI_BASE_URL:-}}"
+    MANIFEST_BASE_URL="${OPENAI_BASE_URL:-}"
 fi
 
 uv run python -m craft_taskgen.baselines.run_manifest \

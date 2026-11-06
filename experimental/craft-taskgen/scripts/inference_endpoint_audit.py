@@ -2,42 +2,41 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Audit a local or gateway-hosted OpenAI-compat endpoint.
+"""This script audits a configured OpenAI-compatible endpoint.
 
-Tells you, per request-body parameter, what the endpoint actually
-honors versus silently ignores. Runs against any /v1/chat/completions
-endpoint: vLLM (Qwen3 / MiniMax / Nemotron), NVIDIA gateway (Claude
-routes), direct Anthropic/OpenAI, etc.
+This script probes reasoning fields and sampling parameters on a configured
+/v1/chat/completions endpoint, such as vLLM or an OpenAI-compatible gateway.
+Its output records what that endpoint returns for each request.
 
-Default mode is a `reasoning_effort` sweep across
-{none, low, medium, high, xhigh} — two HTTP calls per level — followed
-by a summary table. Non-monotonic reasoning output across levels is
-your cue that the endpoint is ignoring the parameter.
+The default mode sweeps `reasoning_effort` across
+{none, low, medium, high, xhigh}, with two HTTP calls per level and a
+summary table. Differences in the returned fields can help investigate
+support for the parameter; they do not establish how the model uses it.
 
 Per-level probe (two HTTP calls, pure-python urllib):
 
-  1. non-stream: emits probes A (message fields) and B (usage fields)
-     from the SAME response. Probe A checks for `message.reasoning`
-     / `message.reasoning_content` — the Anthropic gateway uses
-     `reasoning_content`; vLLM with `--reasoning-parser qwen3` /
-     `minimax_m2` / `nemotron_v3` uses `reasoning` or
-     `reasoning_content`. Probe B checks for
+  1. The non-stream request supplies probes A (message fields) and B
+     (usage fields) from the same response. Probe A checks for
+     `message.reasoning` and `message.reasoning_content`. The returned
+     field depends on the endpoint and its reasoning parser, such as
+     vLLM's `qwen3`, `minimax_m2`, or `nemotron_v3`. Probe B checks for
      `usage.completion_tokens_details.reasoning_tokens` — needed if
-     opencode's `tokens.reasoning` metric is to be non-zero. vLLM
-     typically omits this; the NVIDIA gateway emits it for Claude
-     routes. This gap is structural and unfixable client-side.
+     opencode's `tokens.reasoning` metric is to be non-zero. The probe
+     checks whether the configured endpoint reports this count; support
+     depends on the endpoint and model. Client settings cannot supply
+     a reasoning-token count that the endpoint omits.
 
-  2. stream: probe C — do SSE frames carry `delta.reasoning` or
-     `delta.reasoning_content`? `@ai-sdk/openai-compatible@2.0.41`
+  2. The stream request supplies probe C, which checks for `delta.reasoning`
+     and `delta.reasoning_content` in SSE frames. `@ai-sdk/openai-compatible@2.0.41`
      reads both at `dist/index.mjs:712` and emits
      `reasoning-start / reasoning-delta / reasoning-end` parts
-     downstream. If stream carries it but opencode's trajectory shows
-     0 reasoning events, the drop is on opencode's side
-     (sst/opencode#16963, #19988).
+     downstream. If the stream contains reasoning text but OpenCode's
+     trajectory records 0 reasoning events, investigate how the client
+     handles those fields (sst/opencode#16963, #19988).
 
-Also supports `--sampling-defaults qwen3|minimax|nemotron` to apply
-the family's paper-recommended sampling params and verify the endpoint
-accepts them.
+The `--sampling-defaults qwen3|minimax|nemotron` option applies the family's
+paper-recommended sampling parameters and checks whether the endpoint
+accepts the request.
 
 Usage:
   # Default: sweep all effort levels + summary table
@@ -49,7 +48,7 @@ Usage:
   # Single effort level (skip sweep)
   scripts/inference_endpoint_audit.py \\
       --base-url "$OPENAI_BASE_URL" \\
-      --model aws/anthropic/bedrock-claude-opus-4-6 \\
+      --model claude-opus-4-6 \\
       --reasoning-effort high
 
   # Apply family sampling defaults while sweeping effort
@@ -61,8 +60,6 @@ Usage:
 Exit code 0 if probes ran (regardless of results). Non-zero only on
 connection errors or bad arguments.
 """
-
-from __future__ import annotations
 
 import argparse
 import json
@@ -116,7 +113,7 @@ def _post(base: str, key: str, body: dict) -> bytes:
         return e.read()
 
 
-def _body(args: argparse.Namespace, **overrides) -> dict:
+def _body(args: argparse.Namespace, stream: bool = False) -> dict:
     body = {
         "model": args.model,
         "messages": [{"role": "user", "content": args.prompt}],
@@ -132,7 +129,8 @@ def _body(args: argparse.Namespace, **overrides) -> dict:
         # top_k is standard on vLLM OpenAI-compat but not part of the OpenAI
         # spec. Strict gateways may 400 on this; vLLM accepts it at top level.
         body["top_k"] = args.top_k
-    body.update(overrides)
+    if stream:
+        body.update(stream=True, stream_options={"include_usage": True})
     return body
 
 
@@ -181,7 +179,7 @@ def probe_c_stream(args, base, key) -> dict:
     raw = _post(
         base,
         key,
-        _body(args, stream=True, stream_options={"include_usage": True}),
+        _body(args, stream=True),
     )
     text = raw.decode("utf-8", errors="replace")
     delta_reasoning = 0
@@ -243,9 +241,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Audit an OpenAI-compat endpoint for reasoning + sampling plumbing (vLLM / gateway).",
     )
-    parser.add_argument(
-        "--base-url", help="e.g. http://localhost:9000/v1 or the gateway $OPENAI_BASE_URL"
-    )
+    parser.add_argument("--base-url", help="e.g. http://localhost:9000/v1 or the gateway $OPENAI_BASE_URL")
     parser.add_argument("--model", required=True, help="model id to probe")
     parser.add_argument("--api-key", help="defaults to VLLM_API_KEY / OPENAI_API_KEY / .env")
     parser.add_argument(

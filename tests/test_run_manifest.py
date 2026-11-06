@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from __future__ import annotations
-
 import importlib.util
 import json
 from pathlib import Path
@@ -188,13 +186,13 @@ def test_cli_write_records_direct_upstream_mode_without_routing_stats(tmp_path: 
             "--server-mode",
             "direct",
             "--server-config-json",
-            '{"mode":"direct","upstream_api_key_env":"NVIDIA_API_KEY"}',
+            '{"mode":"direct","upstream_api_key_env":"GATEWAY_API_KEY"}',
             "--harbor-base-url",
-            "https://inference-api.nvidia.com/v1",
+            "https://gateway.example.com/v1",
             "--upstream-base-url",
-            "https://inference-api.nvidia.com/v1",
+            "https://gateway.example.com/v1",
             "--upstream-api-key-env",
-            "NVIDIA_API_KEY",
+            "GATEWAY_API_KEY",
             "--harbor-path",
             str(dataset),
             "--agent",
@@ -224,8 +222,8 @@ def test_cli_write_records_direct_upstream_mode_without_routing_stats(tmp_path: 
     manifest = json.loads(out.read_text())
     assert manifest["server"]["preset"] == "direct"
     assert manifest["server"]["mode"] == "direct"
-    assert manifest["server"]["upstream_base_url"] == "https://inference-api.nvidia.com/v1"
-    assert manifest["server"]["upstream_api_key_env"] == "NVIDIA_API_KEY"
+    assert manifest["server"]["upstream_base_url"] == "https://gateway.example.com/v1"
+    assert manifest["server"]["upstream_api_key_env"] == "GATEWAY_API_KEY"
     assert manifest["server"]["server_config"] is None
     assert manifest["outcomes"]["routing_stats_json_status"] == "not-requested"
 

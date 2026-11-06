@@ -1,7 +1,7 @@
 # Running a batch
 
 End-to-end runbook for launching one deterministic repo batch through the
-tools pipeline. Replaces / supersedes GitLab snippet 13878.
+tools pipeline.
 
 A "batch" is 50 repos drawn from
 `~/projects/craft-bench/docs/plans/expanded-repos/candidates.csv` via
@@ -33,7 +33,7 @@ every machine ⇒ shards never overlap.
    (e.g. `.venv/lib/python3.13/site-packages`). Silent glob misses are the
    most common source of "Harbor smoke behaves weirdly" later on.
 
-3. **`.env`** must set the NVIDIA gateway keys — every LLM step is
+3. **`.env`** must set the configured gateway keys — every LLM step is
    gateway-only, no OAuth fallback.
 
    ```bash

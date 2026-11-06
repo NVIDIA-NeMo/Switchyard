@@ -8,8 +8,6 @@ Used by both the from-T2 converter (`search/harbor.py`) and the native converter
 file writing consistent across adapters.
 """
 
-from __future__ import annotations
-
 import json
 import os
 import textwrap
@@ -74,13 +72,13 @@ def write_task_toml(task_dir: str, tid: str, difficulty: str, agent_timeout: int
         [verifier.env]
         OPENAI_API_KEY = "${{OPENAI_API_KEY}}"
         OPENAI_BASE_URL = "${{OPENAI_BASE_URL}}"
-        # Pin the LLM judge to the NVIDIA gateway independent of the agent's
+        # Pin the LLM judge to the configured gateway independent of the agent's
         # endpoint. The launcher captures the gateway URL+key from .env into
         # JUDGE_* before any vllm-mode override rewrites OPENAI_*. If unset,
         # test_runner.py falls back to OPENAI_BASE_URL (fine in gateway mode).
         JUDGE_API_KEY = "${{JUDGE_API_KEY}}"
         JUDGE_BASE_URL = "${{JUDGE_BASE_URL}}"
-        JUDGE_MODEL = "aws/anthropic/bedrock-claude-sonnet-4-6"
+        JUDGE_MODEL = "claude-sonnet-4-6"
 
         [solution.env]
     """)

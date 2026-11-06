@@ -10,8 +10,6 @@ wasting wall time.
 Exits 0 if all checks pass; 1 otherwise. Each check prints PASS/FAIL with a short hint.
 """
 
-from __future__ import annotations
-
 import argparse
 import glob
 import json
@@ -260,12 +258,10 @@ def check_repos_csv(csv_path: str) -> bool:
 
 
 def check_claude_auth(model: str | None = None) -> bool:
-    """End-to-end validation of the `claude -p` path through the gateway.
+    """The check runs Claude with the configured endpoint and verifies its reported model.
 
-    Builds the same env `gateway.build_gateway_env` builds, shells out to
-    `claude -p`, then asserts the response's `modelUsage` key looks gateway-shaped
-    (e.g. `aws/anthropic/...`) — NOT a bare Anthropic-direct name like `opus`
-    or `claude-opus-4-6`. A mismatch means the request leaked to OAuth/direct.
+    Model IDs may be bare or namespaced; a slash alone does not establish which
+    endpoint served the request.
     """
     import craft_taskgen.config as _cfg
     from craft_taskgen.gateway import build_gateway_env
@@ -294,25 +290,21 @@ def check_claude_auth(model: str | None = None) -> bool:
     except json.JSONDecodeError:
         _print("claude -p auth", False, "response was not JSON")
         return False
-    if out.get("is_error"):
-        _print("claude -p auth", False, f"is_error=True subtype={out.get('subtype', '?')}")
+    if not isinstance(out, dict) or out.get("is_error"):
+        _print("claude -p auth", False, "response was an error or was not a JSON object")
         return False
-    model_usage = out.get("modelUsage") or {}
-    model_used = next(iter(model_usage.keys()), "") if model_usage else ""
-    if not model_used:
-        _print("claude -p auth", False, "response had no modelUsage — cannot verify gateway routing")
+    model_usage = out.get("modelUsage")
+    if (
+        not isinstance(model_usage, dict)
+        or not model_usage
+        or any(not isinstance(usage, dict) for usage in model_usage.values())
+    ):
+        _print("claude -p auth", False, "response had no valid modelUsage object")
         return False
-    # Gateway-shaped model IDs start with a provider prefix like `aws/`, `gcp/`, `azure/`.
-    # Anthropic-direct names look like `claude-opus-4-6` or short aliases like `opus`.
-    if "/" not in model_used:
-        _print(
-            "claude -p auth",
-            False,
-            f"model {model_used!r} is NOT gateway-shaped — request routed via OAuth/direct. "
-            "Check ANTHROPIC_API_KEY / ANTHROPIC_BASE_URL in .env.",
-        )
+    if set(model_usage) != {model}:
+        _print("claude -p auth", False, f"reported models do not match configured model {model!r}")
         return False
-    _print("claude -p auth", True, f"gateway ok ({model_used})")
+    _print("claude -p auth", True, f"configured model responded ({model})")
     return True
 
 
@@ -418,9 +410,8 @@ def check_anthropic_endpoint(test_model: str | None = None) -> bool:
                 "messages": [{"role": "user", "content": "hi"}],
             }
         ).encode()
-        # Send both auth headers. LiteLLM-style gateways (NVIDIA inference-api)
-        # expect Authorization: Bearer; real Anthropic expects x-api-key.
-        # Sending both covers both cases without a fallback round-trip.
+        # Anthropic uses x-api-key, while some compatible gateways use Authorization: Bearer.
+        # Both headers let this probe authenticate without a second request.
         req = urllib.request.Request(
             f"{base_url}/v1/messages",
             data=payload,
@@ -676,17 +667,7 @@ def check_baseline_readiness(backend: str, model: str | None, agents: list[str])
 
     if backend == "gateway":
         results.append(check_env_file())
-        # Short-circuit on the known aws/+claude-code breakage — otherwise we'd
-        # still hit the gateway and record a second, redundant failure.
-        if "claude-code" in agents and model.startswith("aws/"):
-            _print(
-                "claude-code + aws/ gateway model",
-                False,
-                "claude-code is temporarily broken against aws/ gateway endpoints. "
-                "Use an azure/ model (e.g. azure/anthropic/claude-opus-4-6).",
-            )
-            results.append(False)
-        elif "claude-code" in agents:
+        if "claude-code" in agents:
             results.append(check_anthropic_endpoint(test_model=model))
         if "codex" in agents:
             results.append(check_responses_endpoint(test_model=model))
@@ -697,9 +678,8 @@ def check_baseline_readiness(backend: str, model: str | None, agents: list[str])
             # against OPENAI_BASE_URL. Same reachability check as opencode.
             results.append(check_litellm_endpoint(test_model=model))
         if "pi" in agents:
-            # Pi (nvidia provider) hits /v1/chat/completions via the openai-
-            # completions adapter against the baseUrl planted in models.json
-            # (which the launcher seeds from OPENAI_BASE_URL).
+            # Pi's gateway provider uses /v1/chat/completions with the baseUrl in models.json.
+            # The launcher supplies that URL through OPENAI_BASE_URL.
             results.append(check_litellm_endpoint(test_model=model))
         return results
 
@@ -720,14 +700,9 @@ def check_baseline_readiness(backend: str, model: str | None, agents: list[str])
             "vLLM does not speak the Anthropic protocol; claude-code will not work "
             "against this backend unless you've put an Anthropic-compatible shim in front.",
         )
-    # opencode requires `provider/model_id` format (split at first "/"); the
-    # `provider/` prefix is consumed by opencode's config machinery and only
-    # model_id is forwarded to the upstream server. Strip it before preflight
-    # so we hit vLLM with the name vLLM knows.
-    test_model = model.split("/", 1)[1] if "opencode" in agents and "/" in model else model
     results.append(
         check_litellm_endpoint(
-            test_model=test_model,
+            test_model=model,
             base_url=base_url,
             api_key=os.environ.get("VLLM_API_KEY", "EMPTY"),
         )
@@ -948,7 +923,7 @@ def main() -> int:
     if args.check_endpoints:
         checks.append(check_claude_auth(model=profile_llm_step_model))
         # Test LiteLLM with summary model (Sonnet for fix-loop summaries)
-        checks.append(check_litellm_endpoint(test_model="aws/anthropic/bedrock-claude-sonnet-4-6"))
+        checks.append(check_litellm_endpoint(test_model="claude-sonnet-4-6"))
         # Test Anthropic endpoint with the profile's haiku model (cheapest/fastest)
         checks.append(check_anthropic_endpoint(test_model=profile_haiku_model))
 

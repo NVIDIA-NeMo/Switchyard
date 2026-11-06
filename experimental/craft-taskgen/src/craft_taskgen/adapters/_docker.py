@@ -13,8 +13,6 @@ See ``docs/reference/adapter-reproducibility.md`` for the migration guide that o
 track adapter owners should follow.
 """
 
-from __future__ import annotations
-
 import hashlib
 import json
 import logging
@@ -52,8 +50,7 @@ OPENHANDS_SDK_VERSION = "1.17.0"
 QWEN_CODE_VERSION = "0.16.0"
 # pi (mariozechner/earendil-works pi-coding-agent) — installed at run-time by
 # harbor's pi.py::install() (npm install -g @earendil-works/pi-coding-agent@<v>).
-# Patched in patches/harbor-agent-patches.diff to add an `nvidia` provider that
-# writes a per-model models.json planting OPENAI_BASE_URL as baseUrl.
+# The Harbor patch adds a gateway provider whose models.json uses OPENAI_BASE_URL as baseUrl.
 PI_VERSION = "0.75.5"
 OPENHANDS_SDK_MAX_ITERATIONS = 200
 NODE_SETUP_URL = "https://deb.nodesource.com/setup_22.x"

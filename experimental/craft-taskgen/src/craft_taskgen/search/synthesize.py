@@ -14,8 +14,6 @@ All seeds -> 3-model generation -> cross-judging (4 dimensions) -> select best.
 Ported from craft-bench scripts/search/synthesize_from_t2.py.
 """
 
-from __future__ import annotations
-
 import json
 import os
 import re
@@ -30,13 +28,13 @@ import litellm
 litellm.suppress_debug_info = True
 
 # ---------------------------------------------------------------------------
-# Models (LiteLLM names for the NVIDIA inference gateway)
+# LiteLLM uses these model names with the configured gateway.
 # ---------------------------------------------------------------------------
 
 SYNTH_MODELS = {
-    "sonnet-4.6": "openai/aws/anthropic/bedrock-claude-sonnet-4-6",
-    "gemini-3.1-pro": "openai/gcp/google/gemini-3.1-pro-preview",
-    "gpt-5.4": "openai/us/azure/openai/gpt-5.4",
+    "sonnet-4.6": "openai/claude-sonnet-4-6",
+    "gemini-3.1-pro": "openai/gemini-3.1-pro-preview",
+    "gpt-5.4": "openai/gpt-5.4",
 }
 
 # ---------------------------------------------------------------------------
@@ -553,7 +551,6 @@ def repo_name_from_url(url: str) -> str:
 
 
 def run_synthesis(
-    *,
     contexts_dir: str,
     output_dir: str | None = None,
     approaches: list[str] | None = None,

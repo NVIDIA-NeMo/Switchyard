@@ -2,31 +2,31 @@ schema_version = 1
 
 # Clients
 
-[llm_clients.inference_hub]
+[llm_clients.gateway]
 format = "openai_responses"
-base_url = "https://inference-api.nvidia.com/v1"
-api_key_env = "NVIDIA_API_KEY"
+base_url = "https://gateway.example.com/v1"
+api_key_env = "GATEWAY_API_KEY"
 
 [decision_clients.decisions]
 format = "openai_decisions"
-endpoint = "https://inference-api.nvidia.com/v1/decisions"
-api_key_env = "NVIDIA_API_KEY"
+endpoint = "https://gateway.example.com/v1/decisions"
+api_key_env = "GATEWAY_API_KEY"
 timeout_ms = 5000
 
 # The three models our algos use
 
 [targets.capable]
-id = "openai/openai/gpt-6.1-sol"
-llm_client = "inference_hub"
+id = "gpt-6.1-sol"
+llm_client = "gateway"
 extra_body = { reasoning = { effort = "medium" } }
 
 [targets.efficient]
-id = "openai/openai/gpt-6-luna"
-llm_client = "inference_hub"
+id = "gpt-6-luna"
+llm_client = "gateway"
 extra_body = { reasoning = { effort = "medium" } }
 
 [decision_targets.classifier]
-id = "openai/openai/gpt-6-luna"
+id = "gpt-6-luna"
 decision_client = "decisions"
 
 # Best route

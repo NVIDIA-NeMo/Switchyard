@@ -21,8 +21,8 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Default number of retries for server-configured upstream calls.
 pub const DEFAULT_MAX_RETRIES: u32 = 2;
 
-// Canonical OpenAI phrase plus NVIDIA/LiteLLM wrap variants. Adding a new
-// provider-wrap is a one-line entry here, not a fork of the parsing logic.
+// Match standard OpenAI errors and messages wrapped by compatible gateways.
+// Add new message variants here so they share the same parsing logic.
 const OPENAI_OVERFLOW_PHRASES: &[&str] = &[
     "maximum context length",
     "context length exceeded",
@@ -601,7 +601,7 @@ mod tests {
                 r#"{"error":{"code":"context_length_exceeded","message":"x"}}"#
             )
         );
-        // NVIDIA/LiteLLM message wrap with no structured code.
+        // The gateway wraps the message without a structured error code.
         assert!(backend.is_context_overflow(
             r#"{"error":{"message":"the model's context length is only 131072 tokens"}}"#
         ));

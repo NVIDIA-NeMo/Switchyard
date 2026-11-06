@@ -33,15 +33,13 @@ Examples:
 
   # Compare agents on the same task
   uv run python scripts/smoke-probe.py -t <dir> --agent claude-code \
-      --model azure/anthropic/claude-opus-4-6 --reasoning-effort high
+      --model claude-opus-4-6 --reasoning-effort high
 
 A "task dir" is any built Harbor task: a directory with task.toml, environment/,
 instruction.md, AND a tests/ verifier (harbor's TaskPaths.is_valid requires the
 test path). Pass `-t` multiple times, or `--suite-dir` to probe every task.toml
 under a tree.
 """
-
-from __future__ import annotations
 
 import argparse
 import asyncio

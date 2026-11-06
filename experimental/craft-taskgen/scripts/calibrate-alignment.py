@@ -51,8 +51,6 @@ doesn't capture cleanly. Calibration deliverable includes manual
 spot-checks of representative high- and low-jaccard pairs.
 """
 
-from __future__ import annotations
-
 import argparse
 import asyncio
 import csv
@@ -154,8 +152,8 @@ def fetch_reference_tests_and_diff(
     return reference_test_bodies, diff, None
 
 
-STEP_MODEL = os.environ.get("LLM_STEP_MODEL", "aws/anthropic/bedrock-claude-opus-4-6")
-ALIGNMENT_MODEL = os.environ.get("LLM_ALIGNMENT_MODEL", "openai/us/azure/openai/gpt-5.4")
+STEP_MODEL = os.environ.get("LLM_STEP_MODEL", "claude-opus-4-6")
+ALIGNMENT_MODEL = os.environ.get("LLM_ALIGNMENT_MODEL", "openai/gpt-5.4")
 
 
 async def _resolve_merge_base(repo: str, commit_sha: str) -> str | None:
@@ -520,7 +518,7 @@ async def judge_row(
             judge_result = await llm_judge.judge(
                 prompt=prompt,
                 schema=ALIGNMENT_SCHEMA,
-                model=os.environ.get("LLM_ALIGNMENT_MODEL", "openai/us/azure/openai/gpt-5.4"),
+                model=os.environ.get("LLM_ALIGNMENT_MODEL", "openai/gpt-5.4"),
             )
         except Exception as err:
             out["alignment_skip_reason"] = f"judge_error:{type(err).__name__}:{err!s:.100}"

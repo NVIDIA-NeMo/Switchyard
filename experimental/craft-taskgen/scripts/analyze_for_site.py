@@ -22,8 +22,6 @@ Run as: uv run python scripts/analyze_for_site.py
 Or per-section: --only efficiency | corpus | repos
 """
 
-from __future__ import annotations
-
 import argparse
 import json
 import re
@@ -40,9 +38,8 @@ DEFAULT_TASKS_DIR = Path.home() / "projects" / "craft-bench" / "harbor-tasks" / 
 
 PRICING_NOTE = (
     "Per-trial cost computed via harbor-lab's pricing module — the same rates "
-    "`harbor-lab routed-cost` reports. Nemotron-3 Ultra (EA) has no public rate "
-    "and is omitted from the cost scatter. Gateway-billed cost is not exposed "
-    "by the inference-api endpoint."
+    "`harbor-lab routed-cost` reports. Models without a public rate are omitted "
+    "from the cost scatter. These estimates may differ from endpoint billing."
 )
 
 
@@ -87,12 +84,11 @@ def _eff_metric_mean(eff_row: dict, key: str) -> int | float | None:
 # Map leaderboard model labels to harbor-lab pricing keys we can resolve.
 # Anything not in this map gets cost=None (which the scatter renders as "—").
 _LEADERBOARD_MODEL_WIRE: dict[str, str] = {
-    "GPT-5.5": "openai/openai/gpt-5.5",  # litellm: gpt-5.5
-    "Opus 4.7": "azure/anthropic/claude-opus-4-7",  # litellm: claude-opus-4-7
+    "GPT-5.5": "gpt-5.5",  # litellm: gpt-5.5
+    "Opus 4.7": "claude-opus-4-7",  # litellm: claude-opus-4-7
     "GLM-5.1": "zai-org/glm-5.1",  # harbor-lab override
-    "Haiku 4.5": "azure/anthropic/claude-haiku-4-5",
+    "Haiku 4.5": "claude-haiku-4-5",
     "Qwen-3.6-35B-A3B": "qwen/qwen3.6-35b-a3b",  # harbor-lab override
-    "Nemotron-3 Ultra (EA)": "nvidia/nemotron-3-ultra-preview",  # no pricing
 }
 
 

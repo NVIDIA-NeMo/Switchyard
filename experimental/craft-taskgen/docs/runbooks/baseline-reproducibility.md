@@ -52,8 +52,9 @@ Source of truth: `src/craft_taskgen/baselines/reasoning_defaults.py`.
 
 | Model | Effort | Source |
 |---|---|---|
-| `azure/openai/gpt-5.3-codex` | `high` | Harbor default; OpenAI suggests `medium` for day-to-day, we go higher for harder smoke tasks |
-| `openai/openai/gpt-5.3-codex` | `high` | same |
+| `gpt-5.3-codex` | `high` | Launcher default |
+| `gpt-5.4` | `high` | Launcher default |
+| `gpt-5.5` | `high` | Launcher default |
 
 Companion: `CODEX_MODEL_CATALOG_JSON=patches/codex-model-catalog.json` (auto-set by launcher).
 
@@ -63,65 +64,60 @@ Per [Anthropic's effort docs](https://platform.claude.com/docs/en/build-with-cla
 
 | Model | Effort | Source |
 |---|---|---|
-| `aws/anthropic/bedrock-claude-opus-4-7` | `high` | Anthropic recommends `xhigh` for coding, but harbor's CliFlag validator accepts only {low, medium, high}; capped here until we patch harbor |
-| `aws/anthropic/bedrock-claude-opus-4-6` | `high` | API default |
-| `azure/anthropic/claude-opus-4-6` | `high` | API default |
-| `aws/anthropic/claude-opus-4-5` | `high` | API default (no specific recommendation) |
-| `azure/anthropic/claude-opus-4-5` | `high` | API default |
-| `aws/anthropic/bedrock-claude-sonnet-4-6` | `medium` | "Medium effort (recommended default)" for agentic coding |
-| `azure/anthropic/claude-sonnet-4-6` | `medium` | same |
+| `claude-opus-4-7` | `xhigh` | The Harbor patch adds `xhigh` to Claude Code's accepted effort values |
+| `claude-opus-4-6` | `high` | API default |
+| `claude-opus-4-5` | `high` | API default (no specific recommendation) |
+| `claude-sonnet-4-6` | `medium` | "Medium effort (recommended default)" for agentic coding |
 
 Companion: `ANTHROPIC_DEFAULT_{OPUS,SONNET}_MODEL_SUPPORTED_CAPABILITIES=effort,thinking,adaptive_thinking,interleaved_thinking` (auto-set by launcher — without this, effort is silently dropped on gateway-routed models).
 
 ### opencode (OpenAI-compat route via `/v1/chat/completions`)
 
-Same effort intent as claude-code but routes through `@ai-sdk/openai-compatible` → NVIDIA gateway's `/v1/chat/completions`, which rejects `xhigh` per [CLIProxyAPI#2185](https://github.com/router-for-me/CLIProxyAPI/issues/2185). Opus-4-7 capped at `high` until that changes.
+OpenCode uses `@ai-sdk/openai-compatible` to call `/v1/chat/completions`.
+Some endpoints accept only `low`, `medium`, and `high`, so the launcher uses
+`high` for Opus 4.7. Override the effort setting if your endpoint supports
+another value.
 
-Opencode slugs are the **canonical gateway slug** — the same string claude-code and codex use. The opencode-internal `nvidia/` provider dispatch prefix is added by the launcher (see "opencode provider dispatch" below), not typed by the user.
+Opencode slugs are the **canonical gateway slug** — the same string claude-code and codex use. The opencode-internal `gateway/` provider dispatch prefix is added by the launcher (see "opencode provider dispatch" below), not typed by the user.
 
 | Model | Effort | Source |
 |---|---|---|
-| `aws/anthropic/bedrock-claude-opus-4-7` | `high` | Capped below `xhigh` (gateway limitation) |
-| `aws/anthropic/bedrock-claude-opus-4-6` | `high` | API default |
-| `azure/anthropic/claude-opus-4-6` | `high` | API default |
-| `aws/anthropic/claude-opus-4-5` | `high` | API default |
-| `azure/anthropic/claude-opus-4-5` | `high` | API default |
-| `aws/anthropic/bedrock-claude-sonnet-4-6` | `medium` | Anthropic's sonnet-4-6 agentic recommendation |
-| `azure/anthropic/claude-sonnet-4-6` | `medium` | same |
-| `aws/anthropic/claude-haiku-4-5-v1` | `medium` | Haiku via chat-completions (gateway accepts effort; not applicable via claude-code's `/v1/messages`) |
-| `azure/anthropic/claude-haiku-4-5` | `medium` | same |
+| `claude-opus-4-7` | `high` | Default for compatibility with OpenAI-compatible endpoints |
+| `claude-opus-4-6` | `high` | API default |
+| `claude-opus-4-5` | `high` | API default |
+| `claude-sonnet-4-6` | `medium` | Anthropic's sonnet-4-6 agentic recommendation |
+| `claude-haiku-4-5` | `medium` | Sent through Chat Completions; support depends on the endpoint |
 
-Companion: `OPENCODE_REASONING_EFFORT` env → harbor opencode patch writes `reasoningEffort` on the nvidia provider's model entry.
+Companion: `OPENCODE_REASONING_EFFORT` env → harbor opencode patch writes `reasoningEffort` on the gateway provider's model entry.
 
-#### opencode provider dispatch (`nvidia/` prefix)
+#### opencode provider dispatch (`gateway/` prefix)
 
 Opencode's config format uses the first `/`-delimited segment of the model name as a **provider key** — it selects which JS client opencode's AI SDK instantiates (`@ai-sdk/openai-compatible` vs. stock `/v1/messages`). The remainder is the **model ID** that goes on the wire to the endpoint.
 
-For our gateway-routed opencode runs we want provider=`nvidia` (the custom provider our harbor patch defines, which forces `@ai-sdk/openai-compatible`). So harbor's `--model` argument takes the form `nvidia/<canonical-slug>`, but the gateway only ever sees `<canonical-slug>` on the wire.
+For our gateway-routed opencode runs we want provider=`gateway` (the custom provider our harbor patch defines, which forces `@ai-sdk/openai-compatible`). So harbor's `--model` argument takes the form `gateway/<canonical-slug>`, but the gateway only ever sees `<canonical-slug>` on the wire.
 
 Consequences:
 
-- **User-facing `--model`** is the canonical slug (e.g. `aws/anthropic/claude-haiku-4-5-v1`). Same string claude-code and codex use.
-- **Launcher** prepends `nvidia/` automatically when `--agent opencode --backend gateway`. For legacy convenience, `--model nvidia/...` is also accepted (prefix stripped, then re-added).
+- **User-facing `--model`** is the canonical slug (e.g. `claude-haiku-4-5`). Same string claude-code and codex use.
+- **Launcher** prepends `gateway/` automatically when `--agent opencode --backend gateway`. An explicit `--model gateway/...` is also accepted (prefix stripped, then re-added).
 - **Preflight** uses the canonical slug (what the gateway's policy check actually looks up).
 - **`reasoning_defaults.py`** keys on the canonical slug.
 - **Manifest** records `agent.model` (canonical) and `agent.harbor_model_arg` (dispatched form, opencode-only).
 
 ### pi (earendil-works/pi-coding-agent, OpenAI-compat via planted models.json)
 
-Pi is a coding CLI from [earendil-works/pi](https://github.com/earendil-works/pi) (formerly `@mariozechner/pi-coding-agent`). Harbor 0.6.4 ships a `Pi` agent class, but it has no built-in path for arbitrary OpenAI-compatible endpoints — `--provider` only accepts hard-coded names (`openai`, `anthropic`, `google`, ...) and there's no `--base-url` flag. Our harbor patch (in `patches/harbor-agent-patches.diff`) adds a `nvidia` provider branch that, at run time, plants `~/.pi/agent/models.json` declaring `nvidia` as an `openai-completions` provider whose `baseUrl` is the host's `OPENAI_BASE_URL`. The launcher prepends `nvidia/` to `--model` as a dispatch token; pi.py strips it before sending the canonical slug on the wire.
+Pi is a coding CLI from [earendil-works/pi](https://github.com/earendil-works/pi) (formerly `@mariozechner/pi-coding-agent`). Harbor 0.6.4 ships a `Pi` agent class, but it has no built-in path for arbitrary OpenAI-compatible endpoints — `--provider` only accepts hard-coded names (`openai`, `anthropic`, `google`, ...) and there's no `--base-url` flag. Our harbor patch (in `patches/harbor-agent-patches.diff`) adds a `gateway` provider branch that, at run time, plants `~/.pi/agent/models.json` declaring `gateway` as an `openai-completions` provider whose `baseUrl` is the host's `OPENAI_BASE_URL`. The launcher prepends `gateway/` to `--model` as a dispatch token; pi.py strips it before sending the canonical slug on the wire.
 
 The patch also pipes pi's JSON output through `grep -v '"type":"message_update"'` to drop pi's quadratic-bloat thinking-delta events (each emits the full accumulated thinking buffer on every token; without the filter, `pi.txt` grows ~1 GB/min on a reasoning trace). The parser only reads `message_end` events for token totals, so dropping `message_update` is lossless for our usage.
 
 Pinned to **0.75.5** in `src/craft_taskgen/adapters/_docker.py::PI_VERSION`. Installed at container start via `npm install -g @earendil-works/pi-coding-agent@0.75.5`.
 
-Reasoning effort: pi exposes `--thinking {off,minimal,low,medium,high,xhigh}`. Harbor surfaces it as the `thinking` agent-kwarg; the launcher renames `reasoning_effort` → `thinking` in its `pi` branch and forwards the value resolved from `reasoning_defaults.py`. Models with `compat.supportsReasoningEffort=true` in our planted `models.json` (set unconditionally for the `nvidia` provider) translate `thinking=high` to `reasoning_effort=high` in the chat-completions request body.
+Reasoning effort: pi exposes `--thinking {off,minimal,low,medium,high,xhigh}`. Harbor surfaces it as the `thinking` agent-kwarg; the launcher renames `reasoning_effort` → `thinking` in its `pi` branch and forwards the value resolved from `reasoning_defaults.py`. Models with `compat.supportsReasoningEffort=true` in our planted `models.json` (set unconditionally for the `gateway` provider) translate `thinking=high` to `reasoning_effort=high` in the chat-completions request body.
 
 | Model | --thinking | Source |
 |---|---|---|
-| `nvidia/qwen/qwen3.6-35b-a3b` | `high` | Qwen3.x reasoning model |
-| `nvidia/zai-org/glm-5.1` | `high` | GLM reasoning model |
-| `nvidia/nvidia/nemotron-3-ultra-preview` | `high` | Nemotron-Ultra reasoning model |
+| `Qwen/Qwen3.6-35B-A3B` | `high` | Qwen3.x reasoning model |
+| `zai-org/glm-5.1` | `high` | GLM reasoning model |
 | haiku-4-5 | — | No row → no `--thinking` (haiku is not reasoning-capable) |
 
 ### qwen-coder (Qwen Code CLI, OpenAI-compat route via `/v1/chat/completions`)
@@ -132,7 +128,7 @@ Pinned to **0.16.0** in `src/craft_taskgen/adapters/_docker.py::QWEN_CODE_VERSIO
 
 | Model | Effort | Source |
 |---|---|---|
-| `nvidia/qwen/qwen3.6-35b-a3b` | — | No effort kwarg; Qwen3.x thinking is server-side and default-on at the gateway |
+| `Qwen/Qwen3.6-35B-A3B` | — | Qwen Code has no effort option; thinking depends on the endpoint's server configuration. |
 
 No reasoning_effort row in `reasoning_defaults.py` for qwen-coder — the launcher passes nothing. Output is also uncapped at the agent (qwen-code's `maxOutputTokens` setting in `~/.qwen/settings.json` is not plumbed by harbor's install template).
 
@@ -150,9 +146,9 @@ haiku doesn't support effort at all).
 
 ## How opencode gets reasoning
 
-Opencode doesn't have a native `reasoning_effort` concept — it's a model-agnostic TypeScript agent that speaks to whatever OpenAI-compatible endpoint it's pointed at. Our patched `nvidia` provider in `patches/harbor-agent-patches.diff` wires reasoning in for the two model families we care about.
+The patched `gateway` provider in `patches/harbor-agent-patches.diff` passes the configured reasoning effort to the OpenAI-compatible endpoint. The endpoint determines which values it accepts and which reasoning fields it returns.
 
-### Claude models (via NVIDIA gateway `/v1/chat/completions`)
+### Claude models (via configured gateway `/v1/chat/completions`)
 
 Chain:
 
@@ -160,12 +156,12 @@ Chain:
 2. Harbor's opencode agent (patched here) reads `OPENCODE_REASONING_EFFORT` when building the opencode.jsonc config and sets `provider_cfg["models"][model_id].setdefault("options", {})["reasoningEffort"] = "high"` in the JSON it writes into the container. (The `options` sub-dict matters: opencode's schema only honors `reasoningEffort` when nested under `models.<id>.options`. See `scripts/opencode_request_capture.py` + the "Empirically-verified opencode behaviors" section below.)
 3. Opencode runs inside the container, reads its config, sees `reasoningEffort: "high"` on the model entry, passes it through `@ai-sdk/openai-compatible` as a provider option.
 4. The SDK translates `reasoningEffort` into `reasoning_effort` in the `/v1/chat/completions` request body.
-5. NVIDIA's gateway forwards `reasoning_effort` to the upstream Claude route. Gateway accepts `low|medium|high` (not `xhigh`).
-6. Claude produces reasoning tokens; the gateway surfaces them back in the response's `reasoning` field per vLLM-style OpenAI-compat conventions.
+5. The endpoint receives `reasoning_effort`; supported values depend on the provider.
+6. The endpoint may return reasoning text or token counts. An earlier Claude Opus 4.6 probe returned `reasoning_content` and a reasoning-token count, as recorded below. These fields are observations from that endpoint, not guarantees for other gateways.
 
 Where this can break in practice:
 
-- If the SDK drops the `reasoning` field from the response, opencode's trajectory won't show reasoning events even though the model reasoned. Reasoning still happened (and affected the answer), just invisibly to us.
+- If the endpoint returns reasoning text but the SDK or OpenCode omits it, the trajectory cannot show that text. Check the endpoint response separately from the trajectory.
 - If the gateway rejects `xhigh`, the whole request 400s — we cap opus-4-7 at `high` for opencode to avoid this.
 
 ### Qwen3.5 (via local vLLM)
@@ -469,8 +465,9 @@ Expect median >2000 chars / >3 blocks per trial with the fix applied.
 grep -cE '"type":"reasoning"|"type":"thinking"' <trial>/agent/opencode.txt
 ```
 
-Non-zero = reasoning is flowing from the gateway. Zero after this MR is
-applied means `@ai-sdk/openai-compatible` isn't surfacing the field; report.
+A non-zero count shows that the trajectory contains reasoning or thinking
+events. A zero count alone does not identify the cause; compare it with a
+direct endpoint probe.
 
 ### opencode + Qwen3.5 (vLLM) — message.reasoning
 
@@ -490,49 +487,48 @@ reasoning — client-side config can't fix that.
 
 ## Known issues / open items
 
-- **opencode drops reasoning from the trajectory — upstream bug, not ours.**
-  Proven end-to-end with two direct probes of the upstream API:
-  1. **vLLM :9000, Qwen3**: 200 SSE frames with `delta.reasoning` populated
-     (648 chars). `usage.completion_tokens_details` is absent, so
-     `tokens.reasoning` is structurally 0 on this path regardless.
-  2. **NVIDIA gateway, aws/anthropic/bedrock-claude-opus-4-6 with
-     `reasoning_effort=high`**: 10 SSE frames with `delta.reasoning_content`
-     populated (54 chars), non-stream response has `message.reasoning_content`,
-     AND `usage.completion_tokens_details.reasoning_tokens = 32`. All three
-     paths deliver reasoning.
+- **Earlier OpenCode trials omitted reasoning reported by the endpoints.**
+  The recorded direct probes returned these results:
+
+  1. The **vLLM :9000, Qwen3** probe returned 200 SSE frames with
+     `delta.reasoning` populated (648 chars). Its response omitted
+     `usage.completion_tokens_details`, so it provided no count for
+     `tokens.reasoning`.
+  2. The **Claude Opus 4.6 gateway** probe with `reasoning_effort=high`
+     returned 10 SSE frames with `delta.reasoning_content` populated
+     (54 chars). The non-stream response included `message.reasoning_content`
+     and `usage.completion_tokens_details.reasoning_tokens = 32`.
+
+  These are historical results from the tested deployments. They do not
+  establish what another configured endpoint returns.
 
   Corresponding opencode single-trial results: **0 `reasoning-*` part events
   in opencode.txt, `tokens.reasoning` = 0 across every step_finish** for
   both vLLM-Qwen and gateway-opus. 727,813 total tokens processed on the
-  opus trial; 0 reasoning tokens surfaced. The upstream *provides* the
-  data, the SDK *emits* the LanguageModelV2 reasoning parts (verified in
-  `@ai-sdk/openai-compatible@2.0.41` source), and opencode's own stream
-  consumer drops them on the floor.
+  opus trial; 0 reasoning tokens were recorded. The endpoint probes returned
+  reasoning text, and inspection of `@ai-sdk/openai-compatible@2.0.41` showed
+  code that emits LanguageModelV2 reasoning parts. These observations pointed
+  to OpenCode's stream consumer as the source of the missing trajectory text.
 
   Tracked in [sst/opencode#16963](https://github.com/sst/opencode/issues/16963)
   (exact symptom match: vLLM+Qwen3) and [#19988](https://github.com/sst/opencode/issues/19988)
   (vLLM renamed `reasoning_content` → `reasoning`, opencode's zod schema
   doesn't list it). PR [#5531](https://github.com/sst/opencode/pull/5531)
   proposed a wrapper fix; maintainer declined, said it belongs upstream.
-  Bumping opencode to 1.14.20 did not fix the symptom. **The reasoning
-  still happens** and still affects the model's answers; we just can't
-  observe it from the trajectory.
+  Bumping opencode to 1.14.20 did not fix the symptom in the recorded trial.
+  The trajectory alone could not show the reasoning text returned in the
+  endpoint probes.
 - **`high` on codex ≠ `high` on claude-code** in strict terms. The scale is
   calibrated per-model. Don't over-interpret cross-agent comparisons.
 
-## Open gaps / follow-up MRs
+## vLLM provider dispatch
 
-- **vLLM + opencode provider dispatch is broken on this branch** (pre-existing,
-  not an MR-46 regression). `--backend vllm --agent opencode` generates an
-  `opencode.json` where the `provider` key takes the raw first-segment of
-  `--model` (e.g. `qwen` for `qwen/Qwen3-32B`) instead of the `nvidia`
-  provider our harbor patch defines with `@ai-sdk/openai-compatible`. Net:
-  opencode runs without `baseURL`/`apiKey` configured and either fails at
-  startup or routes nowhere. **Blocked on local vLLM stand-up for
-  verification**; follow-up MR will add a `vllm/` dispatch prefix parallel
-  to the existing `nvidia/` prefix, gate the patch's
-  openai-compatible-attach block on `provider in ("nvidia", "vllm")`, and
-  verify with a live trial.
+For `--backend vllm --agent opencode`, the launcher passes
+`vllm/<canonical ID>` to Harbor. The patch selects `@ai-sdk/openai-compatible`
+and configures the endpoint and credentials for both `gateway` and `vllm`.
+Preflight receives the canonical ID unchanged, including any vendor namespace.
+Launcher dry runs and generated-config capture checks pass. These checks did
+not run a Docker or live vLLM trial.
 
 ## Empirically-verified opencode behaviors
 

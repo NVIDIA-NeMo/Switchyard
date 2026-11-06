@@ -4305,7 +4305,7 @@ format = "openai_chat"
 base_url = "https://example.test/v1"
 
 [targets.shared]
-id = "nvidia/deepseek-ai/deepseek-v4-pro"
+id = "deepseek/deepseek-v4-pro"
 llm_client = "primary"
 
 [routes.declared]
@@ -5362,7 +5362,7 @@ async fn streaming_response_is_framed_for_the_inbound_api() -> TestResult {
     Ok(())
 }
 
-// SWITCH-922: every streaming codec must report the routed target, not the route
+// Every streaming codec must report the routed target, not the route
 // id the caller addressed — the route id is meaningless to anything reading the
 // trajectory (a Bench UI, a spend log, the client's own display).
 #[tokio::test]

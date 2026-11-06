@@ -73,7 +73,7 @@ cache_read = 0.2
 cache_write = 2.5
 
 [[prices]]
-models = ["gpt-5.5", "openai/gpt-5.5", "azure/openai/gpt-5.5"]
+models = ["gpt-5.5", "openai/gpt-5.5"]
 input = 5
 output = 30
 cache_read = 0.5
@@ -172,7 +172,6 @@ models = [
     "claude-haiku-4-5",
     "claude-haiku-4-5-20251001",
     "anthropic/claude-haiku-4.5",
-    "azure/anthropic/claude-haiku-4-5",
 ]
 input = 1
 output = 5

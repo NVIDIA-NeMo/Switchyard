@@ -13,7 +13,7 @@
 #   Rubric         frozen; the `prompt` below is the text that was measured
 #
 # The routing parameters and the classifier rubric below are exactly as run. The model
-# wiring is not: the measured runs used NVIDIA-internal endpoints and an on-device weak
+# wiring is not: the measured runs used different endpoints and an on-device weak
 # tier, replaced here with the closest publicly reachable OpenRouter models so the
 # deployment runs as written. The weak tier in particular is a near equivalent rather
 # than the same build, so treat the figures above as the operating point of the

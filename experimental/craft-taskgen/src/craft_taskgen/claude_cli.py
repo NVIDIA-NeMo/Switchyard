@@ -4,16 +4,13 @@
 """Claude CLI helper and auto-fix logic for the task generation pipeline.
 
 Gateway-only policy: every `claude -p` invocation must route through the
-NVIDIA LiteLLM gateway (`ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` from .env).
-OAuth fallback is forbidden because this machine shares a personal Claude
-account that has a budget.
+configured gateway (`ANTHROPIC_BASE_URL` + `ANTHROPIC_API_KEY` from .env).
+OAuth fallback is disabled so calls use the configured endpoint and credentials.
 
 The gateway-env builder lives in `gateway.py` now (shared with `llm_judge.py`
 for direct-API calls). `_build_gateway_env` is preserved as a re-export so
 existing callers (preflight, etc.) don't need to change.
 """
-
-from __future__ import annotations
 
 import asyncio
 import json
@@ -34,15 +31,14 @@ from craft_taskgen.prompts import (
     fix_f2p_p2p_classify_prompt,
 )
 
-_SUMMARY_MODEL = "aws/anthropic/bedrock-claude-sonnet-4-6"
+_SUMMARY_MODEL = "claude-sonnet-4-6"
 
-# Preserved re-export for callers that still reach for the underscore name
-# (e.g. preflight.py before the step-j docs sweep). Prefer `build_gateway_env`
-# from craft_taskgen.gateway in new code.
+# The re-export preserves compatibility with callers of _build_gateway_env.
+# New callers should use build_gateway_env from craft_taskgen.gateway.
 _build_gateway_env = build_gateway_env
 
 
-def _format_subprocess_hint(stderr: str, stdout: str, *, max_chars: int = 200) -> str:
+def _format_subprocess_hint(stderr: str, stdout: str, max_chars: int = 200) -> str:
     """Return a concise retry hint from subprocess output.
 
     Prefer stderr, but fall back to stdout because `claude -p --output-format json`
@@ -104,7 +100,6 @@ def _extract_cli_error(result: dict) -> dict | None:
 
 def run_claude(
     prompt: str,
-    *,
     max_turns: int | None = None,
     timeout: int | None = None,
     cwd: str | None = None,
@@ -178,7 +173,6 @@ _BACKOFF_CAP = 30  # max backoff per retry
 
 async def run_claude_async(
     prompt: str,
-    *,
     max_turns: int | None = None,
     timeout: int | None = None,
     cwd: str | None = None,
@@ -290,8 +284,8 @@ async def save_state_locked(state, state_file: str) -> None:
         state.save(state_file)
 
 
-def summarize(text: str, *, model: str = _SUMMARY_MODEL, max_chars: int = 1500) -> str:
-    """Generate a 1-2 sentence summary via the NVIDIA inference gateway."""
+def summarize(text: str, model: str = _SUMMARY_MODEL, max_chars: int = 1500) -> str:
+    """The helper generates a 1-2 sentence summary through the configured gateway."""
     try:
         import openai
 

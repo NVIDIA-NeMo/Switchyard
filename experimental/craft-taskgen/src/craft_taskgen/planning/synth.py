@@ -8,12 +8,9 @@ Per candidate: one Opus 4.6 call over (spec + PR description + PR diff) →
 sidecar. Always runs as the first step of the scorer pipeline so every
 candidate gets a plan artifact regardless of downstream outcome.
 
-Calls the NVIDIA inference gateway directly via litellm (same endpoint
-craft-taskgen/search and craft-iterative-planning/v1 hit). No new SDK
-dependency.
+The module calls the configured gateway through litellm, using the same
+endpoint as the search pipeline.
 """
-
-from __future__ import annotations
 
 import asyncio
 import json
@@ -31,7 +28,7 @@ from craft_taskgen.planning.prompts import build_gold_plan_prompt
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_MODEL = "openai/aws/anthropic/bedrock-claude-opus-4-6"
+DEFAULT_MODEL = "openai/claude-opus-4-6"
 DEFAULT_MAX_CONCURRENT = 2
 DEFAULT_MAX_TOKENS = 32768
 DEFAULT_MAX_RETRIES = 5
@@ -125,7 +122,7 @@ def _extract_json_plan(text: str) -> dict[str, Any]:
 
 
 async def _call_opus(prompt: str, sem: asyncio.Semaphore, cfg: SynthConfig) -> dict[str, Any]:
-    """Single completion against the NVIDIA gateway via litellm. Retries 429s."""
+    """The helper calls the configured gateway through litellm and retries HTTP 429 responses."""
     api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY") or ""
     for attempt in range(cfg.max_retries):
         async with sem:
@@ -228,7 +225,6 @@ async def _run_async(
 def run_synth(
     candidates_dir: str,
     plans_dir: str | None = None,
-    *,
     model: str = DEFAULT_MODEL,
     base_url: str | None = None,
     max_concurrent: int = DEFAULT_MAX_CONCURRENT,
@@ -257,7 +253,7 @@ def run_synth(
         raise FileNotFoundError(f"no candidate JSONs matched in {candidates_dir} (filter={filter_task!r})")
 
     if not (os.environ.get("OPENAI_API_KEY") or os.environ.get("ANTHROPIC_API_KEY")):
-        raise RuntimeError("OPENAI_API_KEY / ANTHROPIC_API_KEY not set (source .env for NVIDIA gateway)")
+        raise RuntimeError("OPENAI_API_KEY / ANTHROPIC_API_KEY not set (source .env for configured gateway)")
 
     cfg = SynthConfig(
         model=model,

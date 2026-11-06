@@ -97,7 +97,7 @@ Main options:
   --model MODEL                Model Harbor should request. With
                                --server-config this is a Switchyard route
                                key; without it, this is the upstream model.
-                               Defaults --harbor-model to nvidia/MODEL for
+                               Defaults --harbor-model to gateway/MODEL for
                                opencode, switchyard/MODEL for pi, openai/MODEL
                                for other OpenAI-style agents, and MODEL for
                                claude-code/codex.
@@ -404,7 +404,7 @@ if [[ "${HARBOR_MODEL_SET}" -eq 0 ]]; then
     if [[ "${SWITCHYARD_ENABLED}" -eq 1 ]]; then
         case "${AGENT}" in
             claude-code|codex) HARBOR_MODEL="${MODEL}" ;;
-            opencode) HARBOR_MODEL="nvidia/${MODEL}" ;;
+            opencode) HARBOR_MODEL="gateway/${MODEL}" ;;
             pi) HARBOR_MODEL="switchyard/${MODEL}" ;;
             *) HARBOR_MODEL="openai/${MODEL}" ;;
         esac

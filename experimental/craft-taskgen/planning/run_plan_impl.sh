@@ -10,10 +10,10 @@
 # without a separate plan. This script is plan+implementer, not e2e.)
 #
 # Required env vars:
-#   PLANNER_MODEL   harbor -m value for planner (e.g. aws/anthropic/bedrock-claude-opus-4-6)
+#   PLANNER_MODEL   harbor -m value for planner (e.g. claude-opus-4-6)
 #
 # Optional env vars:
-#   IMPL_MODEL            harbor -m value for implementer. Default: aws/anthropic/claude-haiku-4-5-v1
+#   IMPL_MODEL            harbor -m value for implementer. Default: claude-haiku-4-5
 #                         (Haiku 4.5 is the methodology's fixed implementer; override to ablate.)
 #   PLANNER_AGENT         default: claude-code
 #   IMPL_AGENT            default: claude-code
@@ -26,7 +26,7 @@
 #   OUT_DIR               output root, default jobs/plan-impl-<timestamp>
 #
 # Example:
-#   PLANNER_MODEL=aws/anthropic/bedrock-claude-opus-4-6 \
+#   PLANNER_MODEL=claude-opus-4-6 \
 #   PLANNER_AGENT_KWARGS="api_base=$OPENAI_BASE_URL" \
 #   IMPL_AGENT_KWARGS="api_base=$OPENAI_BASE_URL" \
 #   TASKS='hugapi__hug-651' \
@@ -36,7 +36,7 @@ set -euo pipefail
 
 : "${PLANNER_MODEL:?PLANNER_MODEL required (the planner model is what varies in this benchmark)}"
 
-IMPL_MODEL="${IMPL_MODEL:-aws/anthropic/claude-haiku-4-5-v1}"
+IMPL_MODEL="${IMPL_MODEL:-claude-haiku-4-5}"
 PLANNER_AGENT="${PLANNER_AGENT:-claude-code}"
 IMPL_AGENT="${IMPL_AGENT:-claude-code}"
 SOURCE_DATASET="${SOURCE_DATASET:-harbor-tasks/craft-planning}"

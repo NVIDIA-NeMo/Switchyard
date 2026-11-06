@@ -24,8 +24,6 @@ Per candidate:
   7. Write the measurements into the candidate's ``planning_scores`` block.
 """
 
-from __future__ import annotations
-
 import json
 import logging
 import os
@@ -46,9 +44,9 @@ from craft_taskgen.planning.harbor import (
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_PLANNER_A = "aws/anthropic/bedrock-claude-opus-4-6"
-DEFAULT_PLANNER_B = "aws/anthropic/claude-haiku-4-5-v1"
-DEFAULT_IMPLEMENTER = "aws/anthropic/bedrock-claude-sonnet-4-6"
+DEFAULT_PLANNER_A = "claude-opus-4-6"
+DEFAULT_PLANNER_B = "claude-haiku-4-5"
+DEFAULT_IMPLEMENTER = "claude-sonnet-4-6"
 
 _WRAP_PIPELINE = Path(__file__).resolve().parents[3] / "planning" / "wrap_pipeline.py"
 
@@ -195,7 +193,6 @@ def run_score(
     candidates_dir: str,
     dataset_dir: str,
     work_dir: str,
-    *,
     planner_a_model: str = DEFAULT_PLANNER_A,
     planner_b_model: str = DEFAULT_PLANNER_B,
     implementer_model: str = DEFAULT_IMPLEMENTER,
@@ -258,7 +255,7 @@ def run_score(
 
     if not skip_harbor:
         if not os.environ.get("ANTHROPIC_API_KEY"):
-            raise RuntimeError("ANTHROPIC_API_KEY not set (source .env for NVIDIA gateway creds)")
+            raise RuntimeError("ANTHROPIC_API_KEY not set (source .env for configured gateway creds)")
 
         _run_wrap_pipeline(src_path, planner_dataset, "planner", None, task_filter)
         run_harbor(planner_dataset, plans_a_trials, planner_a_model, agent, cfg.api_base, task_filter)

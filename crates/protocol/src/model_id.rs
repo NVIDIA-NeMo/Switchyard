@@ -171,9 +171,9 @@ mod tests {
 
     #[test]
     fn a_map_of_ids_is_queryable_by_str() {
-        let by_model = HashMap::from([(ModelId::new("aws/anthropic/claude-opus-4-5"), 1)]);
+        let by_model = HashMap::from([(ModelId::new("provider/claude-opus-4-5"), 1)]);
 
-        assert_eq!(by_model.get("aws/anthropic/claude-opus-4-5"), Some(&1));
+        assert_eq!(by_model.get("provider/claude-opus-4-5"), Some(&1));
     }
 
     #[test]

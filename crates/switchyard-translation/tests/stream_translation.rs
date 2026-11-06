@@ -687,7 +687,7 @@ fn openai_chat_mixed_reasoning_and_content_stream_in_reasoning_first_order() -> 
     let chunk = json!({
         "id": "chatcmpl-test",
         "object": "chat.completion.chunk",
-        "model": "nvidia/nvidia/nemotron-3-ultra-nvfp4",
+        "model": "nvidia/nemotron-3-ultra-550b-a55b",
         "choices": [{
             "index": 0,
             "delta": {

@@ -19,8 +19,6 @@ Uses `asyncio.run()` to avoid a pytest-asyncio dependency (matches the pattern
 used elsewhere in this repo's tests).
 """
 
-from __future__ import annotations
-
 import asyncio
 from types import SimpleNamespace
 from typing import Any
@@ -40,7 +38,7 @@ _SCHEMA: dict[str, Any] = {
 }
 
 
-def _fake_response(content: str, *, input_tokens: int = 100, output_tokens: int = 20) -> SimpleNamespace:
+def _fake_response(content: str, input_tokens: int = 100, output_tokens: int = 20) -> SimpleNamespace:
     """Build an object shaped like litellm's completion response."""
     message = SimpleNamespace(content=content)
     choice = SimpleNamespace(message=message)
@@ -55,8 +53,18 @@ class _CallRecorder:
         self._script = list(script)
         self.calls: list[dict[str, Any]] = []
 
-    async def __call__(self, **kwargs: Any) -> Any:
-        self.calls.append(kwargs)
+    async def __call__(self, model, messages, max_tokens, api_key, api_base, num_retries, timeout) -> Any:
+        self.calls.append(
+            {
+                "model": model,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "api_key": api_key,
+                "api_base": api_base,
+                "num_retries": num_retries,
+                "timeout": timeout,
+            }
+        )
         item = self._script.pop(0)
         if isinstance(item, BaseException):
             raise item
@@ -80,13 +88,13 @@ def test_happy_path_returns_parsed_result(monkeypatch: pytest.MonkeyPatch) -> No
         llm_judge.judge(
             prompt="decide",
             schema=_SCHEMA,
-            model="aws/anthropic/bedrock-claude-opus-4-6",
+            model="claude-opus-4-6",
         )
     )
 
     assert out.result == {"verdict": "ok", "reason": "clean"}
     assert out.usage == {"input_tokens": 100, "output_tokens": 20, "cached_tokens": 0}
-    assert out.model == "openai/aws/anthropic/bedrock-claude-opus-4-6"
+    assert out.model == "openai/claude-opus-4-6"
     assert out.latency_s >= 0
     assert len(recorder.calls) == 1
 
@@ -100,7 +108,7 @@ def test_strips_markdown_fences(monkeypatch: pytest.MonkeyPatch) -> None:
         llm_judge.judge(
             prompt="decide",
             schema=_SCHEMA,
-            model="aws/anthropic/bedrock-claude-opus-4-6",
+            model="claude-opus-4-6",
         )
     )
     assert out.result == {"verdict": "ok", "reason": "fenced"}
@@ -114,10 +122,10 @@ def test_openai_prefix_preserved(monkeypatch: pytest.MonkeyPatch) -> None:
         llm_judge.judge(
             prompt="decide",
             schema=_SCHEMA,
-            model="openai/us/azure/openai/gpt-5.4",
+            model="openai/gpt-5.4",
         )
     )
-    assert out.model == "openai/us/azure/openai/gpt-5.4"
+    assert out.model == "openai/gpt-5.4"
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +146,7 @@ def test_parse_error_triggers_one_retry_with_feedback(monkeypatch: pytest.Monkey
         llm_judge.judge(
             prompt="decide",
             schema=_SCHEMA,
-            model="aws/anthropic/bedrock-claude-opus-4-6",
+            model="claude-opus-4-6",
         )
     )
 
@@ -168,7 +176,7 @@ def test_parse_retry_preserves_system_prompt_in_single_message(
         llm_judge.judge(
             prompt="decide",
             schema=_SCHEMA,
-            model="aws/anthropic/bedrock-claude-opus-4-6",
+            model="claude-opus-4-6",
             system_prompt="You are a careful judge. Follow the rubric.",
         )
     )
@@ -194,7 +202,7 @@ def test_schema_error_triggers_one_retry(monkeypatch: pytest.MonkeyPatch) -> Non
         llm_judge.judge(
             prompt="decide",
             schema=_SCHEMA,
-            model="aws/anthropic/bedrock-claude-opus-4-6",
+            model="claude-opus-4-6",
         )
     )
     assert out.result == {"verdict": "bad", "reason": "violates rubric"}
@@ -214,7 +222,7 @@ def test_parse_error_after_retry_raises(monkeypatch: pytest.MonkeyPatch) -> None
             llm_judge.judge(
                 prompt="decide",
                 schema=_SCHEMA,
-                model="aws/anthropic/bedrock-claude-opus-4-6",
+                model="claude-opus-4-6",
             )
         )
 
@@ -241,7 +249,7 @@ def test_transient_error_retried(monkeypatch: pytest.MonkeyPatch) -> None:
         llm_judge.judge(
             prompt="decide",
             schema=_SCHEMA,
-            model="aws/anthropic/bedrock-claude-opus-4-6",
+            model="claude-opus-4-6",
         )
     )
     assert out.result["reason"] == "after timeout"
@@ -261,7 +269,7 @@ def test_transient_retries_exhausted_raises(monkeypatch: pytest.MonkeyPatch) -> 
             llm_judge.judge(
                 prompt="decide",
                 schema=_SCHEMA,
-                model="aws/anthropic/bedrock-claude-opus-4-6",
+                model="claude-opus-4-6",
             )
         )
     assert len(recorder.calls) == llm_judge._MAX_TRANSIENT_RETRIES + 1
@@ -284,7 +292,7 @@ def test_non_transient_error_not_retried(monkeypatch: pytest.MonkeyPatch) -> Non
             llm_judge.judge(
                 prompt="decide",
                 schema=_SCHEMA,
-                model="aws/anthropic/bedrock-claude-opus-4-6",
+                model="claude-opus-4-6",
             )
         )
     assert len(recorder.calls) == 1
@@ -302,6 +310,6 @@ def test_missing_creds_raises_runtime_error(monkeypatch: pytest.MonkeyPatch) -> 
             llm_judge.judge(
                 prompt="decide",
                 schema=_SCHEMA,
-                model="aws/anthropic/bedrock-claude-opus-4-6",
+                model="claude-opus-4-6",
             )
         )

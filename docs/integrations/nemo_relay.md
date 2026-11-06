@@ -15,7 +15,7 @@ aborted body. This is not a successful response or an authentication bypass.
 
 This also affects **unmanaged models**: requested model names that do not match
 a configured Switchyard route. For example, if the route is `switchyard/core`
-and its target is `azure/openai/gpt-5.5`, requesting the target name directly
+and its target is `gpt-5.5`, requesting the target name directly
 still delegates the request to Relay.
 
 This plugin build uses `nemo-relay-plugin` 0.10.0 and requires Relay
