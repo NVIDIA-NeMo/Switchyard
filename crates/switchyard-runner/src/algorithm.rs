@@ -12,12 +12,12 @@ use std::sync::Arc;
 use libsy::{
     AdvisorGate, AdvisorGateConfig, Algorithm, BreakerConfig, CapabilityJudgeConfig,
     ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeJudgeConfig,
-    CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    DEFAULT_UNMATCHED_STEPS, DecisionChoice, DecisionJudgeConfig, DirectClassifierConfig,
-    EscalationJudgeConfig, GateTrigger, HandoffNoteConfig, LlmCapabilityConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
-    RuntimeModels, StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig,
-    TaskClassifierConfig, ToolSemantics, Vgr, VgrConfig,
+    CompositeRouter, CustomClassifierConfig, CustomClassifierPolicy, DEFAULT_UNMATCHED_STEPS,
+    DecisionChoice, DecisionJudgeConfig, DirectClassifierConfig, EscalationJudgeConfig,
+    GateTrigger, HandoffNoteConfig, LlmCapabilityConfig, LlmClassifierConfig, LlmFallback,
+    LlmTaskClassifier, Noop, Passthrough, PickerMode, Random, RuntimeModels, StageRouter,
+    StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
+    Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use strum_macros::IntoStaticStr;
@@ -634,6 +634,8 @@ pub struct StageClassifierConfig {
     #[serde(default)]
     pub judge_deadline_ms: Option<u64>,
 }
+
+const COMPOSITE_PLANNING_PROMPT: &str = "You are in the planning phase. Inspect the task and the relevant code, then form a concrete implementation plan before modifying any files. Use read-only tools as needed. Do not make an edit until the plan is complete. After completing the plan, immediately make the first edit in the same task to hand execution off. Do not finish or return a final response with only the plan.";
 
 /// The shared model pair and defaults for composite stage profiles.
 #[derive(Clone, Debug, Deserialize)]
@@ -1925,6 +1927,11 @@ fn build_algorithm(
             let judge = if matches!(classifier.mode, Some(ClassifierMode::Custom)) {
                 CompositeJudgeConfig::Custom(classifier.custom_classifier_config(route_name)?)
             } else {
+                let mut classifier = classifier.clone();
+                classifier.fail_open.get_or_insert(false);
+                if let Some(decision) = &mut classifier.decision {
+                    decision.cutoff.get_or_insert(0.92);
+                }
                 CompositeJudgeConfig::Capability(classifier.task_classifier_config(
                     route_name,
                     &stage.capable_target,
@@ -1932,13 +1939,13 @@ fn build_algorithm(
                 )?)
             };
             let shared = &stage.settings;
-            let algorithm = if efficient.is_some() || capable.is_some() {
+            let algorithm = {
                 let defaults = StageProfileConfig::default();
                 let profiles = [
                     (
                         efficient,
                         PickerMode::EfficientFirst,
-                        shared.confidence_threshold.unwrap_or(0.5),
+                        shared.confidence_threshold.unwrap_or(0.4),
                     ),
                     (
                         capable,
@@ -1953,6 +1960,19 @@ fn build_algorithm(
                         profile.picker.unwrap_or(picker),
                         threshold,
                     );
+                    if profile.picker.unwrap_or(picker) == PickerMode::CapableFirst {
+                        if profile
+                            .settings
+                            .capable_hold_turns
+                            .or(shared.capable_hold_turns)
+                            .is_none()
+                        {
+                            config.capable_hold_turns = 0;
+                        }
+                        if config.capable_system_prompt.is_none() {
+                            config.capable_system_prompt = Some(COMPOSITE_PLANNING_PROMPT.into());
+                        }
+                    }
                     config.llm_fallback = profile
                         .classifier
                         .as_ref()
@@ -1969,13 +1989,6 @@ fn build_algorithm(
                 });
                 let [profile_0, profile_1] = profiles;
                 CompositeRouter::new_with_profiles(judge, profile_0?, profile_1?)
-            } else {
-                let mut config = shared.stage_config(shared, PickerMode::EfficientFirst, 0.5);
-                config.capable_first_threshold = stage.capable_first_threshold;
-                CompositeRouter::new(CompositeRouterConfig {
-                    judge,
-                    stage: config,
-                })
             }
             .map_err(|error| {
                 AlgorithmConfigError::with_source(
