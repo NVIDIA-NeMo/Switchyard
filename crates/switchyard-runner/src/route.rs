@@ -4,20 +4,18 @@
 //! One configured algorithm and the clients that serve its targets.
 
 use std::collections::HashMap;
-use std::error::Error;
 use std::sync::Arc;
 
-use libsy::{Algorithm, LibsyError, RoutingOutcome, RuntimeModels};
+use libsy::{Algorithm, RoutingOutcome, RuntimeModels};
 use serde_json::Value;
 use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObserver, TranslatingLlmClient};
 use switchyard_protocol::{
     LlmClientError, ModelId, Request, Response, RoutedLlmClient, WireFormat,
 };
-use thiserror::Error;
 
-use crate::DecisionTarget;
 use crate::config::EligibleLanes;
 use crate::eligibility::{EligibilityPolicy, has_target_requirements};
+use crate::{CallerAuthKind, DecisionTarget, RunnerError};
 
 /// Capabilities declared for one route.
 ///
@@ -35,79 +33,11 @@ pub struct ModelCapabilities {
     pub vision: Option<bool>,
 }
 
-/// Caller credential family required by a forwarded-auth route.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CallerAuthKind {
-    Anthropic,
-    OpenAi,
-}
-
-impl CallerAuthKind {
-    /// Stable provider name used by the server compatibility API.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Anthropic => "anthropic",
-            Self::OpenAi => "openai",
-        }
-    }
-
-    const fn accepts(self, wire_format: WireFormat) -> bool {
-        matches!(
-            (self, wire_format),
-            (Self::Anthropic, WireFormat::AnthropicMessages)
-                | (
-                    Self::OpenAi,
-                    WireFormat::OpenAiChat | WireFormat::OpenAiResponses
-                )
-        )
-    }
-}
-
 /// Exact upstream model and client used for an auxiliary provider operation.
 #[derive(Clone)]
 pub struct AuxiliaryTarget {
     pub model: ModelId,
     pub client: Arc<TranslatingLlmClient>,
-}
-
-/// Error returned while loading or executing configured routes.
-#[derive(Debug, Error)]
-pub enum RunnerError {
-    #[error("{message}")]
-    Configuration {
-        message: String,
-        #[source]
-        source: Option<Box<dyn Error + Send + Sync>>,
-    },
-    #[error("unknown route model {0:?}")]
-    UnknownRouteModel(String),
-    #[error("caller format is incompatible with {} credentials", .0.as_str())]
-    IncompatibleCallerFormat(CallerAuthKind),
-    #[error("route has no compatible target for the auxiliary operation")]
-    AuxiliaryUnsupported,
-    #[error(transparent)]
-    Algorithm(#[from] LibsyError),
-    #[error(transparent)]
-    Client(#[from] LlmClientError),
-}
-
-impl RunnerError {
-    pub(crate) fn configuration(message: impl Into<String>) -> Self {
-        Self::Configuration {
-            message: message.into(),
-            source: None,
-        }
-    }
-
-    pub(crate) fn configuration_source(
-        message: impl Into<String>,
-        source: impl Error + Send + Sync + 'static,
-    ) -> Self {
-        Self::Configuration {
-            message: message.into(),
-            source: Some(Box::new(source)),
-        }
-    }
 }
 
 /// A configured algorithm and the per-target clients its calls resolve through.

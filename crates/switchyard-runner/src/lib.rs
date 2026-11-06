@@ -6,11 +6,8 @@
 //! WASI builds omit HTTP-backed route execution.
 
 mod algorithm;
-#[cfg(not(target_os = "wasi"))]
 mod algorithm_factory;
-#[cfg(not(target_os = "wasi"))]
 mod config;
-#[cfg(not(target_os = "wasi"))]
 mod eligibility;
 #[cfg(not(target_os = "wasi"))]
 mod failure;
@@ -19,10 +16,9 @@ mod provider_key_redactor;
 mod route;
 #[cfg(not(target_os = "wasi"))]
 mod runner;
+mod runner_error;
 
-#[cfg(not(target_os = "wasi"))]
 pub use config::{ConfiguredTarget, RouteTargets, TargetModel, api_key_variables, route_targets};
-#[cfg(not(target_os = "wasi"))]
 pub use eligibility::require_target_labels;
 
 pub use algorithm::{
@@ -31,7 +27,6 @@ pub use algorithm::{
     StageClassifierConfig, StageProfileConfig, StageSettingsConfig, SubagentRouteConfig,
     VgrModeConfig, VgrRouteConfig,
 };
-#[cfg(not(target_os = "wasi"))]
 pub use algorithm_factory::{AlgorithmFactory, ConfiguredAlgorithm};
 #[cfg(not(target_os = "wasi"))]
 pub use failure::{RouteErrorKind, RouteErrorPhase, RouteErrorSummary, stream_error_summary};
@@ -39,8 +34,7 @@ pub use failure::{RouteErrorKind, RouteErrorPhase, RouteErrorSummary, stream_err
 pub use libsy::{RoutingOutcome, RuntimeModels};
 pub use provider_key_redactor::ProviderKeyRedactor;
 #[cfg(not(target_os = "wasi"))]
-pub use route::{
-    AuxiliaryTarget, CallerAuthKind, ModelCapabilities, Route, RunOutput, RunnerError,
-};
+pub use route::{AuxiliaryTarget, ModelCapabilities, Route, RunOutput};
 #[cfg(not(target_os = "wasi"))]
 pub use runner::{DecisionDescription, DecisionTarget, ModelInfo, Runner};
+pub use runner_error::{CallerAuthKind, RunnerError};
