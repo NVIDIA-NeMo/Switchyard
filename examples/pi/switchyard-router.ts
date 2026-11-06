@@ -10,14 +10,24 @@ import {
 import type {
   ClassifierApi, ClassifierContext, ClassifierModel, ClassifierResult, JsonValue, Message,
 } from "@earendil-works/pi-ai";
-import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir, type ContextWithSystemEvent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+
+const PLANNING_PROMPT = "You are in the planning phase. Inspect the task and the relevant code, then form a concrete implementation plan before modifying any files. Use read-only tools as needed. Do not make an edit until the plan is complete. After completing the plan, immediately make the first edit in the same task to hand execution off. Do not finish or return a final response with only the plan.";
 
 const POLICY = {
   classifier: {
     classify_trigger: "user_turn",
     fail_open: false,
+    cutoff: 0.6,
   },
-  stage: { efficient_first_threshold: 0.5, capable_first_threshold: 0.2 },
+  stage: {
+    efficient_first: { threshold: 0.4, recent_window: 3, capable_hold_turns: 2, efficient_hold_turns: 0 },
+    // After the first switch to efficient, stay there until the next user turn.
+    capable_first: {
+      threshold: 0.0, recent_window: 3, capable_hold_turns: 0, efficient_hold_turns: -1,
+      capable_system_prompt: PLANNING_PROMPT,
+    },
+  },
 } satisfies Omit<CompositeOptions, "targets">;
 
 function modelIdentity(reference: unknown) {
@@ -78,6 +88,17 @@ function decisionResponse(request: DecisionRequest, result: ClassifierResult): D
   return { model: `${result.provider}/${result.model}`, answers };
 }
 
+// Routing prompts go first, as libsy places them ahead of the request's own instructions.
+function prependSystemPrompt(messages: ContextWithSystemEvent["messages"], prompt: string) {
+  const [first, ...rest] = messages;
+  if (first?.role !== "system") return [{ role: "system" as const, content: prompt, timestamp: Date.now() }, ...messages];
+  // Pi's structured prompt keeps its text in sections and leaves content empty.
+  const content = typeof first.content === "string"
+    ? (first.content ? [{ type: "text" as const, text: first.content }] : [])
+    : first.content;
+  return [{ ...first, content: [{ type: "text" as const, text: prompt }, ...content] }, ...rest];
+}
+
 function routingMessages(messages: readonly Message[]): RoutingMessage[] {
   return messages.map((message) => {
     const blocks = typeof message.content === "string"
@@ -107,12 +128,21 @@ function routingMessages(messages: readonly Message[]): RoutingMessage[] {
 export default function (pi: ExtensionAPI) {
   let loaded: ReturnType<typeof loadRouter> | undefined;
   let classifierModel: ClassifierModel<ClassifierApi> | undefined;
+  // Pi builds the request context after routing, so the routed prompt waits for that event.
+  let pendingPrompt: string | undefined;
+  pi.on("context_with_system", (event) => {
+    const prompt = pendingPrompt;
+    pendingPrompt = undefined;
+    return prompt === undefined ? undefined : { messages: prependSystemPrompt(event.messages, prompt) };
+  });
   pi.registerVirtualModel<CompositeState>({
     provider: "switchyard",
     id: "auto",
     name: "Auto (Switchyard)",
     thinkingLevels: ["medium"],
     async route(request, ctx) {
+      // Direct requests, such as compaction summaries, skip the agent loop's context event.
+      if (request.reason !== "direct") pendingPrompt = undefined;
       const { router, classifier } = loaded ??= loadRouter();
       const judge = classifierModel ??= ctx.modelRegistry.findOfType("classifier", classifier.provider, classifier.id);
       if (!judge) throw new Error(`Unknown classifier: ${classifier.reference}`);
@@ -130,6 +160,7 @@ export default function (pi: ExtensionAPI) {
       const identity = modelIdentity(selection.model);
       const model = ctx.modelRegistry.find(identity.provider, identity.id);
       if (!model) throw new Error(`Model ${identity.reference} is not in the catalog`);
+      if (request.reason !== "direct") pendingPrompt = selection.systemPrompt;
       return { model, thinkingLevel: "medium", state: selection.state };
     },
   });
