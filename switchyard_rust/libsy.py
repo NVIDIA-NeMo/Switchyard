@@ -333,7 +333,7 @@ if TYPE_CHECKING:
             required_labels: Sequence[str] | None = None,
             task_id: str | None = None,
         ) -> AsyncIterator[Step.CallModel | Step.CallDecision | Step.Done]:
-            """Yield host calls; target requirements need a ``build_configured()`` handle.
+            """Yield host calls. ``required_labels`` and ``task_id`` need ``build_configured()``.
 
             Omitted labels mean no assessment; ``[]`` supplies no new requirements.
             Reuse the handle for retained task requirements. The host authorizes
