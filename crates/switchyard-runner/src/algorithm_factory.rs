@@ -56,6 +56,7 @@ impl AlgorithmFactory {
     }
 
     /// Builds reusable algorithms keyed by route ID that check target requirements.
+    /// Each Decision model ID must identify one client across a route's alternatives.
     /// The host handles model/Decision calls, approved answer/fallback targets, prompts,
     /// provider settings, credentials and transport. No provider clients are built or credentials read.
     pub fn build_configured(&self) -> Result<BTreeMap<String, ConfiguredAlgorithm>, RunnerError> {
@@ -65,9 +66,9 @@ impl AlgorithmFactory {
             .build_algorithms()
             .map(|entry| {
                 let mut setup = entry?;
+                self.config.validate_decision_models(setup.route_name)?;
                 let policy = self.config.eligibility_policy(setup.route_name);
                 if policy.is_some() {
-                    self.config.validate_decision_models(setup.route_name)?;
                     setup.models = setup.models.with_target_restriction();
                 }
                 Ok((

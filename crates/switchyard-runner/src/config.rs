@@ -529,7 +529,6 @@ impl DeploymentConfig {
         algorithm: &'a AlgorithmSpec,
         overrides: &TargetOverrides<'_>,
     ) -> RunnerResult<Vec<DecisionTargetMapping<'a>>> {
-        let mut decision_clients = HashMap::new();
         algorithm
             .decision_target_names()
             .into_iter()
@@ -540,15 +539,6 @@ impl DeploymentConfig {
                         "route {route_name} requires unknown decision target {bound}"
                     ))
                 })?;
-                if decision_clients
-                    .insert(&target.id, &target.decision_client)
-                    .is_some_and(|client| client != &target.decision_client)
-                {
-                    return Err(RunnerError::configuration(format!(
-                        "route {route_name} maps decision model {} to different clients",
-                        target.id
-                    )));
-                }
                 Ok(DecisionTargetMapping {
                     target_name: name,
                     model_id: &target.id,
@@ -557,12 +547,37 @@ impl DeploymentConfig {
             .collect()
     }
 
+    // Host-owned Decision calls identify the model, not the selected target or client.
     pub(crate) fn validate_decision_models(&self, route_name: &str) -> RunnerResult<()> {
         let route = self
             .routes
             .get(route_name)
             .ok_or_else(|| RunnerError::configuration(format!("unknown route {route_name}")))?;
-        self.resolve_decision_models(route_name, &route.algorithm, &TargetOverrides::new())?;
+        let mut clients = HashMap::new();
+        for name in route.algorithm.decision_target_names() {
+            let alternatives = route
+                .eligibility
+                .as_ref()
+                .and_then(|config| config.target_alternatives.get(name));
+            for candidate in
+                std::iter::once(name).chain(alternatives.into_iter().flatten().map(String::as_str))
+            {
+                let target = self.decision_targets.get(candidate).ok_or_else(|| {
+                    RunnerError::configuration(format!(
+                        "route {route_name} requires unknown decision target {candidate}"
+                    ))
+                })?;
+                if clients
+                    .insert(&target.id, &target.decision_client)
+                    .is_some_and(|client| client != &target.decision_client)
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} maps decision model {} to different clients",
+                        target.id
+                    )));
+                }
+            }
+        }
         Ok(())
     }
 
@@ -2084,6 +2099,76 @@ cutoff = 0.4
         Ok(())
     }
 
+    #[test]
+    fn factory_decision_ids_identify_one_client_across_alternatives() -> RunnerResult<()> {
+        let source = format!(
+            r#"{}
+[decision_clients.other]
+format = "system_one"
+endpoint = "https://private.example.test/v1/decisions"
+api_key_env = "PATH"
+timeout_ms = 5000
+
+[decision_targets.alternative]
+id = "decision/alternative"
+decision_client = "other"
+labels = ["private"]
+
+[routes.typed.eligibility.target_alternatives]
+standard = ["alternative"]
+"#,
+            decision_eligibility_config()
+        );
+        AlgorithmFactory::from_toml(&source)?.build_configured()?;
+
+        let shared_id = source.replace("decision/alternative", "decision/standard");
+        let ambiguous = shared_id.replace(
+            "decision_client = \"privacy\"\nlabels = [\"private\"]",
+            "decision_client = \"privacy\"",
+        );
+        Runner::from_toml(&ambiguous)?;
+        let later_alternative = format!(
+            r#"{}
+[decision_targets.later]
+id = "decision/standard"
+decision_client = "other"
+labels = ["private", "customer_data"]
+"#,
+            source.replace("[\"alternative\"]", "[\"alternative\", \"later\"]")
+        );
+        for source in [&ambiguous, &later_alternative] {
+            let error = AlgorithmFactory::from_toml(source)?
+                .build_configured()
+                .err()
+                .expect("ambiguous endpoint must fail during construction");
+            assert!(
+                error
+                    .to_string()
+                    .contains("maps decision model decision/standard to different clients"),
+                "{error}"
+            );
+        }
+
+        let same_client = shared_id.replace(
+            "decision_client = \"other\"",
+            "decision_client = \"privacy\"",
+        );
+        AlgorithmFactory::from_toml(&same_client)?.build_configured()?;
+        let separate_routes = format!(
+            r#"{}
+[routes.other]
+id = "switchyard/other"
+type = "llm_classifier"
+classifier_target = "alternative"
+strong_target = "strong"
+weak_target = "weak"
+"#,
+            shared_id.replace("standard = [\"alternative\"]", "")
+        );
+        AlgorithmFactory::from_toml(&separate_routes)?.build_configured()?;
+        Ok(())
+    }
+
     // Decision IDs remain provider keys, so bindings cannot give one ID two clients.
     #[tokio::test]
     async fn alternatives_reject_ambiguous_composite_decision_clients() -> RunnerResult<()> {
@@ -2128,11 +2213,10 @@ secondary = ["approved_secondary"]
         let runner = Runner::from_toml(&source)?;
         let mut request = Request::default();
         require_target_labels(&mut request, ["private"])?;
-        let configured = AlgorithmFactory::from_toml(&source)?.build_configured()?;
-        let factory_error = configured["switchyard/ambiguous"]
-            .run_stream(request.clone(), Default::default())
+        let factory_error = AlgorithmFactory::from_toml(&source)?
+            .build_configured()
             .err()
-            .expect("ambiguous factory decisions must fail before model I/O");
+            .expect("ambiguous factory decisions must fail during construction");
         let error = runner
             .route("switchyard/ambiguous")
             .expect("composite route")
@@ -2153,16 +2237,22 @@ secondary = ["approved_secondary"]
             "id = \"decision/secondary\"\ndecision_client = \"privacy\"",
             "id = \"decision/standard\"\ndecision_client = \"other\"",
         );
-        let error = AlgorithmFactory::from_toml(&standard_alias)?
-            .build_configured()
-            .err()
-            .expect("ambiguous standard decisions must fail during construction");
-        assert!(
-            error
-                .to_string()
-                .contains("maps decision model decision/standard to different clients"),
-            "{error}"
-        );
+        let ungoverned = standard_alias
+            .split_once("[routes.ambiguous.eligibility.target_alternatives]")
+            .expect("alternatives fixture")
+            .0;
+        for source in [standard_alias.as_str(), ungoverned] {
+            let error = AlgorithmFactory::from_toml(source)?
+                .build_configured()
+                .err()
+                .expect("ambiguous standard decisions must fail during construction");
+            assert!(
+                error
+                    .to_string()
+                    .contains("maps decision model decision/standard to different clients"),
+                "{error}"
+            );
+        }
         Ok(())
     }
 
