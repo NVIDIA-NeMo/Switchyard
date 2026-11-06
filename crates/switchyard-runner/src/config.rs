@@ -232,7 +232,7 @@ fn check_random_targets(
     Ok(())
 }
 
-// Build alternative model groups without constructing provider clients.
+// Routing uses selected target names; provider model IDs below are for telemetry.
 fn build_resolved_algorithm<'a>(
     route_name: &str,
     algorithm: &AlgorithmSpec,
@@ -247,13 +247,11 @@ fn build_resolved_algorithm<'a>(
     let (algorithm, models) = algorithm
         .build_with_runtime_models(route_name, &model_ids)
         .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
-    let models = models.with_provider_models(
-        targets
-            .values()
-            .map(|target| (ModelId::from(target.name), target.config.id.clone()))
-            .collect(),
-    );
-    Ok((algorithm, models))
+    let provider_models = targets
+        .values()
+        .map(|target| (ModelId::from(target.name), target.config.id.clone()))
+        .collect();
+    Ok((algorithm, models.with_provider_models(provider_models)))
 }
 
 pub(crate) type TargetBindings = Vec<(String, String)>;

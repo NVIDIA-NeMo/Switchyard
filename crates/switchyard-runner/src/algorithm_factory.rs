@@ -105,6 +105,39 @@ struct ConfiguredEligibility {
     setups: Mutex<BTreeMap<TargetBindings, AlgorithmSetup>>,
 }
 
+impl ConfiguredEligibility {
+    fn select(
+        &self,
+        request: &Request,
+        standard: &AlgorithmSetup,
+    ) -> Result<AlgorithmSetup, RunnerError> {
+        let requirements = self.policy.admit(request)?;
+        let Some(bindings) = self
+            .deployment
+            .resolve_target_bindings(&self.route_name, requirements.required_labels())?
+        else {
+            return Ok(standard.clone());
+        };
+        // Building a setup is synchronous; no model I/O occurs under the lock.
+        let mut setups = self.setups.lock();
+        if let Some(setup) = setups.get(&bindings) {
+            return Ok(setup.clone());
+        }
+        if setups.len() >= MAX_ELIGIBLE_LANES {
+            return Err(LlmClientError::TemporarilyUnavailable.into());
+        }
+        let (algorithm, models) = self
+            .deployment
+            .build_bound_algorithm(&self.route_name, &bindings)?;
+        let setup = AlgorithmSetup {
+            algorithm,
+            models: Arc::new(models),
+        };
+        setups.insert(bindings, setup.clone());
+        Ok(setup)
+    }
+}
+
 /// A reusable algorithm that checks target requirements before host-owned model calls.
 pub struct ConfiguredAlgorithm {
     standard: AlgorithmSetup,
@@ -120,35 +153,7 @@ impl ConfiguredAlgorithm {
     /// The host must keep final answer attempts within the returned candidates.
     pub fn run_stream(&self, request: Request, state: State) -> Result<StepStream, RunnerError> {
         let setup = match &self.eligibility {
-            Some(eligibility) => {
-                let requirements = eligibility.policy.admit(&request)?;
-                match eligibility.deployment.resolve_target_bindings(
-                    &eligibility.route_name,
-                    requirements.required_labels(),
-                )? {
-                    None => self.standard.clone(),
-                    Some(bindings) => {
-                        // Building a setup is synchronous; no model I/O occurs under the lock.
-                        let mut setups = eligibility.setups.lock();
-                        if let Some(setup) = setups.get(&bindings) {
-                            setup.clone()
-                        } else {
-                            if setups.len() >= MAX_ELIGIBLE_LANES {
-                                return Err(LlmClientError::TemporarilyUnavailable.into());
-                            }
-                            let (algorithm, models) = eligibility
-                                .deployment
-                                .build_bound_algorithm(&eligibility.route_name, &bindings)?;
-                            let setup = AlgorithmSetup {
-                                algorithm,
-                                models: Arc::new(models),
-                            };
-                            setups.insert(bindings, setup.clone());
-                            setup
-                        }
-                    }
-                }
-            }
+            Some(eligibility) => eligibility.select(&request, &self.standard)?,
             None if has_target_requirements(&request) => {
                 return Err(LlmClientError::InvalidRequest {
                     message: "route does not accept target requirements".into(),
