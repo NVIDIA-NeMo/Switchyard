@@ -75,7 +75,13 @@ depend on provider SDKs, HTTP servers, Python, or FFI bindings.</p>
     }
 
     <span class="prelude-val">Ok</span>(())
-}</code></pre></div><h3 id="translation-policy"><a class="doc-anchor" href="#translation-policy">§</a>Translation policy</h3>
+}</code></pre></div>
+<p>To restore Responses tool namespaces and custom tool calls, use
+<code>translate_response_with_extensions(source, target, body, request_extensions, policy)</code>.
+Pass <code>&amp;decoded_request.request.extensions</code> from the original request returned by
+<code>decode_request</code>. Empty extensions preserve the behavior of <code>translate_response</code>.
+Extensions apply after encoding, including when a same-format response is preserved.</p>
+<h3 id="translation-policy"><a class="doc-anchor" href="#translation-policy">§</a>Translation policy</h3>
 <p>The examples above use <code>TranslationPolicy::default()</code>. A translation policy decides what happens
 when an item cannot be translated exactly: keep it, warn about it, or return an error.</p>
 <p>The default policy:</p>
