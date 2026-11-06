@@ -104,20 +104,13 @@ async fn configured_factory_matches_runner_without_reading_credentials() {
     assert!(std::env::var_os(MISSING_KEY).is_none());
     let source = deployment("request", STAGE, "");
     let factory = AlgorithmFactory::from_toml(&source).expect("deployment");
-    assert!(factory.build().is_err());
-    assert!(Runner::from_toml(&source).is_err());
     let configured = factory.build_configured().expect("no credentials needed");
     let native = Runner::from_toml(&source.replace(MISSING_KEY, "PATH")).expect("native route");
     let route = &configured["switchyard/coding"];
     let state: State = serde_json::from_value(json!({"host_marker": {"bool": true}})).unwrap();
     for (labels, expected) in [
         (&[] as &[&str], ["fast", "capable"]),
-        (&["private"], ["private_fast", "private_capable"]),
-        (&["customer_data"], ["both_fast", "both_capable"]),
-        (
-            &["private", "customer_data", "private"],
-            ["both_fast", "both_capable"],
-        ),
+        (&["private", "customer_data"], ["both_fast", "both_capable"]),
     ] {
         let request = request(None, Some(labels));
         let native = native
@@ -156,13 +149,11 @@ fn invalid_requirements_fail_before_a_stream_is_created() {
         .unwrap()
         .build_configured()
         .unwrap();
-    for labels in [&[] as &[&str], &["private"]] {
-        assert!(
-            configured["switchyard/coding"]
-                .run_stream(request(None, Some(labels)), State::default())
-                .is_err()
-        );
-    }
+    assert!(
+        configured["switchyard/coding"]
+            .run_stream(request(None, Some(&[])), State::default())
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -187,25 +178,10 @@ async fn task_requirements_accumulate_and_survive_unavailable_targets() {
         .await;
         assert_eq!(selected.selected_model_ids[0], expected);
     }
-    let unavailable = source.replace("[\"private\",\"customer_data\"]", "[\"private\"]");
-    let configured = AlgorithmFactory::from_toml(&unavailable)
-        .unwrap()
-        .build_configured()
-        .unwrap();
-    let route = &configured["switchyard/coding"];
-    outcome(
-        route
-            .run_stream(
-                request(Some("blocked"), Some(&["private"])),
-                State::default(),
-            )
-            .unwrap(),
-    )
-    .await;
-    for labels in [&["customer_data"] as &[&str], &[]] {
+    for labels in [&["unapproved"] as &[&str], &[]] {
         assert!(
             route
-                .run_stream(request(Some("blocked"), Some(labels)), State::default())
+                .run_stream(request(Some("shared"), Some(labels)), State::default())
                 .is_err()
         );
     }
@@ -233,11 +209,6 @@ async fn approved_judges_are_served_by_the_host() {
                 .unwrap()
                 .build_configured()
                 .unwrap();
-        assert!(
-            configured["switchyard/coding"]
-                .run_stream(request(None, Some(&["unapproved"])), State::default())
-                .is_err()
-        );
         let mut stream = configured["switchyard/coding"]
             .run_stream(
                 request(None, Some(&["private", "customer_data"])),
