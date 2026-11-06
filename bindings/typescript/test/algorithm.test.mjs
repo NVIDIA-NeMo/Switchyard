@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { AlgorithmFactory, ConfiguredAlgorithm, LibsyError, LlmResponse, Step } from "../dist/index.js";
+import { AlgorithmFactory, ConfiguredAlgorithm, ConfiguredRoute, LibsyError, LlmResponse, Step } from "../dist/index.js";
 
 const deployment = `
 schema_version = 1
@@ -131,6 +131,7 @@ test("configured routes check labels before yielding and retain task requirement
   const configured = AlgorithmFactory.fromToml(labelledDeployment("task")).buildConfigured();
   const route = configured["public/main"];
   assert.ok(route instanceof ConfiguredAlgorithm);
+  assert.ok(route instanceof ConfiguredRoute);
   assert.deepEqual(route.targetModels(), Object.fromEntries([
     "fast", "capable", "private_fast", "private_capable", "both_fast", "both_capable",
   ].map((name) => [name, { client: "answers", id: `upstream/${name}` }])));
@@ -160,12 +161,15 @@ test("configured routes check labels before yielding and retain task requirement
     }));
     assert.equal(steps[0].outcome.selected_model_ids[0], expected);
   }
-  assert.throws(() => routes["public/main"].runStream(request, { requiredLabels: [] }), {
-    code: "ERR_INVALID_REQUEST", message: /buildConfigured/,
-  });
-  assert.throws(() => routes["public/main"].targetModels(), {
-    code: "ERR_INVALID_REQUEST", message: /buildConfigured/,
-  });
+  for (const options of [
+    { requiredLabels: [] },
+    { taskId: "trusted", headers: { "x-switchyard-task-id": "from-header" } },
+  ]) {
+    assert.throws(() => routes["public/main"].runStream(request, options), {
+      code: "ERR_INVALID_REQUEST", message: /buildConfigured/,
+    });
+  }
+  assert.equal("targetModels" in routes["public/main"], false);
   await assert.rejects(configured["public/advisor"].runStream(request, { requiredLabels: [] }).next(), {
     code: "ERR_INVALID_REQUEST",
   });

@@ -157,11 +157,12 @@ impl NativeConfiguredAlgorithm {
             .map(parse)
             .transpose()?
             .unwrap_or_default();
-        if options.required_labels.is_some() && matches!(&self.inner, AlgorithmHandle::Bare { .. })
+        if (options.required_labels.is_some() || options.task_id.is_some())
+            && matches!(&self.inner, AlgorithmHandle::Bare { .. })
         {
             return Err(error(
                 "ERR_INVALID_REQUEST",
-                "route does not accept target requirements; use buildConfigured()",
+                "target requirements or task IDs require buildConfigured()",
             ));
         }
         let headers: Option<BTreeMap<String, String>> =

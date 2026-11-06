@@ -249,6 +249,13 @@ function decodeStep(step: NativeStep): AlgorithmStep {
 }
 
 let configured: (native: NativeConfigured) => ConfiguredAlgorithm;
+let configuredRoute: (native: NativeConfigured) => ConfiguredRoute;
+
+interface RouteRunOptions {
+  headers?: Record<string, string>;
+  requiredLabels?: readonly string[];
+  taskId?: string;
+}
 
 export class AlgorithmFactory {
   readonly #native: NativeFactory;
@@ -273,9 +280,10 @@ export class AlgorithmFactory {
     }
   }
 
-  buildConfigured(): Record<string, ConfiguredAlgorithm> {
+  /** Build routes with target requirement checks and target lookup. */
+  buildConfigured(): Record<string, ConfiguredRoute> {
     try {
-      return Object.fromEntries(Object.entries(this.#native.buildConfigured()).map(([id, route]) => [id, configured(route)]));
+      return Object.fromEntries(Object.entries(this.#native.buildConfigured()).map(([id, route]) => [id, configuredRoute(route)]));
     } catch (error) {
       throw publicError(error);
     }
@@ -285,7 +293,7 @@ export class AlgorithmFactory {
 export class ConfiguredAlgorithm {
   readonly #native: NativeConfigured;
 
-  private constructor(native: NativeConfigured) {
+  protected constructor(native: NativeConfigured) {
     this.#native = native;
   }
 
@@ -293,8 +301,7 @@ export class ConfiguredAlgorithm {
     configured = (native) => new ConfiguredAlgorithm(native);
   }
 
-  /** Resolve call targets to configured clients and provider IDs, not an eligible pool. */
-  targetModels(): Readonly<Record<string, TargetModel>> {
+  protected readTargetModels(): Readonly<Record<string, TargetModel>> {
     try {
       return this.#native.targetModels();
     } catch (error) {
@@ -304,9 +311,11 @@ export class ConfiguredAlgorithm {
 
   runStream(request: JsonObject, options: {
     headers?: Record<string, string>;
-    requiredLabels?: readonly string[];
-    taskId?: string;
   } = {}): AsyncIterableIterator<AlgorithmStep> {
+    return this.start(request, options);
+  }
+
+  protected start(request: JsonObject, options: RouteRunOptions): AsyncIterableIterator<AlgorithmStep> {
     try {
       if (options.requiredLabels !== undefined && !Array.isArray(options.requiredLabels)) {
         throw new Error("ERR_INVALID_REQUEST: requiredLabels must be an array of strings");
@@ -322,5 +331,28 @@ export class ConfiguredAlgorithm {
     } catch (error) {
       throw publicError(error);
     }
+  }
+}
+
+/** A configured route that checks target requirements before routing. */
+export class ConfiguredRoute extends ConfiguredAlgorithm {
+  private constructor(native: NativeConfigured) {
+    super(native);
+  }
+
+  static {
+    configuredRoute = (native) => new ConfiguredRoute(native);
+  }
+
+  /** Resolve call targets to configured clients and provider IDs, not an eligible pool. */
+  targetModels(): Readonly<Record<string, TargetModel>> {
+    return this.readTargetModels();
+  }
+
+  /** Run with host-supplied requirements and a trusted task ID. */
+  override runStream(
+    request: JsonObject, options: RouteRunOptions = {},
+  ): AsyncIterableIterator<AlgorithmStep> {
+    return this.start(request, options);
   }
 }
