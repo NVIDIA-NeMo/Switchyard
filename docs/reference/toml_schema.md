@@ -585,7 +585,7 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `classifier.prompt` | No | packaged prompt | Replaces the classifier judge prompt. The verdict schema is unchanged. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the judge. Use `json_object` when the provider does not support JSON Schema. Switchyard adds the schema to the prompt and validates the verdict locally. |
 | `classifier.max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
-| `classifier.judge_deadline_ms` | No | unset | Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry the judge is treated as unavailable and the route falls back to the capable tier. Must be at least `1`. Unset leaves the consultation unbounded. |
+| `classifier.judge_deadline_ms` | No | unset | Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry, error handling follows `classifier.fail_open`. Must be at least `1`. Unset leaves the consultation unbounded. |
 | `stage.capable_target` | Yes | — | Capable tier. |
 | `stage.efficient_target` | Yes | — | Efficient tier. |
 | `stage.efficient_first_threshold` | No | `0.4` | Signal confidence required after an Efficient classification. In `[0, 1]`. Also accepts `confidence_threshold`. |
