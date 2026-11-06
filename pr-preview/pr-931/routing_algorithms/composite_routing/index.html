@@ -2723,11 +2723,9 @@ and replace its LLM classifier settings with:</p>
 </span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="k">[routes.switchyard.classifier]</span>
 </span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="n">target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;judge&quot;</span>
 </span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="n">classify_trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;user_turn&quot;</span>
-</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>
-</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="k">[routes.switchyard.classifier.decision]</span>
-</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="n">cutoff</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.6</span>
 </span></code></pre></div>
-<p>The judge must be a decision target.
+<p>The judge must be a decision target. Switchyard then uses the default decision
+settings. Add a <code>[routes.switchyard.classifier.decision]</code> table to change them.
 See the <a href="../../reference/toml_schema/#decision_clientsname">decision client reference</a>
 for OpenAI Decisions configuration.</p>
 <p>The judge receives the conversation messages and one choice question. The
