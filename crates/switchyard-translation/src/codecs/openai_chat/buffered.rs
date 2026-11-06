@@ -135,14 +135,14 @@ impl FormatCodec for OpenAiChatCodec {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    request.messages.push(Message {
-                        role: Role::User,
-                        content: vec![ContentBlock::ToolResult(ToolResult {
+                    request.messages.push(Message::new(
+                        Role::User,
+                        vec![ContentBlock::ToolResult(ToolResult {
                             tool_call_id,
                             content: vec![ContentBlock::Text { text }],
                             is_error: message.get("is_error").and_then(Value::as_bool),
                         })],
-                    });
+                    ));
                     continue;
                 }
                 match role {
@@ -152,7 +152,7 @@ impl FormatCodec for OpenAiChatCodec {
                             .push(InstructionBlock { role, content });
                     }
                     Role::User | Role::Assistant | Role::Tool => {
-                        request.messages.push(Message { role, content });
+                        request.messages.push(Message::new(role, content));
                     }
                 }
             }
@@ -899,10 +899,7 @@ fn push_pending_openai_message(
         return Ok(());
     }
 
-    let message = Message {
-        role,
-        content: std::mem::take(pending_content),
-    };
+    let message = Message::new(role, std::mem::take(pending_content));
     out.push(encode_message_without_tool_results_to_openai(
         &message,
         diagnostics,

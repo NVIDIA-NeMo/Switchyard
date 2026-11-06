@@ -1075,10 +1075,12 @@ impl ClientRouter {
             return Ok(());
         }
         let mut segment = input.messages.to_vec();
-        segment.extend(response.outputs.iter().map(|output| Message {
-            role: output.role,
-            content: output.content.clone(),
-        }));
+        segment.extend(
+            response
+                .outputs
+                .iter()
+                .map(|output| Message::new(output.role, output.content.clone())),
+        );
         let history = Arc::new(MessageHistory::new(
             input.parent.clone(),
             Arc::from(segment),
@@ -2134,16 +2136,16 @@ mod tests {
             .extensions
             .fields
             .insert("previous_response_id".to_string(), json!("msg_stream"));
-        follow.llm_request.messages = vec![Message {
-            role: Role::Tool,
-            content: vec![ContentBlock::ToolResult(ToolResult {
+        follow.llm_request.messages = vec![Message::new(
+            Role::Tool,
+            vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "toolu_stream".to_string(),
                 content: vec![ContentBlock::Text {
                     text: "ready".to_string(),
                 }],
                 is_error: None,
             })],
-        }];
+        )];
         assert!(clients.stored_state_owner(&follow).is_none());
         response
             .llm_response

@@ -559,7 +559,15 @@ fn decode_responses_input(
                             &mut pending_tool_outputs,
                             &mut deferred_messages,
                             &mut pending_reasoning,
-                            Message { role, content },
+                            Message {
+                                role,
+                                content,
+                                phase: if role == Role::Assistant {
+                                    item.get("phase").and_then(Value::as_str).map(str::to_owned)
+                                } else {
+                                    None
+                                },
+                            },
                         );
                     }
                     Some("reasoning") => {
@@ -720,8 +728,8 @@ fn decode_responses_input(
                     // decoder and re-emitted in place by the request encoder.
                     Some("additional_tools") => {}
                     _ => {
-                        let message = Message {
-                            role: match item_type {
+                        let message = Message::new(
+                            match item_type {
                                 Some(
                                     "shell_call"
                                     | "apply_patch_call"
@@ -735,11 +743,11 @@ fn decode_responses_input(
                                 ) => Role::Tool,
                                 _ => Role::User,
                             },
-                            content: vec![ContentBlock::Unknown {
+                            vec![ContentBlock::Unknown {
                                 provider: WireFormat::OpenAiResponses.into(),
                                 raw: Value::Object(item.clone()),
                             }],
-                        };
+                        );
                         flush_unattached_responses_reasoning(
                             &mut messages,
                             &mut pending_tool_calls,
@@ -770,10 +778,7 @@ fn decode_responses_input(
             // Trailing reasoning with no assistant turn to join keeps the
             // historical standalone-message shape.
             if !pending_reasoning.is_empty() {
-                messages.push(Message {
-                    role: Role::Assistant,
-                    content: pending_reasoning,
-                });
+                messages.push(Message::new(Role::Assistant, pending_reasoning));
             }
             messages.append(&mut deferred_messages);
             Ok(messages)
@@ -823,10 +828,7 @@ fn flush_unattached_responses_reasoning(
     if pending_reasoning.is_empty() || !pending_tool_calls.is_empty() {
         return;
     }
-    let message = Message {
-        role: Role::Assistant,
-        content: std::mem::take(pending_reasoning),
-    };
+    let message = Message::new(Role::Assistant, std::mem::take(pending_reasoning));
     push_responses_non_tool_message(
         messages,
         pending_tool_calls,
@@ -856,17 +858,14 @@ fn flush_responses_tool_block(
                 .into_iter()
                 .map(ContentBlock::ToolCall),
         );
-        messages.push(Message {
-            role: Role::Assistant,
-            content,
-        });
+        messages.push(Message::new(Role::Assistant, content));
     }
 
     for output in std::mem::take(pending_tool_outputs) {
-        messages.push(Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult(output)],
-        });
+        messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult(output)],
+        ));
     }
 
     messages.append(deferred_messages);
@@ -1339,11 +1338,7 @@ fn encode_responses_input(
                     if !visible_content.is_empty() {
                         let content =
                             encode_responses_content(&visible_content, diagnostics, policy)?;
-                        encoded.push(json!({
-                            "type": "message",
-                            "role": role_to_responses(message.role),
-                            "content": content,
-                        }));
+                        encoded.push(encode_responses_message(message, content));
                         visible_content.clear();
                     }
                     encoded.push(item);
@@ -1353,11 +1348,7 @@ fn encode_responses_input(
             }
             if !visible_content.is_empty() {
                 let content = encode_responses_content(&visible_content, diagnostics, policy)?;
-                encoded.push(json!({
-                    "type": "message",
-                    "role": role_to_responses(message.role),
-                    "content": content,
-                }));
+                encoded.push(encode_responses_message(message, content));
             }
             continue;
         }
@@ -1382,17 +1373,29 @@ fn encode_responses_input(
                 omitted_reasoning = true;
             }
         }
-        if !visible_content.is_empty() || (!emitted_special && !omitted_reasoning) {
+        if !visible_content.is_empty()
+            || (!emitted_special && !omitted_reasoning)
+            || (message.role == Role::Assistant && message.phase.is_some())
+        {
             let content = encode_responses_content(&visible_content, diagnostics, policy)?;
-            encoded.push(json!({
-                "type": "message",
-                "role": role_to_responses(message.role),
-                "content": content,
-            }));
+            encoded.push(encode_responses_message(message, content));
         }
     }
     pair_tool_calls_with_outputs(&mut encoded);
     Ok(Value::Array(encoded))
+}
+
+// Responses defines `phase` only on assistant message items, so drop it elsewhere.
+fn encode_responses_message(message: &Message, content: Value) -> Value {
+    let mut item = json!({
+        "type": "message",
+        "role": role_to_responses(message.role),
+        "content": content,
+    });
+    if let (Role::Assistant, Some(phase)) = (message.role, &message.phase) {
+        item["phase"] = json!(phase);
+    }
+    item
 }
 
 // Moves each tool output directly behind the call it answers. A turn with

@@ -1766,40 +1766,40 @@ mod tests {
 
     // assistant message with a single named tool call
     fn tc(name: &str) -> Message {
-        Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
+        Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolCall(ToolCall {
                 id: String::new(),
                 name: name.to_string(),
                 arguments: json!({}),
             })],
-        }
+        )
     }
 
     // assistant Bash message carrying `command`
     fn bash(command: &str) -> Message {
-        Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
+        Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolCall(ToolCall {
                 id: String::new(),
                 name: "Bash".to_string(),
                 arguments: json!({"command": command}),
             })],
-        }
+        )
     }
 
     // a tool result message (goes in a user-role message, as in Anthropic's normalised form)
     fn tr(text: &str) -> Message {
-        Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult(ToolResult {
+        Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: String::new(),
                 content: vec![ContentBlock::Text {
                     text: text.to_string(),
                 }],
                 is_error: None,
             })],
-        }
+        )
     }
 
     #[test]
@@ -2099,23 +2099,27 @@ mod tests {
 
     #[test]
     fn retrieved_file_contents_are_ignored() {
-        let call = |id: &str, name: &str, arguments: Value| Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
-                id: id.to_string(),
-                name: name.to_string(),
-                arguments,
-            })],
+        let call = |id: &str, name: &str, arguments: Value| {
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolCall(ToolCall {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    arguments,
+                })],
+            )
         };
-        let result = |id: &str, text: &str| Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult(ToolResult {
-                tool_call_id: id.to_string(),
-                content: vec![ContentBlock::Text {
-                    text: text.to_string(),
-                }],
-                is_error: None,
-            })],
+        let result = |id: &str, text: &str| {
+            Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult(ToolResult {
+                    tool_call_id: id.to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: text.to_string(),
+                    }],
+                    is_error: None,
+                })],
+            )
         };
         let signal = extract_tool_signals_with_window(
             &with_messages(vec![
@@ -2260,14 +2264,14 @@ mod tests {
                 "exit_code": exit_code,
                 "error": null,
             });
-            let call = Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::ToolCall(ToolCall {
+            let call = Message::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolCall(ToolCall {
                     id: String::new(),
                     name: "terminal".to_string(),
                     arguments: json!({"command": "cat run.log"}),
                 })],
-            };
+            );
             ToolSignals::from_request(&call_with_result(call, tr(&output.to_string())), None)
                 .severity
         };
@@ -2414,13 +2418,13 @@ mod tests {
                     .map(|call_id| {
                         let mut raw = raw.clone();
                         raw["call_id"] = json!(call_id);
-                        Message {
-                            role: Role::User,
-                            content: vec![ContentBlock::Unknown {
+                        Message::new(
+                            Role::User,
+                            vec![ContentBlock::Unknown {
                                 provider: WireFormat::OpenAiResponses.into(),
                                 raw,
                             }],
-                        }
+                        )
                     })
                     .collect(),
             );
@@ -2452,13 +2456,13 @@ mod tests {
             };
             for index in 0..3 {
                 success["call_id"] = json!(format!("success_{index}"));
-                request.llm_request.messages.push(Message {
-                    role: Role::User,
-                    content: vec![ContentBlock::Unknown {
+                request.llm_request.messages.push(Message::new(
+                    Role::User,
+                    vec![ContentBlock::Unknown {
                         provider: WireFormat::OpenAiResponses.into(),
                         raw: success.clone(),
                     }],
-                });
+                ));
             }
             let recovered = ToolSignals::from_request(&request, Some(3));
             assert_eq!(recovered.severity, 0.0, "{raw}");
@@ -2483,15 +2487,15 @@ mod tests {
         let request = with_messages(vec![
             Message::text(Role::User, "do something"),
             Message::text(Role::Assistant, "working"),
-            Message {
-                role: Role::User,
-                content: vec![
+            Message::new(
+                Role::User,
+                vec![
                     result(vec![ContentBlock::Text {
                         text: "ok".to_string(),
                     }]),
                     result(Vec::new()),
                 ],
-            },
+            ),
             tc("Bash"),
         ]);
         let sig = ToolSignals::from_request(&request, None);
@@ -2534,14 +2538,14 @@ mod tests {
     }
 
     fn exec_command(cmd: Value) -> Message {
-        Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
+        Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolCall(ToolCall {
                 id: String::new(),
                 name: "exec_command".to_string(),
                 arguments: cmd,
             })],
-        }
+        )
     }
 
     #[test]
@@ -2859,14 +2863,14 @@ mod tests {
             json!(r#"{"command":"view","path":"/app/main.py"}"#),
         ];
         for arguments in arguments {
-            let call = Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::ToolCall(ToolCall {
+            let call = Message::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolCall(ToolCall {
                     id: String::new(),
                     name: "str_replace_based_edit_tool".to_string(),
                     arguments,
                 })],
-            };
+            );
             let request = with_messages(vec![call, tr("print('hi')")]);
             let sig = ToolSignals::from_request(&request, None);
             assert_eq!(sig.read_count, 1);

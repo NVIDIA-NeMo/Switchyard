@@ -18,6 +18,73 @@ use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
+fn responses_assistant_phase_survives_rebuilds() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    for phase in [Some("commentary"), Some("final_answer"), None] {
+        let mut message = json!({"type": "message", "role": "assistant", "content": "Done."});
+        if let Some(phase) = phase {
+            message["phase"] = json!(phase);
+        }
+        let body = json!({"model": "route", "input": [message]});
+        let mut request = engine
+            .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+            .request;
+        // Force a rebuild with an unrelated edit.
+        request.preservation.requests.clear();
+        switchyard_translation::append_note(&mut request, "Check the result.");
+        request.model = Some("target".into());
+
+        let output = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+        assert_eq!(output.body["input"][0].get("phase"), message.get("phase"));
+        assert_eq!(output.body["input"].as_array().map(Vec::len), Some(2));
+        assert_eq!(output.body["model"], "target");
+    }
+    Ok(())
+}
+
+#[test]
+fn responses_assistant_phase_is_dropped_for_other_formats() -> TestResult {
+    let engine = TranslationEngine::default();
+    let strict = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..normalized_policy()
+    };
+    let body = json!({
+        "model": "route",
+        "input": [{"type": "message", "role": "assistant", "phase": "commentary", "content": "Done."}]
+    });
+    let request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &strict)?
+        .request;
+    for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+        let output = engine.encode_request(target, &request, &strict)?;
+        assert!(output.body["messages"][0].get("phase").is_none());
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    }
+    Ok(())
+}
+
+#[test]
+fn responses_assistant_phase_survives_reasoning_only_turn() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "route",
+        "input": [
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "thinking"}]},
+            {"type": "message", "role": "assistant", "phase": "commentary", "content": []}
+        ]
+    });
+    let request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &normalized_policy())?
+        .request;
+    let output =
+        engine.encode_request(WireFormat::OpenAiResponses, &request, &normalized_policy())?;
+    assert_eq!(output.body["input"][1]["phase"], "commentary");
+    Ok(())
+}
+
+#[test]
 fn normalized_chat_requests_forward_logprobs_with_top_logprobs() -> TestResult {
     let engine = TranslationEngine::default();
     for enabled in [true, false] {
@@ -164,9 +231,9 @@ fn openai_chat_rejects_mcp_history_before_text_only_returns() {
     let engine = TranslationEngine::default();
     for role in [Role::User, Role::Assistant] {
         let request = LlmRequest {
-            messages: vec![Message {
+            messages: vec![Message::new(
                 role,
-                content: vec![
+                vec![
                     ContentBlock::Text {
                         text: "Keep this text".into(),
                     },
@@ -177,7 +244,7 @@ fn openai_chat_rejects_mcp_history_before_text_only_returns() {
                         error: None,
                     }),
                 ],
-            }],
+            )],
             ..LlmRequest::default()
         };
         for lossy_conversion_policy in [

@@ -677,9 +677,9 @@ mod tests {
             metadata: None,
         };
         let text_only = request(Message::text(Role::User, "Implement the parser."));
-        let text_with_reasoning = request(Message {
-            role: Role::User,
-            content: vec![
+        let text_with_reasoning = request(Message::new(
+            Role::User,
+            vec![
                 ContentBlock::Text {
                     text: "Implement the parser.".to_string(),
                 },
@@ -689,7 +689,7 @@ mod tests {
                     details: Vec::new(),
                 },
             ],
-        });
+        ));
 
         assert_eq!(
             first_user_message_hash(&text_only),
@@ -944,14 +944,14 @@ mod tests {
 
         // A tool continuation holds the assignment, so no judge call.
         let mut continued = opening.clone();
-        continued.llm_request.messages.push(Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult(ToolResult {
+        continued.llm_request.messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "call-1".to_string(),
                 content: Vec::new(),
                 is_error: None,
             })],
-        });
+        ));
         assert_eq!(
             scores(&router, &mut state, &mut continued)
                 .await?
@@ -990,14 +990,14 @@ mod tests {
 
         // The new turn's tool continuation is not held on the earlier turn's model.
         let mut continued = spoke.clone();
-        continued.llm_request.messages.push(Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult(ToolResult {
+        continued.llm_request.messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "call-1".to_string(),
                 content: Vec::new(),
                 is_error: None,
             })],
-        });
+        ));
         assert!(
             scores(&router, &mut state, &mut continued)
                 .await?
