@@ -1457,6 +1457,174 @@ impl RoutedLlmClient for StreamingUsageClient {
     }
 }
 
+#[tokio::test]
+async fn buffered_routing_closes_observation_before_replay() -> switchyard_libsy::Result<()> {
+    use tracing::Instrument;
+
+    let _guard = serialize_test().lock().await;
+    let (_, _, _, exporter, _) = telemetry();
+    for drain in [false, true] {
+        let model = if drain {
+            "routing-replay-drained"
+        } else {
+            "routing-replay-dropped"
+        };
+        let workflow = format!("workflow-{model}");
+        let mut request = request_with_metadata(model, model);
+        request.llm_request.stream = true;
+        let mut upstream_request = request.clone();
+        upstream_request.llm_request.model = Some(model.into());
+        let original = StreamingUsageClient
+            .call(upstream_request)
+            .await
+            .expect("valid upstream fixture");
+        let LlmResponse::Stream(original) = original.llm_response else {
+            return Err(test_error("expected upstream stream"));
+        };
+        let expected = original
+            .map(|event| event.expect("valid fixture"))
+            .collect::<Vec<_>>()
+            .await;
+        let (_, response) = run(
+            Arc::new(RoutingCallAlgo {
+                name: workflow.clone(),
+                target: model.into(),
+            }),
+            Arc::new(StreamingUsageClient),
+            request,
+        )
+        .instrument(tracing::info_span!("buffered-workflow", workflow = %workflow))
+        .await?;
+
+        // The original I/O has finished even though nobody has polled the replay.
+        let before = exporter.get_finished_spans().expect("exported spans");
+        let call = before
+            .iter()
+            .find(|span| span.name == format!("chat {model}"))
+            .expect("client span must close before replay starts");
+        assert_eq!(
+            otel_attribute(call, "gen_ai.usage.input_tokens"),
+            Some(&OtelValue::I64(21))
+        );
+        assert_eq!(
+            otel_attribute(call, "gen_ai.usage.output_tokens"),
+            Some(&OtelValue::I64(5))
+        );
+        let mut ancestor = call;
+        while ancestor.name != "buffered-workflow" {
+            ancestor = before
+                .iter()
+                .find(|span| span.span_context.span_id() == ancestor.parent_span_id)
+                .expect("every parent up to the workflow must already be exported");
+        }
+        assert_eq!(
+            otel_attribute(ancestor, "workflow"),
+            Some(&OtelValue::String(workflow.into()))
+        );
+
+        let LlmResponse::Stream(mut replay) = response.llm_response else {
+            return Err(test_error("expected buffered stream replay"));
+        };
+        if drain {
+            // Provider events and their trailing usage survive buffering unchanged.
+            let mut events = Vec::new();
+            while let Some(event) = replay.next().await {
+                events.push(event.expect("valid replay"));
+            }
+            assert_eq!(
+                events, expected,
+                "normalized chunks and preserved provider data must survive replay"
+            );
+        }
+        drop(replay);
+        assert_eq!(
+            exporter.get_finished_spans().expect("exported spans").len(),
+            before.len(),
+            "replaying or dropping buffered data must not export another observation"
+        );
+    }
+    Ok(())
+}
+
+struct InterruptedRoutingStream {
+    stall: bool,
+}
+
+#[async_trait]
+impl RoutedLlmClient for InterruptedRoutingStream {
+    async fn call(&self, _request: Request) -> Result<Response, LlmClientError> {
+        let usage = LlmResponseChunk::Usage(Usage {
+            input_tokens: Some(11),
+            output_tokens: Some(3),
+            ..Usage::default()
+        });
+        let prefix = futures::stream::iter([Ok(usage.into())]);
+        let tail: switchyard_protocol::LlmResponseStream = if self.stall {
+            futures::stream::pending().boxed()
+        } else {
+            futures::stream::iter([Err(LlmClientError::ResponseTranslation(
+                "broken stream".into(),
+            ))])
+            .boxed()
+        };
+        Ok(Response {
+            llm_response: LlmResponse::Stream(prefix.chain(tail).boxed()),
+            metadata: None,
+            upstream_headers: http::HeaderMap::new(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn interrupted_routing_buffer_retains_observed_usage() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, exporter, _) = telemetry();
+    for stall in [false, true] {
+        let model = if stall {
+            "routing-buffer-cancelled"
+        } else {
+            "routing-buffer-failed"
+        };
+        let mut request = request_with_metadata(model, model);
+        request.llm_request.stream = true;
+        let mut execution = Box::pin(run(
+            Arc::new(RoutingCallAlgo {
+                name: model.into(),
+                target: model.into(),
+            }),
+            Arc::new(InterruptedRoutingStream { stall }),
+            request,
+        ));
+        if stall {
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), execution.as_mut())
+                    .await
+                    .is_err()
+            );
+            drop(execution);
+        } else {
+            assert!(execution.await.is_err());
+        }
+        let span = find_span(&store.spans(), "libsy.client_call", "selected_model", model);
+        for (field, value) in [
+            ("gen_ai.usage.input_tokens", "11"),
+            ("gen_ai.usage.output_tokens", "3"),
+            ("outcome", if stall { "cancelled" } else { "error" }),
+        ] {
+            assert_eq!(span.fields.get(field).map(String::as_str), Some(value));
+        }
+        let exported = exporter.get_finished_spans().expect("exported spans");
+        assert_eq!(
+            exported
+                .iter()
+                .filter(|span| span.name == format!("chat {model}"))
+                .count(),
+            1
+        );
+    }
+    Ok(())
+}
+
 struct TimeoutClient;
 
 #[async_trait]

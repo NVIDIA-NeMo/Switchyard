@@ -456,23 +456,31 @@ async fn call_one(
     let started = Instant::now();
     let mut routing_usage = None;
     let result = async {
-        let mut response = client?.call(request).await?;
+        let response = async { client?.call(request).await }
+            .await
+            .map_err(|source| LibsyError::client_call(model_id.clone(), source))?;
+        // Observe the upstream stream; replay must not retain or re-observe the call.
+        let mut response = observability::observe_client_call(Ok(response))?;
         if is_routing && let LlmResponse::Stream(chunks) = response.llm_response {
-            let (chunks, usage) = buffer_routing_stream(chunks).await?;
+            let (chunks, usage) = buffer_routing_stream(chunks)
+                .await
+                .map_err(|source| LibsyError::client_call(model_id.clone(), source))?;
             routing_usage = usage;
             response.llm_response = LlmResponse::Stream(chunks);
         }
         Ok(response)
     }
-    .await
-    .map_err(|source| LibsyError::client_call(model_id.clone(), source));
+    .await;
     let duration = started.elapsed();
 
     let result = result.map(|mut response| {
         response.set_served_model(model_id);
         response
     });
-    let result = observability::observe_client_call(result);
+    let result = match result {
+        Ok(response) => Ok(response),
+        Err(error) => observability::observe_client_call(Err(error)),
+    };
     let result = if is_routing {
         result
     } else {
