@@ -26,6 +26,8 @@ char *sy_run_next(const SyRun *run, char **out_json);
 // JSON inputs are borrowed for the call and must be NUL-terminated.
 // Free all output strings, including callback strings, with sy_string_free.
 char *sy_router_new(const char *config_json, SyRouter **out);
+// Owned JSON target-to-{client,id} map; only configured routers support discovery.
+char *sy_router_target_models(const SyRouter *router, char **out_json);
 char *sy_run_new(const SyRouter *router, const char *input_json, SyRun **out);
 
 #if !defined(__wasm32__)

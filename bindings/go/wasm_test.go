@@ -89,6 +89,50 @@ func TestBackend(t *testing.T) {
 	}
 }
 
+// Losing a configured guest must not silently clear a task's saved requirements.
+func TestConfiguredWasmTrapFailsClosed(t *testing.T) {
+	router := configuredRouter(t, "switchyard/coding")
+	backend := router.state.backend.(*wasmBackend)
+	if len(backend.slots) != 1 {
+		t.Fatal("configured router must retain task requirements in one guest")
+	}
+	request := Input{
+		Request: input().Request, RequiredLabels: []string{"private", "customer_data"},
+		Metadata: &RequestMetadata{TaskID: "retained"},
+	}
+	outcome, err := router.Route(context.Background(), request, nil)
+	if err != nil || len(outcome.SelectedModelIDs) == 0 || outcome.SelectedModelIDs[0] != "private_fast" {
+		t.Fatalf("initial restricted route: outcome=%+v err=%v", outcome, err)
+	}
+	request.RequiredLabels = []string{}
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slot := backend.slots[0]
+	run, err := slot.startRun(context.Background(), data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer run.close()
+	slot.mu.Lock()
+	_, trap := run.gen.guest.call(context.Background(), "sy_alloc", uint64(^uint32(0)))
+	slot.mu.Unlock()
+	if !isWasmTrap(trap) {
+		t.Fatalf("forced guest allocation panic returned %v", trap)
+	}
+	run.ptr = ^uint32(0)
+	if _, err := run.next(context.Background()); err == nil {
+		t.Fatal("trapped guest returned an outcome")
+	}
+	if _, err := router.Route(context.Background(), request, nil); err == nil || slot.gen != run.gen {
+		t.Fatalf("trapped router recreated task state: %v", err)
+	}
+	if _, err := router.TargetModels(); err == nil {
+		t.Fatal("trapped router returned target models")
+	}
+}
+
 // Parent and child identities must share the guest that owns their session state.
 func TestWasmSessionAffinity(t *testing.T) {
 	backend := &wasmBackend{slots: []*wasmSlot{{}, {}}}
