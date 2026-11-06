@@ -2608,7 +2608,7 @@ fit the same route type.</p>
 <h2 id="what-exists-today">What exists today<a class="headerlink" href="#what-exists-today" title="Permanent link">&para;</a></h2>
 <p>One pairing: a classifier selects the stage router's starting policy.
 By default, an efficient classification selects efficient-first with <code>efficient_first_threshold</code>
-(default <code>0.5</code>).
+(default <code>0.4</code>).
 A capable classification defaults to capable-first with <code>capable_first_threshold</code>
 (default <code>0.0</code>). Both thresholds are configurable from <code>0.0</code> to <code>1.0</code>.
 Tool signals can still change the tier
@@ -2619,6 +2619,10 @@ directly rather than composing arbitrary algorithms.</p>
 to efficient, it stays there until the next user-turn reset or session reset. Efficient-first
 defaults to <code>0</code>. Set this field explicitly to override either default. <code>0</code>
 disables the hold, and a positive value holds that many subsequent requests.</p>
+<p>The capable-first profile adds a planning prompt and defaults to no capable hold.
+The efficient-first profile holds capable for two requests after escalation.
+Both profiles use three recent tool results. Explicit shared and profile settings
+override these defaults. Set <code>capable_system_prompt = ""</code> to disable the planning prompt.</p>
 <p>The classifier can use an LLM judge or a decision model. A decision
 model is configured through a decision client and target, separately from the
 capable and efficient completion targets.</p>
@@ -2638,7 +2642,7 @@ route's configuration to change as more pairings are added.</p>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="k">[routes.switchyard.stage]</span>
 </span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="n">capable_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;strong&quot;</span>
 </span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="n">efficient_target</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;weak&quot;</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="n">efficient_first_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.5</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="n">efficient_first_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.4</span>
 </span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="n">capable_first_threshold</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">0.0</span>
 </span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
 </span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="k">[routes.switchyard.stage.tool_semantics]</span>
@@ -2731,7 +2735,7 @@ for OpenAI Decisions configuration.</p>
 <p>The judge receives the conversation messages and one choice question. The
 default choices are <code>capable</code> (start with the capable model) and <code>efficient</code>
 (start with the efficient model). The classifier selects capable when
-<code>probabilities.capable</code> is above <code>cutoff</code>. The default cutoff is <code>0.6</code>.
+<code>probabilities.capable</code> is above <code>cutoff</code>. The Composite default cutoff is <code>0.92</code>.
 Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
 <code>base_threshold</code>, <code>threshold_step</code> and <code>prompt</code> when using a decision model.
 On judge failure, the default is to retain the last classified tier or use
