@@ -1620,6 +1620,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn escalation_serves_capable_when_efficient_overflows() -> Result<()> {
+        let client = Arc::new(CandidateClient {
+            calls: Mutex::new(Vec::new()),
+            requests: Mutex::new(Vec::new()),
+            first: FirstOutcome::ContextWindow,
+        });
+        let escalation = switchyard_libsy::LlmTaskClassifier::new(
+            switchyard_libsy::LlmClassifierConfig::Escalation {
+                contract: switchyard_libsy::ClassifierContractConfig::default(),
+                config: switchyard_libsy::EscalationJudgeConfig::default(),
+                max_output_tokens: 256,
+                judge_deadline_ms: None,
+            },
+        )?;
+        let models = Arc::new(RuntimeModels::new(
+            [
+                (Category::Judge, vec![ModelId::from("judge")]),
+                (Category::Efficient, vec![ModelId::from("weak")]),
+                (Category::Capable, vec![ModelId::from("strong")]),
+                (
+                    Category::Any,
+                    vec![ModelId::from("strong"), ModelId::from("weak")],
+                ),
+            ]
+            .into(),
+        ));
+
+        let (selected, response) = run(
+            Arc::new(escalation),
+            ClientRouter::single(client.clone()),
+            request(),
+            models,
+            None,
+        )
+        .await?;
+
+        assert_eq!(selected, "strong");
+        assert_eq!(response.served_model().map(ModelId::as_str), Some("strong"));
+        assert_eq!(
+            &*client.calls.lock(),
+            &[ModelId::from("weak"), ModelId::from("strong")]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn served_answer_is_reported_before_the_client_sees_it_end() -> Result<()> {
         #[derive(Default)]
         struct ReportingAlgorithm {
