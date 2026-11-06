@@ -306,6 +306,10 @@ if TYPE_CHECKING:
             """Build independent handles keyed by the public route IDs."""
             ...
 
+        def build_configured(self) -> dict[str, ConfiguredAlgorithm]:
+            """Build handles that check target requirements before yielding host calls."""
+            ...
+
     @final
     class ConfiguredAlgorithm:
         """LLM calls and outcomes use target names; the host resolves provider IDs and settings.
@@ -313,13 +317,30 @@ if TYPE_CHECKING:
         Decision calls use provider IDs.
         """
 
+        def target_models(self) -> dict[str, dict[str, str]]:
+            """Map every possible target key to its ``client`` and provider ``id``.
+
+            Requires ``build_configured()``. This includes ineligible targets;
+            execute only candidates returned by a call or final outcome.
+            """
+            ...
+
         def run_stream(
             self,
             request: Mapping[str, object],
             *,
             headers: Mapping[str, str] | None = None,
+            required_labels: Sequence[str] | None = None,
+            task_id: str | None = None,
         ) -> AsyncIterator[Step.CallModel | Step.CallDecision | Step.Done]:
-            """Yield host calls and an outcome without carrying libsy's per-run State forward."""
+            """Yield host calls; target requirements need a ``build_configured()`` handle.
+
+            Omitted labels mean no assessment; ``[]`` supplies no new requirements.
+            Reuse the handle for retained task requirements. The host authorizes
+            ``task_id``, which overrides a task ID from headers. Libsy's per-run
+            State is not carried forward. Answers and fallbacks must use the
+            returned candidates.
+            """
             ...
 
     def noop() -> Algorithm: ...

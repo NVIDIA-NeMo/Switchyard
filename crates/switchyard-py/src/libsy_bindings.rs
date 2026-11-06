@@ -11,6 +11,7 @@ use http::HeaderMap;
 use http::header::{HeaderName, HeaderValue};
 use pyo3::exceptions::{PyBaseException, PyStopAsyncIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use serde_json::Value;
 use switchyard_libsy::{
     Algorithm, CallDecision, CallModel, CapabilityJudgeConfig, ClassifierContractConfig,
@@ -25,7 +26,7 @@ use switchyard_protocol::{
     Category, DecisionResponse, LlmClientError, LlmResponse, LlmResponseStream,
     LlmResponseStreamEvent, Metadata, ModelId, Request, Response,
 };
-use switchyard_runner::AlgorithmFactory;
+use switchyard_runner::{AlgorithmFactory, require_target_labels};
 use tokio::sync::Mutex;
 
 use crate::errors::{ContextWindowExceededError, py_libsy_error};
@@ -892,6 +893,10 @@ impl PyRunStream {
             let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
             Arc::clone(algorithm).run_stream(request, models, State::default())
         };
+        Self::from_stream(stream)
+    }
+
+    fn from_stream(stream: StepStream) -> Self {
         Self {
             inner: Arc::new(Mutex::new(stream)),
         }
@@ -1001,8 +1006,34 @@ impl PyAlgorithmFactory {
                     Py::new(
                         py,
                         PyConfiguredAlgorithm {
-                            algorithm,
-                            models: Arc::new(models),
+                            inner: ConfiguredBackend::Bare {
+                                algorithm,
+                                models: Arc::new(models),
+                            },
+                        },
+                    )?,
+                ))
+            })
+            .collect()
+    }
+
+    /// Build handles that check target requirements before yielding host-owned calls.
+    fn build_configured(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<BTreeMap<String, Py<PyConfiguredAlgorithm>>> {
+        let algorithms = py
+            .detach(|| self.inner.build_configured())
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        algorithms
+            .into_iter()
+            .map(|(id, algorithm)| {
+                Ok((
+                    id,
+                    Py::new(
+                        py,
+                        PyConfiguredAlgorithm {
+                            inner: ConfiguredBackend::Governed(algorithm),
                         },
                     )?,
                 ))
@@ -1011,30 +1042,78 @@ impl PyAlgorithmFactory {
     }
 }
 
+enum ConfiguredBackend {
+    Bare {
+        algorithm: Arc<dyn Algorithm>,
+        models: Arc<RuntimeModels>,
+    },
+    Governed(switchyard_runner::ConfiguredAlgorithm),
+}
+
 /// A reusable algorithm paired with its deployment's parent and subagent model groups.
 /// The host applies target prompts and provider settings when serving model calls.
 #[pyclass(name = "ConfiguredAlgorithm", module = "switchyard.libsy", frozen)]
 struct PyConfiguredAlgorithm {
-    algorithm: Arc<dyn Algorithm>,
-    models: Arc<RuntimeModels>,
+    inner: ConfiguredBackend,
 }
 
 #[pymethods]
 impl PyConfiguredAlgorithm {
+    /// All possible targets and their client/provider IDs, not the eligible pool for a request.
+    fn target_models<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let ConfiguredBackend::Governed(algorithm) = &self.inner else {
+            return Err(py_libsy_error(
+                "target model lookup requires AlgorithmFactory.build_configured()",
+            ));
+        };
+        let targets = PyDict::new(py);
+        for (name, target) in algorithm.target_models() {
+            let model = PyDict::new(py);
+            model.set_item("client", &target.client)?;
+            model.set_item("id", target.id.as_str())?;
+            targets.set_item(name.as_str(), model)?;
+        }
+        Ok(targets)
+    }
+
     /// Yield host-owned model and decision calls for a normalized request.
+    /// Omitted labels mean no assessment; an empty collection supplies no new requirements.
+    /// The host authorizes `task_id`, which overrides any task ID in `headers`.
     /// Libsy's per-run `State` is not carried forward, as in `Algorithm.run_stream`.
-    #[pyo3(signature = (request, *, headers=None))]
+    #[pyo3(signature = (request, *, headers=None, required_labels=None, task_id=None))]
     fn run_stream(
         &self,
+        py: Python<'_>,
         request: &Bound<'_, PyAny>,
         headers: Option<&Bound<'_, PyAny>>,
+        required_labels: Option<Vec<String>>,
+        task_id: Option<String>,
     ) -> PyResult<PyRunStream> {
         let headers = headers.map(from_python).transpose()?;
-        Ok(PyRunStream::new(
-            &self.algorithm,
-            request_from_python(request, headers)?,
-            Arc::clone(&self.models),
-        ))
+        let mut request = request_from_python(request, headers)?;
+        if let Some(task_id) = task_id {
+            request.metadata.get_or_insert_default().task_id = Some(task_id);
+        }
+        match &self.inner {
+            ConfiguredBackend::Bare { algorithm, models } => {
+                if required_labels.is_some() {
+                    return Err(py_libsy_error(
+                        "target requirements require AlgorithmFactory.build_configured()",
+                    ));
+                }
+                Ok(PyRunStream::new(algorithm, request, Arc::clone(models)))
+            }
+            ConfiguredBackend::Governed(algorithm) => {
+                if let Some(labels) = required_labels {
+                    require_target_labels(&mut request, labels).map_err(py_libsy_error)?;
+                }
+                let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
+                let stream = py
+                    .detach(|| algorithm.run_stream(request, State::default()))
+                    .map_err(py_libsy_error)?;
+                Ok(PyRunStream::from_stream(stream))
+            }
+        }
     }
 }
 

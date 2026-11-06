@@ -123,6 +123,48 @@ asyncio.run(main())
 
 `uv run route.py` prints `Selected: Efficient` without making a network call.
 
+### Target requirements (development)
+
+With matching development bindings, load deployment TOML that declares target
+labels and route eligibility. Build once and reuse the returned handles:
+
+```python
+from switchyard.libsy import AlgorithmFactory
+
+routes = AlgorithmFactory.from_toml(toml).build_configured()
+coding = routes["switchyard/coding"]
+targets = coding.target_models()
+
+steps = coding.run_stream(
+    request,
+    required_labels=["private", "customer_data"],
+    task_id=trusted_task_id,
+)
+```
+
+In the existing handlers, look up a returned LLM judge target or final candidate:
+
+```python
+judge = targets[call.models[0]]
+answer = targets[outcome.selected_model_ids[0]]
+```
+
+Each record contains `client`, the host's configured client name, and `id`, the
+upstream model ID. Typed Decision calls use `targets[call.model]`. The lookup
+contains all possible targets, not the eligible pool for this request; use only
+keys returned by calls and outcomes. `build()` handles reject this lookup.
+
+The host supplies the assessment and an authorized task ID. An explicit task ID
+overrides a task ID from headers. Omitted labels mean no assessment; `[]` supplies
+no new requirements. In task scope, earlier requirements remain in effect.
+Invalid requirements or missing approved targets fail before any routing call.
+
+Consume `steps` through the same model and Decision call handlers. Switchyard
+does not create provider clients or read their credentials. The host owns target
+prompts, provider settings and transport, and must keep answer attempts and
+fallbacks within the returned candidates. Existing `build()` handles do not
+accept target requirements. Per-run libsy state is not carried between Python calls.
+
 ### Concurrent calls and cancellation
 
 The client coroutine returns `LlmResponse.Agg` or `LlmResponse.Stream`.
