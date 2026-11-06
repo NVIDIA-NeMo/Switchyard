@@ -113,6 +113,56 @@ above `4294967295` are rejected.
 
 ## Pickers
 
+### Optional balanced tier
+
+Add `balanced_target` to route moderate recovery to a middle model:
+
+```toml
+[routes.coding]
+id = "coding"
+type = "stage_router"
+efficient_target = "fast"
+balanced_target = "middle"
+capable_target = "strong"
+picker = "efficient_first"
+confidence_threshold = 0.20
+capable_score_threshold = 0.55
+```
+
+The three targets must already exist under `[targets.*]`. Without
+`balanced_target`, routing keeps its two-tier behavior. With it, decisive
+positive tool scores below `capable_score_threshold` select balanced. Scores
+at or above the threshold select capable. Negative scores still select
+efficient. Set `confidence_threshold` below `capable_score_threshold` to make
+the middle band reachable. The default upper threshold is `0.55`; it must be
+in `[0, 1]` and requires `balanced_target`.
+
+Hard overrides select capable. Unless `escalation_hold_turns` is set, existing holds, the optional judge, and the
+picker default keep their two-tier behavior. Balanced choices do not start
+holds or receive capable/efficient handoff notes or tier prompts. Use the
+balanced target's own `system_prompt` for instructions specific to that model.
+Model-call failures can fall back to the other configured targets. All three
+targets must satisfy the request's target requirements.
+
+Set `escalation_hold_turns = 3` to retain either balanced or capable as a
+floor for three subsequent lower-tier requests. Signals are scored on every
+request. A stronger choice takes effect immediately; the same or a higher
+choice renews the hold. A new user turn clears the hold. Retention requires an
+explicit session ID and keeps child agents separate from their parent.
+This option replaces both legacy holds, including when set to `0`, which
+keeps scoring every request and disables retention. It supports standalone
+three-tier tool-signal routes without a fallback judge or handoff notes.
+Omitting it preserves the legacy holds described above.
+
+For Rust callers, set `StageRouterConfig.capable_score_threshold = Some(0.55)`
+and supply the middle model in the runtime `Category::Named("balanced".into())`
+group and `Category::Any`. The default `None` keeps two-tier routing.
+
+This policy uses the existing tool scorer and adds no judge calls. Its middle
+threshold has not been calibrated by a model benchmark.
+
+### Default tier
+
 The picker name says which tier is the **default**: the tier used when the
 signals are ambiguous and no classifier verdict is available.
 

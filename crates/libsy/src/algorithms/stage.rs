@@ -13,24 +13,26 @@
 //! joined in unchanged — and then to the picker's default tier, or to an
 //! override a decider ahead of stage set in its place.
 //!
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use parking_lot::Mutex;
 
 use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
-use super::util::affinity::{ClassifyTrigger, has_new_user_turn};
+use super::util::affinity::{ClassifyTrigger, evict_if_full, has_new_user_turn};
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, Tier, fall_open_tier,
     record_routing_decision,
 };
 use super::util::tool_signals::{DEFAULT_RECENT_WINDOW, ToolSemantics, ToolSignalProcessor};
-use crate::core::algorithm::{Algorithm, Driver};
+use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Category, Request, Response};
+use switchyard_protocol::{Category, ModelId, Request, Response};
 
 /// Telemetry name for a router this module assembles.
 const STAGE_ROUTER: &str = "stage_router";
@@ -98,7 +100,7 @@ impl Classifier for SourceStamp {
         let (classification, served) = self.inner.score(state, request, driver).await?;
         // An abstaining classifier passes the turn on, so it is not its to claim.
         if let Some(winner) = classification.argmax(false)? {
-            record_routing_decision(self.source, driver.provider_model(&winner.target));
+            record_routing_decision(self.source.as_str(), driver.provider_model(&winner.target));
             driver.set_evidence_if_empty(serde_json::json!({
                 "source": self.source.as_str(),
             }));
@@ -110,6 +112,105 @@ impl Classifier for SourceStamp {
 /// Closes the cascade at zero confidence: a fallback, not a judgement.
 struct FallOpen {
     default_tier: Tier,
+}
+
+/// Re-scores every request while retaining an elevated tier as a temporary floor.
+struct EscalationRetention {
+    inner: Arc<StageClassifier>,
+    default_tier: Tier,
+    turns: u32,
+    holds: Mutex<HashMap<RoutingIdentity, (ModelId, u32)>>,
+}
+
+impl EscalationRetention {
+    fn category_and_rank(target: &ModelId, driver: &Driver) -> Option<(Category, u8)> {
+        [
+            (Category::Capable, 2),
+            (Category::Named("balanced".into()), 1),
+            (Category::Efficient, 0),
+        ]
+        .into_iter()
+        .find(|(category, _)| driver.models_for(category).contains(target))
+    }
+
+    fn retain(&self, request: &Request, target: ModelId, driver: &Driver) -> ModelId {
+        if self.turns == 0 {
+            return target;
+        }
+        let Some(key) = RoutingIdentity::from_request(request) else {
+            return target;
+        };
+        let mut holds = self.holds.lock();
+        if has_new_user_turn(&request.llm_request.messages) {
+            holds.remove(&key);
+        }
+        let Some((_, rank)) = Self::category_and_rank(&target, driver) else {
+            holds.remove(&key);
+            return target;
+        };
+        if let Some((held, remaining)) = holds.get(&key).cloned()
+            && remaining > 0
+            && Self::category_and_rank(&held, driver).is_some_and(|(_, held_rank)| held_rank > rank)
+        {
+            if remaining == 1 {
+                holds.remove(&key);
+            } else {
+                holds.insert(key, (held.clone(), remaining - 1));
+            }
+            return held;
+        }
+        if rank > 0 {
+            evict_if_full(&mut holds);
+            holds.insert(key, (target.clone(), self.turns));
+        } else {
+            holds.remove(&key);
+        }
+        target
+    }
+}
+
+#[async_trait]
+impl Classifier for EscalationRetention {
+    async fn score(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: &Driver,
+    ) -> Result<(Classification, Option<Response>)> {
+        let (classification, served) = self.inner.score(state, request, driver).await?;
+        let mut score = match classification.argmax(false)? {
+            Some(score) => score,
+            None => {
+                driver.set_evidence(serde_json::json!({"source": "fall_open"}));
+                FallOpen {
+                    default_tier: self.default_tier,
+                }
+                .score(state, request, driver)
+                .await?
+                .0
+                .argmax(false)?
+                .expect("the picker default always selects a target")
+            }
+        };
+        let selected = self.retain(request, score.target.clone(), driver);
+        if selected != score.target {
+            score.category =
+                Self::category_and_rank(&selected, driver).map(|(category, _)| category);
+            score.target = selected;
+            score.confidence = 1.0;
+            driver.set_evidence(serde_json::json!({"source": "escalation_hold"}));
+        }
+        let evidence = driver.evidence();
+        record_routing_decision(
+            evidence
+                .as_ref()
+                .and_then(|value| value.get("source"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("fall_open"),
+            driver.provider_model(&score.target),
+        );
+        Ok((Classification::Scores(vec![score]), served))
+    }
 }
 
 #[async_trait]
@@ -155,6 +256,13 @@ pub struct StageRouterConfig {
     pub mode: PickerMode,
     /// How much corroboration a decisive pick needs, in `[0.0, 1.0]`.
     pub confidence_threshold: f64,
+    /// Positive tool scores below this confidence use the runtime `balanced`
+    /// group. `None` keeps two-tier routing. Hard overrides stay capable;
+    /// holds keep their original tier.
+    pub capable_score_threshold: Option<f64>,
+    /// Re-scores every turn and keeps elevated tiers as a floor for this many
+    /// lower-tier requests. Replaces legacy holds; `Some(0)` disables retention.
+    pub escalation_hold_turns: Option<u32>,
     /// Threshold after an outer classifier selects capable-first. Defaults to `0.0`.
     pub capable_first_threshold: f64,
     /// Trailing tool results the signals are computed over. `None` uses
@@ -188,6 +296,8 @@ impl StageRouterConfig {
         Self {
             mode,
             confidence_threshold,
+            capable_score_threshold: None,
+            escalation_hold_turns: None,
             capable_first_threshold: 0.0,
             recent_window: None,
             tool_semantics: ToolSemantics::default(),
@@ -241,9 +351,23 @@ impl Algorithm for StageRouter {
 /// Wires the cascade the wrapper drives. Exposed so a composition above can
 /// stack a prelude onto it.
 pub(crate) fn build_stage_route(
-    config: StageRouterConfig,
+    mut config: StageRouterConfig,
     reset_on_user_turn: bool,
 ) -> Result<FallThrough> {
+    if config.escalation_hold_turns.is_some() {
+        if config.capable_score_threshold.is_none() {
+            return Err(LibsyError::AlgorithmError {
+                message: "escalation_hold_turns requires the optional balanced tier".to_string(),
+            });
+        }
+        if reset_on_user_turn || config.llm_fallback.is_some() || config.handoff_notes.is_some() {
+            return Err(LibsyError::AlgorithmError {
+                message: "escalation retention supports standalone tool-signal routes without a fallback judge or handoff notes".to_string(),
+            });
+        }
+        config.capable_hold_turns = 0;
+        config.efficient_hold_turns = Some(0);
+    }
     if let Some(fallback) = &config.llm_fallback
         && (fallback.config.classify_trigger != ClassifyTrigger::EveryRequest
             || fallback.config.message_hash_fallback)
@@ -266,6 +390,13 @@ pub(crate) fn build_stage_route(
         }
     }
     config.tool_semantics.validate()?;
+    if let Some(threshold) = config.capable_score_threshold
+        && !(0.0..=1.0).contains(&threshold)
+    {
+        return Err(LibsyError::AlgorithmError {
+            message: "capable_score_threshold must be between 0 and 1".to_string(),
+        });
+    }
     for (name, turns) in [
         ("capable_hold_turns", Some(config.capable_hold_turns)),
         ("efficient_hold_turns", config.efficient_hold_turns),
@@ -286,6 +417,10 @@ pub(crate) fn build_stage_route(
     let mut classifier = StageClassifier::new(config.mode, config.confidence_threshold)
         .with_capable_first_threshold(config.capable_first_threshold)
         .with_capable_hold_turns(config.capable_hold_turns);
+    classifier.capable_score_threshold = config.capable_score_threshold;
+    if config.escalation_hold_turns.is_some() {
+        classifier = classifier.defer_decision_reporting();
+    }
     classifier.reset_on_user_turn = reset_on_user_turn;
     if let Some(turns) = config.efficient_hold_turns {
         classifier = classifier.with_efficient_hold_turns(turns);
@@ -300,8 +435,17 @@ pub(crate) fn build_stage_route(
     let classifier = Arc::new(classifier.with_signals(signals));
     let mut router = FallThrough::new_with_state()
         .with_name(STAGE_ROUTER)
-        .with_processor(classifier.clone())
-        .with_classifier(classifier);
+        .with_processor(classifier.clone());
+    if let Some(turns) = config.escalation_hold_turns {
+        router = router.with_classifier(Arc::new(EscalationRetention {
+            inner: classifier,
+            default_tier,
+            turns,
+            holds: Mutex::default(),
+        }));
+    } else {
+        router = router.with_classifier(classifier);
+    }
     if let Some(fallback) = config.llm_fallback {
         router = router.with_classifier(Arc::new(SourceStamp {
             inner: Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
@@ -471,6 +615,15 @@ mod tests {
             StageRouter::new(config),
             Err(LibsyError::AlgorithmError { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_an_invalid_capable_score_threshold() {
+        for threshold in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
+            let mut config = config();
+            config.capable_score_threshold = Some(threshold);
+            assert!(StageRouter::new(config).is_err());
+        }
     }
 
     #[test]
@@ -974,5 +1127,147 @@ mod tests {
             "the judge should see the opening task: {judged}"
         );
         Ok(())
+    }
+
+    fn retention_config(turns: u32) -> StageRouterConfig {
+        let mut config = StageRouterConfig::new(PickerMode::EfficientFirst, 0.20);
+        config.capable_score_threshold = Some(0.55);
+        config.escalation_hold_turns = Some(turns);
+        config
+    }
+
+    fn retention_request(signal: char) -> Request {
+        use switchyard_protocol::ContentBlock;
+        let mut request = turn_request(signal == 'C');
+        if signal == 'B' {
+            if let ContentBlock::ToolResult(result) =
+                &mut request.llm_request.messages[2].content[0]
+            {
+                result.content = vec![ContentBlock::Text {
+                    text: "exit code 1".into(),
+                }];
+            }
+            request.raw_request.as_mut().unwrap()["messages"][2]["content"] =
+                serde_json::json!("exit code 1");
+        }
+        request
+    }
+
+    async fn retention_sequence(turns: u32, requests: Vec<Request>) -> Result<Vec<String>> {
+        let router = Arc::new(StageRouter::new(retention_config(turns))?);
+        let recorder = Arc::new(Recorder::default());
+        let mut models = runtime_models();
+        models.insert(Category::Named("balanced".into()), vec!["middle".into()]);
+        models
+            .get_mut(&Category::Any)
+            .unwrap()
+            .push("middle".into());
+        let mut selected = Vec::new();
+        for request in requests {
+            let (target, _) =
+                test_drive_with_models(router.clone(), request, models.clone(), recorder.serve())
+                    .await?;
+            selected.push(target.to_string());
+        }
+        assert_eq!(recorder.judge_calls(), 0);
+        Ok(selected)
+    }
+
+    #[tokio::test]
+    async fn retention_rechecks_signals_renews_and_allows_stronger_targets() -> Result<()> {
+        for (signals, expected) in [
+            (
+                "BEEEE",
+                vec!["middle", "middle", "middle", "middle", "weak"],
+            ),
+            (
+                "BBEEEE",
+                vec!["middle", "middle", "middle", "middle", "middle", "weak"],
+            ),
+            (
+                "BCBEEE",
+                vec!["middle", "strong", "strong", "strong", "strong", "weak"],
+            ),
+            (
+                "CCEEEE",
+                vec!["strong", "strong", "strong", "strong", "strong", "weak"],
+            ),
+        ] {
+            assert_eq!(
+                retention_sequence(3, signals.chars().map(retention_request).collect()).await?,
+                expected,
+                "{signals}"
+            );
+        }
+        assert_eq!(
+            retention_sequence(0, "BCE".chars().map(retention_request).collect()).await?,
+            ["middle", "strong", "weak"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retention_resets_on_user_turn_and_requires_an_explicit_session() -> Result<()> {
+        use switchyard_protocol::{Message, Role};
+        let mut new_user = turn_request(false);
+        new_user
+            .llm_request
+            .messages
+            .push(Message::text(Role::User, "new task"));
+        assert_eq!(
+            retention_sequence(3, vec![retention_request('B'), new_user]).await?,
+            ["middle", "weak"]
+        );
+        let requests = "BEE"
+            .chars()
+            .map(|signal| {
+                let mut request = retention_request(signal);
+                request.metadata.as_mut().unwrap().session_id = None;
+                request
+            })
+            .collect();
+        assert_eq!(
+            retention_sequence(3, requests).await?,
+            ["middle", "weak", "weak"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn retention_does_not_cross_sessions_or_parent_child_boundaries() -> Result<()> {
+        let mut another_session = turn_request(false);
+        another_session.metadata.as_mut().unwrap().session_id = Some("another-session".into());
+        let mut child = turn_request(false);
+        let metadata = child.metadata.as_mut().unwrap();
+        metadata.is_subagent = true;
+        metadata.agent_id = Some("child-1".into());
+        assert_eq!(
+            retention_sequence(
+                3,
+                vec![
+                    retention_request('B'),
+                    another_session,
+                    child,
+                    turn_request(false),
+                ]
+            )
+            .await?,
+            ["middle", "weak", "weak", "middle"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retention_requires_a_standalone_three_tier_signal_route() {
+        let mut missing_balanced = config();
+        missing_balanced.escalation_hold_turns = Some(3);
+        assert!(StageRouter::new(missing_balanced).is_err());
+        assert!(build_stage_route(retention_config(3), true).is_err());
+        let mut with_judge = retention_config(3);
+        with_judge.llm_fallback = Some(LlmFallback {
+            target: None,
+            config: TaskClassifierConfig::default(),
+        });
+        assert!(StageRouter::new(with_judge).is_err());
     }
 }

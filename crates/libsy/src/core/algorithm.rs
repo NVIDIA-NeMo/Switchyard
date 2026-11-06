@@ -463,6 +463,11 @@ impl Driver {
         *self.state.lock() = state;
     }
 
+    /// Snapshots the current decision evidence before a routing wrapper adjusts it.
+    pub(crate) fn evidence(&self) -> Option<Value> {
+        self.evidence.lock().outcome.clone()
+    }
+
     /// Replace the current run's evidence when a component makes the final decision.
     pub(crate) fn set_evidence(&self, evidence: Value) {
         self.evidence.lock().outcome = Some(evidence);
