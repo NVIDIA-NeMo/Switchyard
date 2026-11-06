@@ -225,6 +225,13 @@ impl FormatCodec for AnthropicMessagesCodec {
             .instructions
             .iter()
             .flat_map(|instruction| instruction.content.iter())
+            .chain(
+                request
+                    .messages
+                    .iter()
+                    .filter(|message| matches!(message.role, Role::System | Role::Developer))
+                    .flat_map(|message| message.content.iter()),
+            )
             .filter_map(|block| match block {
                 ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text.as_str()),
                 _ => None,
@@ -883,6 +890,11 @@ fn encode_anthropic_messages(
     let mut index = 0;
 
     while let Some(message) = messages.get(index) {
+        // Inline instructions are emitted in the top-level system field.
+        if matches!(message.role, Role::System | Role::Developer) {
+            index += 1;
+            continue;
+        }
         if !message_is_tool_result_only(message) {
             encoded.push(encode_anthropic_message(message, diagnostics, policy)?);
             index += 1;
@@ -891,6 +903,10 @@ fn encode_anthropic_messages(
 
         let mut content = Vec::new();
         while let Some(tool_message) = messages.get(index) {
+            if matches!(tool_message.role, Role::System | Role::Developer) {
+                index += 1;
+                continue;
+            }
             if !message_is_tool_result_only(tool_message) {
                 break;
             }

@@ -26,7 +26,10 @@ pub fn normalize_compaction(request: &mut LlmRequest, headers: Option<&HeaderMap
             .messages
             .iter()
             .rev()
-            .find(|message| !is_environment_update(message))
+            .find(|message| {
+                !matches!(message.role, Role::System | Role::Developer)
+                    && !is_environment_update(message)
+            })
             .is_some_and(|message| message.role == Role::User && is_compaction_message(message));
 }
 
@@ -115,6 +118,15 @@ mod tests {
         ]});
         let request = decode_request(WireFormat::OpenAiChat, &body).unwrap();
         assert!(request.is_compaction && request.has_compaction);
+        for role in [super::Role::System, super::Role::Developer] {
+            let mut with_instruction = request.clone();
+            with_instruction
+                .messages
+                .push(super::Message::text(role, "Follow repository instructions"));
+            with_instruction.is_compaction = false;
+            super::normalize_compaction(&mut with_instruction, None);
+            assert!(with_instruction.is_compaction);
+        }
         body["messages"]
             .as_array_mut()
             .unwrap()

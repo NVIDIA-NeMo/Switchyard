@@ -24,9 +24,9 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
-    AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
-    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
-    SamplingParams, StopReason, Tool, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    AggLlmResponse, ContentBlock, FileSource, ImageSource, LlmRequest, MediaSource, Message,
+    OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams,
+    StopReason, Tool, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -97,15 +97,13 @@ impl FormatCodec for OpenAiResponsesCodec {
             .and_then(Value::as_str)
             .is_some_and(|id| !id.is_empty());
         let mut custom_call_outputs = Vec::new();
-        let (messages, instructions) = decode_responses_input(
+        request.messages = decode_responses_input(
             body.get("input").unwrap_or(&Value::String(String::new())),
             stored_state,
             &mut custom_call_outputs,
             &mut diagnostics,
             policy,
         )?;
-        request.messages = messages;
-        request.instructions.extend(instructions);
         let mut tool_namespaces = Map::new();
         let mut custom_tools = Map::new();
         request.tools =
@@ -457,25 +455,18 @@ impl FormatCodec for OpenAiResponsesCodec {
     }
 }
 
-/// Decodes Responses `input` into ordered normalized messages and inline
-/// instruction blocks.
-///
-/// Inline `system` and `developer` message items are returned as instruction
-/// blocks rather than conversation turns. Classifying them here, before any
-/// reasoning or tool-call state-machine transitions, prevents an instruction
-/// item from flushing pending reasoning or disturbing tool-call grouping.
+/// Decodes Responses `input` into ordered normalized messages.
 fn decode_responses_input(
     value: &Value,
     stored_state: bool,
     custom_call_outputs: &mut Vec<String>,
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
-) -> Result<(Vec<Message>, Vec<InstructionBlock>)> {
+) -> Result<Vec<Message>> {
     match value {
-        Value::String(text) => Ok((vec![Message::text(Role::User, text)], Vec::new())),
+        Value::String(text) => Ok(vec![Message::text(Role::User, text)]),
         Value::Array(items) => {
             let mut messages = Vec::new();
-            let mut instructions = Vec::new();
             let mut pending_tool_calls = Vec::new();
             let mut pending_tool_outputs = Vec::new();
             let mut deferred_messages = Vec::new();
@@ -526,16 +517,18 @@ fn decode_responses_input(
                                     .to_string(),
                             });
                         }
-                        let content = decode_responses_content(content_value);
-                        // Inline system and developer input items are instructions, not
-                        // conversation turns. Classify them before any state-machine
-                        // transitions so they do not flush pending reasoning or disturb
-                        // tool-call grouping.
-                        if matches!(role, Role::System | Role::Developer) {
-                            instructions.push(InstructionBlock { role, content });
+                        let mut content = decode_responses_content(content_value);
+                        // Inline instructions wait behind an open tool block or pending
+                        // reasoning. They never split tool calls from their outputs, and
+                        // reasoning keeps its place before them.
+                        if matches!(role, Role::System | Role::Developer)
+                            && !(pending_tool_calls.is_empty()
+                                && pending_tool_outputs.is_empty()
+                                && pending_reasoning.is_empty())
+                        {
+                            deferred_messages.push(Message { role, content });
                             continue;
                         }
-                        let mut content = content;
                         // Reasoning that precedes an assistant message belongs to
                         // that turn; fold it in so it never surfaces as its own
                         // (empty-looking) assistant message downstream.
@@ -546,6 +539,10 @@ fn decode_responses_input(
                             let mut merged = std::mem::take(&mut pending_reasoning);
                             merged.append(&mut content);
                             content = merged;
+                            // Instructions held behind the reasoning came before this turn.
+                            if pending_tool_outputs.is_empty() {
+                                messages.append(&mut deferred_messages);
+                            }
                         }
                         if role != Role::Assistant {
                             flush_unattached_responses_reasoning(
@@ -778,7 +775,8 @@ fn decode_responses_input(
                     content: pending_reasoning,
                 });
             }
-            Ok((messages, instructions))
+            messages.append(&mut deferred_messages);
+            Ok(messages)
         }
         _ => Err(TranslationError::InvalidType {
             path: "$.input".to_string(),
@@ -837,6 +835,8 @@ fn flush_unattached_responses_reasoning(
         pending_reasoning,
         message,
     );
+    // Instructions held behind the reasoning follow it.
+    messages.append(deferred_messages);
 }
 
 /// Flushes pending function calls and matching outputs while preserving adjacency.

@@ -78,6 +78,27 @@ fn tool_trajectory_respects_the_current_request_initiator() {
             "finished={finished}, initiator={initiator:?}"
         );
     }
+    for role in [Role::System, Role::Developer] {
+        for (previous, expected) in [
+            (Message::text(Role::Assistant, "done"), true),
+            (call("c1"), false),
+        ] {
+            let request = request(vec![
+                Message::text(Role::User, "fix the build"),
+                previous,
+                Message::text(role, "Follow repository instructions"),
+                Message::text(Role::User, "verify the change"),
+            ]);
+            assert_eq!(
+                super::text::starts_user_turn(&request.llm_request.messages, 3),
+                expected
+            );
+            assert_eq!(
+                super::text::turn_start(&request),
+                if expected { 3 } else { 0 }
+            );
+        }
+    }
     assert!(!super::text::turn_has_tool_trajectory(&Request::default()));
 }
 
