@@ -10,14 +10,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use libsy::{
-    AdvisorGate, AdvisorGateConfig, Algorithm, BreakerConfig, CapabilityJudgeConfig,
-    ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeJudgeConfig,
-    CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
-    DEFAULT_UNMATCHED_STEPS, DecisionChoice, DecisionJudgeConfig, DirectClassifierConfig,
-    EscalationJudgeConfig, GateTrigger, HandoffNoteConfig, LlmCapabilityConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
-    RuntimeModels, StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig,
-    TaskClassifierConfig, ToolSemantics, Vgr, VgrConfig,
+    AdvisorGate, AdvisorGateConfig, Algorithm, AutoRouter, AutoRouterConfig, BreakerConfig,
+    CapabilityJudgeConfig, ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger,
+    CompositeJudgeConfig, CompositeRouter, CompositeRouterConfig, CustomClassifierConfig,
+    CustomClassifierPolicy, DEFAULT_UNMATCHED_STEPS, DecisionChoice, DecisionJudgeConfig,
+    DirectClassifierConfig, EscalationJudgeConfig, GateTrigger, HandoffNoteConfig,
+    LlmCapabilityConfig, LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough,
+    PickerMode, PoolContext, PoolModel, PoolReviewConfig, Random, RuntimeModels, StageRouter,
+    StageRouterConfig, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig,
+    TaskSignalSettings, TaskSignalTrigger, ToolLoopSignalConfig, ToolSemantics, Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use strum_macros::IntoStaticStr;
@@ -434,10 +435,12 @@ pub enum AlgorithmSpec {
     /// `confidence_threshold = 0.5`; change `build_algorithm`'s `Auto` arm to
     /// repoint it at a different algorithm or preset.
     Auto {
-        /// The capable tier.
+        #[serde(default)]
         capable_target: String,
-        /// The efficient tier.
+        #[serde(default)]
         efficient_target: String,
+        #[serde(default)]
+        signals: Option<Box<SignalsConfig>>,
     },
     /// A judge picks the tier at each user turn; a stage router runs the turns within it.
     Composite {
@@ -454,6 +457,17 @@ pub enum AlgorithmSpec {
         /// Separate policy for delegated sub-agent work.
         #[serde(default)]
         subagents: Option<SubagentRouteConfig>,
+    },
+    /// Composes named signals (`task`, `tool_loop`, `review`) into one decision,
+    /// resolved against the deployment's top-level `[pool]`.
+    #[serde(skip)]
+    AutoRouter {
+        /// The route's signal composition.
+        signals: Box<SignalsConfig>,
+        /// The deployment's `[pool]`, copied in by the shared deployment parser.
+        /// Never set directly in a route's own TOML.
+        #[serde(skip)]
+        pool: PoolSpec,
     },
     /// Serves every turn from one target, and has a second model review some of
     /// those turns before the caller sees them.
@@ -814,6 +828,98 @@ impl StageClassifierConfig {
     }
 }
 
+/// The deployment's `[pool]`: a model catalog shared by every `auto` route.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolSpec {
+    /// Models in the pool, in declared order.
+    #[serde(default)]
+    pub(crate) models: Vec<PoolModelSpec>,
+    /// Capability to fall back to when no signal names one.
+    #[serde(default)]
+    pub(crate) default: String,
+}
+
+/// One `[pool]` model and the capability tags it provides.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolModelSpec {
+    /// Target name, resolved against `[targets.*]`.
+    pub(crate) target: String,
+    /// Capability tags this model satisfies.
+    pub(crate) provides: Vec<String>,
+}
+
+/// Signals combined by an auto route.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignalsConfig {
+    #[serde(default)]
+    pub task: Option<TaskSignalConfig>,
+    #[serde(default)]
+    pub tool_loop: Option<ToolLoopSignalTomlConfig>,
+    #[serde(default)]
+    pub review: Option<ReviewSignalConfig>,
+}
+
+/// A judge's efficient-model solve estimate.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskSignalConfig {
+    pub judge: String,
+    #[serde(default)]
+    pub trigger: TaskSignalTrigger,
+    pub threshold: f64,
+    #[serde(default)]
+    pub recent_turn_window: Option<usize>,
+    #[serde(default)]
+    pub prompt: Option<String>,
+    #[serde(default)]
+    pub response_format_type: ClassifierResponseFormat,
+    #[serde(default = "default_classifier_max_output_tokens")]
+    pub max_output_tokens: u64,
+}
+
+/// Tool-result confidence, without a tier catalog or retention policy.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToolLoopSignalTomlConfig {
+    pub enabled: bool,
+    pub confidence: f64,
+    pub recent_turn_window: Option<usize>,
+    pub tool_semantics: ToolSemantics,
+}
+
+impl Default for ToolLoopSignalTomlConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            confidence: 0.5,
+            recent_turn_window: None,
+            tool_semantics: ToolSemantics::default(),
+        }
+    }
+}
+
+/// Reviews the answer from whichever executor the pool selects.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewSignalConfig {
+    pub judge: String,
+    #[serde(default = "default_max_reviews")]
+    pub max_reviews: u32,
+    #[serde(default = "default_review_confirmations")]
+    pub confirmations: u32,
+    #[serde(default)]
+    pub reviewer_system_prompt: Option<String>,
+    #[serde(default = "default_fail_open")]
+    pub fail_open: bool,
+}
+
+const fn default_review_confirmations() -> u32 {
+    1
+}
+
 impl AlgorithmSpec {
     /// Filters configured pools without replacing required targets or changing their roles.
     pub(crate) fn restricted_to(&self, allowed: &BTreeSet<&str>) -> AlgorithmResult<Self> {
@@ -849,6 +955,10 @@ impl AlgorithmSpec {
                 if let Some(models) = &mut config.models {
                     models.restrict_to(allowed);
                 }
+            }
+            Self::AutoRouter { pool, .. } => {
+                pool.models
+                    .retain(|model| allowed.contains(model.target.as_str()));
             }
             _ => {}
         }
@@ -1018,9 +1128,17 @@ impl AlgorithmSpec {
                 }
                 names
             }
+            Self::AutoRouter { pool, .. } => pool
+                .models
+                .iter()
+                .map(|model| model.target.as_str())
+                .collect(),
+            // The advisor is judge-only: reviews go through its own client,
+            // so it is not a completion (or count_tokens) destination.
             Self::Auto {
                 capable_target,
                 efficient_target,
+                ..
             } => vec![capable_target.as_str(), efficient_target.as_str()],
             Self::Composite {
                 stage, subagents, ..
@@ -1034,8 +1152,6 @@ impl AlgorithmSpec {
                 }
                 names
             }
-            // The advisor is judge-only: reviews go through its own client,
-            // so it is not a completion (or count_tokens) destination.
             Self::Advisor {
                 executor_target, ..
             } => vec![executor_target],
@@ -1091,6 +1207,14 @@ impl AlgorithmSpec {
             Self::Vgr { config } => {
                 names.extend(config.judge_target.as_deref());
                 names.extend(config.capable_judge_target.as_deref());
+            }
+            Self::AutoRouter { signals, .. } => {
+                if let Some(task) = &signals.task {
+                    names.push(&task.judge);
+                }
+                if let Some(review) = &signals.review {
+                    names.push(&review.judge);
+                }
             }
             _ => {}
         }
@@ -1148,6 +1272,7 @@ impl AlgorithmSpec {
             Self::Auto {
                 capable_target,
                 efficient_target,
+                ..
             } => category_models([
                 (Category::Capable, vec![capable_target.clone()]),
                 (Category::Efficient, vec![efficient_target.clone()]),
@@ -1171,6 +1296,18 @@ impl AlgorithmSpec {
                     vec![stage.capable_target.clone(), stage.efficient_target.clone()],
                 ),
             ]),
+            Self::AutoRouter { signals, pool } => {
+                let mut models = pool_runtime_model_names(pool);
+                let mut judges = Vec::new();
+                if let Some(task) = &signals.task {
+                    judges.push(task.judge.clone());
+                }
+                if let Some(review) = &signals.review {
+                    judges.push(review.judge.clone());
+                }
+                models.insert(Category::Judge, judges);
+                models
+            }
             Self::Advisor {
                 executor_target,
                 advisor_target,
@@ -1248,6 +1385,7 @@ impl AlgorithmSpec {
             | Self::Passthrough { .. }
             | Self::LlmClassifier { .. }
             | Self::StageRouter { .. }
+            | Self::AutoRouter { .. }
             | Self::Auto { .. }
             | Self::Composite { .. }
             | Self::PrefillRouter { .. } => None,
@@ -1292,6 +1430,28 @@ fn category_models(
     entries: impl IntoIterator<Item = (Category, Vec<String>)>,
 ) -> HashMap<Category, Vec<String>> {
     entries.into_iter().collect()
+}
+
+/// Groups a `[pool]`'s models by the capability tags they provide, plus
+/// `Category::Any` for every pool model. Unlike [`category_models`], this
+/// accumulates rather than overwrites: a tag provided by several models keeps
+/// every one of them, in declared order.
+fn pool_runtime_model_names(pool: &PoolSpec) -> HashMap<Category, Vec<String>> {
+    let mut groups: HashMap<Category, Vec<String>> = HashMap::new();
+    let mut any = Vec::with_capacity(pool.models.len());
+    for model in &pool.models {
+        any.push(model.target.clone());
+        for tag in &model.provides {
+            if let Ok(category) = tag.parse::<Category>() {
+                groups
+                    .entry(category)
+                    .or_default()
+                    .push(model.target.clone());
+            }
+        }
+    }
+    groups.insert(Category::Any, any);
+    groups
 }
 
 fn custom_runtime_model_names(config: &CategoryModelConfig) -> HashMap<Category, Vec<String>> {
@@ -1903,6 +2063,7 @@ fn build_algorithm(
         AlgorithmSpec::Auto {
             capable_target,
             efficient_target,
+            ..
         } => {
             warn_identical_tiers(route_name, capable_target, efficient_target);
             let config = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
@@ -1985,6 +2146,65 @@ fn build_algorithm(
             })?;
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
+        }
+        AlgorithmSpec::AutoRouter { signals, pool } => {
+            let pool = build_pool_context(route_name, pool, targets)?;
+            let task = signals.task.as_ref().map(|task| TaskSignalSettings {
+                classifier: TaskClassifierConfig {
+                    judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
+                        base_threshold: task.threshold,
+                        contract: classifier_contract(task.prompt.as_deref())
+                            .with_response_format_type(task.response_format_type),
+                        max_output_tokens: task.max_output_tokens,
+                        ..LlmCapabilityConfig::default()
+                    }),
+                    recent_turn_window: task.recent_turn_window,
+                    ..TaskClassifierConfig::default()
+                },
+                trigger: task.trigger,
+            });
+            let tool_loop = signals
+                .tool_loop
+                .as_ref()
+                .filter(|tool| tool.enabled)
+                .map(|tool| ToolLoopSignalConfig {
+                    confidence_threshold: tool.confidence,
+                    recent_window: tool.recent_turn_window,
+                    tool_semantics: tool.tool_semantics.clone(),
+                });
+            let review = signals
+                .review
+                .as_ref()
+                .map(|review| -> AlgorithmResult<_> {
+                    let mut gate = AdvisorGateConfig {
+                        max_reviews: review.max_reviews,
+                        confirmations: review.confirmations,
+                        fail_open: review.fail_open,
+                        ..AdvisorGateConfig::default()
+                    };
+                    if let Some(prompt) = &review.reviewer_system_prompt {
+                        gate.reviewer_system_prompt = prompt.clone();
+                    }
+                    Ok(PoolReviewConfig {
+                        judge: resolve_target_model_id(route_name, &review.judge, targets)?,
+                        gate,
+                    })
+                })
+                .transpose()?;
+            Ok(Arc::new(
+                AutoRouter::new(AutoRouterConfig {
+                    pool,
+                    task,
+                    tool_loop,
+                    review,
+                })
+                .map_err(|error| {
+                    AlgorithmConfigError::with_source(
+                        format!("auto route {route_name}: {error}"),
+                        error,
+                    )
+                })?,
+            ))
         }
         AlgorithmSpec::Advisor {
             reviewer_system_prompt,
@@ -2234,6 +2454,40 @@ fn resolve_runtime_models(
         .collect()
 }
 
+fn build_pool_context(
+    route_name: &str,
+    pool: &PoolSpec,
+    targets: &BTreeMap<String, ModelId>,
+) -> AlgorithmResult<PoolContext> {
+    let models = pool
+        .models
+        .iter()
+        .map(|model| {
+            let target = resolve_target_model_id(route_name, &model.target, targets)?;
+            let provides = model
+                .provides
+                .iter()
+                .map(|tag| {
+                    tag.parse::<Category>().map_err(|error| {
+                        AlgorithmConfigError::new(format!(
+                            "auto route {route_name}: pool model {} has an invalid capability {tag:?}: {error}",
+                            model.target
+                        ))
+                    })
+                })
+                .collect::<AlgorithmResult<Vec<_>>>()?;
+            Ok(PoolModel { target, provides })
+        })
+        .collect::<AlgorithmResult<Vec<_>>>()?;
+    let default = pool.default.parse::<Category>().map_err(|error| {
+        AlgorithmConfigError::new(format!(
+            "auto route {route_name}: pool default {:?} is invalid: {error}",
+            pool.default
+        ))
+    })?;
+    Ok(PoolContext { models, default })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2321,6 +2575,7 @@ mod tests {
         let stage = AlgorithmSpec::Auto {
             capable_target: "private".into(),
             efficient_target: "public".into(),
+            signals: None,
         };
         assert!(stage.restricted_to(&BTreeSet::from(["private"])).is_err());
     }

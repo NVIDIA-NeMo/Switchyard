@@ -11,6 +11,7 @@ pub use core::algorithm::{
 };
 pub use core::classifier::{Classification, Classifier, Score};
 pub use core::outcome_metadata::{JudgeDecision, OutcomeMetadata};
+pub use core::pool::{PoolContext, PoolModel, select};
 pub use core::processor::{Event, Processor};
 pub use core::state::{State, StateValue};
 
@@ -19,6 +20,10 @@ pub use error::{DriverError, LibsyError, Result};
 
 mod algorithms;
 pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
+pub use algorithms::auto::{
+    AutoRouter, AutoRouterConfig, PoolReviewConfig, TaskSignalSettings, TaskSignalTrigger,
+    ToolLoopSignalConfig,
+};
 pub use algorithms::composite::{CompositeJudgeConfig, CompositeRouter, CompositeRouterConfig};
 pub use algorithms::infra::InfraPolicy;
 pub use algorithms::llm_class::{

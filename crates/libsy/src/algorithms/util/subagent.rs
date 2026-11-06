@@ -134,8 +134,10 @@ impl Classifier for SubagentOverride {
             Classification::Scores(if is_delegated_work {
                 vec![Score {
                     confidence: 1.0,
-                    target: self.worker.clone(),
-                    category: None,
+                    // `worker` names a configured target, not a category, so it is
+                    // pinned.
+                    needs: Vec::new(),
+                    pin: Some(self.worker.clone()),
                 }]
             } else {
                 Vec::new()
@@ -167,7 +169,7 @@ mod tests {
         let classification = SubagentOverride::new("worker")
             .score(&mut state, &mut request(headers), &empty_driver())
             .await?;
-        Ok(classification.0.argmax(false)?.map(|score| score.target))
+        Ok(classification.0.argmax(false)?.and_then(|score| score.pin))
     }
 
     #[tokio::test]

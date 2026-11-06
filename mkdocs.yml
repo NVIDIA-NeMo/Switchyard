@@ -31,6 +31,8 @@ nav:
   - Routing:
       - Algorithms:
           - Overview: routing_algorithms/overview.md
+          - Unified Auto: routing_algorithms/auto_routing.md
+          - Model Pool: routing_algorithms/pool.md
           - Task (LLM Classifier): routing_algorithms/llm_classifier_routing.md
           - Execution (Stage Router): routing_algorithms/stage_router_routing.md
           - Sub-Agent-Aware Routing: routing_algorithms/subagent_routing.md

@@ -27,7 +27,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
-use crate::core::algorithm::{self, Algorithm, AnswerSummary, Driver};
+use crate::core::algorithm::{Algorithm, AnswerSummary, Driver};
 use crate::core::classifier::{Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::core::state::State;
@@ -148,22 +148,24 @@ impl FallThrough {
             }
         };
 
-        tracing::info!(algorithm=self.name, target=%score.target, confidence=score.confidence, "Model selected");
-
         // A classifier that already called a model — because deciding required one, and that
         // call also answers the turn — hands its response back here, so the turn is not paid
         // for twice.
         // Nothing reads it on the way out: streamed or buffered, it reaches the caller
         // untouched.
-        let target = score.target;
+        let target = resolve_target(&score, &driver)?;
         match served {
             Some(response) => Ok(RoutingOutcome::answered(target, request, response)),
             None => {
-                // The rest of the category the decision came from leads: those are the
+                // The rest of the categories the decision named lead: those are the
                 // alternatives to the model the classifier picked, in the order it ranked
                 // them. Every other runtime target follows as a last resort, so a route
                 // whose category holds one model still fails over to the other tier.
-                let chosen = driver.models_for(score.category.as_ref().unwrap_or(&Category::Any));
+                let chosen: Vec<ModelId> = score
+                    .needs
+                    .iter()
+                    .flat_map(|need| driver.models_for(need).iter().cloned())
+                    .collect();
                 let mut fallback_models: Vec<ModelId> = Vec::new();
                 for candidate in chosen.iter().chain(driver.models_for(&Category::Any)) {
                     if *candidate != target && !fallback_models.contains(candidate) {
@@ -247,9 +249,9 @@ impl FallThrough {
             });
         };
 
-        // 3. Resolve the target.
-        algorithm::ensure_model_is_target(driver.models_for(&Category::Any), &score.target)?;
-        let target = score.target.clone();
+        // 3. Resolve the target and log the choice.
+        let target = resolve_target(&score, driver)?;
+        tracing::info!(algorithm=self.name, target=%target, confidence=score.confidence, "Model selected");
 
         // 4. Post-decision replay: every processor sees the selection so stateful ones
         //    can bind it, and may rewrite the outbound request (e.g. add a target prompt).
@@ -257,7 +259,7 @@ impl FallThrough {
             let event = Event::Decision {
                 request,
                 selected_model_id: &target,
-                category: score.category.clone(),
+                category: score.needs.first().cloned(),
                 driver,
             };
             processor.process(state, event).await?;
@@ -297,6 +299,33 @@ fn session_id(request: &Request) -> Option<String> {
         .as_deref()
         .filter(|id| !id.is_empty())
         .map(str::to_string)
+}
+
+/// Resolves a winning score's needs to one concrete, runtime-available model.
+///
+/// Tries each capability in order. Literal model pins are resolved separately
+/// so a model ID cannot be mistaken for a capability with the same name.
+fn resolve_target(score: &Score, driver: &Driver) -> Result<ModelId> {
+    let available = driver.models_for(&Category::Any);
+    // A pinned model is named outright, so it is never looked up as a capability: a
+    // deployment may define a group whose name happens to match another model's id.
+    if let Some(target) = &score.pin {
+        return available
+            .iter()
+            .find(|model| *model == target)
+            .cloned()
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: format!("pinned model {target} is not a runtime target"),
+            });
+    }
+    score
+        .needs
+        .iter()
+        .find_map(|need| driver.models_for(need).first().cloned())
+        .filter(|target| available.contains(target))
+        .ok_or_else(|| LibsyError::AlgorithmError {
+            message: format!("no runtime model available for needs {:?}", score.needs),
+        })
 }
 
 #[async_trait]
@@ -383,27 +412,16 @@ mod tests {
             _driver: &Driver,
         ) -> Result<(Classification, Option<Response>)> {
             Ok((
-                Classification::Scores(
-                    self.0
-                        .iter()
-                        .map(|s| Score {
-                            confidence: s.confidence,
-                            target: s.target.clone(),
-                            category: None,
-                        })
-                        .collect(),
-                ),
+                Classification::Scores(self.0.iter().map(Clone::clone).collect()),
                 None,
             ))
         }
     }
 
+    /// A score that pins `target` by literal model id, the shape a test fixture's
+    /// "fixed" classifier wants.
     fn score(target: &str, confidence: f64) -> Score {
-        Score {
-            confidence,
-            target: ModelId::from(target),
-            category: None,
-        }
+        Score::pinned(ModelId::from(target), confidence)
     }
 
     fn fixed(scores: Vec<Score>) -> Arc<dyn Classifier> {
@@ -598,6 +616,27 @@ mod tests {
             }
         }
         Err(test_error("expected a Done step"))
+    }
+
+    /// A capability tag is a group a deployment names; a pin is a model. The two may
+    /// share a name, so a pinned score must resolve to the model, never to the group
+    /// that happens to be called the same thing.
+    #[tokio::test]
+    async fn a_pin_resolves_to_the_model_not_a_group_of_the_same_name() -> Result<()> {
+        let router = Arc::new(FallThrough::new().with_classifier(fixed(vec![score("mid", 0.9)])));
+        let models: HashMap<Category, Vec<ModelId>> = [
+            (
+                Category::Any,
+                vec![ModelId::from("mid"), ModelId::from("other")],
+            ),
+            // a group named after a different model
+            (Category::Named("mid".into()), vec![ModelId::from("other")]),
+        ]
+        .into();
+
+        let (selected, _) = test_drive_with_models(router, request(), models, echo()).await?;
+        assert_eq!(selected, "mid");
+        Ok(())
     }
 
     #[tokio::test]
@@ -918,5 +957,36 @@ mod tests {
         let states = states.lock();
         assert!(states.contains_key("session-1"));
         assert!(!states.contains_key("session-2"));
+    }
+
+    #[tokio::test]
+    async fn affinity_preserves_same_category_fallback_priority() -> Result<()> {
+        use crate::core::algorithm::RuntimeModels;
+        let affinity = Arc::new(crate::algorithms::util::affinity::AffinityRouter::new());
+        let router = Arc::new(
+            FallThrough::new()
+                .with_processor(affinity.clone())
+                .with_classifier(affinity)
+                .with_classifier(fixed(vec![Score::needing(vec![Category::Efficient], 1.0)])),
+        );
+        let models = Arc::new(RuntimeModels::new(
+            [
+                (Category::Any, target_set(&["strong", "fast-1", "fast-2"])),
+                (Category::Efficient, target_set(&["fast-1", "fast-2"])),
+            ]
+            .into(),
+        ));
+        for turn in 1..=2 {
+            let outcome = crate::drive(router.clone(), request(), models.clone(), |_| async {
+                unreachable!("this router makes no judge calls")
+            })
+            .await?;
+            assert_eq!(
+                outcome.selected_model_ids,
+                target_set(&["fast-1", "fast-2", "strong"]),
+                "turn {turn} must keep the selected category's alternate ahead of other tiers"
+            );
+        }
+        Ok(())
     }
 }

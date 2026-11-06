@@ -42,12 +42,12 @@ struct TierSetter {
 }
 
 impl TierSetter {
-    fn tier_for(category: Option<Category>) -> Option<Tier> {
-        match category {
-            Some(Category::Capable) => Some(Tier::Capable),
-            Some(Category::Efficient) => Some(Tier::Efficient),
+    fn tier_for(needs: &[Category]) -> Option<Tier> {
+        needs.iter().find_map(|need| match need {
+            Category::Capable => Some(Tier::Capable),
+            Category::Efficient => Some(Tier::Efficient),
             _ => None,
-        }
+        })
     }
 
     /// Two requests for one identity can both pass this and both judge, since a
@@ -91,7 +91,7 @@ impl Processor for TierSetter {
         if self.is_due(identity.as_ref(), state, request) {
             let (classification, _) = self.judge.score(state, request, driver).await?;
             if let Some(winner) = classification.argmax(false)?
-                && let Some(tier) = Self::tier_for(winner.category)
+                && let Some(tier) = Self::tier_for(&winner.needs)
             {
                 set_fall_open(state, tier);
                 if let Some(identity) = identity {

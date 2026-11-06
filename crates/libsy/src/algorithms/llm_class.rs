@@ -283,14 +283,36 @@ impl JudgePolicy for TaskClassifierPolicy {
         };
         // The chosen category may have no models configured. That is ambiguous, not an
         // error, so the surrounding router applies its configured fallback.
-        let Some(target) = driver.models_for(&category).first().cloned() else {
+        if driver.models_for(&category).is_empty() {
+            return Ok(Classification::Ambiguous(vec![]));
+        }
+        Ok(Classification::Scores(vec![Score {
+            needs: vec![category],
+            pin: None,
+            confidence: 1.0,
+        }]))
+    }
+}
+
+/// Leaves the solve estimate intact for the shared selector.
+struct TaskSignalPolicy(TaskClassifierPolicy);
+
+impl JudgePolicy for TaskSignalPolicy {
+    type Verdict = TaskClassifierVerdict;
+
+    fn to_classification(
+        &self,
+        verdict: Option<&Self::Verdict>,
+        _driver: &Driver,
+    ) -> Result<Classification> {
+        let Some(verdict) = verdict.filter(|v| v.is_valid() && self.0.threshold(v).is_some())
+        else {
             return Ok(Classification::Ambiguous(vec![]));
         };
-        Ok(Classification::Scores(vec![Score {
-            target,
-            confidence: 1.0,
-            category: Some(category),
-        }]))
+        Ok(Classification::Scores(vec![Score::needing(
+            vec![Category::Efficient],
+            verdict.p_solve,
+        )]))
     }
 }
 
@@ -664,13 +686,15 @@ impl Classifier for DefaultCategoryClassifier {
         _request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
-        let target = driver.first_model_for(&self.0)?;
+        // Errors if the category has no runtime model — the fallback closing the
+        // cascade must have somewhere to land.
+        driver.first_model_for(&self.0)?;
         driver.set_evidence_if_empty(serde_json::json!({"source": "fall_open"}));
         Ok((
             Classification::Scores(vec![Score {
-                target: target.clone(),
+                needs: vec![self.0.clone()],
+                pin: None,
                 confidence: 0.0,
-                category: Some(self.0.clone()),
             }]),
             None,
         ))
@@ -738,6 +762,32 @@ impl LlmTaskClassifier {
                 config,
             } => Self::build_direct(default_target, config),
         }
+    }
+
+    /// Builds the unthresholded judge face for a shared pool route.
+    pub(crate) fn probability_signal(config: TaskClassifierConfig) -> Result<Arc<dyn Classifier>> {
+        config.validate()?;
+        let CapabilityJudgeConfig::Llm(judge) = config.judge else {
+            return Err(LibsyError::AlgorithmError {
+                message: "task signals require an LLM probability judge".into(),
+            });
+        };
+        Ok(Arc::new(
+            JudgeClassifier::new(
+                StructuredJudge::new(
+                    TaskInput {
+                        recent_turn_window: config.recent_turn_window,
+                    },
+                    Self::load_capability_contract(&judge.contract)?,
+                    SerdeDecoder::new(),
+                    JudgeRuntimeConfig::new(judge.max_output_tokens)?
+                        .with_deadline_ms(judge.judge_deadline_ms)?,
+                ),
+                TaskSignalPolicy(TaskClassifierPolicy::new(&judge)),
+            )
+            .with_error_recovery(config.fail_open)
+            .with_evidence(|policy, verdict| capability_evidence(&policy.0, verdict)),
+        ))
     }
 
     fn build_capability(config: TaskClassifierConfig) -> Result<Self> {
@@ -956,6 +1006,25 @@ mod tests {
         }
     }
 
+    #[test]
+    fn pool_signal_preserves_probability_without_resolving_a_model() -> Result<()> {
+        let policy = TaskSignalPolicy(TaskClassifierPolicy::new(&llm_config(0.9)));
+        let verdict = TaskClassifierVerdict {
+            crux: "bounded task".into(),
+            primary_rule: "SUP-1".into(),
+            capability_boundary: "supported".into(),
+            p_solve: 0.83,
+        };
+        let score = policy
+            .to_classification(Some(&verdict), &crate::core::testing::empty_driver())?
+            .argmax(false)?
+            .unwrap();
+        assert_eq!(score.confidence, 0.83);
+        assert_eq!(score.needs, [Category::Efficient]);
+        assert!(score.pin.is_none());
+        Ok(())
+    }
+
     fn policy() -> TaskClassifierPolicy {
         TaskClassifierPolicy::new(&llm_config(TEST_THRESHOLD))
     }
@@ -994,13 +1063,20 @@ mod tests {
         policy: &TaskClassifierPolicy,
         verdict: Option<&TaskClassifierVerdict>,
     ) -> Result<ModelId> {
-        policy
-            .to_classification(verdict, &policy_driver())?
+        let driver = policy_driver();
+        let score = policy
+            .to_classification(verdict, &driver)?
             .argmax(false)?
-            .map(|score| score.target)
             .ok_or_else(|| LibsyError::AlgorithmError {
                 message: "policy abstained".to_string(),
-            })
+            })?;
+        let category = score
+            .needs
+            .first()
+            .ok_or_else(|| LibsyError::AlgorithmError {
+                message: "policy named no need".to_string(),
+            })?;
+        Ok(driver.first_model_for(category)?.clone())
     }
 
     /// Records what each target received; answers the judge with a supported verdict and

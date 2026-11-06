@@ -18,9 +18,10 @@ use switchyard_llm_client::{
     OpenAiDecisionClient, ResponsesReasoningPolicy, SystemOneClient, TranslatingLlmClient,
 };
 use switchyard_protocol::{
-    LlmClientError, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat,
+    Category, LlmClientError, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat,
 };
 
+use crate::algorithm::PoolSpec;
 use crate::algorithm_factory::AlgorithmAndModels;
 use crate::eligibility::{EligibilityPolicy, validate_labels};
 use crate::route::ExecutionLane;
@@ -101,9 +102,7 @@ pub struct TargetModel {
 /// This function lists each route's targets without building clients or reading credentials.
 /// It returns the same parse error the server reports for a config that does not match the schema.
 pub fn route_targets(source: &str) -> Result<Vec<RouteTargets>, RunnerError> {
-    let config: DeploymentConfig = toml::from_str(source).map_err(|error| {
-        RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
-    })?;
+    let config = AlgorithmFactory::from_toml(source)?.config;
     config.check_schema_version()?;
     Ok(config
         .routes
@@ -153,6 +152,9 @@ pub(crate) struct DeploymentConfig {
     #[serde(default)]
     decision_targets: BTreeMap<String, DecisionTargetConfig>,
     routes: BTreeMap<String, RouteConfig>,
+    /// Shared model catalog for `auto` routes' `[routes.*.signals]`.
+    #[serde(default)]
+    pool: Option<PoolSpec>,
 }
 
 #[derive(Debug)]
@@ -189,6 +191,7 @@ enum RequirementScope {
 struct TargetPromptPolicy {
     prompts: HashMap<ModelId, String>,
     routing_answer_target: Option<ModelId>,
+    routing_answer_targets: Vec<ModelId>,
 }
 
 // Algorithms keep their role names; calls use the selected target's name.
@@ -463,12 +466,103 @@ impl DeploymentConfig {
         })
     }
 
+    /// Validates `[pool]`: every model names a configured target, every
+    /// capability tag parses, and `default` is actually provided by a model.
+    fn validate_pool(&self, pool: &PoolSpec) -> RunnerResult<()> {
+        if pool.models.is_empty() {
+            return Err(RunnerError::configuration(
+                "[pool] must declare at least one model".to_string(),
+            ));
+        }
+        for model in &pool.models {
+            validate_value("pool model target", &model.target)?;
+            self.targets.get(&model.target).ok_or_else(|| {
+                RunnerError::configuration(format!(
+                    "[pool] references unknown target {}",
+                    model.target
+                ))
+            })?;
+            if model.provides.is_empty() {
+                return Err(RunnerError::configuration(format!(
+                    "[pool] model {} must provide at least one capability",
+                    model.target
+                )));
+            }
+            for tag in &model.provides {
+                tag.parse::<Category>().map_err(|error| {
+                    RunnerError::configuration(format!(
+                        "[pool] model {} has an invalid capability {tag:?}: {error}",
+                        model.target
+                    ))
+                })?;
+            }
+        }
+        let default_category = pool.default.parse::<Category>().map_err(|error| {
+            RunnerError::configuration(format!(
+                "[pool] default {:?} is invalid: {error}",
+                pool.default
+            ))
+        })?;
+        let has_default_provider = pool.models.iter().any(|model| {
+            model
+                .provides
+                .iter()
+                .any(|tag| tag.parse::<Category>().as_ref() == Ok(&default_category))
+        });
+        if !has_default_provider {
+            return Err(RunnerError::configuration(format!(
+                "[pool] default {:?} is not provided by any pool model",
+                pool.default
+            )));
+        }
+        Ok(())
+    }
+
+    /// Binds the shared catalog before either execution path inspects route targets.
+    pub(crate) fn bind_pool(&mut self) {
+        for route in self.routes.values_mut() {
+            if let AlgorithmSpec::Auto {
+                capable_target,
+                efficient_target,
+                signals,
+            } = &mut route.algorithm
+                && capable_target.is_empty()
+                && efficient_target.is_empty()
+            {
+                let signals = signals
+                    .take()
+                    .unwrap_or_else(|| Box::new(crate::algorithm::SignalsConfig::default()));
+                route.algorithm = AlgorithmSpec::AutoRouter {
+                    signals,
+                    pool: self.pool.clone().unwrap_or_default(),
+                };
+            }
+        }
+    }
+
     /// Checks route identity and target references without constructing clients.
     pub(crate) fn validate(&self) -> RunnerResult<()> {
         self.check_schema_version()?;
+        if let Some(pool) = &self.pool {
+            self.validate_pool(pool)?;
+        }
 
         let mut route_names_by_id = HashMap::new();
         for (route_name, config) in &self.routes {
+            if let AlgorithmSpec::Auto {
+                signals: Some(_), ..
+            } = &config.algorithm
+            {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name}: use [pool] with signals; remove capable_target and efficient_target"
+                )));
+            }
+            if matches!(&config.algorithm, AlgorithmSpec::AutoRouter { .. }) && self.pool.is_none()
+            {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} requires a top-level [pool] because it uses type = \"auto\""
+                )));
+            }
             validate_value("route name", route_name)?;
             validate_value(&format!("route {route_name} id"), &config.id)?;
             if let Some(first_route_name) =
@@ -1019,6 +1113,7 @@ impl DeploymentConfig {
         let TargetPromptPolicy {
             prompts,
             routing_answer_target,
+            routing_answer_targets,
         } = self.build_route_target_prompts(route_name, route, targets)?;
         let mut by_model = HashMap::new();
         let mut caller_auth = None;
@@ -1088,6 +1183,7 @@ impl DeploymentConfig {
             routing_answer_target,
             &completion_targets,
         )
+        .with_routing_answer_targets(routing_answer_targets)
         .without_rate_limit_fallback(
             route
                 .routing_target_names()
@@ -1121,7 +1217,30 @@ impl DeploymentConfig {
         let mut policy = TargetPromptPolicy {
             prompts,
             routing_answer_target: None,
+            routing_answer_targets: Vec::new(),
         };
+        if let AlgorithmSpec::AutoRouter { signals, .. } = route
+            && signals.review.is_some()
+        {
+            let judges = route.judge_target_names();
+            for name in route.routing_target_names() {
+                let target = &targets[name];
+                if policy.prompts.contains_key(target.name) {
+                    if judges
+                        .iter()
+                        .any(|judge| targets.get(*judge).is_some_and(|j| j.name == target.name))
+                    {
+                        return Err(RunnerError::configuration(format!(
+                            "route {route_name} cannot apply system_prompt to target {name}: it is also the routing-only target"
+                        )));
+                    }
+                    policy
+                        .routing_answer_targets
+                        .push(ModelId::from(target.name));
+                }
+            }
+            return Ok(policy);
+        }
         let Some((response_name, dependency_name)) = route.routing_response_and_dependency() else {
             return Ok(policy);
         };

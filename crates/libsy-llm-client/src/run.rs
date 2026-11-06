@@ -710,6 +710,7 @@ fn conversation_id(fields: &serde_json::Map<String, Value>) -> Option<&str> {
 pub struct ClientRouter {
     inner: Arc<ClientRouting>,
     rate_limit_fallback_disabled: Arc<HashSet<ModelId>>,
+    routing_answer_targets: Arc<HashSet<ModelId>>,
 }
 
 struct ClientRouting {
@@ -797,6 +798,7 @@ impl ClientRouter {
             .is_some_and(|first| clients.any(|client| !Arc::ptr_eq(first, client)));
         Self {
             rate_limit_fallback_disabled: Arc::default(),
+            routing_answer_targets: Arc::default(),
             inner: Arc::new(ClientRouting {
                 routing: Routing::ByModel(by_model),
                 decision_clients,
@@ -824,6 +826,7 @@ impl ClientRouter {
     ) -> Self {
         Self {
             rate_limit_fallback_disabled: Arc::default(),
+            routing_answer_targets: Arc::default(),
             inner: Arc::new(ClientRouting {
                 routing: Routing::Single(client),
                 decision_clients,
@@ -833,6 +836,15 @@ impl ClientRouter {
                 track_provider_state: false,
             }),
         }
+    }
+
+    /// Applies answer prompts to these routing-time candidates, such as pool-selected executors.
+    pub fn with_routing_answer_targets(
+        mut self,
+        targets: impl IntoIterator<Item = ModelId>,
+    ) -> Self {
+        self.routing_answer_targets = Arc::new(targets.into_iter().collect());
+        self
     }
 
     /// Stop completion fallback on HTTP 429 for the given models.
@@ -1108,7 +1120,9 @@ impl ClientRouter {
 
     /// Prepare a routing call, adding a target prompt only when it generates a candidate answer.
     fn prepare_routing_request(&self, mut request: Request, target: &ModelId) -> Request {
-        let prompt = if self.inner.routing_answer_target.as_ref() == Some(target) {
+        let prompt = if self.inner.routing_answer_target.as_ref() == Some(target)
+            || self.routing_answer_targets.contains(target)
+        {
             self.inner.target_prompts.get(target).map(String::as_str)
         } else {
             None

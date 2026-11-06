@@ -26,6 +26,7 @@ impl AlgorithmFactory {
             RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
         })?;
         config.infer_decision_judges();
+        config.bind_pool();
         Ok(Self { config })
     }
 

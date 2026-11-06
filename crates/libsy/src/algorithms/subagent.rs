@@ -155,7 +155,7 @@ mod tests {
             &self,
             _state: &mut State,
             _request: &mut Request,
-            driver: &Driver,
+            _driver: &Driver,
         ) -> crate::Result<(Classification, Option<Response>)> {
             let category = match self.calls.fetch_add(1, Ordering::Relaxed) {
                 0 => Some(Category::Capable),
@@ -165,8 +165,8 @@ mod tests {
             let scores = match category {
                 Some(category) => vec![Score {
                     confidence: 1.0,
-                    target: driver.first_model_for(&category)?.clone(),
-                    category: Some(category),
+                    needs: vec![category],
+                    pin: None,
                 }],
                 None => Vec::new(),
             };
