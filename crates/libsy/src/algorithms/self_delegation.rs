@@ -11,6 +11,7 @@
 //! carries the decision and the executed step together. Nothing else is parsed or rewritten.
 //! Without a capable target (collection mode) nothing is delegated: a reply is kept when it
 //! carries a route line and a step, the shape the exporter accepts, and asked again otherwise.
+//! An optional reminder is appended to each teacher request there and kept out of the trace.
 //!
 //! Both upstream calls ask for buffered replies. The answer is converted to a stream when the
 //! client asked for one. With `trace_jsonl` set, one JSON object per decision is appended for
@@ -29,7 +30,7 @@ use switchyard_protocol::{
     AggLlmResponse, Category, ContentBlock, LlmRequest, LlmResponse, Metadata, ModelId, Request,
     Response, ResponseOutput, Role, StopReason, Usage, WireFormat,
 };
-use switchyard_translation::encode_request;
+use switchyard_translation::{append_note, encode_request};
 
 use crate::core::algorithm::{Algorithm, Driver, RoutingOutcome};
 use crate::{LibsyError, Result};
@@ -98,6 +99,9 @@ pub struct SelfDelegationConfig {
     pub on_invalid: OnInvalid,
     /// Policy for a failed student call.
     pub on_student_error: StudentErrorAction,
+    /// Collection mode only: a reminder appended to each teacher request as its last user
+    /// message. The trace never records it.
+    pub collection_note: Option<String>,
     /// Append one JSON object per decision to this file.
     pub trace_jsonl: Option<PathBuf>,
 }
@@ -109,6 +113,7 @@ impl Default for SelfDelegationConfig {
             lenient_cloud: true,
             on_invalid: OnInvalid::default(),
             on_student_error: StudentErrorAction::Error,
+            collection_note: None,
             trace_jsonl: None,
         }
     }
@@ -677,9 +682,15 @@ impl Algorithm for SelfDelegation {
         // without them is a wasted trajectory, so it is asked again like an invalid one.
         let collecting = capable.is_none();
         let mut collection_label = None;
+        // The teacher sees the reminder as the last user message. The trace records
+        // `upstream`, which never carries it, so the student is never trained on it.
+        let mut student_request = upstream.clone();
+        if collecting && let Some(note) = &self.config.collection_note {
+            append_note(&mut student_request.llm_request, note);
+        }
         for _ in 0..=self.config.on_invalid.retry {
             let started = Instant::now();
-            match call_buffered(&driver, upstream.clone(), &efficient).await {
+            match call_buffered(&driver, student_request.clone(), &efficient).await {
                 Ok(buffered) => {
                     let (text, tool_calls) = text_and_tools(&buffered.agg);
                     let class = classify(&text, tool_calls.len(), self.config.lenient_cloud);

@@ -523,6 +523,10 @@ pub enum AlgorithmSpec {
         /// What to do when the student call fails.
         #[serde(default)]
         on_student_error: StudentErrorAction,
+        /// Collection mode only: a reminder appended to each teacher request as its last
+        /// user message, kept out of the trace. Rejected together with `capable_target`.
+        #[serde(default)]
+        collection_note: Option<String>,
     },
     Vgr {
         #[serde(flatten)]
@@ -2069,10 +2073,17 @@ fn build_algorithm(
             lenient_cloud,
             on_invalid,
             on_student_error,
+            collection_note,
         } => {
             resolve_target_model_id(route_name, efficient_target, targets)?;
             if let Some(capable_target) = capable_target {
                 resolve_target_model_id(route_name, capable_target, targets)?;
+                // The reminder exists for the teacher; a student must never see it.
+                if collection_note.is_some() {
+                    return Err(AlgorithmConfigError::new(format!(
+                        "self_delegation route {route_name}: collection_note is only used without capable_target"
+                    )));
+                }
             } else {
                 // Without a capable target there is nothing to escalate to, so the policy
                 // would silently serve instead; reject it at load.
@@ -2092,6 +2103,7 @@ fn build_algorithm(
                 lenient_cloud: *lenient_cloud,
                 on_invalid: *on_invalid,
                 on_student_error: *on_student_error,
+                collection_note: collection_note.clone(),
                 trace_jsonl: trace_jsonl.clone(),
             })))
         }
@@ -2483,9 +2495,16 @@ mod tests {
         spec.build("edgewise", &self_delegation_targets())?;
 
         // Collection mode has no capable tier; an evaluation arm may name one target twice.
-        let collect: AlgorithmSpec =
-            toml::from_str("type = \"self_delegation\"\nefficient_target = \"student\"")
-                .expect("collection route parses");
+        let collect: AlgorithmSpec = toml::from_str(
+            "type = \"self_delegation\"\nefficient_target = \"student\"\n\
+             collection_note = \"Begin with the route line.\"",
+        )
+        .expect("collection route parses");
+        assert!(matches!(
+            &collect,
+            AlgorithmSpec::SelfDelegation { collection_note: Some(note), .. }
+                if note == "Begin with the route line."
+        ));
         assert_eq!(collect.routing_target_names(), ["student"]);
         let (_, models) =
             collect.build_with_runtime_models("edgewise", &self_delegation_targets())?;
@@ -2509,6 +2528,23 @@ mod tests {
             [ModelId::from("student")]
         );
         Ok(())
+    }
+
+    #[test]
+    fn self_delegation_rejects_a_collection_note_with_a_capable_target() {
+        let spec: AlgorithmSpec = toml::from_str(
+            "type = \"self_delegation\"\nefficient_target = \"student\"\n\
+             capable_target = \"strong\"\ncollection_note = \"Begin with the route line.\"",
+        )
+        .expect("route parses");
+        let error = match spec.build("edgewise", &self_delegation_targets()) {
+            Ok(_) => panic!("collection_note must be rejected with capable_target"),
+            Err(error) => error.to_string(),
+        };
+        assert!(
+            error.contains("collection_note is only used without capable_target"),
+            "{error}"
+        );
     }
 
     #[test]

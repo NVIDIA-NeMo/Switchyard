@@ -109,6 +109,7 @@ trace_jsonl = "/var/tmp/edgewise-serve-trace.jsonl"
 | `on_invalid.retry` | `1` | How many times a reply is asked again, with the same request: an invalid reply at serving, or a reply without a route line or without a step in collection mode. |
 | `on_invalid.action` | `"serve"` | `serve` the last invalid reply as it came, or `escalate` to the capable model. `escalate` needs `capable_target`. |
 | `on_student_error` | `"error"` | `error` returns a failed student call to the client; `escalate` calls the capable model instead. `escalate` needs `capable_target`. |
+| `collection_note` | unset | Collection mode only. Text appended to each teacher request as its last user message, as a per-reply reminder of the route line. Never recorded in the trace. Rejected together with `capable_target`. |
 
 Both targets answer requests, so neither is a judge-only target. A
 `system_prompt` on `efficient_target` is prepended to the student call, because
@@ -143,6 +144,7 @@ id = "switchyard/edgewise-collect"
 type = "self_delegation"
 efficient_target = "teacher"
 trace_jsonl = "/var/tmp/edgewise-collect-trace.jsonl"
+collection_note = "Reminder for this reply: your visible reply must begin with exactly {\"route\":\"local\"} or exactly {\"route\":\"cloud\"} on its own first line, before any text or tool call, then continue the task as usual."
 ```
 
 In collection mode nothing is delegated, so the teacher must put its step after
@@ -154,6 +156,15 @@ the check, for example a tool call with empty content, is asked again up to
 export tooling drops it. The trace records the check as `collection_valid` on
 every attempt, and `decision` carries the teacher's label (`local` or `cloud`)
 or `invalid`.
+
+A teacher tends to follow the rubric on the first decision of a session and to
+drop the route line on later turns, when the rubric at the top of the system
+prompt is far from the point of generation. In a first live collection most
+invalid replies were later turns with a tool call and empty content, or text
+without the route line. `collection_note` appends a short reminder to every
+teacher request as its last user message. The reminder is added after the
+request has been captured for the trace, so the recorded request never
+contains it and the student is never trained on it.
 
 The teacher follows the rubric more often at a lower temperature. The CLIs send
 none, so the example collection file sets one on the teacher target with

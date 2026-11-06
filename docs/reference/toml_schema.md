@@ -657,6 +657,7 @@ reply is asked again unless it carries a route line and a step. See
 | `on_invalid.retry` | No | `1` | Times a reply is asked again with the same request: an invalid reply at serving, or a reply without a route line or without a step in collection mode. |
 | `on_invalid.action` | No | `serve` | `serve` the last invalid reply, or `escalate` to the capable target. `escalate` without `capable_target` is rejected at load. |
 | `on_student_error` | No | `error` | `error` returns a failed efficient call to the client; `escalate` calls the capable target instead. `escalate` without `capable_target` is rejected at load. |
+| `collection_note` | No | unset | Collection mode only: text appended to each efficient-target request as its last user message, a per-reply reminder to start with the route line for a teacher that drops it on later turns. The trace never records it. Rejected at load when `capable_target` is set. |
 
 ## Validation Errors
 

@@ -31,3 +31,5 @@ id = "switchyard/edgewise-collect"
 type = "self_delegation"
 efficient_target = "teacher"
 trace_jsonl = "/var/tmp/edgewise-collect-trace.jsonl"
+# Appended to each teacher request as its last user message; never recorded in the trace.
+collection_note = "Reminder for this reply: your visible reply must begin with exactly {\"route\":\"local\"} or exactly {\"route\":\"cloud\"} on its own first line, before any text or tool call, then continue the task as usual."

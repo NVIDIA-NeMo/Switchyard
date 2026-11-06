@@ -2600,6 +2600,7 @@ id = "switchyard/edgewise-collect"
 type = "self_delegation"
 efficient_target = "teacher"
 trace_jsonl = "/var/tmp/edgewise-trace.jsonl"
+collection_note = "Begin with the route line."
 
 [routes.edgewise_self]
 id = "switchyard/edgewise-self"

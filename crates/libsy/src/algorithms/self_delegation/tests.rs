@@ -720,6 +720,88 @@ async fn collection_mode_accepts_a_cloud_labelled_step() -> Result<()> {
     Ok(())
 }
 
+const NOTE: &str = "Reminder for this reply: begin with the route line.";
+
+#[tokio::test]
+async fn collection_note_reaches_the_teacher_but_not_the_trace() -> Result<()> {
+    let trace = TraceFile::new("collect_note");
+    let config = SelfDelegationConfig {
+        collection_note: Some(NOTE.to_string()),
+        ..trace.config()
+    };
+    // The first reply fails the collection profile, so the retry must carry the note too.
+    let fake = Fake::new(vec![Ok(reply("", 1)), Ok(reply(LOCAL_LINE, 1))], vec![]);
+    let mut request = request();
+    request.llm_request.preservation.requests.insert(
+        "openai_chat".into(),
+        json!({
+            "model": "switchyard/edgewise",
+            "messages": [{"role": "user", "content": "fix the parser"}],
+            "stream": true,
+        }),
+    );
+
+    let (selected, agg) = drive(config, request, models(false), &fake).await?;
+
+    assert_eq!(selected, STUDENT);
+    assert_eq!(completion_text(&agg), LOCAL_LINE);
+    {
+        let calls = fake.calls.lock();
+        assert_eq!(calls.len(), 2);
+        for (_, call) in calls.iter() {
+            let last = call.llm_request.messages.last().expect("a message");
+            assert_eq!(last.role, Role::User);
+            assert_eq!(last.text_content("\n").as_deref(), Some(NOTE));
+            assert_eq!(call.llm_request.messages.len(), 2);
+            assert_eq!(call.llm_request.temporary_note_count, 1);
+            assert!(!call.llm_request.stream);
+            // The preserved same-format body carries the note and still no stream flag.
+            let body = call
+                .llm_request
+                .preservation
+                .requests
+                .values()
+                .next()
+                .expect("preserved body");
+            assert!(body.to_string().contains(NOTE));
+            assert!(body.get("stream").is_none());
+        }
+    }
+    let record = trace.record();
+    assert!(
+        !record["request"].to_string().contains(NOTE),
+        "the trace must not hold the note: {}",
+        record["request"]
+    );
+    assert_eq!(record["request"]["model"], STUDENT);
+    assert_eq!(record["decision"], "local");
+    Ok(())
+}
+
+#[tokio::test]
+async fn serving_mode_never_appends_the_collection_note() -> Result<()> {
+    let config = SelfDelegationConfig {
+        collection_note: Some(NOTE.to_string()),
+        ..SelfDelegationConfig::default()
+    };
+    let fake = Fake::new(
+        vec![Ok(reply(CLOUD_SENTINEL, 0))],
+        vec![Ok(reply("Editing.", 1))],
+    );
+
+    let (selected, _) = drive(config, request(), models(true), &fake).await?;
+
+    assert_eq!(selected, STRONG);
+    let neutral = request();
+    let calls = fake.calls.lock();
+    assert_eq!(calls.len(), 2);
+    for (_, call) in calls.iter() {
+        assert_eq!(call.llm_request.messages, neutral.llm_request.messages);
+        assert_eq!(call.llm_request.temporary_note_count, 0);
+    }
+    Ok(())
+}
+
 #[tokio::test]
 async fn escalation_policies_need_a_capable_target() -> Result<()> {
     let config = SelfDelegationConfig {
