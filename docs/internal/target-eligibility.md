@@ -51,8 +51,9 @@ capable = ["approved_capable"]
   supplied requirements, including an empty collection.
 - `require_explicit_requirements` defaults to `false`. When `true`, every request
   needs a collection; an explicitly empty one counts.
-- `scope` is `"request"`, the default and only supported value. Requirements
-  cover this request and its internal model calls.
+- `scope` defaults to `"request"`. Requirements cover this request and its
+  internal model calls. `"task"` also retains labels under the host-authorized
+  `request.metadata.task_id`.
 - `target_alternatives` maps configured target names to ordered alternatives;
   default `{}`. Keys name targets, not router roles. Alternatives must preserve
   target kind.
@@ -85,16 +86,33 @@ let output = route.execute(request, None).await?;
 ```
 
 An empty collection means the host assessed the request and found no requirements.
-Omitting the helper supplies no assessment. With the default optional policy,
-both allow normal routing. With `require_explicit_requirements = true`, omission
-is rejected. Labels accumulate within one request but are not retained across
-requests, even when they carry the same task ID.
+Omitting the helper supplies no assessment. With request scope and the default
+optional policy, both allow normal routing. With
+`require_explicit_requirements = true`, omission is rejected. With request scope,
+labels accumulate within one request but are not retained across requests, even
+when they carry the same task ID.
+
+## Task requirements
+
+Set `scope = "task"` to retain requirements across requests. Every request needs
+a trusted `request.metadata.task_id`: a nonempty string of at most 512 bytes,
+without surrounding whitespace. The host must authorize task ownership.
+
+Labels only accumulate for the same task ID; different IDs are independent.
+For example, a task requiring `private` that later adds `customer_data` requires
+both from then on. Missing or empty requirements do not remove retained labels.
+If the combined requirements cannot be served, the request fails and the labels
+remain retained.
+
+State is in memory and belongs to one route instance. There is no reset, expiry,
+replication, restart persistence or revocation. Overlapping in-flight requests
+keep the requirements under which they were admitted.
 
 ## Execution
 
 ```mermaid
 flowchart TD
-    H["Trusted host: request + required labels"] --> A["Runner checks requirements"]
+    H["Trusted host: request + required labels"] --> A["Runner checks requirements and adds retained task labels"]
     A --> P["Resolve eligible roles; filter configured pools"]
     P -->|"no valid setup"| E["Error: no provider call"]
     P --> R["Existing routing algorithm"]
@@ -107,8 +125,10 @@ targets. Each setup keeps its algorithm, clients, model groups and auxiliary
 targets together. Required judges, typed decisions, answer fallbacks and auxiliary
 calls must qualify. Provider codecs keep their existing translation role.
 
-A route caches at most 128 additional model setups. Requirements contain at most
-64 labels of 128 bytes each. Limits fail closed; routing state is not evicted.
+A route retains at most 4,096 restricted tasks and caches at most 128 additional
+model setups. Requirements contain at most 64 labels of 128 bytes each, including
+the combined labels retained for a task. Limits fail closed; requirements are not
+cleared and routing state is not evicted.
 Provider-held Responses continuation state and forwarded caller authentication
 are rejected on eligibility routes.
 

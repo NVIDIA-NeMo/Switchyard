@@ -488,13 +488,13 @@ mod tests {
     }
 
     #[test]
-    fn infra_spillover_stays_within_request_requirements() {
+    fn infra_rechecks_task_requirements_and_spills_only_to_approved_models() {
         let algorithm = "type = 'llm_classifier'\nclassifier_target = 'judge'\n\
             strong_target = 'capable'\nweak_target = 'fast'\nbase_threshold = 0.5";
         let source = format!(
             "{}\n[routes.test.infra]\nmax_signal_age_ms = 1000\n\
              min_waiting_requests = 4\nmax_capable_inflight = 2\n",
-            config(algorithm)
+            config(algorithm).replace("scope = 'request'", "scope = 'task'")
         );
         let runner = Runner::from_toml(&source).expect("eligible queue policy");
         let route = runner.route("route").expect("route");
@@ -521,8 +521,13 @@ mod tests {
         })
         .collect();
 
-        let mut stale =
-            RoutingOutcome::route_to("fast".into(), vec![], request("request", &["private"]));
+        let mut stale = RoutingOutcome::route_to("fast".into(), vec![], request("task", &[]));
+        route
+            .select_lane(&request("task", &["private"]))
+            .expect("retain private");
+        route
+            .select_lane(&request("task", &["customer_data"]))
+            .expect("accumulate requirements");
         let error = route
             .apply_infra(&mut stale, &signals)
             .expect_err("stale decision");
@@ -531,12 +536,11 @@ mod tests {
             "{error}"
         );
 
-        for (labels, initial, expected) in [
-            (&[] as &[&str], "fast", "capable"),
-            (&["private"], "approved_fast", "approved_capable"),
+        for (task, initial, expected) in [
+            ("other", "fast", "capable"),
+            ("task", "approved_fast", "approved_capable"),
         ] {
-            let mut outcome =
-                RoutingOutcome::route_to(initial.into(), vec![], request("request", labels));
+            let mut outcome = RoutingOutcome::route_to(initial.into(), vec![], request(task, &[]));
             assert!(
                 route
                     .apply_infra(&mut outcome, &signals)

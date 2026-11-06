@@ -183,6 +183,7 @@ struct TargetEligibilityConfig {
 enum RequirementScope {
     #[default]
     Request,
+    Task,
 }
 
 struct TargetPromptPolicy {
@@ -661,11 +662,10 @@ impl DeploymentConfig {
             let mut route = Route::from_lane(standard, caller_auth, capabilities, route_targets)
                 .with_infra(config.infra.clone());
             if let Some(eligibility) = &config.eligibility {
-                let policy = match eligibility.scope {
-                    RequirementScope::Request => {
-                        EligibilityPolicy::new(eligibility.require_explicit_requirements)
-                    }
-                };
+                let policy = EligibilityPolicy::new(
+                    eligibility.require_explicit_requirements,
+                    matches!(eligibility.scope, RequirementScope::Task),
+                );
                 route = route.with_eligibility(
                     policy,
                     EligibleLanes {
@@ -2016,8 +2016,8 @@ secondary = ["approved_secondary"]
                 "unknown field `require_explicit_requirement`",
             ),
             (
-                format!("{configured}\nscope = 'task'\n"),
-                "unknown variant `task`",
+                format!("{configured}\nscope = 'tenant'\n"),
+                "unknown variant `tenant`",
             ),
         ] {
             let message = error_message(&invalid);
