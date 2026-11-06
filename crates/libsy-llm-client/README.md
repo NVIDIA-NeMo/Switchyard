@@ -241,7 +241,9 @@ fn build_multi_format_client(
 
 - The `Backend` variant sets auth: OpenAI formats send `Authorization: Bearer <key>`;
   Anthropic sends `x-api-key: <key>` plus `anthropic-version`.
-- By default, only `x-request-id` from `request.metadata.http_headers` is forwarded.
+- By default, only `x-request-id` and `x-litellm-session-id` from
+  `request.metadata.http_headers` are forwarded. LiteLLM uses `x-litellm-session-id`
+  to keep a conversation on one prompt cache.
   With `forward_auth`, application headers are forwarded, while connection, destination,
   body, and the selected provider's owned headers are removed or rebuilt.
 - `HttpBackendConfig::forward_auth` uses the caller's credential instead of the
