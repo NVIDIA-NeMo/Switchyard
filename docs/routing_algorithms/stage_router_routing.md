@@ -134,6 +134,53 @@ Both pickers read the same signals; only the default tier differs.
     [Reachable scores per picker](#reachable-scores-per-picker) for what a
     threshold can and cannot do with each picker.
 
+## Optional balanced tier
+
+Add `balanced_target` to route moderate recovery to a middle model:
+
+```toml
+[routes.coding]
+id = "coding"
+type = "stage_router"
+efficient_target = "fast"
+balanced_target = "middle"
+capable_target = "strong"
+picker = "efficient_first"
+confidence_threshold = 0.20
+capable_score_threshold = 0.55
+balanced_hold_turns = 3
+```
+
+The three targets must already exist under `[targets.*]`. Without
+`balanced_target`, the route has two tiers and behaves as before.
+
+With it, decisive positive tool scores below `capable_score_threshold` select
+balanced. Scores at or above the threshold select capable. Hard overrides
+select capable. Negative scores select efficient. The default threshold is
+`0.55`. It must be in `[0, 1]` and above `confidence_threshold`.
+
+`balanced_hold_turns` keeps balanced for that many requests that would
+otherwise use efficient. The default is `0`, so the next request can drop to
+efficient. `-1` keeps balanced until a capable decision. Each balanced decision
+renews the hold. Signals still run during this hold, so a capable decision
+takes effect at once and clears it. Held requests skip the classifier, as other
+holds do. Like the other holds, a new user turn does not clear it.
+
+These settings work alongside `capable_hold_turns`, `efficient_hold_turns`,
+`classifier`, and `handoff_notes`. Those keep their meaning. They apply to the
+capable and efficient tiers. Use the balanced target's own `system_prompt` for
+instructions specific to that model. Model-call failures can fall back to the
+other configured targets. All three targets must satisfy the request's target
+requirements.
+
+For Rust callers, set `StageRouterConfig.capable_score_threshold = Some(0.55)`
+and `balanced_hold_turns`, and supply the middle model in the runtime
+`Category::Named("balanced".into())` group and `Category::Any`. The default
+`None` keeps two-tier routing.
+
+The balanced tier uses the existing tool scorer and adds no judge calls. Its
+threshold has not been calibrated by a model benchmark.
+
 ## Tuning `confidence_threshold`
 
 The tool-signal scorer gives each turn a signed score in `(-1, 1)`: negative
@@ -249,6 +296,9 @@ required columns.
 | `efficient_target` | required | Efficient tier. |
 | `picker` | required | `efficient_first` or `capable_first` (experimental). Tier used when the signals are not confident. |
 | `confidence_threshold` | required | Corroboration a decisive pick needs, `0` to `1`. Alias `efficient_first_threshold`. |
+| `balanced_target` | unset | Middle tier for moderate positive tool scores. |
+| `capable_score_threshold` | `0.55` with `balanced_target` | Confidence at which positive tool scores select capable. Above `confidence_threshold`, up to `1`. Requires `balanced_target`. |
+| `balanced_hold_turns` | `0` | Requests kept on balanced that would otherwise use efficient. Signals still run. `-1` keeps balanced until a capable decision. Requires `balanced_target`. |
 | `capable_first_threshold` | `0.0` | Used only after an outer `composite` classifier selects the capable tier. No effect on a standalone route. |
 | `capable_system_prompt` | unset | System prompt prepended for capable requests. |
 | `efficient_system_prompt` | unset | System prompt prepended for efficient requests. |
@@ -473,6 +523,7 @@ the `stage router override` log line carries it for overrides:
 | `ambiguous` | The signed score stayed inside the band. This label never reaches `/v1/stats` or the logs: the turn continues to the classifier or the picker default, and that later source is recorded. |
 | `llm-classifier` | The signals were ambiguous and the classifier returned a usable verdict. |
 | `fall_open` | The signal scorer abstained and the classifier was absent or could not decide, so the picker default was used. |
+| `balanced_hold` | `balanced_hold_turns` kept this turn on balanced instead of efficient. |
 
 ## When *not* to use stage-router
 

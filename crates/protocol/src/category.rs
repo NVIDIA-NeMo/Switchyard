@@ -18,7 +18,8 @@ pub enum Category {
     /// Models the algorithm can use to decide.
     Judge,
     /// A deployment-defined group. Only a custom classifier's policy or a direct
-    /// decision selects one, and no algorithm ascribes meaning to the name.
+    /// decision selects one. Stage routing also uses `balanced` when its optional
+    /// middle tier is configured.
     Named(Arc<str>),
 }
 
