@@ -3298,7 +3298,7 @@ counts. Plain <code>decide</code> and <code>execute</code> retain task routing. 
 </span></code></pre></div>
 <p>All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/fe0d2ec5e33be7eee3f65f92c4b4665f0e8bb4f8/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/5bde8855556c242d4a994b5d985a2d66947f7665/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
 for collection and capacity safeguards.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
@@ -4146,8 +4146,8 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 <tr>
 <td><code>classifier.fail_open</code></td>
 <td style="text-align: center;">No</td>
-<td>capability: <code>false</code>, custom: <code>true</code></td>
-<td>Capability judge errors stop the request. Set <code>true</code> to retain the last tier or default to efficient. Custom classifiers always use that fallback.</td>
+<td><code>true</code></td>
+<td>On judge failure, retain the last classified tier or default to efficient. Set <code>false</code> to return the error.</td>
 </tr>
 <tr>
 <td><code>classifier.message_hash_fallback</code></td>
