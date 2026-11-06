@@ -724,14 +724,14 @@ async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard
         })?);
     let request = Request {
         llm_request: LlmRequest {
-            messages: vec![Message {
-                role: Role::User,
-                content: vec![ContentBlock::Reasoning {
+            messages: vec![Message::new(
+                Role::User,
+                vec![ContentBlock::Reasoning {
                     text: "provider reasoning".to_string(),
                     signature: None,
                     details: Vec::new(),
                 }],
-            }],
+            )],
             ..LlmRequest::default()
         },
         raw_request: None,
@@ -1277,24 +1277,24 @@ async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Res
             model: Some("auto".to_string()),
             messages: vec![
                 Message::text(Role::User, "fix the build"),
-                Message {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::ToolCall(ToolCall {
+                Message::new(
+                    Role::Assistant,
+                    vec![ContentBlock::ToolCall(ToolCall {
                         id: "call_1".to_string(),
                         name: "Bash".to_string(),
                         arguments: json!({"command": "cargo test"}),
                     })],
-                },
-                Message {
-                    role: Role::Tool,
-                    content: vec![ContentBlock::ToolResult(ToolResult {
+                ),
+                Message::new(
+                    Role::Tool,
+                    vec![ContentBlock::ToolResult(ToolResult {
                         tool_call_id: "call_1".to_string(),
                         content: vec![ContentBlock::Text {
                             text: "fatal runtime error: out of memory".to_string(),
                         }],
                         is_error: Some(true),
                     })],
-                },
+                ),
             ],
             ..LlmRequest::default()
         },

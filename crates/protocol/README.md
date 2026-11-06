@@ -31,12 +31,12 @@ use switchyard_protocol::{ContentBlock, LlmRequest, Message, Role};
 
 let request = LlmRequest {
     model: Some("provider/model".into()),
-    messages: vec![Message {
-        role: Role::User,
-        content: vec![ContentBlock::Text {
+    messages: vec![Message::new(
+        Role::User,
+        vec![ContentBlock::Text {
             text: "Explain tail latency".into(),
         }],
-    }],
+    )],
     ..LlmRequest::default()
 };
 

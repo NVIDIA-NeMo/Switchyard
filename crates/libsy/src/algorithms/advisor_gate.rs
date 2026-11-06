@@ -390,10 +390,7 @@ impl AdvisorGate {
             .llm_request
             .instructions
             .iter()
-            .map(|block| Message {
-                role: block.role,
-                content: block.content.clone(),
-            })
+            .map(|block| Message::new(block.role, block.content.clone()))
             .chain(base.llm_request.messages.iter().cloned())
             .collect();
         let transcript = review_transcript(

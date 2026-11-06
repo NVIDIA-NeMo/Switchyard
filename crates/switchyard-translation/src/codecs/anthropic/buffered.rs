@@ -151,7 +151,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                     &mut diagnostics,
                     policy,
                 )?;
-                request.messages.push(Message { role, content });
+                request.messages.push(Message::new(role, content));
             }
         }
         request.tools = decode_anthropic_tools(body.get("tools"));

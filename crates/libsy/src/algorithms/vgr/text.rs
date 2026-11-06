@@ -78,7 +78,7 @@ pub(super) fn turns(request: &Request) -> (Vec<Turn>, bool) {
     for InstructionBlock { role, content } in &request.llm_request.instructions {
         push(*role, content);
     }
-    for Message { role, content } in &request.llm_request.messages {
+    for Message { role, content, .. } in &request.llm_request.messages {
         push(*role, content);
     }
     (flattened, unsupported)

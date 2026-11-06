@@ -48,15 +48,24 @@ pub struct Message {
     pub role: Role,
     /// Ordered message content.
     pub content: Vec<ContentBlock>,
+    /// OpenAI Responses assistant message `phase`, such as `commentary` or `final_answer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
 }
 
 impl Message {
-    /// Creates a text-only message for the given role.
-    pub fn text(role: Role, text: impl Into<String>) -> Self {
+    /// Creates a message with no `phase`.
+    pub fn new(role: Role, content: Vec<ContentBlock>) -> Self {
         Self {
             role,
-            content: vec![ContentBlock::Text { text: text.into() }],
+            content,
+            phase: None,
         }
+    }
+
+    /// Creates a text-only message for the given role.
+    pub fn text(role: Role, text: impl Into<String>) -> Self {
+        Self::new(role, vec![ContentBlock::Text { text: text.into() }])
     }
 
     /// Concatenates text-like content blocks when the message has any.

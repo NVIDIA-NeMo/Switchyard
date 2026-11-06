@@ -99,17 +99,17 @@ use switchyard_protocol::{ContentBlock, Message, Role, ToolCall, ToolResult};
 let mut request = request;
 // Describe the agent's past activity; this example does not execute bash.
 request.llm_request.messages.extend([
-    Message {
-        role: Role::Assistant,
-        content: vec![ContentBlock::ToolCall(ToolCall {
+    Message::new(
+        Role::Assistant,
+        vec![ContentBlock::ToolCall(ToolCall {
             id: "c1".into(),
             name: "bash".into(),
             arguments: r#"{"command":"cargo test"}"#.parse()?,
         })],
-    },
-    Message {
-        role: Role::User,
-        content: vec![ContentBlock::ToolResult(ToolResult {
+    ),
+    Message::new(
+        Role::User,
+        vec![ContentBlock::ToolResult(ToolResult {
             // The result refers to the tool call above by its ID.
             tool_call_id: "c1".into(),
             is_error: Some(true),
@@ -117,7 +117,7 @@ request.llm_request.messages.extend([
                 text: "MemoryError: cannot allocate memory\nKilled".into(),
             }],
         })],
-    },
+    ),
 ]);
 ```
 

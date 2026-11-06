@@ -178,14 +178,16 @@ fn task_messages(messages: &[Message]) -> Vec<Message> {
     [Some(opening_task), user_messages.next_back()]
         .into_iter()
         .flatten()
-        .map(|message| Message {
-            role: Role::User,
-            content: message
-                .content
-                .iter()
-                .filter(|block| is_task_content(block))
-                .cloned()
-                .collect(),
+        .map(|message| {
+            Message::new(
+                Role::User,
+                message
+                    .content
+                    .iter()
+                    .filter(|block| is_task_content(block))
+                    .cloned()
+                    .collect(),
+            )
         })
         .collect()
 }
@@ -1560,9 +1562,9 @@ mod tests {
             ..DecisionJudgeConfig::default()
         };
         let mut request = classify_session_request();
-        request.llm_request.messages.push(Message {
-            role: Role::Assistant,
-            content: vec![
+        request.llm_request.messages.push(Message::new(
+            Role::Assistant,
+            vec![
                 ContentBlock::Reasoning {
                     text: "private reasoning".into(),
                     signature: None,
@@ -1572,7 +1574,7 @@ mod tests {
                     text: "visible progress".into(),
                 },
             ],
-        });
+        ));
         request
             .llm_request
             .messages
@@ -2155,27 +2157,27 @@ mod tests {
     }
 
     fn tool_call(id: &str) -> Message {
-        Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
+        Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolCall(ToolCall {
                 id: id.to_string(),
                 name: "search".to_string(),
                 arguments: Value::Null,
             })],
-        }
+        )
     }
 
     fn tool_result(id: &str) -> Message {
-        Message {
-            role: Role::Tool,
-            content: vec![ContentBlock::ToolResult(ToolResult {
+        Message::new(
+            Role::Tool,
+            vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: id.to_string(),
                 content: vec![ContentBlock::Text {
                     text: "tool output".to_string(),
                 }],
                 is_error: None,
             })],
-        }
+        )
     }
 
     #[test]
@@ -2334,9 +2336,9 @@ mod tests {
         let messages = vec![
             Message::text(Role::System, "client instructions"),
             Message::text(Role::User, "initial task"),
-            Message {
-                role: Role::Assistant,
-                content: vec![
+            Message::new(
+                Role::Assistant,
+                vec![
                     ContentBlock::Reasoning {
                         text: "private chain of thought".to_string(),
                         signature: None,
@@ -2346,17 +2348,17 @@ mod tests {
                         text: "visible answer".to_string(),
                     },
                 ],
-            },
+            ),
             tool_call("call-1"),
             tool_result("call-1"),
-            Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::Reasoning {
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Reasoning {
                     text: "reasoning-only turn".to_string(),
                     signature: None,
                     details: Vec::new(),
                 }],
-            },
+            ),
             Message::text(Role::User, "follow-up"),
         ];
         let request = Request {
