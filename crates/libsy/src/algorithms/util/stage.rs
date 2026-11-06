@@ -172,6 +172,8 @@ pub enum DecisionSource {
     LlmClassifier,
     /// Nothing resolved the turn, so it landed on the picker's default tier.
     FallOpen,
+    /// Escalation retention kept this request on a stronger tier than it scored.
+    EscalationHold,
 }
 
 impl DecisionSource {
@@ -185,6 +187,7 @@ impl DecisionSource {
             Self::Ambiguous => "ambiguous",
             Self::LlmClassifier => "llm-classifier",
             Self::FallOpen => "fall_open",
+            Self::EscalationHold => "escalation_hold",
         }
     }
 }
@@ -273,11 +276,11 @@ pub fn dimensions_from_signal(signal: &ToolSignals) -> CodingAgentDimensions {
 }
 
 /// Records one stage-router decision with bounded labels.
-pub(crate) fn record_routing_decision(source: &str, target_name: &str) {
+pub(crate) fn record_routing_decision(source: DecisionSource, target_name: &str) {
     meter().u64_counter(ROUTING_DECISIONS_METRIC).build().add(
         1,
         &[
-            KeyValue::new("decision_source", source.to_string()),
+            KeyValue::new("decision_source", source.as_str()),
             KeyValue::new("target_name", target_name.to_string()),
         ],
     );
@@ -533,9 +536,10 @@ pub struct StageClassifier {
     capable_hold_turns: i64,
     efficient_hold_turns: Option<i64>,
     pub(crate) reset_on_user_turn: bool,
+    /// Compute signals from the current user turn only, on every request.
+    pub(crate) user_turn_signals: bool,
     signals: ToolSignalProcessor,
     handoff_notes: Option<HandoffNoteConfig>,
-    report_decisions: bool,
 }
 
 impl StageClassifier {
@@ -550,9 +554,9 @@ impl StageClassifier {
             capable_hold_turns: 2,
             efficient_hold_turns: None,
             reset_on_user_turn: false,
+            user_turn_signals: false,
             signals: ToolSignalProcessor::default(),
             handoff_notes: None,
-            report_decisions: true,
         }
     }
 
@@ -573,12 +577,6 @@ impl StageClassifier {
     /// Validated by the enclosing stage router.
     pub fn with_efficient_hold_turns(mut self, turns: i64) -> Self {
         self.efficient_hold_turns = Some(turns);
-        self
-    }
-
-    /// Lets the enclosing retention policy report the final selected model.
-    pub(crate) fn defer_decision_reporting(mut self) -> Self {
-        self.report_decisions = false;
         self
     }
 
@@ -610,7 +608,7 @@ impl StageClassifier {
         }
     }
 
-    fn agent_key(request: &Request, key: &str) -> String {
+    pub(crate) fn agent_key(request: &Request, key: &str) -> String {
         request
             .metadata
             .as_ref()
@@ -618,7 +616,7 @@ impl StageClassifier {
             .map_or_else(|| key.to_string(), |agent_id| format!("{key}:{agent_id}"))
     }
 
-    fn consume_hold(state: &mut State, key: &str) -> bool {
+    pub(crate) fn consume_hold(state: &mut State, key: &str) -> bool {
         // Reuse the existing state values: a true flag is an unbounded hold.
         if matches!(state.extra.get(key), Some(StateValue::Bool(true))) {
             return true;
@@ -637,7 +635,7 @@ impl StageClassifier {
         true
     }
 
-    fn set_hold(state: &mut State, key: &str, turns: i64) {
+    pub(crate) fn set_hold(state: &mut State, key: &str, turns: i64) {
         match turns {
             -1 => {
                 state.extra.insert(key.to_string(), StateValue::Bool(true));
@@ -677,7 +675,7 @@ impl Processor for StageClassifier {
                 state.tool_signals = None;
                 return Ok(());
             }
-            if self.reset_on_user_turn {
+            if self.reset_on_user_turn || self.user_turn_signals {
                 state.tool_signals = Some(self.signals.for_user_turn(request));
                 return Ok(());
             }
@@ -739,14 +737,15 @@ impl Processor for StageClassifier {
     }
 }
 
-#[async_trait]
-impl Classifier for StageClassifier {
-    async fn score(
+impl StageClassifier {
+    /// Picks the tier for this request and its source, or `None` when the signals
+    /// cannot decide. The caller reports the decision.
+    pub(crate) fn decide(
         &self,
         state: &mut State,
         request: &mut Request,
         driver: &Driver,
-    ) -> Result<(Classification, Option<switchyard_protocol::Response>)> {
+    ) -> Result<Option<(Score, DecisionSource)>> {
         let capable_hold_key = Self::agent_key(request, CAPABLE_HOLD_KEY);
         for (key, category, source) in [
             (
@@ -762,24 +761,21 @@ impl Classifier for StageClassifier {
         ] {
             if Self::consume_hold(state, &Self::agent_key(request, key)) {
                 let target = driver.first_model_for(&category)?.clone();
-                if self.report_decisions {
-                    record_routing_decision(source.as_str(), driver.provider_model(&target));
-                }
                 driver.set_evidence(serde_json::json!({"source": source.as_str()}));
-                return Ok((
-                    Classification::Scores(vec![Score {
+                return Ok(Some((
+                    Score {
                         target,
                         confidence: 1.0,
                         category: Some(category),
-                    }]),
-                    None,
-                ));
+                    },
+                    source,
+                )));
             }
         }
         let Some(signal) = state.tool_signals.clone() else {
             // No tool activity yet — nothing to score, so the signals have no
             // opinion, same as a below-threshold turn.
-            return Ok((Self::abstain(), None));
+            return Ok(None);
         };
         let (mode, threshold) = match fall_open_tier(state) {
             Some(Tier::Capable) => (PickerMode::CapableFirst, self.capable_first_threshold),
@@ -820,9 +816,6 @@ impl Classifier for StageClassifier {
                 {
                     Self::set_hold(state, &capable_hold_key, self.capable_hold_turns);
                 }
-                if self.report_decisions {
-                    record_routing_decision(source.as_str(), driver.provider_model(target));
-                }
                 if source == DecisionSource::Override
                     && let Some(reason) = override_reason(&signal)
                 {
@@ -848,17 +841,33 @@ impl Classifier for StageClassifier {
                     _ => serde_json::json!({"source": source.as_str()}),
                 };
                 driver.set_evidence(evidence);
-                Ok((
-                    Classification::Scores(vec![Score {
+                Ok(Some((
+                    Score {
                         target: target.clone(),
                         confidence: conf,
                         category: Some(category),
-                    }]),
-                    None,
-                ))
+                    },
+                    source,
+                )))
             }
-            PickOutcome::ConsultClassifier { .. } => Ok((Self::abstain(), None)),
+            PickOutcome::ConsultClassifier { .. } => Ok(None),
         }
+    }
+}
+
+#[async_trait]
+impl Classifier for StageClassifier {
+    async fn score(
+        &self,
+        state: &mut State,
+        request: &mut Request,
+        driver: &Driver,
+    ) -> Result<(Classification, Option<switchyard_protocol::Response>)> {
+        let Some((score, source)) = self.decide(state, request, driver)? else {
+            return Ok((Self::abstain(), None));
+        };
+        record_routing_decision(source, driver.provider_model(&score.target));
+        Ok((Classification::Scores(vec![score]), None))
     }
 }
 

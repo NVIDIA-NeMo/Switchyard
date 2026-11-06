@@ -113,56 +113,6 @@ above `4294967295` are rejected.
 
 ## Pickers
 
-### Optional balanced tier
-
-Add `balanced_target` to route moderate recovery to a middle model:
-
-```toml
-[routes.coding]
-id = "coding"
-type = "stage_router"
-efficient_target = "fast"
-balanced_target = "middle"
-capable_target = "strong"
-picker = "efficient_first"
-confidence_threshold = 0.20
-capable_score_threshold = 0.55
-```
-
-The three targets must already exist under `[targets.*]`. Without
-`balanced_target`, routing keeps its two-tier behavior. With it, decisive
-positive tool scores below `capable_score_threshold` select balanced. Scores
-at or above the threshold select capable. Negative scores still select
-efficient. Set `confidence_threshold` below `capable_score_threshold` to make
-the middle band reachable. The default upper threshold is `0.55`; it must be
-in `[0, 1]` and requires `balanced_target`.
-
-Hard overrides select capable. Unless `escalation_hold_turns` is set, existing holds, the optional judge, and the
-picker default keep their two-tier behavior. Balanced choices do not start
-holds or receive capable/efficient handoff notes or tier prompts. Use the
-balanced target's own `system_prompt` for instructions specific to that model.
-Model-call failures can fall back to the other configured targets. All three
-targets must satisfy the request's target requirements.
-
-Set `escalation_hold_turns = 3` to retain either balanced or capable as a
-floor for three subsequent lower-tier requests. Signals are scored on every
-request. A stronger choice takes effect immediately; the same or a higher
-choice renews the hold. A new user turn clears the hold. Retention requires an
-explicit session ID and keeps child agents separate from their parent.
-This option replaces both legacy holds, including when set to `0`, which
-keeps scoring every request and disables retention. It supports standalone
-three-tier tool-signal routes without a fallback judge or handoff notes.
-Omitting it preserves the legacy holds described above.
-
-For Rust callers, set `StageRouterConfig.capable_score_threshold = Some(0.55)`
-and supply the middle model in the runtime `Category::Named("balanced".into())`
-group and `Category::Any`. The default `None` keeps two-tier routing.
-
-This policy uses the existing tool scorer and adds no judge calls. Its middle
-threshold has not been calibrated by a model benchmark.
-
-### Default tier
-
 The picker name says which tier is the **default**: the tier used when the
 signals are ambiguous and no classifier verdict is available.
 
@@ -183,6 +133,55 @@ Both pickers read the same signals; only the default tier differs.
     are running your own calibration. See
     [Reachable scores per picker](#reachable-scores-per-picker) for what a
     threshold can and cannot do with each picker.
+
+## Optional balanced tier
+
+Add `balanced_target` to route moderate recovery to a middle model:
+
+```toml
+[routes.coding]
+id = "coding"
+type = "stage_router"
+efficient_target = "fast"
+balanced_target = "middle"
+capable_target = "strong"
+picker = "efficient_first"
+confidence_threshold = 0.20
+capable_score_threshold = 0.55
+```
+
+The three targets must already exist under `[targets.*]`. Without
+`balanced_target`, routing keeps its two-tier behavior. With it, decisive
+positive tool scores below `capable_score_threshold` select balanced. Scores
+at or above the threshold select capable. Negative scores still select
+efficient. The default upper threshold is `0.55`. It must be in `[0, 1]`, must
+be above `confidence_threshold`, and requires `balanced_target`.
+
+Hard overrides select capable. Unless `escalation_hold_turns` is set, existing holds, the optional judge, and the
+picker default keep their two-tier behavior. Balanced choices do not start
+holds or receive capable/efficient handoff notes or tier prompts. Use the
+balanced target's own `system_prompt` for instructions specific to that model.
+Model-call failures can fall back to the other configured targets. All three
+targets must satisfy the request's target requirements.
+
+Set `escalation_hold_turns = 3` to retain either balanced or capable as a
+floor for three subsequent lower-tier requests. Signals are scored on every
+request and use only tool results from the current user turn. A stronger
+choice takes effect immediately; the same or a higher choice renews the hold.
+A new user turn clears the hold. Retention requires an explicit session ID and
+keeps child agents separate from their parent.
+This option replaces both legacy holds, including when set to `0`, which
+keeps scoring every request and disables retention. A route that also sets
+`capable_hold_turns` or `efficient_hold_turns` is rejected. It supports
+standalone three-tier tool-signal routes without a fallback judge or handoff
+notes. Omitting it preserves the legacy holds described above.
+
+For Rust callers, set `StageRouterConfig.capable_score_threshold = Some(0.55)`
+and supply the middle model in the runtime `Category::Named("balanced".into())`
+group and `Category::Any`. The default `None` keeps two-tier routing.
+
+This policy uses the existing tool scorer and adds no judge calls. Its middle
+threshold has not been calibrated by a model benchmark.
 
 ## Tuning `confidence_threshold`
 
@@ -299,6 +298,9 @@ required columns.
 | `efficient_target` | required | Efficient tier. |
 | `picker` | required | `efficient_first` or `capable_first` (experimental). Tier used when the signals are not confident. |
 | `confidence_threshold` | required | Corroboration a decisive pick needs, `0` to `1`. Alias `efficient_first_threshold`. |
+| `balanced_target` | unset | Middle tier for moderate positive tool scores. |
+| `capable_score_threshold` | `0.55` with `balanced_target` | Confidence at which positive tool scores select capable. Above `confidence_threshold`, up to `1`. Requires `balanced_target`. |
+| `escalation_hold_turns` | unset | Lower-tier requests that keep balanced or capable as a floor. Cannot be set with `capable_hold_turns` or `efficient_hold_turns`. |
 | `capable_first_threshold` | `0.0` | Used only after an outer `composite` classifier selects the capable tier. No effect on a standalone route. |
 | `capable_system_prompt` | unset | System prompt prepended for capable requests. |
 | `efficient_system_prompt` | unset | System prompt prepended for efficient requests. |
@@ -523,6 +525,7 @@ the `stage router override` log line carries it for overrides:
 | `ambiguous` | The signed score stayed inside the band. This label never reaches `/v1/stats` or the logs: the turn continues to the classifier or the picker default, and that later source is recorded. |
 | `llm-classifier` | The signals were ambiguous and the classifier returned a usable verdict. |
 | `fall_open` | The signal scorer abstained and the classifier was absent or could not decide, so the picker default was used. |
+| `escalation_hold` | `escalation_hold_turns` kept this request on a stronger tier than it scored. |
 
 ## When *not* to use stage-router
 

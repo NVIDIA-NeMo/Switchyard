@@ -13,15 +13,13 @@
 //! joined in unchanged — and then to the picker's default tier, or to an
 //! override a decider ahead of stage set in its place.
 //!
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use parking_lot::Mutex;
 
 use super::fall_through::FallThrough;
 use super::llm_class::{LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
-use super::util::affinity::{ClassifyTrigger, evict_if_full, has_new_user_turn};
+use super::util::affinity::{ClassifyTrigger, has_new_user_turn};
 use super::util::stage::{
     DecisionSource, HandoffNoteConfig, PickerMode, StageClassifier, Tier, fall_open_tier,
     record_routing_decision,
@@ -32,10 +30,13 @@ use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Category, ModelId, Request, Response};
+use switchyard_protocol::{Category, Request, Response};
 
 /// Telemetry name for a router this module assembles.
 const STAGE_ROUTER: &str = "stage_router";
+/// Session state keys for the requests left on a retained tier.
+const RETAINED_CAPABLE_KEY: &str = "retained_capable";
+const RETAINED_BALANCED_KEY: &str = "retained_balanced";
 
 struct TierPromptProcessor {
     capable: Option<String>,
@@ -100,7 +101,7 @@ impl Classifier for SourceStamp {
         let (classification, served) = self.inner.score(state, request, driver).await?;
         // An abstaining classifier passes the turn on, so it is not its to claim.
         if let Some(winner) = classification.argmax(false)? {
-            record_routing_decision(self.source.as_str(), driver.provider_model(&winner.target));
+            record_routing_decision(self.source, driver.provider_model(&winner.target));
             driver.set_evidence_if_empty(serde_json::json!({
                 "source": self.source.as_str(),
             }));
@@ -119,97 +120,87 @@ struct EscalationRetention {
     inner: Arc<StageClassifier>,
     default_tier: Tier,
     turns: u32,
-    holds: Mutex<HashMap<RoutingIdentity, (ModelId, u32)>>,
 }
 
 impl EscalationRetention {
-    fn category_and_rank(target: &ModelId, driver: &Driver) -> Option<(Category, u8)> {
-        [
-            (Category::Capable, 2),
-            (Category::Named("balanced".into()), 1),
-            (Category::Efficient, 0),
-        ]
-        .into_iter()
-        .find(|(category, _)| driver.models_for(category).contains(target))
-    }
-
-    fn retain(&self, request: &Request, target: ModelId, driver: &Driver) -> ModelId {
-        if self.turns == 0 {
-            return target;
+    /// Returns the category to use for this request and updates the retained tier.
+    ///
+    /// A stronger retained tier replaces `category` and uses one retained request.
+    /// Otherwise an elevated `category` starts a new hold.
+    fn retain(&self, state: &mut State, request: &Request, category: Category) -> Category {
+        if self.turns == 0 || RoutingIdentity::from_request(request).is_none() {
+            return category;
         }
-        let Some(key) = RoutingIdentity::from_request(request) else {
-            return target;
-        };
-        let mut holds = self.holds.lock();
+        // Strongest first, so the entries before `category` are the stronger tiers.
+        let holds = [
+            (
+                Category::Capable,
+                StageClassifier::agent_key(request, RETAINED_CAPABLE_KEY),
+            ),
+            (
+                Category::Named("balanced".into()),
+                StageClassifier::agent_key(request, RETAINED_BALANCED_KEY),
+            ),
+        ];
         if has_new_user_turn(&request.llm_request.messages) {
-            holds.remove(&key);
-        }
-        let Some((_, rank)) = Self::category_and_rank(&target, driver) else {
-            holds.remove(&key);
-            return target;
-        };
-        if let Some((held, remaining)) = holds.get(&key).cloned()
-            && remaining > 0
-            && Self::category_and_rank(&held, driver).is_some_and(|(_, held_rank)| held_rank > rank)
-        {
-            if remaining == 1 {
-                holds.remove(&key);
-            } else {
-                holds.insert(key, (held.clone(), remaining - 1));
+            for (_, key) in &holds {
+                state.extra.remove(key);
             }
-            return held;
         }
-        if rank > 0 {
-            evict_if_full(&mut holds);
-            holds.insert(key, (target.clone(), self.turns));
-        } else {
-            holds.remove(&key);
+        for (held, key) in holds.iter().take_while(|(held, _)| *held != category) {
+            if StageClassifier::consume_hold(state, key) {
+                return held.clone();
+            }
         }
-        target
+        for (held, key) in &holds {
+            if *held == category {
+                StageClassifier::set_hold(state, key, i64::from(self.turns));
+            } else {
+                state.extra.remove(key);
+            }
+        }
+        category
     }
 }
 
 #[async_trait]
 impl Classifier for EscalationRetention {
+    /// Scores the request, applies the retained tier, and reports the final choice once.
     async fn score(
         &self,
         state: &mut State,
         request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
-        let (classification, served) = self.inner.score(state, request, driver).await?;
-        let mut score = match classification.argmax(false)? {
-            Some(score) => score,
+        let (mut score, mut source) = match self.inner.decide(state, request, driver)? {
+            Some(decision) => decision,
             None => {
-                driver.set_evidence(serde_json::json!({"source": "fall_open"}));
-                FallOpen {
+                driver
+                    .set_evidence(serde_json::json!({"source": DecisionSource::FallOpen.as_str()}));
+                let fall_open = FallOpen {
                     default_tier: self.default_tier,
-                }
-                .score(state, request, driver)
-                .await?
-                .0
-                .argmax(false)?
-                .expect("the picker default always selects a target")
+                };
+                let score = fall_open
+                    .score(state, request, driver)
+                    .await?
+                    .0
+                    .argmax(false)?
+                    .expect("the picker default always selects a target");
+                (score, DecisionSource::FallOpen)
             }
         };
-        let selected = self.retain(request, score.target.clone(), driver);
-        if selected != score.target {
-            score.category =
-                Self::category_and_rank(&selected, driver).map(|(category, _)| category);
-            score.target = selected;
-            score.confidence = 1.0;
-            driver.set_evidence(serde_json::json!({"source": "escalation_hold"}));
+        if let Some(category) = score.category.clone() {
+            let selected = self.retain(state, request, category.clone());
+            if selected != category {
+                score.target = driver.first_model_for(&selected)?.clone();
+                score.category = Some(selected);
+                score.confidence = 1.0;
+                source = DecisionSource::EscalationHold;
+                driver.set_evidence(serde_json::json!({"source": source.as_str()}));
+            }
         }
-        let evidence = driver.evidence();
-        record_routing_decision(
-            evidence
-                .as_ref()
-                .and_then(|value| value.get("source"))
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("fall_open"),
-            driver.provider_model(&score.target),
-        );
-        Ok((Classification::Scores(vec![score]), served))
+        record_routing_decision(source, driver.provider_model(&score.target));
+        Ok((Classification::Scores(vec![score]), None))
     }
 }
 
@@ -258,10 +249,11 @@ pub struct StageRouterConfig {
     pub confidence_threshold: f64,
     /// Positive tool scores below this confidence use the runtime `balanced`
     /// group. `None` keeps two-tier routing. Hard overrides stay capable;
-    /// holds keep their original tier.
+    /// holds keep their original tier. Must be above `confidence_threshold`.
     pub capable_score_threshold: Option<f64>,
-    /// Re-scores every turn and keeps elevated tiers as a floor for this many
-    /// lower-tier requests. Replaces legacy holds; `Some(0)` disables retention.
+    /// Re-scores every request from the current user turn and keeps elevated
+    /// tiers as a floor for this many lower-tier requests. Replaces legacy holds;
+    /// `Some(0)` disables retention.
     pub escalation_hold_turns: Option<u32>,
     /// Threshold after an outer classifier selects capable-first. Defaults to `0.0`.
     pub capable_first_threshold: f64,
@@ -397,6 +389,14 @@ pub(crate) fn build_stage_route(
             message: "capable_score_threshold must be between 0 and 1".to_string(),
         });
     }
+    if config
+        .capable_score_threshold
+        .is_some_and(|threshold| threshold <= config.confidence_threshold)
+    {
+        return Err(LibsyError::AlgorithmError {
+            message: "capable_score_threshold must be above confidence_threshold, or the balanced tier is never selected".to_string(),
+        });
+    }
     for (name, turns) in [
         ("capable_hold_turns", Some(config.capable_hold_turns)),
         ("efficient_hold_turns", config.efficient_hold_turns),
@@ -418,9 +418,7 @@ pub(crate) fn build_stage_route(
         .with_capable_first_threshold(config.capable_first_threshold)
         .with_capable_hold_turns(config.capable_hold_turns);
     classifier.capable_score_threshold = config.capable_score_threshold;
-    if config.escalation_hold_turns.is_some() {
-        classifier = classifier.defer_decision_reporting();
-    }
+    classifier.user_turn_signals = config.escalation_hold_turns.is_some();
     classifier.reset_on_user_turn = reset_on_user_turn;
     if let Some(turns) = config.efficient_hold_turns {
         classifier = classifier.with_efficient_hold_turns(turns);
@@ -441,7 +439,6 @@ pub(crate) fn build_stage_route(
             inner: classifier,
             default_tier,
             turns,
-            holds: Mutex::default(),
         }));
     } else {
         router = router.with_classifier(classifier);
@@ -621,6 +618,15 @@ mod tests {
     fn rejects_an_invalid_capable_score_threshold() {
         for threshold in [-0.1, 1.1, f64::NAN, f64::INFINITY] {
             let mut config = config();
+            config.capable_score_threshold = Some(threshold);
+            assert!(StageRouter::new(config).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_an_unreachable_balanced_tier() {
+        for threshold in [0.1, 0.2] {
+            let mut config = StageRouterConfig::new(PickerMode::EfficientFirst, 0.2);
             config.capable_score_threshold = Some(threshold);
             assert!(StageRouter::new(config).is_err());
         }
@@ -1217,6 +1223,22 @@ mod tests {
         assert_eq!(
             retention_sequence(3, vec![retention_request('B'), new_user]).await?,
             ["middle", "weak"]
+        );
+        // Errors from before the new user turn must not start a new hold, on
+        // the first request of that turn or on later ones.
+        let mut next_turn = retention_request('B');
+        next_turn
+            .llm_request
+            .messages
+            .push(Message::text(Role::User, "new task"));
+        let mut later_in_turn = next_turn.clone();
+        later_in_turn
+            .llm_request
+            .messages
+            .extend(turn_request(false).llm_request.messages.split_off(1));
+        assert_eq!(
+            retention_sequence(3, vec![retention_request('B'), next_turn, later_in_turn]).await?,
+            ["middle", "weak", "weak"]
         );
         let requests = "BEE"
             .chars()

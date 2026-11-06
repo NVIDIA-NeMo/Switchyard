@@ -1909,6 +1909,14 @@ fn build_algorithm(
                     "capable_score_threshold requires balanced_target",
                 ));
             }
+            if escalation_hold_turns.is_some()
+                && (settings.capable_hold_turns.is_some()
+                    || settings.efficient_hold_turns.is_some())
+            {
+                return Err(AlgorithmConfigError::new(
+                    "escalation_hold_turns cannot be combined with capable_hold_turns or efficient_hold_turns",
+                ));
+            }
             config.capable_score_threshold = balanced_target
                 .as_ref()
                 .map(|_| capable_score_threshold.unwrap_or(0.55));

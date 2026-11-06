@@ -2870,6 +2870,21 @@ classify_trigger"#,
             "picker = \"capable_first\"\ncapable_score_threshold = 0.55",
         );
         assert!(error_message(&no_target).contains("requires balanced_target"));
+        let unreachable =
+            balanced.replace("confidence_threshold = 0.0", "confidence_threshold = 0.6");
+        assert!(error_message(&unreachable).contains("above confidence_threshold"));
+        for conflict in [
+            balanced.replace(
+                "balanced_target = \"classifier\"",
+                "balanced_target = \"classifier\"\nescalation_hold_turns = 3",
+            ),
+            balanced.replace(
+                "efficient_hold_turns = -1",
+                "escalation_hold_turns = 3\ncapable_hold_turns = 2",
+            ),
+        ] {
+            assert!(error_message(&conflict).contains("cannot be combined"));
+        }
         Ok(())
     }
 
