@@ -56,6 +56,22 @@ func (backend *nativeBackend) close() {
 	}
 }
 
+func (backend *nativeBackend) targetModels() (map[string]TargetModel, error) {
+	backend.mu.RLock()
+	defer backend.mu.RUnlock()
+	if backend.ptr == nil {
+		return nil, errors.New("Switchyard router is closed")
+	}
+	var output *C.char
+	if err := nativeError(C.sy_router_target_models(backend.ptr, &output)); err != nil {
+		return nil, err
+	}
+	defer C.sy_string_free(output)
+	var models map[string]TargetModel
+	err := json.Unmarshal([]byte(C.GoString(output)), &models)
+	return models, err
+}
+
 func (backend *nativeBackend) newRun(input Input) (*C.SyRun, error) {
 	data, err := json.Marshal(input)
 	if err != nil {
