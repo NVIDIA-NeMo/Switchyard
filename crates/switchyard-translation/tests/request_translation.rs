@@ -8,9 +8,9 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    ContentBlock, FormatId, LossyConversionPolicy, Message, Role, TranslationEngine,
-    TranslationError, TranslationPolicy, WireFormat, prepare_request_for_target,
-    sanitize_anthropic_tool_use_id,
+    ContentBlock, FormatId, ImageSource, InstructionBlock, LlmRequest, LossyConversionPolicy,
+    Message, Role, TranslationEngine, TranslationError, TranslationPolicy, WireFormat,
+    prepare_request_for_target, sanitize_anthropic_tool_use_id,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
@@ -2126,6 +2126,62 @@ fn responses_rebuild_preserves_inline_instructions() -> TestResult {
             .body,
         expected
     );
+    Ok(())
+}
+
+// Anthropic `system` is text only, so non-text instruction content is lossy.
+#[test]
+fn anthropic_reports_dropped_instruction_content() -> TestResult {
+    let engine = TranslationEngine::default();
+    let image = ContentBlock::Image {
+        source: ImageSource::Url {
+            url: "https://example.test/layout.png".into(),
+            detail: None,
+        },
+    };
+    let text = ContentBlock::Text {
+        text: "Match this layout.".into(),
+    };
+    let mut top_level = LlmRequest {
+        messages: vec![Message::text(Role::User, "Hi")],
+        ..LlmRequest::default()
+    };
+    let mut inline = top_level.clone();
+    top_level.instructions.push(InstructionBlock {
+        role: Role::System,
+        content: vec![text.clone(), image.clone()],
+    });
+    inline.messages.push(Message {
+        role: Role::Developer,
+        content: vec![text, image],
+    });
+
+    let strict = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..TranslationPolicy::default()
+    };
+    for (request, location) in [
+        (top_level, "system instruction 0"),
+        (inline, "developer message 1"),
+    ] {
+        let allowed = engine.encode_request(
+            WireFormat::AnthropicMessages,
+            &request,
+            &TranslationPolicy::default(),
+        )?;
+        assert_eq!(allowed.body["system"], "Match this layout.");
+        assert!(
+            allowed.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "lossy_conversion" && diagnostic.message.contains(location)
+            }),
+            "{location}: {:?}",
+            allowed.diagnostics
+        );
+        assert!(matches!(
+            engine.encode_request(WireFormat::AnthropicMessages, &request, &strict),
+            Err(TranslationError::LossyConversion(_))
+        ));
+    }
     Ok(())
 }
 

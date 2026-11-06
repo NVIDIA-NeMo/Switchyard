@@ -241,6 +241,34 @@ impl FormatCodec for AnthropicMessagesCodec {
         if !system_text.is_empty() {
             body.insert("system".to_string(), Value::String(system_text));
         }
+        // Anthropic `system` is a text field, so other instruction content is dropped.
+        let instructions = request
+            .instructions
+            .iter()
+            .enumerate()
+            .map(|(index, block)| (block.role, &block.content, "instruction", index));
+        let inline = request
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, message)| matches!(message.role, Role::System | Role::Developer))
+            .map(|(index, message)| (message.role, &message.content, "message", index));
+        for (role, content, kind, index) in instructions.chain(inline) {
+            for block in content {
+                if !matches!(
+                    block,
+                    ContentBlock::Text { .. } | ContentBlock::Refusal { .. }
+                ) {
+                    push_lossy(
+                        &mut diagnostics,
+                        policy,
+                        format!(
+                            "Anthropic system prompt accepts only text; dropped non-text content from {role} {kind} {index}"
+                        ),
+                    )?;
+                }
+            }
+        }
 
         body.insert(
             "messages".to_string(),
