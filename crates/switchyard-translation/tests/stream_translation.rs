@@ -153,6 +153,14 @@ fn preserved_same_format_events_replay_unknown_fields_exactly() -> TestResult {
             }),
         ),
         (
+            WireFormat::OpenAiResponses,
+            json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": {"type": "compaction", "id": "cmp_1", "encrypted_content": "opaque"}
+            }),
+        ),
+        (
             WireFormat::AnthropicMessages,
             json!({
                 "type": "content_block_delta",
@@ -199,6 +207,39 @@ fn preserved_same_format_replay_stops_after_an_error() -> TestResult {
             json!({"type": "response.output_text.delta", "delta": "before"}),
             json!({"type": "error", "message": "boom"}),
         ]
+    );
+    Ok(())
+}
+
+// A finished item that contradicts text that was already streamed reaches a same-format client
+// as an error event in its place. Before, the contradicting event was replayed and the stream
+// ended with no error event.
+#[test]
+fn preserved_same_format_snapshot_conflict_replays_as_an_error() -> TestResult {
+    let format = WireFormat::OpenAiResponses;
+    let events = [
+        json!({"type": "response.output_text.delta", "output_index": 0, "content_index": 0, "delta": "Hello"}),
+        json!({"type": "response.output_item.done", "output_index": 0, "item": {"type": "message",
+            "role": "assistant", "content": [{"type": "output_text", "text": "Goodbye"}]}}),
+    ];
+    let engine = TranslationEngine::default();
+    let mut decode_state = StreamTranslationState::new(format, format);
+    let mut encode_state = StreamTranslationState::new(format, format);
+    let mut replayed = Vec::new();
+    for event in events {
+        let preserved = engine.decode_stream_event(&mut decode_state, format, event)?;
+        replayed.extend(engine.encode_stream_event(&mut encode_state, format, preserved)?);
+    }
+
+    let types: Vec<_> = replayed.iter().map(|event| &event["type"]).collect();
+    assert_eq!(
+        types,
+        [&json!("response.output_text.delta"), &json!("error")],
+        "{replayed:?}"
+    );
+    assert_eq!(
+        replayed[1]["message"],
+        "Responses snapshot conflicts with streamed content"
     );
     Ok(())
 }
@@ -544,6 +585,63 @@ fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResu
             "index": 0,
             "delta": {"type": "text_delta", "text": "Hi"}
         })
+    );
+    Ok(())
+}
+
+// Verifies Chat Completions refusal deltas remain visible and terminate as refusals.
+#[test]
+fn openai_chat_refusal_stream_translates_to_anthropic() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let refusal = json!({
+        "id": "chatcmpl-refusal",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "delta": {"refusal": "I cannot help with that request."},
+            "finish_reason": null
+        }]
+    });
+
+    let mut events = engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &refusal,
+    )?;
+    let text_delta = events
+        .iter()
+        .find(|event| event["type"] == "content_block_delta")
+        .ok_or("missing refusal text delta")?;
+    assert_eq!(
+        text_delta["delta"]["text"],
+        "I cannot help with that request."
+    );
+
+    let terminal = json!({
+        "id": "chatcmpl-refusal",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+    });
+    events.extend(engine.translate_event(
+        &mut state,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &terminal,
+    )?);
+    events.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
+    let message_delta = events
+        .iter()
+        .find(|event| event["type"] == "message_delta")
+        .ok_or("missing Anthropic terminal delta")?;
+    assert_eq!(message_delta["delta"]["stop_reason"], "refusal");
+    assert_eq!(
+        message_delta["delta"]["stop_details"],
+        json!({"type": "refusal", "category": null, "explanation": null})
     );
     Ok(())
 }
@@ -2486,12 +2584,14 @@ fn anthropic_context_window_stop_streams_as_token_limit() -> TestResult {
 // Verifies a streamed response.incomplete from a Responses upstream reaches a Chat client.
 #[test]
 fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
+    // A token-limited response must retain final accounting as well as the length stop reason.
     let engine = TranslationEngine::default();
     let mut state =
         StreamTranslationState::new(WireFormat::OpenAiResponses, WireFormat::OpenAiChat);
     let incomplete = json!({
         "type": "response.incomplete",
-        "response": {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"}}
+        "response": {"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"},
+            "usage":{"input_tokens":12000,"input_tokens_details":{"cached_tokens":4000,"cache_write_tokens":7000},"output_tokens":16,"total_tokens":12016,"cost":0.01515}}
     });
 
     let mut events = engine.translate_event(
@@ -2502,10 +2602,21 @@ fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
     )?;
     events.extend(engine.finish_stream(&mut state, WireFormat::OpenAiChat)?);
 
-    let Some(terminal) = events.last() else {
+    let Some(terminal) = events
+        .iter()
+        .find(|event| event["choices"][0]["finish_reason"] == "length")
+    else {
         return Err("finish should emit a terminal Chat chunk".into());
     };
     assert_eq!(terminal["choices"][0]["finish_reason"], "length");
+    let usage = events
+        .iter()
+        .find_map(|event| event.get("usage"))
+        .ok_or("missing terminal usage")?;
+    assert_eq!(usage["prompt_tokens"], 12000);
+    assert_eq!(usage["prompt_tokens_details"]["cached_tokens"], 4000);
+    assert_eq!(usage["prompt_tokens_details"]["cache_write_tokens"], 7000);
+    assert_eq!(usage["cost"], 0.01515);
     Ok(())
 }
 
@@ -3478,7 +3589,7 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
         )?;
         assert!(matches!(
             decoded.normalized().last(),
-            Some(LlmResponseChunk::StreamError { .. })
+            Some(LlmResponseChunk::DecodeError { .. })
         ));
         assert!(
             !decoded
@@ -3486,6 +3597,68 @@ fn responses_terminal_snapshots_recover_missing_output_once() -> TestResult {
                 .iter()
                 .any(|chunk| matches!(chunk, LlmResponseChunk::MessageStop { .. }))
         );
+    }
+    Ok(())
+}
+
+// LiteLLM in front of Bedrock streams a freeform call as function-style argument deltas that
+// spell `{"content": ...}`. OpenAI streams it with custom input deltas. Both must decode,
+// without a conflict, to one call whose only arguments are the finished input.
+#[test]
+fn responses_custom_tool_calls_decode_from_the_finished_item() -> TestResult {
+    let engine = TranslationEngine::default();
+    let source = WireFormat::OpenAiResponses;
+    let done = json!({"type": "custom_tool_call", "id": "ctc_1", "call_id": "call_1", "name": "exec", "input": "ls"});
+    let added = json!({"type": "response.output_item.added", "output_index": 1,
+        "item": {"type": "custom_tool_call", "id": "ctc_1", "call_id": "call_1", "name": "exec", "input": ""}});
+    let item_done =
+        json!({"type": "response.output_item.done", "output_index": 1, "item": done.clone()});
+    let completed = json!({"type": "response.completed", "response": {"id": "resp_1", "status": "completed",
+        "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": ""}]}, done]}});
+    let litellm = vec![
+        added.clone(),
+        json!({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": "{\"content\": "}),
+        json!({"type": "response.function_call_arguments.delta", "output_index": 1, "delta": "\"ls\"}"}),
+        json!({"type": "response.function_call_arguments.done", "output_index": 1, "arguments": "{\"content\": \"ls\"}"}),
+        item_done.clone(),
+        completed.clone(),
+    ];
+    let openai = vec![
+        added,
+        json!({"type": "response.custom_tool_call_input.delta", "output_index": 1, "delta": "ls"}),
+        json!({"type": "response.custom_tool_call_input.done", "output_index": 1, "input": "ls"}),
+        item_done,
+        completed,
+    ];
+    for (shape, events) in [("litellm", litellm), ("openai", openai)] {
+        let mut state = StreamTranslationState::new(source, WireFormat::OpenAiChat);
+        let mut chunks = Vec::new();
+        for event in events {
+            chunks.extend(
+                engine
+                    .decode_stream_event(&mut state, source, event)?
+                    .normalized()
+                    .to_vec(),
+            );
+        }
+        assert!(
+            !chunks.iter().any(|chunk| matches!(
+                chunk,
+                LlmResponseChunk::DecodeError { .. } | LlmResponseChunk::StreamError { .. }
+            )),
+            "{shape}: {chunks:?}"
+        );
+        let arguments: String = chunks
+            .iter()
+            .filter_map(|chunk| match chunk {
+                LlmResponseChunk::ToolCallDelta {
+                    arguments_delta: Some(arguments),
+                    ..
+                } => Some(arguments.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(arguments, r#"{"input":"ls"}"#, "{shape}");
     }
     Ok(())
 }

@@ -7,6 +7,7 @@ mod capabilities;
 pub mod config;
 mod metrics;
 mod observability;
+mod observed_translation;
 mod redaction;
 mod response;
 mod routing_log;
@@ -42,7 +43,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use switchyard_llm_client::{AuxiliaryOperation, RunObservation, RunObserver};
-use switchyard_protocol::{LlmClientError, Metadata, ModelId, Request, Usage};
+use switchyard_protocol::{LlmClientError, Metadata, ModelId, ProviderExtensions, Request, Usage};
 use switchyard_runner::{
     CallerAuthKind, DecisionTarget, ModelCapabilities, Route, RunOutput, Runner, RunnerError,
 };
@@ -50,7 +51,7 @@ use tokio::net::{TcpListener, TcpSocket};
 use tokio::task;
 use tracing::{Instrument, Level};
 
-use switchyard_translation::{WireFormat, decode_request, encode_aggregated_response};
+use switchyard_translation::WireFormat;
 
 use crate::response::into_http_response;
 use crate::stats::{StatsAccumulator, StatsSnapshot, prefix_probe, tracking_enabled_from_env};
@@ -139,6 +140,8 @@ struct DecisionResponse {
     selected: DecisionTargetResponse,
     fallbacks: Vec<DecisionTargetResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<libsy::OutcomeMetadata>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     response: Option<Value>,
 }
 
@@ -149,6 +152,8 @@ struct DecisionTargetResponse {
     model: ModelId,
     llm_client: DecisionLlmClientResponse,
     extra_body: BTreeMap<String, Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<String>,
 }
 
 /// Non-secret client settings needed to call a selected model.
@@ -168,6 +173,7 @@ pub struct ServerState {
     stats: StatsAccumulator,
     routing_log: Option<SharedRoutingLog>,
     track_cache_eligibility: bool,
+    model_catalog: Arc<tokio::sync::Mutex<Option<(Instant, Value)>>>,
 }
 
 #[derive(Clone)]
@@ -187,11 +193,16 @@ impl SharedRoutingLog {
     fn append(
         &self,
         context: routing_log::RoutingLogContext,
+        target: &str,
         model: &str,
         tier: Option<&str>,
         usage: &Usage,
     ) {
-        if let Err(error) = self.writer.lock().append(context, model, tier, usage) {
+        if let Err(error) = self
+            .writer
+            .lock()
+            .append(context, target, model, tier, usage)
+        {
             tracing::warn!(path = %self.path.display(), %error, "routing log append failed");
         }
     }
@@ -201,6 +212,19 @@ impl SharedRoutingLog {
         session_id: &str,
     ) -> std::io::Result<Option<routing_log::SessionStatsSnapshot>> {
         routing_log::snapshot(&self.path, session_id)
+    }
+
+    fn append_outcome(
+        &self,
+        context: &routing_log::RoutingLogContext,
+        metadata: libsy::OutcomeMetadata,
+    ) {
+        if metadata.judgments.is_empty() {
+            return;
+        }
+        if let Err(error) = self.writer.lock().append_outcome(context, metadata) {
+            tracing::warn!(path = %self.path.display(), %error, "routing outcome append failed");
+        }
     }
 }
 
@@ -225,12 +249,24 @@ impl ServerState {
             stats,
             routing_log: None,
             track_cache_eligibility: tracking_enabled_from_env(),
+            model_catalog: Arc::default(),
         })
     }
 
     /// Enables durable per-request routing records at `path`.
     pub fn with_routing_log(mut self, path: impl Into<PathBuf>) -> ServerResult<Self> {
         self.routing_log = Some(SharedRoutingLog::new(path.into())?);
+        Ok(self)
+    }
+
+    /// This method loads rates in USD per million tokens for saved routing records.
+    pub fn with_pricing_file(self, path: impl AsRef<std::path::Path>) -> ServerResult<Self> {
+        let prices = switchyard_costs::Pricing::load(path.as_ref()).map_err(ServerError::new)?;
+        let log = self
+            .routing_log
+            .as_ref()
+            .ok_or_else(|| ServerError::new("pricing requires a routing log"))?;
+        log.writer.lock().pricing = prices;
         Ok(self)
     }
 
@@ -266,10 +302,12 @@ impl ServerState {
                 base_url: target.base_url,
             },
             extra_body: target.extra_body,
+            reasoning_effort: target.reasoning_effort,
         };
         Some(DecisionResponse {
             selected: convert(description.selected),
             fallbacks: description.fallbacks.into_iter().map(convert).collect(),
+            metadata: description.metadata,
             response,
         })
     }
@@ -426,40 +464,60 @@ struct RequestStart(Instant);
 /// Routing-log marker distinguishing classifier and judge calls from answer calls.
 const CLASSIFIER_TIER: &str = "classifier";
 
-/// Maps answer-call observations to backend stats, routing calls to classifier/judge
-/// stats, and records routing overhead once the algorithm run completes.
+/// This observer updates backend stats and records classifier and judge calls.
 ///
-/// Successful classifier/judge calls are also appended to `classifier_log` when one is
-/// configured, so per-session routing snapshots account for judge token overhead. Routed
-/// calls stay off this path: the served call is logged with its terminal usage in
-/// [`usage_metrics::observe`], which would make a second append here a double count.
+/// The routing log also records failed answer calls with unknown cost. Successful
+/// answer calls are recorded by [`usage_metrics::observe`] with their terminal usage;
+/// recording them here would count each answer twice.
 fn stats_observer(
     stats: StatsAccumulator,
     classifier_log: Option<(SharedRoutingLog, routing_log::RoutingLogContext)>,
+    route: Route,
 ) -> RunObserver {
     Arc::new(move |observation| match observation {
-        RunObservation::Outcome(_) => {}
+        RunObservation::Outcome(metadata) => {
+            if let Some((log, context)) = classifier_log.as_ref() {
+                log.append_outcome(context, metadata);
+            }
+        }
         RunObservation::AnswerCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
             if call.is_success {
                 stats.record_success(&call.selected_model, latency_ms);
             } else {
+                if let Some((log, context)) = classifier_log.as_ref() {
+                    log.append(
+                        context.clone().with_reasoning_effort(
+                            route
+                                .target(&call.selected_model)
+                                .and_then(|target| target.reasoning_effort.as_deref()),
+                        ),
+                        &call.selected_model,
+                        route.provider_model(&call.selected_model),
+                        None,
+                        &Usage::default(),
+                    );
+                }
                 stats.record_error(&call.selected_model);
             }
         }
         RunObservation::LlmCall(call) | RunObservation::DecisionCall(call) => {
             let latency_ms = call.duration.as_secs_f64() * 1_000.0;
+            if let Some((log, context)) = classifier_log.as_ref() {
+                let model = route.provider_model(&call.selected_model);
+                log.append(
+                    context.clone().with_reasoning_effort(
+                        route
+                            .target(&call.selected_model)
+                            .and_then(|target| target.reasoning_effort.as_deref()),
+                    ),
+                    &call.selected_model,
+                    model,
+                    Some(CLASSIFIER_TIER),
+                    call.usage.as_ref().unwrap_or(&Usage::default()),
+                );
+            }
             if call.is_success {
-                if let (Some((log, context)), Some(usage)) =
-                    (classifier_log.as_ref(), call.usage.as_ref())
-                {
-                    log.append(
-                        context.clone(),
-                        &call.selected_model,
-                        Some(CLASSIFIER_TIER),
-                        usage,
-                    );
-                }
                 stats.record_classifier_success(
                     call.selected_model,
                     call.usage.as_ref().map(usage_metrics::token_usage),
@@ -707,6 +765,15 @@ async fn decision(
     headers: HeaderMap,
     body: std::result::Result<Json<DecisionEndpointRequest>, JsonRejection>,
 ) -> Response {
+    let span = observability::request_span(&headers);
+    decision_inner(state, headers, body).instrument(span).await
+}
+
+async fn decision_inner(
+    state: ServerState,
+    headers: HeaderMap,
+    body: std::result::Result<Json<DecisionEndpointRequest>, JsonRejection>,
+) -> Response {
     let body = match body {
         Ok(Json(body)) if body.request.is_object() => body,
         Ok(_) => {
@@ -749,10 +816,14 @@ async fn decision(
             // The request moved into the decision run, so its namespace mapping
             // is gone by here. A Codex tool call in this preview keeps its
             // qualified name.
-            match encode_aggregated_response(
+            match observed_translation::encode_response(
                 &aggregate,
                 input_format,
-                outcome.selected_model_id().ok().map(ModelId::as_str),
+                outcome
+                    .selected_model_id()
+                    .ok()
+                    .map(|model| route.provider_model(model).as_str()),
+                &ProviderExtensions::default(),
             ) {
                 Ok(response) => Some(response),
                 Err(error) => return server_error(error.to_string()),
@@ -975,8 +1046,9 @@ fn resolve_route(
     if let Some(metadata) = body.get_mut("metadata").and_then(Value::as_object_mut) {
         metadata.remove(switchyard_translation::util::SWITCHYARD_METADATA_KEY);
     }
-    let llm_request = decode_request(wire_format, &body)
+    let mut llm_request = observed_translation::decode_request(wire_format, &body)
         .map_err(|error| invalid_body_error(StatusCode::BAD_REQUEST, error.to_string()))?;
+    switchyard_translation::normalize_compaction(&mut llm_request, metadata.http_headers.as_ref());
     let requested_model = llm_request
         .model
         .clone()
@@ -1055,9 +1127,11 @@ async fn handle_llm_request(
     });
     // Only the Codex namespace mapping is needed downstream, not the whole request.
     let request_extensions = request.llm_request.extensions.clone();
+    let stats = state.stats.for_route(route.clone());
     let observer = stats_observer(
-        state.stats.clone(),
+        stats.clone(),
         state.routing_log.clone().zip(routing_log_context.clone()),
+        route.clone(),
     );
 
     let output = match route.execute(request, Some(observer)).await {
@@ -1070,7 +1144,7 @@ async fn handle_llm_request(
                     | LlmClientError::ResponseStateConflict,
             }) = &error
             {
-                state.stats.record_response_error(target);
+                stats.record_response_error(target);
             }
             return runner_error(error);
         }
@@ -1082,16 +1156,28 @@ async fn handle_llm_request(
     // The response carries the candidate that actually served it. Fall back to the routing
     // selection for algorithms that return a response without an offloaded model call.
     let served_model = response.served_model().cloned().or(Some(selected_model));
+    // Keep the provider identity separate from the selected target for reporting.
+    let provider_model = served_model
+        .as_ref()
+        .map(|model| route.provider_model(model).to_string());
     let mut response = if let Some(served_model) = served_model.as_ref() {
         let cache_eligible = cache_probe
             .as_ref()
-            .map(|probe| state.stats.prefix_eligibility(served_model, probe))
+            .map(|probe| stats.prefix_eligibility(served_model, probe))
             .unwrap_or(0.0);
+        let routing_log_context = routing_log_context.map(|context| {
+            context.with_reasoning_effort(
+                route
+                    .target(served_model)
+                    .and_then(|target| target.reasoning_effort.as_deref()),
+            )
+        });
         usage_metrics::observe(
             response,
             served_model.as_str(),
+            provider_model.as_deref().unwrap_or(served_model.as_str()),
             started.0,
-            state.stats,
+            stats,
             cache_eligible,
             state.routing_log.zip(routing_log_context),
         )
@@ -1100,7 +1186,7 @@ async fn handle_llm_request(
     };
 
     let upstream_headers = std::mem::take(&mut response.upstream_headers);
-    let response_model = served_model.as_ref().map(ToString::to_string);
+    let response_model = provider_model.clone();
     let mut response = match into_http_response(
         response,
         wire_format,
@@ -1120,8 +1206,8 @@ async fn handle_llm_request(
         }
         response_headers.append(name.clone(), value.clone());
     }
-    if let Some(served_model) = served_model.as_ref() {
-        attach_routing_headers(&mut response, served_model.as_str());
+    if let Some(provider_model) = provider_model.as_ref() {
+        attach_routing_headers(&mut response, provider_model);
     }
     response
 }
@@ -1187,8 +1273,8 @@ impl RequestLogContext {
                     requested_model = self.requested_model.as_deref().unwrap_or(""),
                     selected_model,
                     streaming = self.streaming,
-                    session_id = self.session_id.as_deref().unwrap_or(""),
-                    correlation_id = self.correlation_id.as_deref().unwrap_or(""),
+                    session_id = self.session_id.as_deref(),
+                    correlation_id = self.correlation_id.as_deref(),
                     handling_duration_ms = duration_ms,
                     error,
                     $message
@@ -1215,8 +1301,8 @@ impl RequestLogContext {
             requested_model = self.requested_model.as_deref().unwrap_or(""),
             selected_model = "",
             streaming = self.streaming,
-            session_id = self.session_id.as_deref().unwrap_or(""),
-            correlation_id = self.correlation_id.as_deref().unwrap_or(""),
+            session_id = self.session_id.as_deref(),
+            correlation_id = self.correlation_id.as_deref(),
             handling_duration_ms = self.started.elapsed().as_secs_f64() * 1_000.0,
             error = "client disconnected before a response was written",
             "LLM request cancelled"
@@ -1460,12 +1546,43 @@ fn error_response(
 }
 
 async fn models(State(state): State<ServerState>) -> Json<Value> {
-    Json(model_list_payload(
-        state
-            .runner
-            .models()
+    let mut cache = state.model_catalog.lock().await;
+    if let Some((updated, catalog)) = cache.as_ref()
+        && updated.elapsed() < Duration::from_secs(60)
+    {
+        return Json(catalog.clone());
+    }
+    let mut models: Vec<_> = state.runner.models().collect();
+    let probes = models
+        .iter_mut()
+        .filter(|model| model.capabilities.context_window.is_none())
+        .map(|model| async {
+            model.capabilities.context_window =
+                discover_context_window(&state.runner, model.id).await;
+        });
+    // Keep completed discoveries even when another backend exhausts the shared budget.
+    let _ = tokio::time::timeout(
+        Duration::from_secs(2),
+        futures_util::future::join_all(probes),
+    )
+    .await;
+    let catalog = model_list_payload(
+        models
+            .into_iter()
             .map(|model| (model.id.as_str(), model.capabilities)),
-    ))
+    );
+    *cache = Some((Instant::now(), catalog.clone()));
+    Json(catalog)
+}
+
+async fn discover_context_window(runner: &Runner, model: &ModelId) -> Option<u32> {
+    let body = runner
+        .model_properties(model.as_str(), Duration::from_secs(2))
+        .await?;
+    let context = body
+        .pointer("/default_generation_settings/n_ctx")?
+        .as_u64()?;
+    u32::try_from(context).ok().filter(|context| *context > 0)
 }
 
 async fn get_stats(State(state): State<ServerState>) -> Json<StatsSnapshot> {
@@ -1693,19 +1810,111 @@ mod tests {
 
     use super::*;
 
-    /// A successful judge call lands in the per-session routing snapshot under its
-    /// model id with the classifier tier, while routed calls stay off the observer's
-    /// log path — they are logged with terminal usage when the served response is
-    /// observed, so an append here would double count them.
+    #[tokio::test]
+    async fn decision_continues_incoming_w3c_trace_context() {
+        use std::io::Write as _;
+
+        use opentelemetry::trace::TracerProvider as _;
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tower::ServiceExt as _;
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("decision-test")));
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let mut config = tempfile::NamedTempFile::new().expect("config file");
+        config
+            .write_all(
+                br#"schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "http://127.0.0.1:9/v1"
+
+[targets.only]
+id = "only-model"
+llm_client = "upstream"
+
+[routes.pick]
+id = "pick"
+type = "random"
+targets = ["only"]
+"#,
+            )
+            .expect("write config");
+        let app = build_switchyard_router(config::load_server_state(config.path()).expect("state"));
+
+        let request = axum::http::Request::post("/v1/decision")
+            .header("content-type", "application/json")
+            .header(
+                "traceparent",
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            )
+            .body(axum::body::Body::from(
+                r#"{"input_format":"openai_chat","request":{"model":"pick","messages":[{"role":"user","content":"hi"}]}}"#,
+            ))
+            .expect("request");
+        let response = app.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let spans = exporter.get_finished_spans().expect("finished spans");
+        let span = |name: &str| {
+            spans
+                .iter()
+                .find(|span| span.name == name)
+                .unwrap_or_else(|| panic!("{name} span"))
+        };
+        let request_span = span("switchyard.request");
+        assert_eq!(
+            request_span.span_context.trace_id().to_string(),
+            "4bf92f3577b34da6a3ce929d0e0e4736"
+        );
+        assert_eq!(request_span.parent_span_id.to_string(), "00f067aa0ba902b7");
+        let run_span = span("libsy.run");
+        assert_eq!(
+            run_span.span_context.trace_id(),
+            request_span.span_context.trace_id()
+        );
+    }
+
+    /// The observer logs judge calls with their model IDs, classifier tier, and
+    /// recorded session and turn IDs. The served response logs routed calls with
+    /// their final usage, so logging them here would count each routed call twice.
     #[test]
-    fn stats_observer_logs_judge_calls_to_the_routing_log() {
+    fn stats_observer_logs_judge_calls_to_the_routing_log() -> Result<(), Box<dyn std::error::Error>>
+    {
         let dir = tempfile::tempdir().expect("temp dir");
         let log = SharedRoutingLog::new(dir.path().join("routing.jsonl")).expect("routing log");
         let mut headers = HeaderMap::new();
         headers.insert("proxy_x_session_id", "session-1".parse().expect("header"));
+        headers.insert("x-switchyard-turn-id", "turn-1".parse()?);
         let metadata = metadata_from_headers(headers);
         let context = routing_log::RoutingLogContext::from_metadata(&metadata);
-        let observer = stats_observer(StatsAccumulator::default(), Some((log.clone(), context)));
+        let runner = Runner::from_toml(
+            r#"
+schema_version = 1
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "http://localhost:1/v1"
+[targets.judge]
+id = "judge-model"
+llm_client = "upstream"
+[routes.only]
+id = "route"
+type = "passthrough"
+target = "judge"
+"#,
+        )?;
+        let observer = stats_observer(
+            StatsAccumulator::default(),
+            Some((log.clone(), context)),
+            runner.route("route").expect("configured route").clone(),
+        );
 
         let call = |model: &str, answer: bool| {
             let observation = ModelCallObservation {
@@ -1724,8 +1933,27 @@ mod tests {
                 RunObservation::LlmCall(observation)
             }
         };
-        observer(call("judge-model", false));
+        observer(call("judge", false));
         observer(call("routed-model", true));
+        observer(RunObservation::Outcome(libsy::OutcomeMetadata::new(
+            "stage".into(),
+            None,
+        )));
+        for (target, category) in [
+            ("strong", switchyard_protocol::Category::Capable),
+            ("weak", switchyard_protocol::Category::Efficient),
+        ] {
+            let mut outcome = libsy::OutcomeMetadata::new(
+                "composite".into(),
+                Some(serde_json::json!({"source": "stage"})),
+            );
+            outcome.judgments.push(libsy::JudgeDecision {
+                target: Some(target.into()),
+                category: Some(category.as_str().to_string()),
+                evidence: None,
+            });
+            observer(RunObservation::Outcome(outcome));
+        }
 
         let snapshot = log
             .snapshot_session("session-1")
@@ -1736,6 +1964,24 @@ mod tests {
         assert_eq!(snapshot["models"]["judge-model"]["prompt_tokens"], 100);
         assert_eq!(snapshot["models"]["judge-model"]["completion_tokens"], 7);
         assert!(snapshot["models"].get("routed-model").is_none());
+        assert_eq!(snapshot["total_calls"], 1);
+        assert_eq!(snapshot["outcomes"].as_array().expect("outcomes").len(), 2);
+        assert_eq!(snapshot["outcomes"][0]["judgments"][0]["target"], "strong");
+        assert_eq!(
+            snapshot["outcomes"][1]["judgments"][0]["category"],
+            "efficient"
+        );
+        assert_eq!(snapshot["outcomes"][1]["turn_id"], "turn-1");
+        assert!(log.snapshot_session("another-session")?.is_none());
+        let contents = std::fs::read_to_string(&log.path)?;
+        assert_eq!(contents.lines().count(), 3);
+        let record: serde_json::Value =
+            serde_json::from_str(contents.lines().next().expect("call record"))?;
+        assert_eq!(record["session_id"], "session-1");
+        assert_eq!(record["turn_id"], "turn-1");
+        assert_eq!(record["target"], "judge");
+        assert_eq!(record["model"], "judge-model");
+        Ok(())
     }
 
     #[derive(Clone)]
@@ -1908,7 +2154,12 @@ mod tests {
 
     // Collects the terminal request events emitted while it is the active subscriber.
     #[derive(Clone, Default)]
-    struct CapturedEvents(Arc<Mutex<Vec<(Level, String)>>>);
+    struct CapturedEvents(Arc<Mutex<Vec<CapturedEvent>>>);
+
+    struct CapturedEvent {
+        level: Level,
+        message: String,
+    }
 
     impl tracing_subscriber::Layer<tracing_subscriber::Registry> for CapturedEvents {
         fn on_event(
@@ -1925,7 +2176,10 @@ mod tests {
                     message.push_str(&format!("{}={value:?} ", field.name()));
                 },
             );
-            self.0.lock().push((*event.metadata().level(), message));
+            self.0.lock().push(CapturedEvent {
+                level: *event.metadata().level(),
+                message,
+            });
         }
     }
 
@@ -1940,13 +2194,13 @@ mod tests {
         }
     }
 
-    fn captured_events(run: impl FnOnce()) -> Vec<(Level, String)> {
+    fn captured_events(run: impl FnOnce()) -> Vec<CapturedEvent> {
         use tracing_subscriber::layer::SubscriberExt;
 
         let captured = CapturedEvents::default();
         let subscriber = tracing_subscriber::registry().with(captured.clone());
         crate::testing::with_subscriber(subscriber, run);
-        captured.0.lock().clone()
+        std::mem::take(&mut *captured.0.lock())
     }
 
     // A dropped handler future is the only trace an abandoned buffered request leaves,
@@ -1958,8 +2212,12 @@ mod tests {
         });
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, Level::WARN);
-        assert!(events[0].1.contains("cancelled"), "{:?}", events[0].1);
+        assert_eq!(events[0].level, Level::WARN);
+        assert!(
+            events[0].message.contains("cancelled"),
+            "{:?}",
+            events[0].message
+        );
     }
 
     // A request that reached a response is not a cancellation, even though the guard
@@ -1972,8 +2230,49 @@ mod tests {
         });
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].0, Level::INFO);
-        assert!(events[0].1.contains("handled"), "{:?}", events[0].1);
+        assert_eq!(events[0].level, Level::INFO);
+        assert!(
+            events[0].message.contains("handled"),
+            "{:?}",
+            events[0].message
+        );
+    }
+
+    // An operator has to be able to tell "no session was sent" from "a blank one was
+    // sent": an absent id omits the field, an empty one records an empty value.
+    #[test]
+    fn request_log_distinguishes_absent_ids_from_empty_ones() {
+        let rows = [
+            (None, None),
+            (Some(String::new()), Some("\"\"")),
+            (Some("abc".to_string()), Some("\"abc\"")),
+        ];
+
+        for (id, expected) in rows {
+            let context = || {
+                let mut context = request_log_context();
+                context.session_id = id.clone();
+                context.correlation_id = id.clone();
+                context
+            };
+
+            let answered = captured_events(|| {
+                let mut guard = RequestLogGuard(Some(context()));
+                guard.emit(&StatusCode::OK.into_response());
+            });
+            let cancelled = captured_events(|| drop(RequestLogGuard(Some(context()))));
+
+            for events in [answered, cancelled] {
+                assert_eq!(events.len(), 1);
+                for field in ["session_id", "correlation_id"] {
+                    let rendered = events[0]
+                        .message
+                        .split_whitespace()
+                        .find_map(|part| part.strip_prefix(&format!("{field}=")));
+                    assert_eq!(rendered, expected, "{field} {id:?}: {}", events[0].message);
+                }
+            }
+        }
     }
 
     // Terminal request severity follows HTTP status instead of error-path bookkeeping.
@@ -2025,8 +2324,12 @@ mod tests {
             let response = render_error_response(client_error(&error), wire_format);
             let events = captured_events(|| request_log_context().emit(&response));
             assert_eq!(events.len(), 1);
-            assert!(!events[0].1.contains(LEAKED), "{}", events[0].1);
-            assert!(events[0].1.contains("upstream_error"), "{}", events[0].1);
+            assert!(!events[0].message.contains(LEAKED), "{}", events[0].message);
+            assert!(
+                events[0].message.contains("upstream_error"),
+                "{}",
+                events[0].message
+            );
             let api_error = response
                 .extensions()
                 .get::<ApiError>()

@@ -17,12 +17,34 @@ use crate::codecs::stream::{
 use crate::format::{FormatId, WireFormat};
 use crate::llm::Usage;
 
+use super::buffered::encode_responses_usage;
+
 /// Stream codec for OpenAI Responses API events.
 pub struct OpenAiResponsesStreamCodec;
 
 impl StreamCodec for OpenAiResponsesStreamCodec {
     fn format(&self) -> FormatId {
         WireFormat::OpenAiResponses.into()
+    }
+
+    fn is_terminal_event(&self, event: &Value) -> bool {
+        matches!(
+            event
+                .get("type")
+                .or_else(|| event.get("event"))
+                .and_then(Value::as_str),
+            Some("response.completed" | "response.incomplete" | "response.failed")
+        )
+    }
+
+    fn sse_done_is_terminal(&self) -> bool {
+        true
+    }
+
+    fn stamp_streamed_response_model(&self, event: &mut Value, served_model: &str) {
+        if let Some(response) = event.get_mut("response").and_then(Value::as_object_mut) {
+            response.insert("model".to_string(), Value::String(served_model.to_string()));
+        }
     }
 
     fn decode_event(
@@ -188,6 +210,13 @@ fn decode_responses_stream(
             event
                 .get("delta")
                 .and_then(Value::as_str)
+                // The decoder reads a custom call's input only from its completed item.
+                .filter(|_| {
+                    !state
+                        .tool_states
+                        .get(&(output_index as usize))
+                        .is_some_and(|tool| tool.decoded_custom_call)
+                })
                 .map(|delta| {
                     state.decoded_tool_call = true;
                     // Recorded so `response.output_item.done`, which repeats
@@ -269,23 +298,13 @@ fn decode_responses_stream(
                 for (position, item) in items.iter().enumerate() {
                     if let Some(item) = item.as_object() {
                         out.extend(decode_responses_completed_item(item, position, state));
-                        if matches!(out.last(), Some(LlmResponseChunk::StreamError { .. })) {
+                        if matches!(out.last(), Some(LlmResponseChunk::DecodeError { .. })) {
                             return out;
                         }
                     }
                 }
             }
-            if let Some(usage) = event
-                .get("response")
-                .and_then(Value::as_object)
-                .and_then(|response| response.get("usage"))
-                .and_then(Value::as_object)
-            {
-                let usage = responses_usage(usage);
-                state.usage = usage.clone();
-                state.saw_backend_usage = true;
-                out.push(LlmResponseChunk::Usage(usage));
-            }
+            decode_terminal_usage(state, event, &mut out);
             // A completed response that produced a tool call ended the turn to run that
             // tool, not because the assistant was done. The buffered decoder reports tool
             // use for such output; the stream must too, or stop-reason-driven tool loops
@@ -296,9 +315,14 @@ fn decode_responses_stream(
             out
         }
         // Carries the Anthropic spelling because every encoder already maps it.
-        Some("response.incomplete") => vec![LlmResponseChunk::MessageStop {
-            reason: Some("max_tokens".to_string()),
-        }],
+        Some("response.incomplete") => {
+            let mut out = Vec::new();
+            decode_terminal_usage(state, event, &mut out);
+            out.push(LlmResponseChunk::MessageStop {
+                reason: Some("max_tokens".to_string()),
+            });
+            out
+        }
         Some("response.failed") => vec![LlmResponseChunk::StreamError {
             message: event
                 .get("response")
@@ -670,15 +694,14 @@ fn decode_responses_output_item_added(
         .or_else(|| item.get("id"))
         .and_then(Value::as_str);
     let name = item.get("name").and_then(Value::as_str);
-    state
-        .tool_states
-        .entry(index)
-        .or_default()
-        .has_decoded_identity |=
+    let tool = state.tool_states.entry(index).or_default();
+    tool.has_decoded_identity |=
         id.is_some_and(|id| !id.is_empty()) && name.is_some_and(|name| !name.is_empty());
+    let custom = item_type == Some("custom_tool_call");
+    tool.decoded_custom_call |= custom;
     // A freeform call's `input` becomes the single `input` argument; it is only complete on
     // the done event, so nothing is emitted for it here beyond id and name.
-    let arguments_delta = if item_type == Some("custom_tool_call") {
+    let arguments_delta = if custom {
         None
     } else {
         item.get("arguments")
@@ -687,12 +710,7 @@ fn decode_responses_output_item_added(
             .map(ToOwned::to_owned)
     };
     if let Some(arguments) = arguments_delta.as_deref() {
-        state
-            .tool_states
-            .entry(index)
-            .or_default()
-            .decoded_arguments
-            .push_str(arguments);
+        tool.decoded_arguments.push_str(arguments);
     }
     vec![LlmResponseChunk::ToolCallDelta {
         index,
@@ -789,13 +807,14 @@ fn decode_responses_completed_item(
     Vec::new()
 }
 
-// A snapshot may extend streamed content, but cannot retract content already sent.
+// A snapshot may extend streamed content, but cannot retract content already sent. A
+// conflict is invalid provider data, so it is a `DecodeError`.
 fn snapshot_suffix(
     decoded: &mut String,
     snapshot: &str,
 ) -> Result<Option<String>, LlmResponseChunk> {
     let Some(suffix) = snapshot.strip_prefix(decoded.as_str()) else {
-        return Err(LlmResponseChunk::StreamError {
+        return Err(LlmResponseChunk::DecodeError {
             message: "Responses snapshot conflicts with streamed content".to_string(),
         });
     };
@@ -848,7 +867,7 @@ fn responses_stream_response(
         tool_choice: "auto",
         tools: Vec::new(),
         top_p: None,
-        usage: responses_usage_value(&state.usage),
+        usage: encode_responses_usage(&state.usage),
     }
 }
 
@@ -1143,6 +1162,25 @@ fn encode_responses_tool_delta(
     out
 }
 
+// Both completed and token-limited Responses events can carry final usage and provider cost.
+fn decode_terminal_usage(
+    state: &mut StreamTranslationState,
+    event: &Value,
+    out: &mut Vec<LlmResponseChunk>,
+) {
+    if let Some(usage) = event
+        .get("response")
+        .and_then(Value::as_object)
+        .and_then(|response| response.get("usage"))
+        .and_then(Value::as_object)
+    {
+        let usage = responses_usage(usage);
+        state.usage = usage.clone();
+        state.saw_backend_usage = true;
+        out.push(LlmResponseChunk::Usage(usage));
+    }
+}
+
 // Normalizes OpenAI Responses token usage fields.
 fn responses_usage(usage: &serde_json::Map<String, Value>) -> Usage {
     let aggregate_input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
@@ -1161,8 +1199,13 @@ fn responses_usage(usage: &serde_json::Map<String, Value>) -> Usage {
     });
     let output_tokens = usage.get("output_tokens").and_then(Value::as_u64);
     Usage {
+        provider_cost: crate::codecs::common::provider_cost(usage),
         input_tokens,
-        cache: Usage::cache_details(cached_input_tokens, cache_creation_input_tokens),
+        cache: crate::codecs::common::cache_usage_details(
+            usage,
+            cached_input_tokens,
+            cache_creation_input_tokens,
+        ),
         output_tokens,
         total_tokens: usage
             .get("total_tokens")
@@ -1178,27 +1221,6 @@ fn responses_usage(usage: &serde_json::Map<String, Value>) -> Usage {
             })
             .and_then(Value::as_u64),
     }
-}
-
-// Builds OpenAI Responses usage payloads from normalized usage.
-fn responses_usage_value(usage: &Usage) -> Value {
-    let input_tokens = usage.input_tokens.unwrap_or(0)
-        + usage.cached_input_tokens().unwrap_or(0)
-        + usage.cache_creation_input_tokens().unwrap_or(0);
-    // Both detail objects are always present, for the same reason as the buffered encoder: the
-    // Responses schema types them as required, so a missing breakdown serializes as zero.
-    json!({
-        "input_tokens": input_tokens,
-        "output_tokens": usage.output_tokens.unwrap_or(0),
-        "total_tokens": usage.total_tokens.unwrap_or_else(|| {
-            input_tokens + usage.output_tokens.unwrap_or(0)
-        }),
-        "input_tokens_details": {
-            "cached_tokens": usage.cached_input_tokens().unwrap_or(0),
-            "cache_write_tokens": usage.cache_creation_input_tokens().unwrap_or(0),
-        },
-        "output_tokens_details": {"reasoning_tokens": usage.reasoning_tokens.unwrap_or(0)},
-    })
 }
 
 // Longest response-id discriminator embedded verbatim in a synthesized item id. OpenAI rejects
@@ -1237,4 +1259,41 @@ fn responses_id(state: &StreamTranslationState) -> String {
     target_message_id_or_source_message_id(state)
         .unwrap_or("resp_switchyard")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_stream_completion() {
+        let codec = OpenAiResponsesStreamCodec;
+        assert!(codec.sse_done_is_terminal());
+        for kind in [
+            "response.completed",
+            "response.incomplete",
+            "response.failed",
+        ] {
+            assert!(codec.is_terminal_event(&json!({"type": kind})));
+            assert!(codec.is_terminal_event(&json!({"event": kind})));
+        }
+        assert!(!codec.is_terminal_event(&json!({"type": "response.created"})));
+    }
+
+    #[test]
+    fn responses_replay_stamps_the_served_model_inside_response() {
+        let mut event = json!({
+            "type": "response.created",
+            "response": {
+                "id": "resp_1",
+                "model": "provider/model",
+                "provider_extension": true,
+            },
+        });
+
+        OpenAiResponsesStreamCodec.stamp_streamed_response_model(&mut event, "served/model");
+
+        assert_eq!(event["response"]["model"], "served/model");
+        assert_eq!(event["response"]["provider_extension"], true);
+    }
 }

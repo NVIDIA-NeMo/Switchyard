@@ -124,10 +124,55 @@ served model. The legacy `proxy_x_session_id` remains a fallback when no normali
 present. The endpoint returns `404` when the session has no records and is not registered when
 routing logging is disabled.
 
+The routing log saves each call's reported charge in USD. When the upstream reports no
+charge, the server estimates it using [bundled rates](../switchyard-costs/prices.toml).
+A reported charge, including zero, takes precedence over the bundled rates.
+Bundled rates stay fixed until you install a version with updated rates.
+The table includes text-token rates for OpenAI, Claude, Gemini, and DeepSeek models, plus
+OpenRouter rates for other popular models. Model IDs match exactly, including provider
+prefixes; an unlisted ID has no estimated cost. Direct-provider and OpenRouter rates use
+separate IDs, such as `gemini-3.8-flash` and `google/gemini-3.8-flash`.
+Estimates exclude long-context and service-tier adjustments, OpenAI's 12-hour cache-write
+pricing, tool fees, and time-based cache storage. Each model has one rate at all times of
+day. Billed charges can differ when a gateway selects another provider or a promotion
+ends. The table lists the Gemini promotion end dates.
+Use `--pricing-file prices.toml` to replace the entire bundled table with your own rates.
+Use a `.toml` file with quoted served model IDs and rates in USD per million tokens:
+
+```toml
+["upstream/model"]
+input = 1
+output = 5
+cache_read = 0.1
+cache_write = 2
+```
+
+The `.toml` extension check ignores case. Other filenames are read as JSON, so existing
+JSON overrides still work. TOML and JSON also accept groups of exact IDs that share
+one set of rates, as shown in the [pi guide](../../docs/integrations/pi.md#estimate-the-cost).
+The bundled table uses this grouped format and can be supplied to `--pricing-file`.
+
+Session stats include cost totals. Missing usage or rates leave cost unknown; `known_usd`
+keeps the priced subtotal and `total_usd` is null when any cost is unknown. Rates load once
+at startup, and saved costs do not change when prices change. An unreadable or invalid
+`--pricing-file` stops startup; the server does not use bundled rates instead.
+
+The [pi guide](../../docs/integrations/pi.md#estimate-the-cost) explains how to supply
+rates for your own models. The desktop app uses the same bundled rates by default.
+For custom rates, point its `pricing_file` setting at the same TOML or JSON file as
+the server's `--pricing-file`. The desktop app totals these recorded costs, so its totals
+can differ from what your provider bills.
+
 Clients can send `x-switchyard-origin: codex-cli` (or another client label) to include an
 `origin` field in each routing record. Missing, empty, or non-text header values produce
 `"origin": null`. The value is supplied by the caller; it is not inferred from `User-Agent`.
 Older records without `origin` remain readable by the session stats endpoint.
+
+A child agent can share its parent's session ID. To tell their calls apart, records also include
+the agent identity from the request metadata: `agent_id`, `parent_agent_id`, `agent_kind`,
+`agent_role`, and `delegated` (`true` when the request carries delegated sub-agent work). When the client
+cannot identify its child agents, the record has `"subagent_identity_unsupported": true`. Each of
+these fields is left out when it is not set, so records without agent identity are unchanged.
 
 An `llm_classifier` route sends each task to `classifier_target` for a capability verdict, then
 routes to `weak_target` or `strong_target`. Beyond the three targets it accepts these keys; only
@@ -136,7 +181,8 @@ routes to `weak_target` or `strong_target`. Beyond the three targets it accepts 
 | Key | Default | Meaning |
 |---|---|---|
 | `base_threshold` | *required* | Lowest solve probability that routes a task to `weak_target`. Raise it to send less traffic to the weak model. |
-| `threshold_step` | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
+| `threshold_step` | `0.0` | Finite, non-negative amount added once for uncertain verdicts, `unmatched_steps` times for unmatched verdicts, and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
+| `unmatched_steps` | `1` | Threshold steps for an unmatched verdict. `0`, `1`, or `2`; `2` treats it like unsupported. |
 | `classify_trigger` | `every_request` | When the judge runs. `every_request` judges every request including tool continuations, `user_turn` judges each new user message and holds that target across the tool calls between, `new_session` judges once and reuses that target for the session. |
 | `message_hash_fallback` | `false` | Extends affinity to clients that send no session header, keying on the first user message. Requires `classify_trigger = "new_session"` or `"user_turn"`. |
 
@@ -259,7 +305,8 @@ rule to `~/.codex/rules/default.rules`. See Codex's
 [Agent approvals & security](https://learn.chatgpt.com/docs/agent-approvals-security)
 page.
 
-The installer, `scripts/linux/install.sh`, does not overwrite an existing
+The experimental desktop installer, `cargo desktop install`, which you run from
+`experimental/switchyard-desktop`, does not overwrite an existing
 `~/.switchyard/composite.toml`.
 If you installed Switchyard before this route was added, add the
 `[targets.reviewer]` and `[routes.codex_auto_review]` blocks to that file by
@@ -284,8 +331,8 @@ hand, then restart the server.
 | `GET` | `/health` | Liveness |
 
 Requests name a route by its `id`, so `POST /v1/chat/completions` with `"model": "switchyard/general"`
-routes through the `[routes.general]` entry above. Any of the three request formats can address any
-route, and the server translates between them.
+routes through the `[routes.general]` entry above. The server translates between request formats
+supported by the selected route and its forwarding clients.
 
 Set the top-level `fallback_client` to an entry under `[llm_clients]` to proxy any otherwise
 unmatched method and path through that client. The fallback client does not need a target. Requests
@@ -303,7 +350,9 @@ returns the selected target and ordered fallbacks with their model, format, base
 `extra_body`. It does not make a post-routing answer call. Routing-time calls still execute, and
 response-dependent algorithms such as escalation and advisor routing may produce an answer while
 deciding. When they do, the endpoint includes the buffered answer as `response`, encoded in
-`input_format`; otherwise the field is omitted.
+`input_format`; otherwise the field is omitted. When the algorithm attaches outcome metadata, the
+endpoint returns it as `metadata`, with the outcome ID, the algorithm name and the algorithm's
+evidence.
 
 For `stage_router`, `algorithm_stats.stage_router` groups routing decisions by source and semantic
 target and summarizes its score, confidence, and input-dimension histograms. These values reset

@@ -6,6 +6,13 @@ __pycache__/
 # C extensions
 *.so
 
+# Node.js bindings
+node_modules/
+*.node
+/bindings/typescript/LICENSE
+/bindings/typescript/NOTICE
+/bindings/go/internal/wasm/switchyard.wasm
+
 # Distribution / packaging
 leaderboard/
 report/

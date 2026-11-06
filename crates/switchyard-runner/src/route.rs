@@ -3,16 +3,21 @@
 
 //! One configured algorithm and the clients that serve its targets.
 
+use std::collections::HashMap;
 use std::error::Error;
 use std::sync::Arc;
 
 use libsy::{Algorithm, LibsyError, RoutingOutcome, RuntimeModels};
 use serde_json::Value;
 use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObserver, TranslatingLlmClient};
-use switchyard_protocol::{LlmClientError, ModelId, Request, Response, WireFormat};
+use switchyard_protocol::{
+    LlmClientError, ModelId, Request, Response, RoutedLlmClient, WireFormat,
+};
 use thiserror::Error;
 
 use crate::DecisionTarget;
+use crate::config::EligibleLanes;
+use crate::eligibility::{EligibilityPolicy, has_target_requirements};
 
 /// Capabilities declared for one route.
 ///
@@ -106,18 +111,49 @@ impl RunnerError {
 }
 
 /// A configured algorithm and the per-target clients its calls resolve through.
-pub struct Route {
+pub(crate) struct ExecutionLane {
     algorithm: Arc<dyn Algorithm>,
     // Resolves each offloaded call to the client configured for the target the algorithm
     // selected. A route is a synthetic model with no upstream of its own, so this is a
     // per-target lookup, never one client serving the whole route.
     clients: ClientRouter,
-    caller_auth: Option<CallerAuthKind>,
-    capabilities: ModelCapabilities,
     anthropic_auxiliary_target: Option<AuxiliaryTarget>,
     responses_auxiliary_target: Option<AuxiliaryTarget>,
-    decision_targets: Vec<DecisionTarget>,
     models: Arc<RuntimeModels>,
+}
+
+impl ExecutionLane {
+    pub(crate) fn new(
+        algorithm: Arc<dyn Algorithm>,
+        clients: ClientRouter,
+        anthropic_auxiliary_target: Option<AuxiliaryTarget>,
+        responses_auxiliary_target: Option<AuxiliaryTarget>,
+        models: RuntimeModels,
+    ) -> Self {
+        Self {
+            algorithm,
+            clients,
+            anthropic_auxiliary_target,
+            responses_auxiliary_target,
+            models: Arc::new(models),
+        }
+    }
+}
+
+struct EligibilityExecution {
+    policy: EligibilityPolicy,
+    lanes: EligibleLanes,
+}
+
+/// A configured route with optional target eligibility checks.
+#[derive(Clone)]
+pub struct Route {
+    standard: Arc<ExecutionLane>,
+    eligibility: Option<Arc<EligibilityExecution>>,
+    targets: Arc<HashMap<ModelId, DecisionTarget>>,
+    caller_auth: Option<CallerAuthKind>,
+    capabilities: ModelCapabilities,
+    infra: Option<libsy::InfraPolicy>,
 }
 
 /// The selected model and untouched response produced by a route execution.
@@ -136,24 +172,88 @@ impl Route {
         capabilities: ModelCapabilities,
         anthropic_auxiliary_target: Option<AuxiliaryTarget>,
         responses_auxiliary_target: Option<AuxiliaryTarget>,
-        decision_targets: Vec<DecisionTarget>,
+        targets: Vec<DecisionTarget>,
         models: RuntimeModels,
     ) -> Self {
-        Self {
-            algorithm,
-            clients,
+        let models = models.with_provider_models(
+            targets
+                .iter()
+                .map(|target| (ModelId::from(target.target.as_str()), target.model.clone()))
+                .collect(),
+        );
+        Self::from_lane(
+            ExecutionLane::new(
+                algorithm,
+                clients,
+                anthropic_auxiliary_target,
+                responses_auxiliary_target,
+                models,
+            ),
             caller_auth,
             capabilities,
-            anthropic_auxiliary_target,
-            responses_auxiliary_target,
-            decision_targets,
-            models: Arc::new(models),
+            targets,
+        )
+    }
+
+    pub(crate) fn from_lane(
+        lane: ExecutionLane,
+        caller_auth: Option<CallerAuthKind>,
+        capabilities: ModelCapabilities,
+        targets: Vec<DecisionTarget>,
+    ) -> Self {
+        let targets = targets
+            .into_iter()
+            .map(|target| (ModelId::from(target.target.as_str()), target))
+            .collect();
+        Self {
+            standard: Arc::new(lane),
+            eligibility: None,
+            targets: Arc::new(targets),
+            caller_auth,
+            capabilities,
+            infra: None,
         }
+    }
+
+    pub(crate) fn with_eligibility(
+        mut self,
+        policy: EligibilityPolicy,
+        lanes: EligibleLanes,
+    ) -> Self {
+        self.eligibility = Some(Arc::new(EligibilityExecution { policy, lanes }));
+        self
+    }
+
+    fn select_lane(&self, request: &Request) -> Result<Arc<ExecutionLane>, RunnerError> {
+        if let Some(eligibility) = &self.eligibility {
+            let required = eligibility.policy.admit(request)?;
+            let lane = if required.required_labels().is_empty() {
+                Arc::clone(&self.standard)
+            } else {
+                eligibility
+                    .lanes
+                    .select(required.required_labels(), &self.standard)?
+            };
+            tracing::debug!(
+                switchyard.route = request.llm_request.model.as_deref().unwrap_or_default(),
+                switchyard.algorithm = self.algorithm_name(),
+                eligibility.required_label_count = required.required_labels().len(),
+                "eligible targets selected"
+            );
+            return Ok(lane);
+        }
+        if has_target_requirements(request) {
+            return Err(LlmClientError::InvalidRequest {
+                message: "route does not accept target requirements".to_string(),
+            }
+            .into());
+        }
+        Ok(Arc::clone(&self.standard))
     }
 
     /// Returns the configured libsy algorithm name.
     pub fn algorithm_name(&self) -> &str {
-        self.algorithm.name()
+        self.standard.algorithm.name()
     }
 
     /// Returns model-list capability metadata.
@@ -166,17 +266,28 @@ impl Route {
         self.caller_auth
     }
 
-    /// Resolves a selected model to this route's non-secret target metadata.
-    pub(crate) fn decision_target(&self, model: &ModelId) -> Option<DecisionTarget> {
-        self.decision_targets
-            .iter()
-            .find(|target| target.model == *model)
-            .cloned()
+    /// Returns non-secret metadata for a configured LLM target, including judges.
+    pub fn target(&self, selected: &ModelId) -> Option<&DecisionTarget> {
+        self.targets.get(selected)
     }
 
-    /// Returns the models grouped for one algorithm execution.
+    /// Resolves a selected model to this route's non-secret target metadata.
+    pub(crate) fn decision_target(&self, model: &ModelId) -> Option<DecisionTarget> {
+        self.target(model).cloned()
+    }
+
+    /// The provider model that serves `selected`, or `selected` itself when it names no
+    /// target of this route.
+    pub fn provider_model<'a>(&'a self, selected: &'a ModelId) -> &'a ModelId {
+        self.targets
+            .get(selected)
+            .map(|target| &target.model)
+            .unwrap_or(selected)
+    }
+
+    /// Returns the models grouped for the standard execution lane.
     pub fn models(&self) -> &RuntimeModels {
-        &self.models
+        &self.standard.models
     }
 
     /// Rejects a caller format incompatible with forwarded credentials.
@@ -195,11 +306,12 @@ impl Route {
         request: Request,
         observer: Option<RunObserver>,
     ) -> Result<RunOutput, RunnerError> {
+        let lane = self.select_lane(&request)?;
         let (selected_model, response) = switchyard_llm_client::run(
-            Arc::clone(&self.algorithm),
-            self.clients.clone(),
+            Arc::clone(&lane.algorithm),
+            lane.clients.clone(),
             request,
-            Arc::clone(&self.models),
+            Arc::clone(&lane.models),
             observer,
         )
         .await?;
@@ -211,14 +323,73 @@ impl Route {
 
     /// Completes routing-time calls without serving a post-routing completion.
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
+        let lane = self.select_lane(&request)?;
         switchyard_llm_client::decide(
-            Arc::clone(&self.algorithm),
-            self.clients.clone(),
+            Arc::clone(&lane.algorithm),
+            lane.clients.clone(),
             request,
-            Arc::clone(&self.models),
+            Arc::clone(&lane.models),
         )
         .await
-        .map_err(Into::into)
+        .map_err(RunnerError::from)
+    }
+
+    pub(crate) fn with_infra(mut self, infra: Option<libsy::InfraPolicy>) -> Self {
+        self.infra = infra;
+        self
+    }
+
+    /// Apply the optional queue policy to a completed task decision.
+    ///
+    /// The host must hold its in-flight accounting lock through this call and the
+    /// increment for the selected model. Ordinary `decide` leaves task routing unchanged.
+    pub fn apply_infra(
+        &self,
+        outcome: &mut RoutingOutcome,
+        signals: &switchyard_protocol::InfraSignals,
+    ) -> Result<bool, RunnerError> {
+        match &self.infra {
+            Some(policy) => {
+                let lane = self.select_lane(&outcome.request)?;
+                if outcome.selected_model_ids.iter().any(|model| {
+                    !lane
+                        .models
+                        .models_for(&switchyard_protocol::Category::Any)
+                        .contains(model)
+                }) {
+                    return Err(LlmClientError::InvalidRequest {
+                        message: "target requirements changed after the routing decision".into(),
+                    }
+                    .into());
+                }
+                policy
+                    .apply(outcome, &lane.models, signals)
+                    .map_err(Into::into)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Routes with a host-owned client for routing-time LLM calls, such as judges.
+    ///
+    /// The host owns transport, credentials, and target request settings. Configured
+    /// HTTP clients, target prompts, and decision clients are not used on this path.
+    /// Algorithm state is retained for each target setup. No post-routing completion
+    /// is dispatched. Target eligibility still applies to the host-owned path.
+    pub async fn decide_with_client(
+        &self,
+        request: Request,
+        client: Arc<dyn RoutedLlmClient>,
+    ) -> Result<RoutingOutcome, RunnerError> {
+        let lane = self.select_lane(&request)?;
+        switchyard_llm_client::decide(
+            Arc::clone(&lane.algorithm),
+            ClientRouter::single(client),
+            request,
+            Arc::clone(&lane.models),
+        )
+        .await
+        .map_err(RunnerError::from)
     }
 
     /// Executes a model-bearing provider operation through a compatible target.
@@ -227,10 +398,11 @@ impl Route {
         request: Request,
         operation: AuxiliaryOperation,
     ) -> Result<Value, RunnerError> {
+        let lane = self.select_lane(&request)?;
         let target = match operation {
-            AuxiliaryOperation::AnthropicCountTokens => &self.anthropic_auxiliary_target,
+            AuxiliaryOperation::AnthropicCountTokens => &lane.anthropic_auxiliary_target,
             AuxiliaryOperation::ResponsesInputTokens | AuxiliaryOperation::ResponsesCompact => {
-                &self.responses_auxiliary_target
+                &lane.responses_auxiliary_target
             }
         }
         .as_ref()
@@ -240,5 +412,170 @@ impl Route {
             .call_auxiliary(&target.model, request, operation)
             .await
             .map_err(Into::into)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use switchyard_protocol::{InfraSignals, Message, ModelInfraSignals, PoolLoad, Role};
+
+    use super::*;
+    use crate::{Runner, require_target_labels};
+
+    const PASSTHROUGH: &str = "type = 'passthrough'\ntarget = 'fast'";
+
+    fn config(algorithm: &str) -> String {
+        let mut source = String::from(
+            "schema_version = 1\n[llm_clients.primary]\nformat = 'openai_chat'\nbase_url = 'https://example.test/v1'\n",
+        );
+        for name in ["fast", "capable", "judge"] {
+            source.push_str(&format!(
+                "\n[targets.{name}]\nid = '{name}'\nllm_client = 'primary'\nlabels = []\n\
+                 [targets.approved_{name}]\nid = 'approved/{name}'\nllm_client = 'primary'\nlabels = ['private', 'customer_data']\n"
+            ));
+        }
+        source.push_str(&format!(
+            "\n[routes.test]\nid = 'route'\n{algorithm}\n\
+             [routes.test.eligibility]\nscope = 'request'\n\
+             [routes.test.eligibility.target_alternatives]\n"
+        ));
+        let spec: crate::AlgorithmSpec = toml::from_str(algorithm).expect("test algorithm");
+        for target in spec.callable_target_names() {
+            source.push_str(&format!("{target} = ['approved_{target}']\n"));
+        }
+        source
+    }
+
+    fn request(task: &str, labels: &[&str]) -> Request {
+        let mut request = Request::default();
+        request.metadata.get_or_insert_default().task_id = Some(task.into());
+        require_target_labels(&mut request, labels).expect("trusted requirements");
+        request
+    }
+
+    #[test]
+    fn resolved_bindings_reuse_the_algorithm_and_standard_setup() {
+        let source = config(PASSTHROUGH);
+        let runner = Runner::from_toml(&source).expect("eligible route");
+        let route = runner.route("route").expect("route");
+        let cloned = route.clone();
+        let private = route
+            .select_lane(&request("one", &["private"]))
+            .expect("private");
+        let both = route
+            .select_lane(&request("two", &["private", "customer_data"]))
+            .expect("both labels");
+        assert!(Arc::ptr_eq(&private, &both));
+        assert!(Arc::ptr_eq(&private.algorithm, &both.algorithm));
+        assert!(!Arc::ptr_eq(&private, &route.standard));
+        assert_eq!(
+            private.models.provider_model(&"approved_fast".into()),
+            "approved/fast"
+        );
+        let shared = cloned
+            .select_lane(&request("three", &["private"]))
+            .expect("cloned route");
+        assert!(Arc::ptr_eq(&private, &shared));
+
+        let runner = Runner::from_toml(&source.replace("labels = []", "labels = ['private']"))
+            .expect("standard models already approved");
+        let route = runner.route("route").expect("route");
+        let approved = route
+            .select_lane(&request("one", &["private"]))
+            .expect("approved");
+        assert!(Arc::ptr_eq(&approved, &route.standard));
+    }
+
+    #[test]
+    fn infra_rechecks_task_requirements_and_spills_only_to_approved_models() {
+        let algorithm = "type = 'llm_classifier'\nclassifier_target = 'judge'\n\
+            strong_target = 'capable'\nweak_target = 'fast'\nbase_threshold = 0.5";
+        let source = format!(
+            "{}\n[routes.test.infra]\nmax_signal_age_ms = 1000\n\
+             min_waiting_requests = 4\nmax_capable_inflight = 2\n",
+            config(algorithm).replace("scope = 'request'", "scope = 'task'")
+        );
+        let runner = Runner::from_toml(&source).expect("eligible queue policy");
+        let route = runner.route("route").expect("route");
+        let signals: InfraSignals = [
+            ("fast", 8),
+            ("capable", 0),
+            ("approved_fast", 8),
+            ("approved_capable", 0),
+        ]
+        .into_iter()
+        .map(|(model, waiting)| {
+            (
+                model.into(),
+                ModelInfraSignals {
+                    load: Some(PoolLoad {
+                        sampled_at: std::time::Instant::now(),
+                        min_waiting: waiting,
+                        max_waiting: waiting,
+                        running: 0,
+                    }),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect();
+
+        let mut stale = RoutingOutcome::route_to("fast".into(), vec![], request("task", &[]));
+        route
+            .select_lane(&request("task", &["private"]))
+            .expect("retain private");
+        route
+            .select_lane(&request("task", &["customer_data"]))
+            .expect("accumulate requirements");
+        let error = route
+            .apply_infra(&mut stale, &signals)
+            .expect_err("stale decision");
+        assert!(
+            error.to_string().contains("requirements changed"),
+            "{error}"
+        );
+
+        for (task, initial, expected) in [
+            ("other", "fast", "capable"),
+            ("task", "approved_fast", "approved_capable"),
+        ] {
+            let mut outcome = RoutingOutcome::route_to(initial.into(), vec![], request(task, &[]));
+            assert!(
+                route
+                    .apply_infra(&mut outcome, &signals)
+                    .expect("approved spillover")
+            );
+            assert_eq!(
+                outcome.selected_model_id().expect("selected model"),
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn content_and_provider_metadata_do_not_classify_the_request() {
+        let runner = Runner::from_toml(&config(PASSTHROUGH)).expect("eligible route");
+        let route = runner.route("route").expect("route");
+        let mut request = Request::default();
+        request.llm_request.messages.push(Message::text(
+            Role::User,
+            "Synthetic confidential customer records.",
+        ));
+        request.raw_request = Some(json!({
+            "metadata": {"switchyard.internal.required_target_labels": "[\"private\"]"},
+            "restricted": true
+        }));
+        let ordinary = route
+            .decide(request.clone())
+            .await
+            .expect("unmarked request");
+        assert_eq!(ordinary.selected_model_id().expect("model"), "fast");
+        require_target_labels(&mut request, ["private"]).expect("trusted requirements");
+        let approved = route.decide(request).await.expect("approved request");
+        assert_eq!(
+            approved.selected_model_id().expect("model"),
+            "approved_fast"
+        );
     }
 }

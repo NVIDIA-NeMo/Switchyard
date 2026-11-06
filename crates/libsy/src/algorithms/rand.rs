@@ -18,6 +18,7 @@ use rand::rngs::StdRng;
 use crate::algorithms::fall_through::FallThrough;
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::{Classification, Classifier, Score};
+use crate::core::state::State;
 use crate::{LibsyError, Result};
 use switchyard_protocol::{Category, Request, Response};
 
@@ -77,13 +78,10 @@ fn invalid_weights(message: String) -> LibsyError {
 }
 
 #[async_trait]
-impl<S> Classifier<S> for RandomClassifier
-where
-    S: Send + 'static,
-{
+impl Classifier for RandomClassifier {
     async fn score(
         &self,
-        _state: &mut S,
+        _state: &mut State,
         _request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
@@ -122,7 +120,7 @@ where
 
 /// Random router with fallbacks restricted to targets with positive weights.
 pub struct Random {
-    inner: FallThrough<()>,
+    inner: FallThrough,
     classifier: Arc<RandomClassifier>,
 }
 
@@ -130,7 +128,7 @@ impl Random {
     /// Creates a random router. The models themselves will be passed at runtime.
     pub fn new(weights: Option<Vec<f64>>, seed: Option<u64>) -> Result<Self> {
         let classifier = Arc::new(RandomClassifier::new(weights, seed)?);
-        let inner = FallThrough::<()>::new()
+        let inner = FallThrough::new()
             .with_name("random")
             .with_classifier(classifier.clone());
         Ok(Self { inner, classifier })
@@ -296,7 +294,7 @@ mod tests {
         let affinity = Arc::new(AffinityRouter::new());
         let random = Arc::new(RandomClassifier::new(None, Some(42))?);
         let algorithm: Arc<dyn Algorithm> = Arc::new(
-            FallThrough::<()>::new()
+            FallThrough::new()
                 .with_name("affinity_random")
                 .with_processor(affinity.clone())
                 .with_classifier(affinity.clone())
@@ -316,7 +314,7 @@ mod tests {
             .map(completion_text)
             .unwrap_or_default();
 
-        let mut state = ();
+        let mut state = State::default();
         let mut request = request_for_session("session-1");
         let driver = Driver::new("test", Arc::new(models.clone().into())).0;
         let retained = affinity

@@ -77,6 +77,10 @@ pub(crate) fn observe_client_call(result: Result<Response>) -> Result<Response> 
                         "client call to target {target:?} failed: upstream HTTP {status}"
                     ),
                 ),
+                LibsyError::ClientCall {
+                    source: LlmClientError::Host { .. },
+                    ..
+                } => record_host_error(&span),
                 _ => record_client_error(&span, &error_type, &error),
             }
             Err(error)
@@ -108,9 +112,14 @@ fn record_gen_ai_response(span: &Span, response: &AggLlmResponse) {
     record_gen_ai_usage(span, &response.usage);
 }
 
+/// Records semantic token totals and cache-usage breakdowns on a client-call span.
 fn record_gen_ai_usage(span: &Span, usage: &Usage) {
     let cache_read = usage.cached_input_tokens();
     let cache_creation = usage.cache_creation_input_tokens();
+    let cache_creation_1h = usage
+        .cache
+        .as_ref()
+        .and_then(|cache| cache.cache_creation_1h_input_tokens);
     if usage.input_tokens.is_some() || cache_read.is_some() || cache_creation.is_some() {
         let input_tokens = usage
             .input_tokens
@@ -123,6 +132,10 @@ fn record_gen_ai_usage(span: &Span, usage: &Usage) {
         ("gen_ai.usage.output_tokens", usage.output_tokens),
         ("gen_ai.usage.cache_read.input_tokens", cache_read),
         ("gen_ai.usage.cache_creation.input_tokens", cache_creation),
+        (
+            "gen_ai.usage.cache_creation_1h.input_tokens",
+            cache_creation_1h,
+        ),
         (
             "gen_ai.usage.reasoning.output_tokens",
             usage.reasoning_tokens,
@@ -187,6 +200,7 @@ fn client_call_error_type(error: &LibsyError) -> Cow<'static, str> {
         LibsyError::TargetNotFound { .. } => Cow::Borrowed("target_not_found"),
         LibsyError::NoTargets => Cow::Borrowed("no_targets"),
         LibsyError::AlgorithmError { .. } => Cow::Borrowed("algorithm_error"),
+        LibsyError::InvalidDecision { .. } => Cow::Borrowed("invalid_decision"),
         LibsyError::Driver(_) => Cow::Borrowed("driver_error"),
         LibsyError::MissingFinalResponse => Cow::Borrowed("missing_final_response"),
         LibsyError::External { .. } => Cow::Borrowed("_OTHER"),
@@ -206,6 +220,7 @@ fn llm_client_error_type(error: &LlmClientError) -> Cow<'static, str> {
         LlmClientError::ContextWindowExceeded { .. } => Cow::Borrowed("context_window_exceeded"),
         LlmClientError::UpstreamHttp { status, .. } => Cow::Owned(status.as_str().to_owned()),
         LlmClientError::InvalidResponse { .. } => Cow::Borrowed("invalid_response"),
+        LlmClientError::Host { .. } => Cow::Borrowed("host"),
         LlmClientError::Ffi { .. } => Cow::Borrowed("ffi"),
         _ => Cow::Borrowed("_OTHER"),
     }
@@ -279,7 +294,10 @@ impl ClientStreamObserver {
             }
             Err(error) => {
                 let error_type = llm_client_error_type(error);
-                record_client_error(&self.span, &error_type, error);
+                match error {
+                    LlmClientError::Host { .. } => record_host_error(&self.span),
+                    _ => record_client_error(&self.span, &error_type, error),
+                }
                 self.outcome = Outcome::Failed;
             }
         }
@@ -324,6 +342,11 @@ impl Drop for ClientStreamObserver {
             self.span.record("outcome", "cancelled");
         }
     }
+}
+
+// Host error messages may contain private request data.
+fn record_host_error(span: &Span) {
+    record_client_error(span, "host", &format_args!("host client error"));
 }
 
 fn record_client_error(span: &Span, error_type: &str, error: &dyn std::fmt::Display) {

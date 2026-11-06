@@ -10,13 +10,14 @@ pub mod advisor_gate;
 pub mod composite;
 mod escalation;
 pub mod fall_through;
+pub mod infra;
 pub mod llm_class;
 pub mod noop;
 pub mod passthrough;
-pub mod plan_execute;
 pub mod rand;
 pub mod stage;
 pub mod subagent;
+pub mod vgr;
 
 pub mod util;
 

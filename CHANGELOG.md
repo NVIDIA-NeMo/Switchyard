@@ -4,6 +4,68 @@ All notable changes to Switchyard are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Host aborts** - The C ABI accepts an `abort` reply, and the Go binding adds
+  `Abort(err)` to stop routing when the host refuses a model or decision call,
+  even if the algorithm recovers from ordinary call failures.
+- **VGR routing (planned for 0.4.0)** — adds `type = "vgr"` deployment routes
+  and the `AlgorithmSpec::Vgr` variant. **Rust source-breaking change:** callers
+  that match exhaustively on `AlgorithmSpec` must handle the new variant.
+- **Caller-owned routing state** - `Algorithm::run_stream` takes a `State` and
+  `RoutingOutcome.state` returns the updated `State`, with `Serialize` and
+  `Deserialize` on `State` and `StateValue` for hosts that store routing state
+  across turns outside the router.
+  **Host API change (source-breaking):** `Processor`, `Classifier`,
+  `FallThrough` and `SubagentGate` use `State` in place of a type parameter.
+  `State.extra` is a `BTreeMap`. `State.turn_count` and `DECISION_SOURCE_KEY`
+  are removed. `StateValue::Bool` replaces `StateValue::Int` and
+  `StateValue::Scalar`.
+- **Speculative workflows** - algorithms can run model and decision calls in
+  parallel, stop one call, and let another continue. This includes decision
+  models used as speculative tool callers. The same controls support general
+  speculative and parallel workflows built on libsy. Cancellation stops local work;
+  provider generation and billing may continue after disconnect.
+  **Host API change (source-breaking):** Rust uses `call.respond(work).await?`;
+  Python uses `await call.respond(work)` and `await call.fail(error)`. Pass work
+  before awaiting it. See the
+  [host integration guide](docs/getting_started.md#drive-the-algorithm).
+  ([#948](https://github.com/NVIDIA-NeMo/Switchyard/pull/948))
+
+### Changed
+
+- **Simpler decision requests and routing question** — `DecisionRequest.context`
+  is renamed to `input`. Decision judges send the conversation messages as
+  `input`, with string instructions and a description for every choice. The
+  decision judge now asks whether to start with the `capable` or the `efficient` model.
+  The `cutoff` applies to the `capable` probability and defaults to `0.6`.
+  Decision settings drop `candidates`, `evidence`, and `criteria`; use
+  `choices` (`DecisionChoice` values) and `apply_cutoff_to` for a custom question. Routing evidence
+  reports `capable_score` and `capable_threshold`. Re-evaluate existing cutoffs.
+  **Config and API change (breaking).**
+- **Stage fallback-judge knobs that had no effect are now rejected** — a
+  `stage_router` route no longer loads with a `classifier.classify_trigger` other
+  than `every_request` or with `classifier.message_hash_fallback`. The stage
+  fallback judge runs on every ambiguous turn and retains no verdict, so these
+  keys did nothing. Composite routes, which own the judge trigger, are
+  unchanged. The server also warns at startup when
+  a route's two tiers name the same target, and when an `llm_classifier` route
+  that selects escalation mode through its `escalation` table carries capability
+  keys that mode ignores.
+
+### Fixed
+
+- **Responses reasoning history reaches non-OpenAI targets** - the default
+  `responses_reasoning` is now `"auto"`. Targets other than OpenAI keep plaintext
+  reasoning `summary` and `content` in place, for any `store` value. Before, it
+  was removed, so models such as GLM lost their earlier reasoning. These targets
+  lose opaque `encrypted_content`, because its issuer is unknown. OpenAI targets
+  keep the previous behavior. **Rust source-breaking change:** callers that match
+  exhaustively on `ResponsesReasoningPolicy` must handle `Auto` and
+  `PreservePlaintext`.
+
 ## [0.3.0]
 
 Switchyard 0.3.0 builds on the native server and Rust library introduced in

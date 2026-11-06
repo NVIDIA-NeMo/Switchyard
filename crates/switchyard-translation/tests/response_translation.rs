@@ -8,7 +8,8 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::json;
 use switchyard_translation::{
-    PreservationPolicy, TranslationEngine, TranslationPolicy, WireFormat,
+    ContentBlock, PreservationPolicy, ProviderExtensions, StopReason, TranslationEngine,
+    TranslationPolicy, WireFormat,
 };
 
 use common::{
@@ -255,6 +256,55 @@ fn openai_chat_response_translates_to_anthropic_message() -> TestResult {
     Ok(())
 }
 
+// Verifies a Chat Completions refusal survives both neutral decoding and Anthropic encoding.
+#[test]
+fn openai_chat_refusal_decodes_and_translates_to_anthropic() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "id": "chatcmpl-refusal",
+        "model": "gpt-4o",
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": null,
+                "refusal": "I cannot help with that request."
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    });
+
+    let decoded =
+        engine.decode_response(WireFormat::OpenAiChat, &body, &TranslationPolicy::default())?;
+    let output = decoded.response.first_output().ok_or("missing output")?;
+    assert_eq!(
+        output.content,
+        vec![ContentBlock::Refusal {
+            text: "I cannot help with that request.".to_string()
+        }]
+    );
+    assert_eq!(output.stop_reason, Some(StopReason::ContentFilter));
+
+    let translated = engine
+        .encode_response(
+            WireFormat::AnthropicMessages,
+            &decoded.response,
+            &TranslationPolicy::default(),
+        )?
+        .body;
+    assert_eq!(
+        translated["content"],
+        json!([{"type": "text", "text": "I cannot help with that request."}])
+    );
+    assert_eq!(translated["stop_reason"], "refusal");
+    assert_eq!(
+        translated["stop_details"],
+        json!({"type": "refusal", "category": null, "explanation": null})
+    );
+    Ok(())
+}
+
 // Verifies Anthropic message responses map to OpenAI Chat completions.
 #[test]
 fn anthropic_message_response_translates_to_openai_chat_completion() -> TestResult {
@@ -328,7 +378,7 @@ fn responses_reasoning_usage_translates_to_openai_chat_usage_details() -> TestRe
         json!({"reasoning_tokens": 3})
     );
     assert_eq!(
-        output["usage"]["prompt_tokens_details"]["cache_creation_tokens"],
+        output["usage"]["prompt_tokens_details"]["cache_write_tokens"],
         2
     );
     let decoded = engine
@@ -812,6 +862,12 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
                     "id": "call_1",
                     "type": "function",
                     "function": {"name": "lookup", "arguments": "{\"q\":\"rust\"}"}
+                }, {
+                    "id": "call_2", "type": "function",
+                    "function": {"name": "mcp__docs__search", "arguments": "{\"query\":\"streaming\"}"}
+                }, {
+                    "id": "call_3", "type": "function",
+                    "function": {"name": "exec", "arguments": "{\"input\":\"ls -la\"}"}
                 }]
             },
             "finish_reason": "tool_calls"
@@ -829,10 +885,17 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
         .body;
 
     assert_eq!(output["object"], "response");
-    assert_eq!(output["output"][0]["type"], "function_call");
-    assert_eq!(output["output"][0]["call_id"], "call_1");
-    assert_eq!(output["output"][0]["name"], "lookup");
-    assert_eq!(output["output"][0]["arguments"], "{\"q\": \"rust\"}");
+    assert_eq!(
+        output["output"],
+        json!([
+            {"type": "function_call", "call_id": "call_1", "name": "lookup",
+                "arguments": "{\"q\": \"rust\"}"},
+            {"type": "function_call", "call_id": "call_2", "name": "mcp__docs__search",
+                "arguments": "{\"query\": \"streaming\"}"},
+            {"type": "function_call", "call_id": "call_3", "name": "exec",
+                "arguments": "{\"input\": \"ls -la\"}"}
+        ])
+    );
     assert_eq!(
         output["usage"],
         json!({
@@ -843,6 +906,83 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
             "output_tokens_details": {"reasoning_tokens": 0}
         })
     );
+
+    let policy = TranslationPolicy::default();
+    let request = engine.decode_request(
+        WireFormat::OpenAiResponses,
+        &json!({
+            "input": "Search and list files",
+            "tools": [
+                {"type": "namespace", "name": "mcp__docs", "tools": [
+                    {"type": "function", "name": "search", "parameters": {}}
+                ]},
+                {"type": "custom", "name": "exec", "format": {"type": "text"}}
+            ]
+        }),
+        &policy,
+    )?;
+    let extensions = &request.request.extensions;
+    let empty = ProviderExtensions::default();
+    let mut restored = output.clone();
+    restored["output"] = json!([
+        {"type": "function_call", "call_id": "call_1", "name": "lookup",
+            "arguments": "{\"q\": \"rust\"}"},
+        {"type": "function_call", "call_id": "call_2", "name": "search",
+            "namespace": "mcp__docs", "arguments": "{\"query\": \"streaming\"}"},
+        {"type": "custom_tool_call", "call_id": "call_3", "name": "exec", "input": "ls -la"}
+    ]);
+    let anthropic = engine
+        .translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::AnthropicMessages,
+            &body,
+            &policy,
+        )?
+        .body;
+    let mut preserved = output.clone();
+    preserved["output"][2]["id"] = json!("fc_custom");
+    let mut restored_preserved = restored.clone();
+    restored_preserved["output"][2]["id"] = json!("ctc_custom");
+
+    for (name, source, target, body, extensions, expected) in [
+        (
+            "no extensions",
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &empty,
+            &output,
+        ),
+        (
+            "namespace and custom restored",
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            extensions,
+            &restored,
+        ),
+        (
+            "Anthropic unchanged",
+            WireFormat::OpenAiChat,
+            WireFormat::AnthropicMessages,
+            &body,
+            extensions,
+            &anthropic,
+        ),
+        (
+            "preserved response restored",
+            WireFormat::OpenAiResponses,
+            WireFormat::OpenAiResponses,
+            &preserved,
+            extensions,
+            &restored_preserved,
+        ),
+    ] {
+        let translated =
+            engine.translate_response_with_extensions(source, target, body, extensions, &policy)?;
+        assert_eq!(&translated.body, expected, "{name}");
+        assert!(translated.diagnostics.is_empty(), "{name}");
+    }
     Ok(())
 }
 
@@ -1094,6 +1234,31 @@ fn failed_responses_return_upstream_failure_with_provider_message() -> TestResul
         .ok_or_else(|| format!("{target:?} accepted a failed response"))?;
     assert_eq!(error.kind(), "UpstreamFailure");
     assert!(error.to_string().contains("deterministic upstream failure"));
+    Ok(())
+}
+
+// Verifies Chat `abort`, `error` and `repetition` finish reasons fail the turn.
+#[test]
+fn failed_finish_reasons_return_upstream_failure() -> TestResult {
+    let engine = TranslationEngine::default();
+    for reason in ["abort", "error", "repetition"] {
+        let body = json!({
+            "id": "chatcmpl-test", "object": "chat.completion", "model": "gpt-4o",
+            "choices": [{"index": 0, "finish_reason": reason,
+                "message": {"role": "assistant", "content": "partial"}}]
+        });
+        let error = engine
+            .translate_response(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &body,
+                &TranslationPolicy::default(),
+            )
+            .err()
+            .ok_or_else(|| format!("accepted finish_reason {reason}"))?;
+        assert_eq!(error.kind(), "UpstreamFailure");
+        assert!(error.to_string().contains(reason), "{error}");
+    }
     Ok(())
 }
 

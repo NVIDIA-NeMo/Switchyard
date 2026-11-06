@@ -1,1 +1,0 @@
-You are in the planning phase. Inspect the task and relevant code, then form a concrete implementation plan before modifying any files. Use read-only tools as needed. Do not edit until the plan is complete. Your first edit hands execution to another model.

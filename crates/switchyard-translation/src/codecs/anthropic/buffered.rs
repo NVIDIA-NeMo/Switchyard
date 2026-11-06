@@ -20,7 +20,7 @@ use crate::format::{FormatId, WireFormat};
 use crate::llm::{
     AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
     MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
-    SamplingParams, StopReason, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    SamplingParams, StopReason, Tool, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -29,7 +29,7 @@ use crate::util::{
     sanitize_anthropic_tool_use_id,
 };
 use crate::util::{
-    json_string, push_lossy, reject_responses_builtin_tool_item, stable_id, string_value,
+    json_string, push_lossy, reject_responses_native_input_item, stable_id, string_value,
     validate_request_capabilities,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -245,7 +245,7 @@ impl FormatCodec for AnthropicMessagesCodec {
         );
 
         if !tools.is_empty() {
-            body.insert("tools".to_string(), encode_anthropic_tools(tools));
+            body.insert("tools".to_string(), encode_anthropic_tools(tools)?);
         }
         let parallel_tool_calls = request
             .extensions
@@ -783,25 +783,37 @@ fn decode_anthropic_file_source(block: &Map<String, Value>) -> FileSource {
 }
 
 // Decodes Anthropic tool definitions into normalized tool definitions.
-fn decode_anthropic_tools(value: Option<&Value>) -> Vec<ToolDefinition> {
+fn decode_anthropic_tools(value: Option<&Value>) -> Vec<Tool> {
     value
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .filter_map(Value::as_object)
         .filter_map(|tool| {
+            if tool
+                .get("type")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind != "custom")
+            {
+                return Some(Tool::Provider {
+                    provider: WireFormat::AnthropicMessages.into(),
+                    raw: Value::Object(tool.clone()),
+                });
+            }
             let name = tool.get("name").and_then(Value::as_str)?.to_string();
-            (!name.is_empty()).then(|| ToolDefinition {
-                name,
-                description: tool
-                    .get("description")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
-                parameters: tool
-                    .get("input_schema")
-                    .cloned()
-                    .unwrap_or_else(|| json!({})),
-                strict: tool.get("strict").and_then(Value::as_bool),
+            (!name.is_empty()).then(|| {
+                Tool::Function(ToolDefinition {
+                    name,
+                    description: tool
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(ToOwned::to_owned),
+                    parameters: tool
+                        .get("input_schema")
+                        .cloned()
+                        .unwrap_or_else(|| json!({})),
+                    strict: tool.get("strict").and_then(Value::as_bool),
+                })
             })
         })
         .collect()
@@ -925,7 +937,7 @@ fn encode_anthropic_content_with_policy(
         crate::codecs::openai_media::validate_media(block, WireFormat::AnthropicMessages)?;
         match block {
             ContentBlock::Unknown { provider, raw } => {
-                reject_responses_builtin_tool_item(provider, raw, WireFormat::AnthropicMessages)?;
+                reject_responses_native_input_item(provider, raw, WireFormat::AnthropicMessages)?;
                 push_lossy(
                     diagnostics,
                     policy,
@@ -1118,6 +1130,11 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Result<Vec<Value>> {
             }),
             MediaSource::Raw(raw) => raw.clone(),
         }],
+        ContentBlock::Mcp(_) => {
+            return Err(TranslationError::LossyConversion(
+                "MCP history encoding is not implemented".into(),
+            ));
+        }
         ContentBlock::Unknown { raw, .. } => vec![raw.clone()],
     })
 }
@@ -1137,6 +1154,9 @@ fn encode_one_anthropic_tool_result_block(block: &ContentBlock) -> Result<Vec<Va
         ContentBlock::Unknown { raw, .. } => {
             Ok(vec![json!({"type": "text", "text": json_string(raw)})])
         }
+        ContentBlock::Mcp(_) => Err(TranslationError::LossyConversion(
+            "MCP history encoding is not implemented".into(),
+        )),
         ContentBlock::Reasoning { .. }
         | ContentBlock::Audio { .. }
         | ContentBlock::Video { .. }
@@ -1198,11 +1218,21 @@ fn ensure_anthropic_tool_input_object(arguments: Value) -> Value {
 }
 
 // Encodes normalized tool definitions into Anthropic tool JSON.
-fn encode_anthropic_tools(tools: &[ToolDefinition]) -> Value {
-    Value::Array(
+fn encode_anthropic_tools(tools: &[Tool]) -> Result<Value> {
+    Ok(Value::Array(
         tools
             .iter()
             .map(|tool| {
+                if let Tool::Provider { provider, raw } = tool
+                    && provider.as_str() == WireFormat::AnthropicMessages.as_str()
+                {
+                    return Ok(raw.clone());
+                }
+                let tool = tool.function().ok_or_else(|| {
+                    TranslationError::LossyConversion(
+                        "MCP and provider tool encoding is not implemented".into(),
+                    )
+                })?;
                 let mut item = json!({
                     "name": tool.name,
                     "description": tool.description.clone().unwrap_or_default(),
@@ -1211,10 +1241,10 @@ fn encode_anthropic_tools(tools: &[ToolDefinition]) -> Value {
                 if let Some(strict) = tool.strict {
                     item["strict"] = Value::Bool(strict);
                 }
-                item
+                Ok(item)
             })
-            .collect(),
-    )
+            .collect::<Result<_>>()?,
+    ))
 }
 
 // Encodes normalized tool choice into Anthropic tool-choice JSON.
@@ -1240,8 +1270,13 @@ fn decode_anthropic_usage(value: Option<&Value>) -> Usage {
         .and_then(Value::as_u64);
     let output_tokens = value.get("output_tokens").and_then(Value::as_u64);
     Usage {
+        provider_cost: crate::codecs::common::provider_cost(value),
         input_tokens,
-        cache: Usage::cache_details(cached_input_tokens, cache_creation_input_tokens),
+        cache: crate::codecs::common::cache_usage_details(
+            value,
+            cached_input_tokens,
+            cache_creation_input_tokens,
+        ),
         output_tokens,
         total_tokens: input_tokens.zip(output_tokens).map(|(input, output)| {
             input
@@ -1273,7 +1308,7 @@ fn encode_anthropic_usage(usage: &Usage) -> Value {
     if let Some(thinking_tokens) = usage.reasoning_tokens {
         value["output_tokens_details"] = json!({"thinking_tokens": thinking_tokens});
     }
-    value
+    crate::codecs::common::encode_usage_metadata(value, usage)
 }
 
 // Maps Anthropic stop reasons to normalized stop reasons.

@@ -39,7 +39,7 @@ use switchyard_protocol::{
 };
 
 use crate::core::algorithm::{Algorithm, Driver, RoutingOutcome};
-use crate::core::processor::{Event, Processor};
+use crate::core::processor::Event;
 use crate::{LibsyError, Result};
 
 mod budget;

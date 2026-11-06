@@ -207,7 +207,7 @@ fn encode(request: &DecisionRequest) -> Result<Value> {
             }),
         );
     }
-    Ok(json!({"model": model, "state": request.context, "questions": questions}))
+    Ok(json!({"model": model, "state": request.input, "questions": questions}))
 }
 
 #[derive(Deserialize)]

@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+
+[llm_clients.dynamo]
+format = "openai_chat"
+base_url = "http://inference-gateway.agentgateway-system.svc.cluster.local/v1"
+timeout_ms = 2000
+max_retries = 0
+
+[targets.qwen-small]
+id = "Qwen/Qwen3-0.6B"
+llm_client = "dynamo"
+
+[targets.qwen-large]
+id = "Qwen/Qwen3-1.7B"
+llm_client = "dynamo"
+extra_body = { temperature = 0, chat_template_kwargs = { enable_thinking = false } }
+
+[routes.task]
+id = "auto"
+type = "llm_classifier"
+mode = "capability"
+classifier_target = "qwen-large"
+weak_target = "qwen-small"
+strong_target = "qwen-large"
+classify_trigger = "new_session"
+base_threshold = 0.5
+fail_open = true
+max_output_tokens = 256
+
+# Remove this table for task-only routing. Tune limits for your deployment.
+[routes.task.infra]
+max_signal_age_ms = 3000
+min_waiting_requests = 4
+max_capable_inflight = 2
+
+# The classifier calls this model through the same gateway without classifying again.
+[routes.large_direct]
+id = "Qwen/Qwen3-1.7B"
+type = "passthrough"
+target = "qwen-large"

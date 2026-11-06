@@ -356,7 +356,7 @@ async fn calls_preserve_candidates_and_attribute_the_serving_executor() {
             };
             let mut response = reply(text);
             response.set_served_model(&served);
-            call.respond(Ok(response))
+            call.respond(std::future::ready(Ok(response))).await
         }
     })
     .await

@@ -54,24 +54,21 @@ mode = "capability"
 classifier_target = "judge"
 strong_target = "quality"
 weak_target = "economy"
-
-[routes.capability.decision]
-cutoff = 0.4
-candidates = { a = "quality", b = "economy" }
-evidence = { candidates = { a = "Higher-quality model", b = "Lower-cost model" } }
 ```
 
 - `endpoint` is the full System One URL. Set the named key environment variable
   before startup; caller credentials are not forwarded to the decision provider.
-- Candidate labels must cover both tiers. Extra candidates add context, not routes.
-  Supply evidence from your evaluations and choose a cutoff using those results.
-- `decision.instructions` can replace the default relative-advantage instructions.
-  It must preserve the meaning of `advantage` and `no_advantage`. Evidence is passed unchanged.
-- The capable tier is selected only when its advantage score exceeds `cutoff`.
+- The judge receives the conversation messages and chooses between `capable` and
+  `efficient`. Choose a cutoff using results from your evaluations. The default is `0.6`.
+- A `[routes.capability.decision]` table changes the defaults.
+  `decision.cutoff` sets the cutoff.
+  `decision.instructions` replaces the default instructions.
+  It must preserve the meaning of the choices.
+- The capable tier is selected when the `capable` probability is above `cutoff`.
   Client failures and deadlines use the capable tier by default; set `fail_open = false`
   on the route to propagate those errors.
 - Decision targets cannot serve final answers. Both normal requests and `/v1/decision`
-  use this configuration. Omit `decision` to keep the existing LLM judge settings.
+  use this configuration. A judge called through an LLM target keeps the LLM judge settings.
 
 ## Add an algorithm
 

@@ -12,7 +12,10 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - "crates/libsy/**"
+      - "crates/libsy-llm-client/**"
+      - "crates/switchyard-runner/**"
       - "crates/protocol/**"
+      - "crates/switchyard-translation/**"
       - ".github/workflows/docs.yml"
   push:
     branches: [main]
@@ -26,7 +29,10 @@ on:
       - "Cargo.lock"
       - "rust-toolchain.toml"
       - "crates/libsy/**"
+      - "crates/libsy-llm-client/**"
+      - "crates/switchyard-runner/**"
       - "crates/protocol/**"
+      - "crates/switchyard-translation/**"
       - ".github/workflows/docs.yml"
 
 # Cancel superseded PR runs; keep main builds so gh-pages writes don't race.
@@ -61,6 +67,9 @@ jobs:
           cargo doc --locked --no-deps
           --package switchyard-libsy
           --package switchyard-protocol
+          --package switchyard-translation
+          --package switchyard-llm-client
+          --package switchyard-runner
       - name: Add crate documentation to site
         run: |
           mkdir -p site/rust

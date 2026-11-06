@@ -4,18 +4,25 @@
 [workspace]
 resolver = "3"
 members = [
+    "examples/claude",
+    "examples/dynamo-preproc",
     "crates/libsy",
     "crates/libsy-llm-client",
     "crates/prefill-router",
     "crates/switchyard-py",
+    "crates/switchyard-node",
+    "crates/switchyard-ffi",
     "crates/protocol",
     "crates/switchyard-nemo-relay-plugin",
     "crates/switchyard-runner",
+    "crates/switchyard-costs",
     "crates/switchyard-server",
     "crates/switchyard-skill-distillation",
     "crates/switchyard-soak",
     "crates/switchyard-translation",
 ]
+
+exclude = ["experimental/switchyard-desktop"]
 
 [workspace.package]
 version = "0.3.0"
@@ -36,7 +43,7 @@ http = "1"
 httpdate = "1"
 jsonschema = { version = "0.49.4", default-features = false }
 jsonptr = { version = "0.8.1", default-features = false, features = ["std", "json", "resolve"] }
-nemo-relay-plugin = ">=0.8.0, <1.0.0"
+nemo-relay-plugin = "0.10.0"
 parking_lot = "0.12"
 prefill-router = { path = "crates/prefill-router", version = "0.3.0" }
 rand = "0.10"
@@ -44,6 +51,7 @@ regex = "1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+switchyard-costs = { path = "crates/switchyard-costs", version = "0.3.0" }
 switchyard-libsy = { path = "crates/libsy", version = "0.3.0" }
 switchyard-llm-client = { path = "crates/libsy-llm-client", version = "0.3.0" }
 switchyard-protocol = { path = "crates/protocol", version = "0.3.0" }

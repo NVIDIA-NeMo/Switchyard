@@ -17,6 +17,7 @@ ENV PATH="/opt/switchyard/.venv/bin:${PATH}" \
 
 COPY pyproject.toml uv.lock README.md Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY examples/dynamo-preproc ./examples/dynamo-preproc
 COPY switchyard ./switchyard
 COPY switchyard_rust ./switchyard_rust
 

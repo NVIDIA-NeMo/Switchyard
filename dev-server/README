@@ -1,8 +1,9 @@
 # Switchyard dev server
 
-```curl --insecure -s 'https://switchyard-dev.nvidia.com/v1/chat/completions' -H 'Content-Type: application/json' -d '{"messages":[{"content":"Hello from Switchyard","role":"user"}],"model":"switchyard/passthrough","max_tokens": 4096}'```
+```curl --insecure -s 'https://switchyard-dev.nvidia.com/v1/chat/completions' -H 'Content-Type: application/json' -d '{"messages":[{"content":"Hello from Switchyard","role":"user"}],"model":"switchyard/auto","max_tokens": 4096}'```
 
 It has the following endpoints connected to Inference Hub:
+. `switchyard/auto`: Composite. Decision model as classifier (Mercury Decide), then Stage on tool call signals.
 * `switchyard/noop`
 * `switchyard/passthrough` -> nvidia/openai/gpt-oss-20b
 * `switchyard/random` -> oss-20b (above) and nvidia_dynamo/deepseek-ai/deepseek-v4-flash-nvfp4-elb

@@ -17,7 +17,7 @@ serde_json = "1"
 | Area | Types |
 |---|---|
 | Conversation | [`LlmRequest`], [`Message`], [`InstructionBlock`], [`ContentBlock`] |
-| Tools | [`ToolDefinition`], [`ToolChoice`], [`ToolCall`], [`ToolResult`] |
+| Tools | [`Tool`], [`ToolDefinition`], [`McpToolset`], [`McpToolConfig`], [`McpContent`], [`ToolChoice`], [`ToolCall`], [`ToolResult`] |
 | Response | [`AggLlmResponse`], [`ResponseOutput`], [`Usage`], [`StopReason`] |
 | Streaming | [`LlmResponse`], [`LlmResponseStream`], [`LlmResponseStreamEvent`], [`LlmResponseChunk`], [`ProviderStreamEvent`] |
 | Envelope | [`Request`], [`Response`], [`Metadata`] |
@@ -75,7 +75,7 @@ let request = Request {
                 "required": ["name"]
             }),
             strict: Some(true),
-        }],
+        }.into()],
         tool_choice: Some(ToolChoice::Auto),
         sampling: SamplingParams {
             temperature: Some(0.2),
@@ -96,7 +96,7 @@ let request = Request {
     ..Request::default()
 };
 
-assert_eq!(request.llm_request.tools[0].name, "lookup_metric");
+assert_eq!(request.llm_request.tools[0].function().map(|tool| tool.name.as_str()), Some("lookup_metric"));
 ```
 
 ## Response forms

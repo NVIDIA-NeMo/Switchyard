@@ -21,6 +21,20 @@ impl StreamCodec for AnthropicMessagesStreamCodec {
         WireFormat::AnthropicMessages.into()
     }
 
+    fn is_terminal_event(&self, event: &Value) -> bool {
+        event.get("type").and_then(Value::as_str) == Some("message_stop")
+    }
+
+    fn sse_done_is_terminal(&self) -> bool {
+        false
+    }
+
+    fn stamp_streamed_response_model(&self, event: &mut Value, served_model: &str) {
+        if let Some(message) = event.get_mut("message").and_then(Value::as_object_mut) {
+            message.insert("model".to_string(), Value::String(served_model.to_string()));
+        }
+    }
+
     fn decode_event(
         &self,
         state: &mut StreamTranslationState,
@@ -633,6 +647,20 @@ fn capture_anthropic_usage(state: &mut StreamTranslationState, usage: &Value) {
     if let Some(value) = usage.get("input_tokens").and_then(Value::as_u64) {
         state.usage.input_tokens = Some(value);
     }
+    if let Some(cost) = crate::codecs::common::provider_cost(usage) {
+        state.usage.provider_cost = Some(cost);
+    }
+    if let Some(tokens) = usage
+        .get("cache_creation")
+        .and_then(|details| details.get("ephemeral_1h_input_tokens"))
+        .and_then(Value::as_u64)
+    {
+        state
+            .usage
+            .cache
+            .get_or_insert_with(Default::default)
+            .cache_creation_1h_input_tokens = Some(tokens);
+    }
     if let Some(value) = usage.get("output_tokens").and_then(Value::as_u64) {
         state.usage.output_tokens = Some(value);
     }
@@ -681,7 +709,7 @@ fn anthropic_stream_usage(state: &StreamTranslationState) -> Value {
             json!({"thinking_tokens": value}),
         );
     }
-    Value::Object(usage)
+    crate::codecs::common::encode_usage_metadata(Value::Object(usage), &state.usage)
 }
 
 // Converts any upstream message ID into an Anthropic-looking message ID.
@@ -734,5 +762,35 @@ fn tool_input_delta(value: &Value) -> Option<String> {
         Value::String(text) if !text.is_empty() => Some(text.clone()),
         Value::Object(object) if !object.is_empty() => serde_json::to_string(value).ok(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_stream_completion() {
+        let codec = AnthropicMessagesStreamCodec;
+        assert!(!codec.sse_done_is_terminal());
+        assert!(codec.is_terminal_event(&json!({"type": "message_stop"})));
+        assert!(!codec.is_terminal_event(&json!({"type": "message_delta"})));
+    }
+
+    #[test]
+    fn anthropic_replay_stamps_the_served_model_inside_message() {
+        let mut event = json!({
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "model": "provider/model",
+                "provider_extension": true,
+            },
+        });
+
+        AnthropicMessagesStreamCodec.stamp_streamed_response_model(&mut event, "served/model");
+
+        assert_eq!(event["message"]["model"], "served/model");
+        assert_eq!(event["message"]["provider_extension"], true);
     }
 }

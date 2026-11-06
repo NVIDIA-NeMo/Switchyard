@@ -18,6 +18,7 @@ use super::util::subagent::SubagentOverride;
 use crate::Result;
 use crate::core::algorithm::Driver;
 use crate::core::classifier::{Classification, Classifier, Score};
+use crate::core::state::State;
 use crate::core::testing::{echo, test_drive_with_models};
 use switchyard_protocol::{
     Category, Metadata, ModelId, Request, Response, completion_text, slice_to_header_map,
@@ -31,7 +32,7 @@ struct AlwaysOrchestrator;
 impl Classifier for AlwaysOrchestrator {
     async fn score(
         &self,
-        _state: &mut (),
+        _state: &mut State,
         _request: &mut Request,
         _driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
@@ -66,7 +67,7 @@ fn request(headers: &[(&str, &str)]) -> Request {
 fn router() -> Arc<FallThrough> {
     let affinity = Arc::new(AffinityRouter::for_subagents());
     Arc::new(
-        FallThrough::<()>::new()
+        FallThrough::new()
             .with_processor(affinity.clone())
             .with_classifier(affinity)
             .with_classifier(Arc::new(SubagentOverride::new("worker")))
@@ -145,7 +146,7 @@ async fn harness_maintenance_turns_are_not_forced_to_the_worker() -> Result<()> 
 /// Builds a cascade whose override scores `worker`, sharing `affinity` across instances.
 fn router_overriding_to(affinity: Arc<AffinityRouter>, worker: &str) -> Arc<FallThrough> {
     Arc::new(
-        FallThrough::<()>::new()
+        FallThrough::new()
             .with_processor(affinity.clone())
             .with_classifier(affinity)
             .with_classifier(Arc::new(SubagentOverride::new(worker)))
@@ -205,7 +206,7 @@ async fn a_cascade_without_the_override_still_routes_root_traffic() -> Result<()
     // cascade, which is the point of composing them rather than nesting one in the other.
     let affinity = Arc::new(AffinityRouter::for_subagents());
     let router = Arc::new(
-        FallThrough::<()>::new()
+        FallThrough::new()
             .with_processor(affinity.clone())
             .with_classifier(affinity)
             .with_classifier(Arc::new(AlwaysOrchestrator)),

@@ -16,6 +16,10 @@ use stage_router::{StageRouterCumulative, StageRouterStatsSnapshot};
 
 const ADVISOR_GATE: &str = "advisor_gate";
 const STAGE_ROUTER: &str = "stage_router";
+// A composite route is a stage route under another name: CompositeRouter is
+// build_stage_route(..).with_name("composite") and its StageClassifier records
+// the same switchyard.stage_router.* instruments.
+const COMPOSITE: &str = "composite";
 
 /// Owns algorithm metric baselines behind the generic server stats interface.
 pub(super) struct AlgorithmStats {
@@ -47,9 +51,9 @@ impl AlgorithmStats {
             advisor_gate_baseline: algorithms
                 .contains(ADVISOR_GATE)
                 .then(|| AdvisorGateCumulative::collect(&families)),
-            stage_router_baseline: algorithms
-                .contains(STAGE_ROUTER)
-                .then(|| StageRouterCumulative::collect(&families)),
+            stage_router_baseline: (algorithms.contains(STAGE_ROUTER)
+                || algorithms.contains(COMPOSITE))
+            .then(|| StageRouterCumulative::collect(&families)),
             registry,
         }
     }

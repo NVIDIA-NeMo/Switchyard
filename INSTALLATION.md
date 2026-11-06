@@ -32,50 +32,19 @@ switchyard-server --config routes.toml --dry-run
 switchyard-server --config routes.toml --port 4000
 ```
 
-See [Getting Started](docs/getting_started.md#server-path) for a complete TOML
-deployment and [`switchyard-server`](crates/switchyard-server/README.md) for the
+See [Local Evaluation](docs/operations/local_evaluation.md) for a complete TOML
+example and [`switchyard-server`](crates/switchyard-server/README.md) for the
 configuration reference.
 
-## Linux Codex Service
+## Experimental desktop app
 
-This setup is for single-user Linux machines. It requires a systemd user
-session, the Rust toolchain listed above, and Codex CLI 0.134.0 or newer
-logged in with a ChatGPT account. Another user's process could take the local
-port while the service is stopped and receive your login and prompts.
-
-From a checkout, preview or install the service:
-
-```bash
-make install-linux-dry-run
-make install-linux
-systemctl --user status switchyard
-codex -p sy
-```
-
-The installer builds and installs `~/.switchyard/bin/switchyard-server`.
-It creates `~/.switchyard/composite.toml` if missing and keeps existing edits.
-It replaces `~/.config/systemd/user/switchyard.service` and restarts the service.
-It writes `~/.codex/sy.config.toml`, backing up a changed profile first.
-It leaves shell rc files unchanged. Use `codex -p sy` to select the profile;
-`codex login` and other management commands still work as usual.
-The profile format requires [Codex 0.134.0 or newer](https://developers.openai.com/codex/config-advanced#profiles).
-Remove any old `[profiles.sy]` table from `~/.codex/config.toml` before using it.
-
-Set `SY_HOME` or `SY_PORT` to change the server directory or port (default 4123).
-`SY_HOME` must not contain whitespace, control characters, or a trailing
-backslash; `SY_PORT` must contain only digits. `XDG_CONFIG_HOME` and `CODEX_HOME`
-set the systemd and Codex config directories.
-
-Read server logs with `journalctl --user -u switchyard`. Routing records are
-stored in `~/.switchyard/routing.jsonl`. Use `systemctl --user edit switchyard`
-for service changes that survive reinstalling.
-
-Remove the service and profile with `make uninstall-linux`. This also removes
-marked Codex aliases left by older installs from existing `.bashrc` and
-`.zshrc` files. If upgrading an older install, uninstall first and run
-`unalias codex` in any open shell. The server directory, routing records,
-profile backups, and systemd drop-in files stay in place. Use the same path
-overrides when installing and uninstalling.
+The desktop app, terminal app, and their installer live in
+`experimental/switchyard-desktop`. They are outside Switchyard release QA and
+have no support or compatibility guarantee. The installer also sets up the
+server as a user service and the Linux Codex service. It does not save API keys:
+the installed server starts only after you save them in the app's
+**Settings → Server keys**. See the
+[desktop installation guide](experimental/switchyard-desktop/INSTALLATION.md).
 
 ## Rust Libraries
 
@@ -106,3 +75,6 @@ uv run pytest tests/ -v
 
 The `dev` dependency group contains testing and linting tools and is not exposed
 in the published wheel metadata.
+
+See the experimental [desktop and terminal quickstart](experimental/switchyard-desktop/README.md) for
+first-run setup, reviewed settings changes, usage, recovery, and safe uninstall.

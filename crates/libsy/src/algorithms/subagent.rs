@@ -14,13 +14,12 @@ use super::util::subagent::SubagentGate;
 use crate::algorithms::llm_class::DefaultCategoryClassifier;
 use crate::core::algorithm::{Algorithm, Driver};
 use crate::core::classifier::Classifier;
-use crate::core::state::State;
 use crate::{LibsyError, Result, RoutingOutcome};
 
 /// Runtime components for delegated sub-agent routing.
 pub struct SubagentRouterConfig {
     /// Classifier invoked for delegated work according to `classify_trigger`.
-    pub classifier: Arc<dyn Classifier<State>>,
+    pub classifier: Arc<dyn Classifier>,
     /// Child model category used when `classifier` abstains.
     pub default_target: Category,
     /// Controls whether each child is classified once or on every request.
@@ -44,7 +43,7 @@ impl SubagentRouterConfig {
 /// Routes delegated work independently while preserving the parent algorithm for other traffic.
 pub struct SubagentRouter {
     parent: Arc<dyn Algorithm>,
-    subagent: FallThrough<State>,
+    subagent: FallThrough,
     /// Whether the one-time warning about a harness without sub-agent identity has been emitted.
     identity_warning_emitted: AtomicBool,
 }
@@ -151,7 +150,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl Classifier<State> for ScriptedClassifier {
+    impl Classifier for ScriptedClassifier {
         async fn score(
             &self,
             _state: &mut State,
@@ -193,7 +192,7 @@ mod tests {
         }))
     }
 
-    fn configured(classifier: Arc<dyn Classifier<State>>) -> crate::Result<Arc<SubagentRouter>> {
+    fn configured(classifier: Arc<dyn Classifier>) -> crate::Result<Arc<SubagentRouter>> {
         Ok(Arc::new(SubagentRouter::new(
             Arc::new(Passthrough),
             SubagentRouterConfig {

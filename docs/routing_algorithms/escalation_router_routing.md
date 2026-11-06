@@ -186,12 +186,14 @@ next request.
 
 Anchor and transcript caps remain fixed. Set the route-level
 `max_output_tokens` key to change the judge's reply budget. Any decline or
-verdict without new evidence resets the streak to zero.
+verdict without new evidence resets the streak to zero. Set `judge_deadline_ms`
+to bound the whole judge consultation in milliseconds; on expiry the judge is
+treated as unavailable and the session stays where it is.
 
 ## Run the route
 
 After installing the Rust server, as described in
-[Getting Started](../getting_started.md#install-the-server), export the provider
+[Local Evaluation](../operations/local_evaluation.md#install-the-server), export the provider
 credential, validate the configuration, and start the binary:
 
 ```bash
@@ -252,7 +254,9 @@ retained nor logged.
 ## Related
 
 - [Routing Overview](overview.md): compare all supported routing strategies.
+- [Model Selection](model_selection.md): choose the weak, strong, and judge
+  models, with measured pairs.
 - [LLM Classifier Routing](llm_classifier_routing.md): pick a tier up front
   instead of judging the run.
-- [Architecture](../architecture.md): the end-to-end request lifecycle and system
-  boundaries.
+- [Mechanics of Libsy](../mechanics_of_libsy.md): the execution model and host responsibilities.
+- [Tuning](../tuning/index.md): check your current route and compare candidate settings on your workload.

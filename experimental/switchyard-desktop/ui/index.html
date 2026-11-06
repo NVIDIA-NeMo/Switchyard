@@ -1,0 +1,55 @@
+<!doctype html>
+<!-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved. -->
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<html lang="en" data-theme="canary">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Switchyard</title>
+  <link rel="stylesheet" href="app.css">
+  <link rel="stylesheet" href="appearance.css">
+  <script defer src="appearance.js"></script>
+  <script defer src="vendor/echarts.min.js"></script>
+  <script defer src="combobox.js"></script>
+  <script defer src="analytics.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <aside class="app-sidebar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 17 17 2"/><path d="m2 14 8 8"/><path d="m5 11 8 8"/><path d="m8 8 8 8"/><path d="m11 5 8 8"/><path d="m14 2 8 8"/><path d="M7 22 22 7"/></svg></span>
+      <div><h1>Switchyard</h1><p class="sidebar-caption">Model routing</p></div>
+    </div>
+    <nav aria-label="App sections">
+      <!-- Icons from Lucide (ISC license, ui/vendor/LICENSE.lucide). -->
+      <button data-page="overview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/></svg><span>Overview</span></button>
+      <button data-page="routes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg><span>Routes</span></button>
+      <button data-page="install"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22v-5"/><path d="M15 8V2"/><path d="M17 8a1 1 0 0 1 1 1v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V9a1 1 0 0 1 1-1z"/><path d="M9 8V2"/></svg><span>Connect tools</span></button>
+      <button data-page="usage"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg><span>Usage</span></button>
+      <button data-page="sessions"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19h8"/><path d="m4 17 6-6-6-6"/></svg><span>Sessions</span></button>
+      <button data-page="settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 17H5"/><path d="M19 7h-9"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></svg><span>Settings</span></button>
+    </nav>
+    <footer>Local routing workbench</footer>
+  </aside>
+  <main>
+    <div class="window-drag-strip" data-tauri-drag-region aria-hidden="true"></div>
+    <header class="app-header" data-tauri-drag-region>
+      <h2 id="title" tabindex="-1">Overview</h2>
+      <div class="refresh-controls"><small id="freshness" aria-live="off">Loading…</small><button id="refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>Refresh</button></div>
+    </header>
+    <div id="server-state" class="server-state" role="status" aria-live="polite" hidden></div>
+    <p id="page-errors" role="status" aria-live="polite" hidden></p>
+    <div id="notification" class="notification" hidden>
+      <div class="notification-body">
+        <p id="status" role="status" aria-live="polite" aria-atomic="true"></p>
+        <details id="notification-details" hidden>
+          <summary>Details</summary>
+          <pre id="notification-detail-text"></pre>
+        </details>
+      </div>
+      <button id="dismiss-notification" aria-label="Dismiss notification" title="Dismiss notification">×</button>
+    </div>
+    <section id="content" aria-label="Page content"></section>
+  </main>
+</body>
+</html>

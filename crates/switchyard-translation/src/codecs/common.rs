@@ -6,7 +6,7 @@
 use serde_json::{Map, Value};
 
 use crate::error::{Result, TranslationError};
-use crate::llm::{ContentBlock, LlmRequest, ToolChoice, ToolDefinition};
+use crate::llm::{ContentBlock, LlmRequest, Tool, ToolChoice};
 
 // Internal provenance survives mutations that invalidate exact request replay.
 pub(crate) const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
@@ -19,7 +19,7 @@ pub(crate) fn is_anthropic_request(request: &LlmRequest) -> bool {
 /// Converts an OpenAI allowed-tools policy to a restricted function list and mode.
 pub(crate) fn allowed_function_tools(
     request: &LlmRequest,
-) -> Result<Option<(Vec<ToolDefinition>, ToolChoice)>> {
+) -> Result<Option<(Vec<Tool>, ToolChoice)>> {
     let Some(ToolChoice::Raw(choice)) = &request.tool_choice else {
         return Ok(None);
     };
@@ -63,7 +63,12 @@ pub(crate) fn allowed_function_tools(
             }
             _ => name.to_string(),
         };
-        if !request.tools.iter().any(|tool| tool.name == name) {
+        if !request
+            .tools
+            .iter()
+            .filter_map(Tool::function)
+            .any(|tool| tool.name == name)
+        {
             return Err(error());
         }
         names.push(name);
@@ -73,7 +78,10 @@ pub(crate) fn allowed_function_tools(
     let tools = request
         .tools
         .iter()
-        .filter(|tool| names.contains(&tool.name))
+        .filter(|tool| {
+            tool.function()
+                .is_some_and(|tool| names.contains(&tool.name))
+        })
         .cloned()
         .collect();
     Ok(Some((tools, mode)))
@@ -221,6 +229,51 @@ pub(crate) fn provider_extensions(
         }
     }
     extensions
+}
+
+/// Invalid charges remain unknown so accounting can use configured token rates.
+pub(crate) fn provider_cost(value: &Map<String, Value>) -> Option<f64> {
+    value
+        .get("cost")
+        .and_then(Value::as_f64)
+        .filter(|cost| cost.is_finite() && *cost >= 0.0)
+}
+
+/// Cache duration must survive decoding because one-hour writes can have a different rate.
+pub(crate) fn cache_usage_details(
+    value: &Map<String, Value>,
+    cached: Option<u64>,
+    created: Option<u64>,
+) -> Option<Box<crate::llm::InputCacheUsage>> {
+    let one_hour = value
+        .get("cache_creation")
+        .and_then(|details| details.get("ephemeral_1h_input_tokens"))
+        .and_then(Value::as_u64);
+    let mut cache = crate::llm::Usage::cache_details(cached, created);
+    if let Some(tokens) = one_hour {
+        cache
+            .get_or_insert_with(Default::default)
+            .cache_creation_1h_input_tokens = Some(tokens);
+    }
+    cache
+}
+
+/// These fields preserve provider charges and cache duration across response formats.
+pub(crate) fn encode_usage_metadata(mut value: Value, usage: &crate::llm::Usage) -> Value {
+    if let Some(cost) = usage
+        .provider_cost
+        .filter(|cost| cost.is_finite() && *cost >= 0.0)
+    {
+        value["cost"] = serde_json::json!(cost);
+    }
+    if let Some(tokens) = usage
+        .cache
+        .as_ref()
+        .and_then(|cache| cache.cache_creation_1h_input_tokens)
+    {
+        value["cache_creation"] = serde_json::json!({"ephemeral_1h_input_tokens": tokens});
+    }
+    value
 }
 
 #[cfg(test)]

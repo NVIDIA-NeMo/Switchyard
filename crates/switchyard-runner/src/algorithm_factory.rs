@@ -1,0 +1,52 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+//! Algorithm construction from deployment TOML without provider clients.
+
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
+use libsy::{Algorithm, RuntimeModels};
+
+use crate::RunnerError;
+use crate::config::DeploymentConfig;
+
+pub(crate) type AlgorithmAndModels = (Arc<dyn Algorithm>, RuntimeModels);
+
+/// Parsed deployment configuration for building algorithms with host-owned execution.
+pub struct AlgorithmFactory {
+    pub(crate) config: DeploymentConfig,
+}
+
+impl AlgorithmFactory {
+    /// Parses deployment TOML without resolving credentials or constructing provider clients.
+    /// Invalid TOML returns a configuration error; routing settings are checked by [`Self::build`].
+    pub fn from_toml(source: &str) -> Result<Self, RunnerError> {
+        let mut config: DeploymentConfig = toml::from_str(source).map_err(|error| {
+            RunnerError::configuration_source(format!("failed to parse TOML: {error}"), error)
+        })?;
+        config.infer_decision_judges();
+        Ok(Self { config })
+    }
+
+    /// Builds algorithms and their model groups, keyed by configured route `id`.
+    ///
+    /// LLM calls and outcomes use target names; the host resolves their provider IDs and
+    /// owns target prompts, provider settings and transport. Decision calls use provider IDs.
+    /// Reuse the returned algorithms across requests to retain algorithm-owned state.
+    pub fn build(&self) -> Result<BTreeMap<String, AlgorithmAndModels>, RunnerError> {
+        self.config.validate()?;
+        if self.config.requires_target_admission() {
+            return Err(RunnerError::configuration(
+                "target eligibility requires Runner admission; use Runner instead of AlgorithmFactory",
+            ));
+        }
+        self.config
+            .build_algorithms()
+            .map(|entry| {
+                let (_, config, algorithm) = entry?;
+                Ok((config.id.to_string(), algorithm))
+            })
+            .collect()
+    }
+}
