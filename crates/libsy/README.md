@@ -25,6 +25,7 @@ tokio = { version = "1", features = ["macros", "rt"] }
 | [`Random`] | Select among any number of targets using uniform or weighted routing. |
 | [`LlmTaskClassifier`] | Ask a judge model to choose an efficient or capable target. |
 | [`StageRouter`] | Route coding-agent turns from tool and progress signals, with an optional judge fallback. |
+| [`SelfDelegation`] | Serve an efficient model that starts each reply with a route line, and hand its cloud sentinel to a capable model. |
 
 [`Noop`] is a test helper, not a production routing algorithm.
 

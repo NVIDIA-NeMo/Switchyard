@@ -1,0 +1,49 @@
+{
+  "schema_version": "native-v1",
+  "description": "Shared fixtures for the native-v1 route line. Consumed by the Rust self_delegation route type (classification at serving) and by the Python native_harness validator (strict profiles at export). `profile` selects the validator profile: `serving` = student responses, `collection` = teacher responses. `tool_calls` is the number of tool calls that accompany `content`. `expect.valid` is the strict validator result for that profile. `expect.route` is what the gateway does with the response at serving: `local` = served as is, `cloud` = strong model called, `invalid` = on_invalid policy (retry, then serve or escalate). `expect.lenient` is true when the cloud classification comes from the lenient match (code fences, spacing, single quotes, trailing text) rather than the strict sentinel; the strict validator rejects those. For the collection profile `expect.route` is the label when valid and `invalid` otherwise.",
+  "sentinel": "{\"route\":\"cloud\"}",
+  "local_line": "{\"route\":\"local\"}",
+  "cases": [
+    {"name": "local_tool_call", "profile": "serving", "content": "{\"route\":\"local\"}\nI will read the file first.", "tool_calls": 1, "expect": {"valid": true, "route": "local", "lenient": false}},
+    {"name": "local_text_only_final", "profile": "serving", "content": "{\"route\":\"local\"}\nThe fix is complete and the tests pass.", "tool_calls": 0, "expect": {"valid": true, "route": "local", "lenient": false}},
+    {"name": "local_tools_no_text", "profile": "serving", "content": "{\"route\":\"local\"}", "tool_calls": 2, "expect": {"valid": true, "route": "local", "lenient": false}},
+    {"name": "local_leading_whitespace", "profile": "serving", "content": "\n  {\"route\":\"local\"}\nok", "tool_calls": 1, "expect": {"valid": true, "route": "local", "lenient": false}},
+    {"name": "cloud_bare", "profile": "serving", "content": "{\"route\":\"cloud\"}", "tool_calls": 0, "expect": {"valid": true, "route": "cloud", "lenient": false}},
+    {"name": "cloud_trailing_newline", "profile": "serving", "content": "{\"route\":\"cloud\"}\n", "tool_calls": 0, "expect": {"valid": true, "route": "cloud", "lenient": false}},
+    {"name": "cloud_spaced_json", "profile": "serving", "content": "{ \"route\": \"cloud\" }", "tool_calls": 0, "expect": {"valid": true, "route": "cloud", "lenient": false}},
+    {"name": "cloud_fenced", "profile": "serving", "content": "```json\n{\"route\":\"cloud\"}\n```", "tool_calls": 0, "expect": {"valid": false, "route": "cloud", "lenient": true}},
+    {"name": "cloud_single_quotes", "profile": "serving", "content": "{'route':'cloud'}", "tool_calls": 0, "expect": {"valid": false, "route": "cloud", "lenient": true}},
+    {"name": "cloud_with_explanation", "profile": "serving", "content": "{\"route\":\"cloud\"}\nThis step needs the stronger model.", "tool_calls": 0, "expect": {"valid": false, "route": "cloud", "lenient": true}},
+    {"name": "cloud_with_tool_calls", "profile": "serving", "content": "{\"route\":\"cloud\"}", "tool_calls": 1, "expect": {"valid": false, "route": "local", "lenient": false}},
+    {"name": "missing_route_line_with_tools", "profile": "serving", "content": "Let me look at the repository.", "tool_calls": 1, "expect": {"valid": false, "route": "local", "lenient": false}},
+    {"name": "route_line_not_first", "profile": "serving", "content": "Sure.\n{\"route\":\"local\"}", "tool_calls": 1, "expect": {"valid": false, "route": "local", "lenient": false}},
+    {"name": "unknown_route_value", "profile": "serving", "content": "{\"route\":\"remote\"}\nhello", "tool_calls": 1, "expect": {"valid": false, "route": "local", "lenient": false}},
+    {"name": "second_route_line", "profile": "serving", "content": "{\"route\":\"local\"}\n{\"route\":\"cloud\"}", "tool_calls": 0, "expect": {"valid": false, "route": "invalid", "lenient": false}},
+    {"name": "route_line_only_local", "profile": "serving", "content": "{\"route\":\"local\"}\n", "tool_calls": 0, "expect": {"valid": false, "route": "invalid", "lenient": false}},
+    {"name": "empty", "profile": "serving", "content": "", "tool_calls": 0, "expect": {"valid": false, "route": "invalid", "lenient": false}},
+    {"name": "prose_without_tools", "profile": "serving", "content": "I think the bug is in the parser.", "tool_calls": 0, "expect": {"valid": false, "route": "invalid", "lenient": false}},
+    {"name": "teacher_local_step", "profile": "collection", "content": "{\"route\":\"local\"}\nRunning the tests.", "tool_calls": 1, "expect": {"valid": true, "route": "local", "lenient": false}},
+    {"name": "teacher_cloud_step", "profile": "collection", "content": "{\"route\":\"cloud\"}\nThis needs care; editing the parser.", "tool_calls": 1, "expect": {"valid": true, "route": "cloud", "lenient": false}},
+    {"name": "teacher_cloud_text_final", "profile": "collection", "content": "{\"route\":\"cloud\"}\nThe task is complete.", "tool_calls": 0, "expect": {"valid": true, "route": "cloud", "lenient": false}},
+    {"name": "teacher_local_tools_no_text", "profile": "collection", "content": "{\"route\":\"local\"}", "tool_calls": 1, "expect": {"valid": true, "route": "local", "lenient": false}},
+    {"name": "teacher_cloud_bare_is_missing_step", "profile": "collection", "content": "{\"route\":\"cloud\"}", "tool_calls": 0, "expect": {"valid": false, "route": "invalid", "lenient": false}},
+    {"name": "teacher_local_bare_is_missing_step", "profile": "collection", "content": "{\"route\":\"local\"}\n", "tool_calls": 0, "expect": {"valid": false, "route": "invalid", "lenient": false}},
+    {"name": "teacher_missing_line", "profile": "collection", "content": "Running tests.", "tool_calls": 1, "expect": {"valid": false, "route": "invalid", "lenient": false}},
+    {"name": "teacher_labels_key_rejected", "profile": "collection", "content": "{\"labels\":\"cloud\"}\nstep", "tool_calls": 1, "expect": {"valid": false, "route": "invalid", "lenient": false}},
+    {"name": "teacher_fenced_rejected", "profile": "collection", "content": "```json\n{\"route\":\"local\"}\n```\nstep", "tool_calls": 1, "expect": {"valid": false, "route": "invalid", "lenient": false}}
+  ],
+  "strip_cases": [
+    {"name": "strip_local_text", "content": "{\"route\":\"local\"}\nText after the line.", "stripped": "Text after the line."},
+    {"name": "strip_cloud_merged", "content": "{\"route\":\"cloud\"}\nStrong model text.", "stripped": "Strong model text."},
+    {"name": "strip_local_only_line_becomes_empty", "content": "{\"route\":\"local\"}", "stripped": ""},
+    {"name": "strip_keeps_text_without_line", "content": "No route line here.", "stripped": "No route line here."},
+    {"name": "strip_leading_whitespace", "content": "\n{\"route\":\"local\"}\nok", "stripped": "ok"},
+    {"name": "strip_only_first_line", "content": "{\"route\":\"local\"}\n{\"route\":\"local\"}\nok", "stripped": "{\"route\":\"local\"}\nok"}
+  ],
+  "merge_cases": [
+    {"name": "merge_cloud_prepend", "student_content": "{\"route\":\"cloud\"}", "strong_content": "I will edit the parser.", "served": "{\"route\":\"cloud\"}\nI will edit the parser.", "imitated_route_line": false},
+    {"name": "merge_drops_imitated_line", "student_content": "{\"route\":\"cloud\"}", "strong_content": "{\"route\":\"local\"}\nI will edit the parser.", "served": "{\"route\":\"cloud\"}\nI will edit the parser.", "imitated_route_line": true},
+    {"name": "merge_strong_empty_text", "student_content": "{\"route\":\"cloud\"}", "strong_content": "", "served": "{\"route\":\"cloud\"}", "imitated_route_line": false},
+    {"name": "merge_lenient_student_text_dropped", "student_content": "```json\n{\"route\":\"cloud\"}\n```", "strong_content": "Editing.", "served": "{\"route\":\"cloud\"}\nEditing.", "imitated_route_line": false}
+  ]
+}

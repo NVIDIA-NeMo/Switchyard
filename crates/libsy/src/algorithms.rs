@@ -15,6 +15,7 @@ pub mod llm_class;
 pub mod noop;
 pub mod passthrough;
 pub mod rand;
+pub mod self_delegation;
 pub mod stage;
 pub mod subagent;
 pub mod vgr;

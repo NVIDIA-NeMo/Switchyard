@@ -29,6 +29,9 @@ pub use algorithms::llm_class::{
 pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::Passthrough;
 pub use algorithms::rand::{Random, RandomClassifier};
+pub use algorithms::self_delegation::{
+    InvalidAction, OnInvalid, SelfDelegation, SelfDelegationConfig, StudentErrorAction,
+};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::subagent::{SubagentRouter, SubagentRouterConfig};
 pub use algorithms::util::affinity::{AffinityRouter, ClassifyTrigger};

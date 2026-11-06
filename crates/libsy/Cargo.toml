@@ -23,6 +23,8 @@ serde_json.workspace = true
 futures.workspace = true
 # Typed status codes for errors synthesized from broken upstream streams.
 http.workspace = true
+# RFC 3339 timestamps on self_delegation trace records.
+humantime = "2.4"
 jsonschema.workspace = true
 jsonptr.workspace = true
 # Metrics-only OTel API: instruments record through the host-installed global
