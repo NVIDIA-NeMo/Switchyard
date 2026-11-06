@@ -95,8 +95,8 @@
 <a href=#95 id=95 data-nosnippet>95</a><span class="doccomment">/// Keeps the opening task and the last `recent_turn_window` turns after it. A
 <a href=#96 id=96 data-nosnippet>96</a>/// window of `0` keeps the task alone.
 <a href=#97 id=97 data-nosnippet>97</a>///
-<a href=#98 id=98 data-nosnippet>98</a>/// Inbound decoders normalize client system and developer content into
-<a href=#99 id=99 data-nosnippet>99</a>/// `LlmRequest::instructions`, so it never reaches this list.
+<a href=#98 id=98 data-nosnippet>98</a>/// Inline system and developer messages are kept, in their original order,
+<a href=#99 id=99 data-nosnippet>99</a>/// ahead of the task.
 <a href=#100 id=100 data-nosnippet>100</a>///
 <a href=#101 id=101 data-nosnippet>101</a>/// Selects by reference and clones only what survives — a coding-agent
 <a href=#102 id=102 data-nosnippet>102</a>/// conversation carries every tool result, so cloning it whole to keep a window

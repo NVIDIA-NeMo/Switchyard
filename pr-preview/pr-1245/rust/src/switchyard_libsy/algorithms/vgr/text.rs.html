@@ -11,7 +11,7 @@
 <a href=#11 id=11 data-nosnippet>11</a><span class="kw">use </span>serde_json::Value;
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span>switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role, ToolResult};
 <a href=#13 id=13 data-nosnippet>13</a>
-<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span><span class="kw">crate</span>::algorithms::util::affinity::{initiated_by_user, is_environment_update, is_user_turn};
+<a href=#14 id=14 data-nosnippet>14</a><span class="kw">use </span><span class="kw">crate</span>::algorithms::util::affinity::{initiated_by_user, is_turn_context, is_user_turn};
 <a href=#15 id=15 data-nosnippet>15</a><span class="kw">use </span><span class="kw">crate</span>::algorithms::util::tool_signals::classify_text;
 <a href=#16 id=16 data-nosnippet>16</a>
 <a href=#17 id=17 data-nosnippet>17</a><span class="doccomment">/// One flattened turn: instructions first, then messages.
@@ -132,7 +132,7 @@
 <a href=#132 id=132 data-nosnippet>132</a>            previous
 <a href=#133 id=133 data-nosnippet>133</a>                .iter()
 <a href=#134 id=134 data-nosnippet>134</a>                .rev()
-<a href=#135 id=135 data-nosnippet>135</a>                .find(|message| !is_environment_update(message))
+<a href=#135 id=135 data-nosnippet>135</a>                .find(|message| !is_turn_context(message))
 <a href=#136 id=136 data-nosnippet>136</a>        }),
 <a href=#137 id=137 data-nosnippet>137</a>    ) <span class="kw">else </span>{
 <a href=#138 id=138 data-nosnippet>138</a>        <span class="kw">return </span><span class="bool-val">false</span>;
