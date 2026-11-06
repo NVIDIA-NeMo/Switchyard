@@ -78,7 +78,7 @@
 <a href=#78 id=78 data-nosnippet>78</a>    <span class="kw">for </span>InstructionBlock { role, content } <span class="kw">in </span><span class="kw-2">&amp;</span>request.llm_request.instructions {
 <a href=#79 id=79 data-nosnippet>79</a>        push(<span class="kw-2">*</span>role, content);
 <a href=#80 id=80 data-nosnippet>80</a>    }
-<a href=#81 id=81 data-nosnippet>81</a>    <span class="kw">for </span>Message { role, content } <span class="kw">in </span><span class="kw-2">&amp;</span>request.llm_request.messages {
+<a href=#81 id=81 data-nosnippet>81</a>    <span class="kw">for </span>Message { role, content, .. } <span class="kw">in </span><span class="kw-2">&amp;</span>request.llm_request.messages {
 <a href=#82 id=82 data-nosnippet>82</a>        push(<span class="kw-2">*</span>role, content);
 <a href=#83 id=83 data-nosnippet>83</a>    }
 <a href=#84 id=84 data-nosnippet>84</a>    (flattened, unsupported)

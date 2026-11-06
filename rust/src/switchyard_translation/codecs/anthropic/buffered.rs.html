@@ -151,7 +151,7 @@
 <a href=#151 id=151 data-nosnippet>151</a>                    <span class="kw-2">&amp;mut </span>diagnostics,
 <a href=#152 id=152 data-nosnippet>152</a>                    policy,
 <a href=#153 id=153 data-nosnippet>153</a>                )<span class="question-mark">?</span>;
-<a href=#154 id=154 data-nosnippet>154</a>                request.messages.push(Message { role, content });
+<a href=#154 id=154 data-nosnippet>154</a>                request.messages.push(Message::new(role, content));
 <a href=#155 id=155 data-nosnippet>155</a>            }
 <a href=#156 id=156 data-nosnippet>156</a>        }
 <a href=#157 id=157 data-nosnippet>157</a>        request.tools = decode_anthropic_tools(body.get(<span class="string">"tools"</span>));

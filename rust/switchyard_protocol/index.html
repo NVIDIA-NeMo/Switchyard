@@ -18,12 +18,12 @@ serde_json = &quot;1&quot;</code></pre></div><h3 id="main-types"><a class="doc-a
 
 <span class="kw">let </span>request = LlmRequest {
     model: <span class="prelude-val">Some</span>(<span class="string">"provider/model"</span>.into()),
-    messages: <span class="macro">vec!</span>[Message {
-        role: Role::User,
-        content: <span class="macro">vec!</span>[ContentBlock::Text {
+    messages: <span class="macro">vec!</span>[Message::new(
+        Role::User,
+        <span class="macro">vec!</span>[ContentBlock::Text {
             text: <span class="string">"Explain tail latency"</span>.into(),
         }],
-    }],
+    )],
     ..LlmRequest::default()
 };
 

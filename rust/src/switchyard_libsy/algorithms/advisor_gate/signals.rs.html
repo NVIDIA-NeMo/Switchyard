@@ -65,16 +65,16 @@
 <a href=#65 id=65 data-nosnippet>65</a>                messages: <span class="macro">vec!</span>[
 <a href=#66 id=66 data-nosnippet>66</a>                    Message::text(Role::User, <span class="string">"build X"</span>),
 <a href=#67 id=67 data-nosnippet>67</a>                    Message::text(Role::Assistant, <span class="string">"working"</span>),
-<a href=#68 id=68 data-nosnippet>68</a>                    Message {
-<a href=#69 id=69 data-nosnippet>69</a>                        role: Role::User,
-<a href=#70 id=70 data-nosnippet>70</a>                        content: <span class="macro">vec!</span>[ContentBlock::ToolResult(ToolResult {
+<a href=#68 id=68 data-nosnippet>68</a>                    Message::new(
+<a href=#69 id=69 data-nosnippet>69</a>                        Role::User,
+<a href=#70 id=70 data-nosnippet>70</a>                        <span class="macro">vec!</span>[ContentBlock::ToolResult(ToolResult {
 <a href=#71 id=71 data-nosnippet>71</a>                            tool_call_id: <span class="string">"t1"</span>.to_string(),
 <a href=#72 id=72 data-nosnippet>72</a>                            content: <span class="macro">vec!</span>[ContentBlock::Text {
 <a href=#73 id=73 data-nosnippet>73</a>                                text: <span class="string">"ok"</span>.to_string(),
 <a href=#74 id=74 data-nosnippet>74</a>                            }],
 <a href=#75 id=75 data-nosnippet>75</a>                            is_error: <span class="prelude-val">None</span>,
 <a href=#76 id=76 data-nosnippet>76</a>                        })],
-<a href=#77 id=77 data-nosnippet>77</a>                    },
+<a href=#77 id=77 data-nosnippet>77</a>                    ),
 <a href=#78 id=78 data-nosnippet>78</a>                ],
 <a href=#79 id=79 data-nosnippet>79</a>                ..LlmRequest::default()
 <a href=#80 id=80 data-nosnippet>80</a>            },
