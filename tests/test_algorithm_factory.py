@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from typing import Literal
 
 import pytest
 
@@ -33,7 +34,7 @@ async def test_factory_builds_a_usable_python_handle() -> None:
     assert outcome.selected_model_ids == ["fast", "capable"]
 
 
-def deployment(*, scope: str = "request", decision: bool | None = None) -> str:
+def deployment(*, scope: str = "request", judge: Literal["llm", "decision"] | None = None) -> str:
     targets = "\n".join(
         f'{name} = {{ id = "provider/{name}", llm_client = "{client}", labels = {json.dumps(labels)} }}'
         for name, client, labels in [
@@ -52,15 +53,16 @@ def deployment(*, scope: str = "request", decision: bool | None = None) -> str:
         'picker = "efficient_first"\nconfidence_threshold = 0.6'
     )
     alternative = ""
-    if decision is not None:
-        judge = "judge_decision" if decision else "judge"
-        settings = "[routes.coding.decision]\ncutoff = 0.7" if decision else "base_threshold = 0.5"
+    if judge is not None:
+        is_decision = judge == "decision"
+        judge_target = "judge_decision" if is_decision else "judge"
+        settings = "[routes.coding.decision]\ncutoff = 0.7" if is_decision else "base_threshold = 0.5"
         algorithm = (
-            f'type = "llm_classifier"\nclassifier_target = "{judge}"\n'
+            f'type = "llm_classifier"\nclassifier_target = "{judge_target}"\n'
             f'strong_target = "capable"\nweak_target = "fast"\nfail_open = false\n{settings}'
         )
-        replacement = "approved_decision" if decision else "approved_judge"
-        alternative = f'{judge} = ["{replacement}"]'
+        replacement = "approved_decision" if is_decision else "approved_judge"
+        alternative = f'{judge_target} = ["{replacement}"]'
     return f"""
 schema_version = 1
 [llm_clients.standard]
@@ -151,31 +153,28 @@ async def test_alternatives_and_task_requirements_use_the_trusted_task_id() -> N
         }
 
 
-@pytest.mark.parametrize("decision", [False, True])
-async def test_approved_judge_calls_are_executed_by_the_python_host(decision: bool) -> None:
-    route = AlgorithmFactory.from_toml(deployment(decision=decision)).build_configured()[
+@pytest.mark.parametrize("judge", ["llm", "decision"])
+async def test_approved_judge_calls_are_executed_by_the_python_host(
+    judge: Literal["llm", "decision"],
+) -> None:
+    route = AlgorithmFactory.from_toml(deployment(judge=judge)).build_configured()[
         "switchyard/coding"
     ]
     targets = route.target_models()
     stream = route.run_stream(request_body(), required_labels=["private", "customer_data"])
     step = await anext(stream)
-    if decision:
+    if judge == "decision":
         assert isinstance(step, Step.CallDecision)
         assert step.call.model == step.call.request["model"] == "decision/approved"
         assert targets[step.call.model] == {"client": "scoring", "id": "decision/approved"}
-        response = {
-            "answers": {
-                "route": {
-                    "value": {
-                        "type": "choice",
-                        "data": {
-                            "selected": "efficient",
-                            "probabilities": {"efficient": 0.9, "capable": 0.1},
-                        },
-                    }
-                }
-            }
+        choice = {
+            "type": "choice",
+            "data": {
+                "selected": "efficient",
+                "probabilities": {"efficient": 0.9, "capable": 0.1},
+            },
         }
+        response = {"answers": {"route": {"value": choice}}}
     else:
         assert isinstance(step, Step.CallModel)
         assert step.call.models == ["approved_judge"]
@@ -188,18 +187,12 @@ async def test_approved_judge_calls_are_executed_by_the_python_host(decision: bo
             "capability_boundary": "supported",
             "p_solve": 0.9,
         }
-        response = LlmResponse.Agg(
-            {
-                "model": target["id"],
-                "outputs": [
-                    {
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": json.dumps(verdict)}],
-                        "stop_reason": "end_turn",
-                    }
-                ],
-            }
-        )
+        message = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": json.dumps(verdict)}],
+            "stop_reason": "end_turn",
+        }
+        response = LlmResponse.Agg({"model": target["id"], "outputs": [message]})
 
     async def reply() -> object:
         return response

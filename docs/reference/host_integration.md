@@ -142,17 +142,24 @@ steps = coding.run_stream(
 )
 ```
 
-In the existing handlers, look up a returned LLM judge target or final candidate:
+For each `Step.CallModel`, resolve the returned target before calling your client.
+Here `clients` is supplied by the gateway and keyed by the TOML client aliases,
+not a new Switchyard interface. Its clients follow the
+[Python host example](../../examples/libsy.py): they accept a normalized request
+and provider model ID, and return `LlmResponse.Agg` or `LlmResponse.Stream`.
 
 ```python
-judge = targets[call.models[0]]
-answer = targets[outcome.selected_model_ids[0]]
+async def serve_model(call):
+    target = targets[call.models[0]]
+    client = clients[target["client"]]
+    await call.respond(client.call(call.request, target["id"]))
 ```
 
-Each record contains `client`, the host's configured client name, and `id`, the
-upstream model ID. Typed Decision calls use `targets[call.model]`. The lookup
-contains all possible targets, not the eligible pool for this request; use only
-keys returned by calls and outcomes. `build()` handles reject this lookup.
+Use the first routing-time candidate and pass client failures back to Switchyard.
+Typed Decision calls use `targets[call.model]` and their own Decision handler.
+For a final answer candidate, use `targets[outcome.selected_model_ids[0]]`.
+The lookup contains all possible targets, not the eligible pool for this request;
+use only keys returned by calls and outcomes. `build()` handles reject this lookup.
 
 The host supplies the assessment and an authorized task ID. An explicit task ID
 overrides a task ID from headers. Omitted labels mean no assessment; `[]` supplies

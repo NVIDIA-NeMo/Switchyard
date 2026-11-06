@@ -1001,18 +1001,13 @@ impl PyAlgorithmFactory {
         algorithms
             .into_iter()
             .map(|(id, (algorithm, models))| {
-                Ok((
-                    id,
-                    Py::new(
-                        py,
-                        PyConfiguredAlgorithm {
-                            inner: ConfiguredBackend::Bare {
-                                algorithm,
-                                models: Arc::new(models),
-                            },
-                        },
-                    )?,
-                ))
+                let handle = PyConfiguredAlgorithm {
+                    inner: ConfiguredBackend::Bare {
+                        algorithm,
+                        models: Arc::new(models),
+                    },
+                };
+                Ok((id, Py::new(py, handle)?))
             })
             .collect()
     }
@@ -1028,15 +1023,10 @@ impl PyAlgorithmFactory {
         algorithms
             .into_iter()
             .map(|(id, algorithm)| {
-                Ok((
-                    id,
-                    Py::new(
-                        py,
-                        PyConfiguredAlgorithm {
-                            inner: ConfiguredBackend::Governed(algorithm),
-                        },
-                    )?,
-                ))
+                let handle = PyConfiguredAlgorithm {
+                    inner: ConfiguredBackend::Governed(algorithm),
+                };
+                Ok((id, Py::new(py, handle)?))
             })
             .collect()
     }
