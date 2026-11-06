@@ -11,7 +11,7 @@ use regex::Regex;
 use serde_json::Value;
 use switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role, ToolResult};
 
-use crate::algorithms::util::affinity::{initiated_by_user, is_environment_update, is_user_turn};
+use crate::algorithms::util::affinity::{initiated_by_user, is_turn_context, is_user_turn};
 use crate::algorithms::util::tool_signals::classify_text;
 
 /// One flattened turn: instructions first, then messages.
@@ -132,7 +132,7 @@ pub(super) fn starts_user_turn(messages: &[Message], index: usize) -> bool {
             previous
                 .iter()
                 .rev()
-                .find(|message| !is_environment_update(message))
+                .find(|message| !is_turn_context(message))
         }),
     ) else {
         return false;

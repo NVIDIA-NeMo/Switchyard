@@ -918,9 +918,11 @@ fn encode_message_without_tool_results_to_openai(
     policy: &TranslationPolicy,
 ) -> Result<Value> {
     let role = match message.role {
+        Role::System => "system",
+        Role::Developer => "developer",
         Role::Assistant => "assistant",
         Role::Tool => "tool",
-        _ => "user",
+        Role::User => "user",
     };
     let tool_calls = message
         .content
