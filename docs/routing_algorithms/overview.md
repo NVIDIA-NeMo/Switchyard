@@ -42,6 +42,7 @@ quality, see [Examples](../tuning/examples.md).
 | [Custom](llm_classifier_routing.md#custom-multi-target-routing) | `llm_classifier`, `mode = "custom"` | Your own judge prompt and schema choose among any number of targets. |
 | [Advisor Gate](advisor_gate_routing.md) | `advisor` | One executor serves every turn. A stronger advisor reviews its plans and "done" claims. |
 | [Verification-Gated](vgr_routing.md) | `vgr` | An efficient model drafts. Verified answers stay on the efficient tier, and everything else goes to the capable model. |
+| [Self-Delegation](self_delegation_routing.md) | `self_delegation` | The efficient model starts each reply with a route line. Its cloud sentinel sends the turn to the capable model. |
 | [Prefill](prefill_routing.md) | `prefill_router` | A classifier you train on the prompt's hidden states picks the target. Experimental: Switchyard supplies no checkpoint, exporter, or encoder assets. |
 | [Random](random_routing.md) | `random` | A fixed traffic split. |
 | [Fixed](#direct-model-routes) | `passthrough` | One target, no decision. |
@@ -60,16 +61,18 @@ quality, see [Examples](../tuning/examples.md).
 | `stage_router`, plan/execute settings | Stage scores recent tool results. | Stage makes no classifier calls. | Stage holds efficient after a switch. | A stable ID is required from the first planning request to retain the hold. | Stage selects capable. | This configuration has no published results. The [historical Plan/Execute results](../benchmarks.md#deepswe) used the removed implementation. | See [Plan/Execute with Stage](stage_router_routing.md#plan-and-execute). |
 | `advisor` | The executor's terminal turn | One advisor review per gated turn, up to `max_reviews` | Never. One executor serves. | Scopes the review budget | An unreadable verdict or a failed advisor call lets the buffered executor turn through (`fail_open`, default `true`). `fail_open = false` stops the request. | [DeepSWE results](../benchmarks.md#deepswe) with the [DeepSWE v1.1 profile](../../benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) | That profile |
 | `vgr` | Evidence about an efficient candidate | Verifier and judge calls | Per final answer | See [the page](vgr_routing.md) | Capable tier | Not benchmarked. Planned for 0.4.0. | [`examples/vgr-local-servers.toml`](../../examples/vgr-local-servers.toml) |
+| `self_delegation` | The efficient model's own route line | One capable call per cloud decision | Every request | Not required | An invalid reply is served or escalated per `on_invalid` | Not benchmarked. Needs a model trained to emit the route line. | [Self-Delegation Routing](self_delegation_routing.md#configuration) |
 | `prefill_router` | Hidden states of the prompt | Encoder inference, no provider call | Every request | Not required | Checkpoint output | Experimental. No checkpoint is supplied. | [Schema example](../reference/toml_schema.md#prefill_router) |
 | `random` | Weights | None | Every request | Not required | Not applicable | Utility | [Random Routing](random_routing.md) |
 | `passthrough` | Nothing | None | Never | Not required | Not applicable | Utility | [Schema](../reference/toml_schema.md#passthrough) |
 | `noop` | Nothing | None | Never | Not required | Not applicable | Smoke test | [Schema](../reference/toml_schema.md#noop) |
 
-Every route streams the served model's reply. Three hold a turn back first.
+Every route streams the served model's reply. Four hold a turn back first.
 Escalation buffers the weak reply until the judge rules on it. `advisor` holds a
 gated turn until the review finishes. `vgr` holds a local candidate until it is
-verified. Task judges before the turn is served, which adds the judge's latency
-to every judged request.
+verified. `self_delegation` buffers the efficient reply to read its route line.
+Task judges before the turn is served, which adds the judge's latency to every
+judged request.
 
 "Measured" links the [Benchmarks](../benchmarks.md) page, the checked-in
 profile, or the public report a result comes from. The `capable_first` picker

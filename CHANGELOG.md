@@ -8,6 +8,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Self-delegation routing** — adds `type = "self_delegation"` deployment
+  routes and the `AlgorithmSpec::SelfDelegation` variant. The efficient model
+  starts each reply with a route line; its cloud sentinel `{"route":"cloud"}`
+  sends the turn to the capable model, whose reply is served behind the
+  sentinel. Optional `trace_jsonl` records one JSON object per decision.
+  **Rust source-breaking change:** callers that match exhaustively on
+  `AlgorithmSpec` must handle the new variant.
 - **Host aborts** - The C ABI accepts an `abort` reply, and the Go binding adds
   `Abort(err)` to stop routing when the host refuses a model or decision call,
   even if the algorithm recovers from ordinary call failures.

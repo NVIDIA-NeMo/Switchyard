@@ -638,6 +638,26 @@ advisor's plan. See
 | `reviewer_system_prompt` | No | packaged prompt | Replaces the APPROVE/REDO reviewer prompt. |
 | `redo_feedback_prefix` | No | packaged prompt | Replaces the text put in front of a REDO plan fed back to the executor. |
 
+### `self_delegation`
+
+Serves the efficient target, whose replies start with a route line. When the
+reply is the cloud sentinel `{"route":"cloud"}`, the route calls the capable
+target with the client's request unchanged and serves that reply behind the
+sentinel. Without `capable_target` the sentinel is served as it came
+(collection mode). See
+[Self-Delegation Routing](../routing_algorithms/self_delegation_routing.md).
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `efficient_target` | Yes | — | The student, or the teacher in collection mode. Its `system_prompt` applies to the routing call. |
+| `capable_target` | No | unset | Strong model called on the cloud sentinel. May name the efficient target itself for an evaluation arm. |
+| `trace_jsonl` | No | unset | File that receives one JSON object per decision. A failed write is logged and never fails the request. |
+| `hide_route` | No | `false` | Removes the route line from served text. |
+| `lenient_cloud` | No | `true` | Treats a sentinel with cosmetic damage as cloud at serving. |
+| `on_invalid.retry` | No | `1` | Times an invalid reply is asked again with the same request. |
+| `on_invalid.action` | No | `serve` | `serve` the last invalid reply, or `escalate` to the capable target. `escalate` without `capable_target` is rejected at load. |
+| `on_student_error` | No | `error` | `error` returns a failed efficient call to the client; `escalate` calls the capable target instead. `escalate` without `capable_target` is rejected at load. |
+
 ## Validation Errors
 
 `--dry-run` prefixes configuration failures with
