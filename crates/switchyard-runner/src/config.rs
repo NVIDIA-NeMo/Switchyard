@@ -210,6 +210,52 @@ fn callable_targets(algorithm: &AlgorithmSpec) -> BTreeSet<&str> {
     algorithm.callable_target_names().into_iter().collect()
 }
 
+fn check_random_targets(
+    algorithm: &AlgorithmSpec,
+    targets: &LaneTargets<'_>,
+    has_overrides: bool,
+) -> RunnerResult<()> {
+    if matches!(algorithm, AlgorithmSpec::Random { .. }) && has_overrides {
+        let mut models = BTreeSet::new();
+        for name in algorithm.routing_target_names() {
+            let target = targets[name].name;
+            if !models.insert(target) {
+                return Err(LlmClientError::InvalidRequest {
+                    message: format!(
+                        "random route alternatives map multiple pool entries to target {target}; use distinct targets"
+                    ),
+                }
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+// Build alternative model groups without constructing provider clients.
+fn build_resolved_algorithm<'a>(
+    route_name: &str,
+    algorithm: &AlgorithmSpec,
+    targets: &LaneTargets<'_>,
+    decisions: impl Iterator<Item = (&'a str, &'a ModelId)>,
+) -> RunnerResult<AlgorithmAndModels> {
+    let model_ids = targets
+        .iter()
+        .map(|(name, target)| ((*name).to_owned(), ModelId::from(target.name)))
+        .chain(decisions.map(|(name, model)| (name.to_owned(), model.clone())))
+        .collect();
+    let (algorithm, models) = algorithm
+        .build_with_runtime_models(route_name, &model_ids)
+        .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+    let models = models.with_provider_models(
+        targets
+            .values()
+            .map(|target| (ModelId::from(target.name), target.config.id.clone()))
+            .collect(),
+    );
+    Ok((algorithm, models))
+}
+
 pub(crate) type TargetBindings = Vec<(String, String)>;
 pub(crate) const MAX_ELIGIBLE_LANES: usize = 128;
 
@@ -251,6 +297,11 @@ impl EligibleLanes {
         let targets = self
             .deployment
             .resolve_lane_targets(&algorithm, &overrides)?;
+        check_random_targets(
+            &algorithm,
+            &targets,
+            key.iter().any(|(name, target)| name != target),
+        )?;
         let decisions = self.deployment.resolve_decision_targets(
             &self.route_name,
             &algorithm,
@@ -264,8 +315,7 @@ impl EligibleLanes {
             &targets,
             &decisions,
             &self.clients,
-            self.deployment
-                .build_algorithm(&self.route_name, &algorithm, &overrides, &targets)?,
+            None,
         )?;
         let lane = Arc::new(lane);
         lanes.insert(key, Arc::clone(&lane));
@@ -445,74 +495,56 @@ impl DeploymentConfig {
             .map(|(name, target)| (name.as_str(), target.as_str()))
             .collect();
         let targets = self.resolve_lane_targets(&algorithm, &overrides)?;
-        self.build_algorithm(route_name, &algorithm, &overrides, &targets)
+        check_random_targets(
+            &algorithm,
+            &targets,
+            bindings.iter().any(|(name, target)| name != target),
+        )?;
+        let decisions = self.resolve_decision_models(route_name, &algorithm, &overrides)?;
+        let (algorithm, models) =
+            build_resolved_algorithm(route_name, &algorithm, &targets, decisions.into_iter())?;
+        Ok((algorithm, models.with_target_restriction()))
     }
 
-    // Native and host-owned calls resolve the same target identities and model groups.
-    fn build_algorithm(
-        &self,
+    // The host-owned path checks declared Decision identities without building clients.
+    fn resolve_decision_models<'a>(
+        &'a self,
         route_name: &str,
-        algorithm: &AlgorithmSpec,
+        algorithm: &'a AlgorithmSpec,
         overrides: &TargetOverrides<'_>,
-        targets: &LaneTargets<'_>,
-    ) -> RunnerResult<AlgorithmAndModels> {
-        let restricted = self
-            .routes
-            .get(route_name)
-            .is_some_and(|route| route.eligibility.is_some());
-        let mut model_ids = targets
-            .iter()
-            .map(|(name, target)| ((*name).to_owned(), ModelId::from(target.name)))
-            .collect::<BTreeMap<_, _>>();
+    ) -> RunnerResult<BTreeMap<&'a str, &'a ModelId>> {
         let mut decision_clients = HashMap::new();
-        for name in algorithm.decision_target_names() {
-            let bound = bound_target(name, overrides);
-            let target = self.decision_targets.get(bound).ok_or_else(|| {
-                RunnerError::configuration(format!(
-                    "route {route_name} requires unknown decision target {bound}"
-                ))
-            })?;
-            if restricted
-                && decision_clients
+        algorithm
+            .decision_target_names()
+            .into_iter()
+            .map(|name| {
+                let bound = bound_target(name, overrides);
+                let target = self.decision_targets.get(bound).ok_or_else(|| {
+                    RunnerError::configuration(format!(
+                        "route {route_name} requires unknown decision target {bound}"
+                    ))
+                })?;
+                if decision_clients
                     .insert(&target.id, &target.decision_client)
                     .is_some_and(|client| client != &target.decision_client)
-            {
-                return Err(RunnerError::configuration(format!(
-                    "route {route_name} maps decision model {} to different clients",
-                    target.id
-                )));
-            }
-            model_ids.insert(name.to_owned(), target.id.clone());
-        }
-        if matches!(algorithm, AlgorithmSpec::Random { .. })
-            && overrides.iter().any(|(name, target)| name != target)
-        {
-            let mut models = BTreeSet::new();
-            for name in algorithm.routing_target_names() {
-                let target = targets[name].name;
-                if !models.insert(target) {
-                    return Err(LlmClientError::InvalidRequest {
-                        message: format!(
-                            "random route alternatives map multiple pool entries to target {target}; use distinct targets"
-                        ),
-                    }
-                    .into());
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} maps decision model {} to different clients",
+                        target.id
+                    )));
                 }
-            }
-        }
-        let (algorithm, models) = algorithm
-            .build_with_runtime_models(route_name, &model_ids)
-            .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
-        let mut models = models.with_provider_models(
-            targets
-                .values()
-                .map(|target| (ModelId::from(target.name), target.config.id.clone()))
-                .collect(),
-        );
-        if restricted {
-            models = models.with_target_restriction();
-        }
-        Ok((algorithm, models))
+                Ok((name, &target.id))
+            })
+            .collect()
+    }
+
+    pub(crate) fn validate_decision_models(&self, route_name: &str) -> RunnerResult<()> {
+        let route = self
+            .routes
+            .get(route_name)
+            .ok_or_else(|| RunnerError::configuration(format!("unknown route {route_name}")))?;
+        self.resolve_decision_models(route_name, &route.algorithm, &TargetOverrides::new())?;
+        Ok(())
     }
 
     fn target_labels(&self, name: &str) -> Option<&BTreeSet<String>> {
@@ -644,7 +676,8 @@ impl DeploymentConfig {
     pub(crate) fn build_algorithms(
         &self,
     ) -> impl Iterator<Item = RunnerResult<(&str, &RouteConfig, AlgorithmAndModels)>> {
-        self.routes.iter().map(|(route_name, config)| {
+        let targets = self.build_targets();
+        self.routes.iter().map(move |(route_name, config)| {
             let decision_targets = config.algorithm.decision_target_names();
             for name in config.callable_target_names() {
                 let (exists, kind) = if decision_targets.contains(&name) {
@@ -670,10 +703,21 @@ impl DeploymentConfig {
                     "route {route_name} context_window must be greater than zero"
                 )));
             }
-            let overrides = TargetOverrides::new();
-            let targets = self.resolve_lane_targets(&config.algorithm, &overrides)?;
-            let built =
-                self.build_algorithm(route_name, &config.algorithm, &overrides, &targets)?;
+            let (algorithm, models) = config
+                .algorithm
+                .build_with_runtime_models(route_name, &targets)
+                .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+            let models = models.with_provider_models(
+                config
+                    .callable_target_names()
+                    .into_iter()
+                    .filter_map(|name| {
+                        self.targets
+                            .get(name)
+                            .map(|target| (ModelId::from(name), target.id.clone()))
+                    })
+                    .collect(),
+            );
             if let Some(infra) = &config.infra {
                 if !matches!(&config.algorithm, AlgorithmSpec::LlmClassifier { config }
                     if matches!(config.mode, None | Some(crate::ClassifierMode::Capability))
@@ -687,7 +731,7 @@ impl DeploymentConfig {
                     RunnerError::configuration_source(format!("route {route_name}: {error}"), error)
                 })?;
             }
-            Ok((route_name.as_str(), config, built))
+            Ok((route_name.as_str(), config, (algorithm, models)))
         })
     }
 
@@ -740,7 +784,7 @@ impl DeploymentConfig {
                 &standard_targets,
                 &decisions,
                 &clients,
-                (algorithm, models),
+                Some((algorithm, models)),
             )?;
             // Judges are included so a judge answer maps to its provider model too.
             let mut target_names = callable_targets(&config.algorithm);
@@ -759,7 +803,11 @@ impl DeploymentConfig {
                 .collect();
             let mut route = Route::from_lane(standard, caller_auth, capabilities, route_targets)
                 .with_infra(config.infra.clone());
-            if let Some(policy) = self.eligibility_policy(route_name) {
+            if let Some(eligibility) = &config.eligibility {
+                let policy = EligibilityPolicy::new(
+                    eligibility.require_explicit_requirements,
+                    matches!(eligibility.scope, RequirementScope::Task),
+                );
                 route = route.with_eligibility(
                     policy,
                     EligibleLanes {
@@ -906,15 +954,31 @@ impl DeploymentConfig {
         targets: &LaneTargets<'_>,
         decisions: &LaneDecisions<'_>,
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
-        built: AlgorithmAndModels,
+        built: Option<AlgorithmAndModels>,
     ) -> RunnerResult<(ExecutionLane, Option<CallerAuthKind>)> {
-        let (algorithm, models) = built;
+        let (algorithm, mut models) = if let Some(built) = built {
+            built
+        } else {
+            build_resolved_algorithm(
+                route_name,
+                route,
+                targets,
+                decisions.iter().map(|(name, target)| (*name, target.model)),
+            )?
+        };
         let (route_clients, caller_auth) =
             self.build_route_clients(route_name, route, targets, decisions, clients)?;
         let anthropic_auxiliary_target =
             self.build_anthropic_auxiliary_target(route, targets, clients);
         let responses_auxiliary_target =
             self.build_responses_auxiliary_target(route, targets, clients);
+        if self
+            .routes
+            .get(route_name)
+            .is_some_and(|config| config.eligibility.is_some())
+        {
+            models = models.with_target_restriction();
+        }
         Ok((
             ExecutionLane::new(
                 algorithm,
@@ -1058,7 +1122,6 @@ impl DeploymentConfig {
     /// Algorithms route on LLM target names, so targets that share a provider model keep
     /// their own settings. The LLM client sends each target's `id` upstream. Decision targets
     /// route on their `id`, which the decision client sends as is.
-    #[cfg(test)]
     fn build_targets(&self) -> BTreeMap<String, ModelId> {
         self.targets
             .keys()
@@ -2038,6 +2101,11 @@ secondary = ["approved_secondary"]
         let runner = Runner::from_toml(&source)?;
         let mut request = Request::default();
         require_target_labels(&mut request, ["private"])?;
+        let configured = AlgorithmFactory::from_toml(&source)?.build_configured()?;
+        let factory_error = configured["switchyard/ambiguous"]
+            .run_stream(request.clone(), Default::default())
+            .err()
+            .expect("ambiguous factory decisions must fail before model I/O");
         let error = runner
             .route("switchyard/ambiguous")
             .expect("composite route")
@@ -2045,11 +2113,27 @@ secondary = ["approved_secondary"]
             .await
             .err()
             .expect("ambiguous decision clients must fail before model I/O");
-        assert!(matches!(error, RunnerError::Configuration { .. }));
+        for error in [error, factory_error] {
+            assert!(matches!(error, RunnerError::Configuration { .. }));
+            assert!(
+                error
+                    .to_string()
+                    .contains("maps decision model decision/shared to different clients"),
+                "{error}"
+            );
+        }
+        let standard_alias = source.replace(
+            "id = \"decision/secondary\"\ndecision_client = \"privacy\"",
+            "id = \"decision/standard\"\ndecision_client = \"other\"",
+        );
+        let error = AlgorithmFactory::from_toml(&standard_alias)?
+            .build_configured()
+            .err()
+            .expect("ambiguous standard decisions must fail during construction");
         assert!(
             error
                 .to_string()
-                .contains("maps decision model decision/shared to different clients"),
+                .contains("maps decision model decision/standard to different clients"),
             "{error}"
         );
         Ok(())

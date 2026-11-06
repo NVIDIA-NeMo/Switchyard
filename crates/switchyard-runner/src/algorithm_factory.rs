@@ -66,8 +66,12 @@ impl AlgorithmFactory {
         self.config
             .build_algorithms()
             .map(|entry| {
-                let (name, route, (algorithm, models)) = entry?;
+                let (name, route, (algorithm, mut models)) = entry?;
                 let policy = self.config.eligibility_policy(name);
+                if policy.is_some() {
+                    self.config.validate_decision_models(name)?;
+                    models = models.with_target_restriction();
+                }
                 Ok((
                     route.id.to_string(),
                     ConfiguredAlgorithm {
