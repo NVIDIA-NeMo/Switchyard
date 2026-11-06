@@ -22,6 +22,7 @@ use tracing_subscriber::registry::LookupSpan;
 
 const CLIENT_CALL: &str = "libsy.client_call";
 const UPSTREAM_ATTEMPT: &str = "libsy.upstream_attempt";
+const DECISION_CALL: &str = "libsy.decision_client_call";
 const PAYLOAD_TARGET: &str = "switchyard.payload";
 const MAX_PAYLOAD_REDACTION_DEPTH: usize = 64;
 
@@ -71,17 +72,18 @@ where
         let Some(span) = ctx.event_span(event) else {
             return;
         };
-        let is_routing = span.scope().any(|ancestor| {
-            ancestor.extensions().get::<OpenSpan>().is_some_and(|open| {
-                open.name == CLIENT_CALL
-                    && open
-                        .fields
-                        .get("switchyard.call_phase")
-                        .and_then(Value::as_str)
-                        == Some("routing")
-            })
-        });
-        if !is_routing || span.name() != UPSTREAM_ATTEMPT {
+        let is_routing = span.name() == DECISION_CALL
+            || span.scope().any(|ancestor| {
+                ancestor.extensions().get::<OpenSpan>().is_some_and(|open| {
+                    open.name == CLIENT_CALL
+                        && open
+                            .fields
+                            .get("switchyard.call_phase")
+                            .and_then(Value::as_str)
+                            == Some("routing")
+                })
+            });
+        if !is_routing || !matches!(span.name(), UPSTREAM_ATTEMPT | DECISION_CALL) {
             return;
         }
         let mut payload = PayloadVisitor {
@@ -506,7 +508,8 @@ impl Visit for FieldVisitor<'_> {
 }
 
 fn captures(metadata: &Metadata<'_>) -> bool {
-    metadata.target() == "libsy" && matches!(metadata.name(), CLIENT_CALL | UPSTREAM_ATTEMPT)
+    (metadata.target() == "libsy" && matches!(metadata.name(), CLIENT_CALL | UPSTREAM_ATTEMPT))
+        || (metadata.target() == "switchyard_llm_client::run" && metadata.name() == DECISION_CALL)
 }
 
 fn relay_scope_type(name: &str) -> ScopeType {
@@ -701,6 +704,115 @@ mod tests {
                 assert!(attempt.payloads.request.is_none());
                 assert!(attempt.payloads.response.is_none());
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn captures_decision_http_bodies_with_opt_in_and_size_limits() {
+        use std::{collections::BTreeMap, sync::Arc, time::Duration};
+
+        use switchyard_llm_client::{ClientRouter, OpenAiDecisionClient, SystemOneClient, decide};
+        use switchyard_protocol::{Request, RoutedDecisionClient, text_request};
+        use switchyard_runner::AlgorithmSpec;
+        use wiremock::matchers::{header, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let spec: AlgorithmSpec = serde_json::from_value(serde_json::json!({
+            "type": "llm_classifier", "classifier_target": "decision/model",
+            "strong_target": "capable", "weak_target": "efficient",
+            "decision": {"instructions": "Choose capable or efficient."}, "fail_open": false
+        }))
+        .unwrap();
+        let targets = BTreeMap::from(
+            ["decision/model", "capable", "efficient"].map(|model| (model.into(), model.into())),
+        );
+        let (algorithm, models) = spec.build_with_runtime_models("capture", &targets).unwrap();
+        let models = Arc::new(models);
+        let redactor = ProviderKeyRedactor::new(&["qa-secret".into()]);
+        for system_one in [true, false] {
+            let server = MockServer::start().await;
+            let response = if system_one {
+                serde_json::json!({
+                    "model": "decision/model", "answers": {"route": {
+                        "type": "choice", "choice": "capable",
+                        "probabilities": {"capable": 0.9, "efficient": 0.1}}}
+                })
+            } else {
+                serde_json::json!({
+                    "model": "decision/model", "answers": [{"name": "route", "type": "choice",
+                        "choice": "capable", "probabilities": [
+                            {"value": "capable", "probability": 0.9},
+                            {"value": "efficient", "probability": 0.1}]}],
+                    "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2,
+                        "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+                        "output_tokens_details": {"reasoning_tokens": 0}}
+                })
+            };
+            Mock::given(method("POST"))
+                .and(header("authorization", "Bearer qa-secret"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(&response))
+                .expect(3)
+                .mount(&server)
+                .await;
+            let endpoint = server.uri().parse().unwrap();
+            let client: Arc<dyn RoutedDecisionClient> = if system_one {
+                Arc::new(
+                    SystemOneClient::new(endpoint, "qa-secret".into(), Duration::from_secs(5))
+                        .unwrap(),
+                )
+            } else {
+                Arc::new(
+                    OpenAiDecisionClient::new(endpoint, "qa-secret".into(), Duration::from_secs(5))
+                        .unwrap(),
+                )
+            };
+            let clients = ClientRouter::new_with_decision_clients(
+                Default::default(),
+                [("decision/model".into(), client)].into(),
+                Default::default(),
+                None,
+                &[],
+            );
+            for limit in [None, Some(4096), Some(1)] {
+                let (sender, spans) = mpsc::channel();
+                let capture = SpanCapture::new(limit, move |span| sender.send(span).unwrap());
+                let request = Request {
+                    llm_request: text_request(None, "Inspect qa-secret."),
+                    ..Request::default()
+                };
+                let execution = decide(algorithm.clone(), clients.clone(), request, models.clone());
+                capture.capture(execution).await.unwrap();
+                let mut span = spans.try_recv().expect("decision span must be captured");
+                assert_eq!(span.name, DECISION_CALL);
+                assert_eq!(span.fields["outcome"], "ok");
+                assert!(spans.try_recv().is_err());
+                let received = server.received_requests().await.unwrap();
+                let request_body = received.last().unwrap().body_json::<Json>().unwrap();
+                for (payload, expected) in [
+                    (&span.payloads.request, &request_body),
+                    (&span.payloads.response, &response),
+                ] {
+                    match limit {
+                        None => assert!(payload.is_none()),
+                        Some(1) => assert_eq!(
+                            payload.as_ref().unwrap(),
+                            &serde_json::json!({"body": null, "truncated": true})
+                        ),
+                        Some(_) => {
+                            let body = payload.as_ref().unwrap()["body"].as_str().unwrap();
+                            assert_eq!(&serde_json::from_str::<Json>(body).unwrap(), expected);
+                        }
+                    }
+                }
+                span.sanitize(&redactor);
+                if limit == Some(4096) {
+                    let payload = span.payloads.request.unwrap();
+                    let body = payload["body"].as_str().unwrap();
+                    assert!(body.contains("Inspect") && body.contains("[REDACTED]"));
+                    assert!(!body.contains("qa-secret"));
+                }
+            }
+            server.verify().await;
         }
     }
 
