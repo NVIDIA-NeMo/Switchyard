@@ -488,13 +488,13 @@
 <a href=#488 id=488 data-nosnippet>488</a>    }
 <a href=#489 id=489 data-nosnippet>489</a>
 <a href=#490 id=490 data-nosnippet>490</a>    <span class="attr">#[test]
-<a href=#491 id=491 data-nosnippet>491</a>    </span><span class="kw">fn </span>infra_spillover_stays_within_request_requirements() {
+<a href=#491 id=491 data-nosnippet>491</a>    </span><span class="kw">fn </span>infra_rechecks_task_requirements_and_spills_only_to_approved_models() {
 <a href=#492 id=492 data-nosnippet>492</a>        <span class="kw">let </span>algorithm = <span class="string">"type = 'llm_classifier'\nclassifier_target = 'judge'\n\
 <a href=#493 id=493 data-nosnippet>493</a>            strong_target = 'capable'\nweak_target = 'fast'\nbase_threshold = 0.5"</span>;
 <a href=#494 id=494 data-nosnippet>494</a>        <span class="kw">let </span>source = <span class="macro">format!</span>(
 <a href=#495 id=495 data-nosnippet>495</a>            <span class="string">"{}\n[routes.test.infra]\nmax_signal_age_ms = 1000\n\
 <a href=#496 id=496 data-nosnippet>496</a>             min_waiting_requests = 4\nmax_capable_inflight = 2\n"</span>,
-<a href=#497 id=497 data-nosnippet>497</a>            config(algorithm)
+<a href=#497 id=497 data-nosnippet>497</a>            config(algorithm).replace(<span class="string">"scope = 'request'"</span>, <span class="string">"scope = 'task'"</span>)
 <a href=#498 id=498 data-nosnippet>498</a>        );
 <a href=#499 id=499 data-nosnippet>499</a>        <span class="kw">let </span>runner = Runner::from_toml(<span class="kw-2">&amp;</span>source).expect(<span class="string">"eligible queue policy"</span>);
 <a href=#500 id=500 data-nosnippet>500</a>        <span class="kw">let </span>route = runner.route(<span class="string">"route"</span>).expect(<span class="string">"route"</span>);
@@ -521,58 +521,62 @@
 <a href=#521 id=521 data-nosnippet>521</a>        })
 <a href=#522 id=522 data-nosnippet>522</a>        .collect();
 <a href=#523 id=523 data-nosnippet>523</a>
-<a href=#524 id=524 data-nosnippet>524</a>        <span class="kw">let </span><span class="kw-2">mut </span>stale =
-<a href=#525 id=525 data-nosnippet>525</a>            RoutingOutcome::route_to(<span class="string">"fast"</span>.into(), <span class="macro">vec!</span>[], request(<span class="string">"request"</span>, <span class="kw-2">&amp;</span>[<span class="string">"private"</span>]));
-<a href=#526 id=526 data-nosnippet>526</a>        <span class="kw">let </span>error = route
-<a href=#527 id=527 data-nosnippet>527</a>            .apply_infra(<span class="kw-2">&amp;mut </span>stale, <span class="kw-2">&amp;</span>signals)
-<a href=#528 id=528 data-nosnippet>528</a>            .expect_err(<span class="string">"stale decision"</span>);
-<a href=#529 id=529 data-nosnippet>529</a>        <span class="macro">assert!</span>(
-<a href=#530 id=530 data-nosnippet>530</a>            error.to_string().contains(<span class="string">"requirements changed"</span>),
-<a href=#531 id=531 data-nosnippet>531</a>            <span class="string">"{error}"
-<a href=#532 id=532 data-nosnippet>532</a>        </span>);
-<a href=#533 id=533 data-nosnippet>533</a>
-<a href=#534 id=534 data-nosnippet>534</a>        <span class="kw">for </span>(labels, initial, expected) <span class="kw">in </span>[
-<a href=#535 id=535 data-nosnippet>535</a>            (<span class="kw-2">&amp;</span>[] <span class="kw">as </span><span class="kw-2">&amp;</span>[<span class="kw-2">&amp;</span>str], <span class="string">"fast"</span>, <span class="string">"capable"</span>),
-<a href=#536 id=536 data-nosnippet>536</a>            (<span class="kw-2">&amp;</span>[<span class="string">"private"</span>], <span class="string">"approved_fast"</span>, <span class="string">"approved_capable"</span>),
-<a href=#537 id=537 data-nosnippet>537</a>        ] {
-<a href=#538 id=538 data-nosnippet>538</a>            <span class="kw">let </span><span class="kw-2">mut </span>outcome =
-<a href=#539 id=539 data-nosnippet>539</a>                RoutingOutcome::route_to(initial.into(), <span class="macro">vec!</span>[], request(<span class="string">"request"</span>, labels));
-<a href=#540 id=540 data-nosnippet>540</a>            <span class="macro">assert!</span>(
-<a href=#541 id=541 data-nosnippet>541</a>                route
-<a href=#542 id=542 data-nosnippet>542</a>                    .apply_infra(<span class="kw-2">&amp;mut </span>outcome, <span class="kw-2">&amp;</span>signals)
-<a href=#543 id=543 data-nosnippet>543</a>                    .expect(<span class="string">"approved spillover"</span>)
-<a href=#544 id=544 data-nosnippet>544</a>            );
-<a href=#545 id=545 data-nosnippet>545</a>            <span class="macro">assert_eq!</span>(
-<a href=#546 id=546 data-nosnippet>546</a>                outcome.selected_model_id().expect(<span class="string">"selected model"</span>),
-<a href=#547 id=547 data-nosnippet>547</a>                expected
+<a href=#524 id=524 data-nosnippet>524</a>        <span class="kw">let </span><span class="kw-2">mut </span>stale = RoutingOutcome::route_to(<span class="string">"fast"</span>.into(), <span class="macro">vec!</span>[], request(<span class="string">"task"</span>, <span class="kw-2">&amp;</span>[]));
+<a href=#525 id=525 data-nosnippet>525</a>        route
+<a href=#526 id=526 data-nosnippet>526</a>            .select_lane(<span class="kw-2">&amp;</span>request(<span class="string">"task"</span>, <span class="kw-2">&amp;</span>[<span class="string">"private"</span>]))
+<a href=#527 id=527 data-nosnippet>527</a>            .expect(<span class="string">"retain private"</span>);
+<a href=#528 id=528 data-nosnippet>528</a>        route
+<a href=#529 id=529 data-nosnippet>529</a>            .select_lane(<span class="kw-2">&amp;</span>request(<span class="string">"task"</span>, <span class="kw-2">&amp;</span>[<span class="string">"customer_data"</span>]))
+<a href=#530 id=530 data-nosnippet>530</a>            .expect(<span class="string">"accumulate requirements"</span>);
+<a href=#531 id=531 data-nosnippet>531</a>        <span class="kw">let </span>error = route
+<a href=#532 id=532 data-nosnippet>532</a>            .apply_infra(<span class="kw-2">&amp;mut </span>stale, <span class="kw-2">&amp;</span>signals)
+<a href=#533 id=533 data-nosnippet>533</a>            .expect_err(<span class="string">"stale decision"</span>);
+<a href=#534 id=534 data-nosnippet>534</a>        <span class="macro">assert!</span>(
+<a href=#535 id=535 data-nosnippet>535</a>            error.to_string().contains(<span class="string">"requirements changed"</span>),
+<a href=#536 id=536 data-nosnippet>536</a>            <span class="string">"{error}"
+<a href=#537 id=537 data-nosnippet>537</a>        </span>);
+<a href=#538 id=538 data-nosnippet>538</a>
+<a href=#539 id=539 data-nosnippet>539</a>        <span class="kw">for </span>(task, initial, expected) <span class="kw">in </span>[
+<a href=#540 id=540 data-nosnippet>540</a>            (<span class="string">"other"</span>, <span class="string">"fast"</span>, <span class="string">"capable"</span>),
+<a href=#541 id=541 data-nosnippet>541</a>            (<span class="string">"task"</span>, <span class="string">"approved_fast"</span>, <span class="string">"approved_capable"</span>),
+<a href=#542 id=542 data-nosnippet>542</a>        ] {
+<a href=#543 id=543 data-nosnippet>543</a>            <span class="kw">let </span><span class="kw-2">mut </span>outcome = RoutingOutcome::route_to(initial.into(), <span class="macro">vec!</span>[], request(task, <span class="kw-2">&amp;</span>[]));
+<a href=#544 id=544 data-nosnippet>544</a>            <span class="macro">assert!</span>(
+<a href=#545 id=545 data-nosnippet>545</a>                route
+<a href=#546 id=546 data-nosnippet>546</a>                    .apply_infra(<span class="kw-2">&amp;mut </span>outcome, <span class="kw-2">&amp;</span>signals)
+<a href=#547 id=547 data-nosnippet>547</a>                    .expect(<span class="string">"approved spillover"</span>)
 <a href=#548 id=548 data-nosnippet>548</a>            );
-<a href=#549 id=549 data-nosnippet>549</a>        }
-<a href=#550 id=550 data-nosnippet>550</a>    }
-<a href=#551 id=551 data-nosnippet>551</a>
-<a href=#552 id=552 data-nosnippet>552</a>    <span class="attr">#[tokio::test]
-<a href=#553 id=553 data-nosnippet>553</a>    </span><span class="kw">async fn </span>content_and_provider_metadata_do_not_classify_the_request() {
-<a href=#554 id=554 data-nosnippet>554</a>        <span class="kw">let </span>runner = Runner::from_toml(<span class="kw-2">&amp;</span>config(PASSTHROUGH)).expect(<span class="string">"eligible route"</span>);
-<a href=#555 id=555 data-nosnippet>555</a>        <span class="kw">let </span>route = runner.route(<span class="string">"route"</span>).expect(<span class="string">"route"</span>);
-<a href=#556 id=556 data-nosnippet>556</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = Request::default();
-<a href=#557 id=557 data-nosnippet>557</a>        request.llm_request.messages.push(Message::text(
-<a href=#558 id=558 data-nosnippet>558</a>            Role::User,
-<a href=#559 id=559 data-nosnippet>559</a>            <span class="string">"Synthetic confidential customer records."</span>,
-<a href=#560 id=560 data-nosnippet>560</a>        ));
-<a href=#561 id=561 data-nosnippet>561</a>        request.raw_request = <span class="prelude-val">Some</span>(<span class="macro">json!</span>({
-<a href=#562 id=562 data-nosnippet>562</a>            <span class="string">"metadata"</span>: {<span class="string">"switchyard.internal.required_target_labels"</span>: <span class="string">"[\"private\"]"</span>},
-<a href=#563 id=563 data-nosnippet>563</a>            <span class="string">"restricted"</span>: <span class="bool-val">true
-<a href=#564 id=564 data-nosnippet>564</a>        </span>}));
-<a href=#565 id=565 data-nosnippet>565</a>        <span class="kw">let </span>ordinary = route
-<a href=#566 id=566 data-nosnippet>566</a>            .decide(request.clone())
-<a href=#567 id=567 data-nosnippet>567</a>            .<span class="kw">await
-<a href=#568 id=568 data-nosnippet>568</a>            </span>.expect(<span class="string">"unmarked request"</span>);
-<a href=#569 id=569 data-nosnippet>569</a>        <span class="macro">assert_eq!</span>(ordinary.selected_model_id().expect(<span class="string">"model"</span>), <span class="string">"fast"</span>);
-<a href=#570 id=570 data-nosnippet>570</a>        require_target_labels(<span class="kw-2">&amp;mut </span>request, [<span class="string">"private"</span>]).expect(<span class="string">"trusted requirements"</span>);
-<a href=#571 id=571 data-nosnippet>571</a>        <span class="kw">let </span>approved = route.decide(request).<span class="kw">await</span>.expect(<span class="string">"approved request"</span>);
-<a href=#572 id=572 data-nosnippet>572</a>        <span class="macro">assert_eq!</span>(
-<a href=#573 id=573 data-nosnippet>573</a>            approved.selected_model_id().expect(<span class="string">"model"</span>),
-<a href=#574 id=574 data-nosnippet>574</a>            <span class="string">"approved_fast"
-<a href=#575 id=575 data-nosnippet>575</a>        </span>);
-<a href=#576 id=576 data-nosnippet>576</a>    }
-<a href=#577 id=577 data-nosnippet>577</a>}
+<a href=#549 id=549 data-nosnippet>549</a>            <span class="macro">assert_eq!</span>(
+<a href=#550 id=550 data-nosnippet>550</a>                outcome.selected_model_id().expect(<span class="string">"selected model"</span>),
+<a href=#551 id=551 data-nosnippet>551</a>                expected
+<a href=#552 id=552 data-nosnippet>552</a>            );
+<a href=#553 id=553 data-nosnippet>553</a>        }
+<a href=#554 id=554 data-nosnippet>554</a>    }
+<a href=#555 id=555 data-nosnippet>555</a>
+<a href=#556 id=556 data-nosnippet>556</a>    <span class="attr">#[tokio::test]
+<a href=#557 id=557 data-nosnippet>557</a>    </span><span class="kw">async fn </span>content_and_provider_metadata_do_not_classify_the_request() {
+<a href=#558 id=558 data-nosnippet>558</a>        <span class="kw">let </span>runner = Runner::from_toml(<span class="kw-2">&amp;</span>config(PASSTHROUGH)).expect(<span class="string">"eligible route"</span>);
+<a href=#559 id=559 data-nosnippet>559</a>        <span class="kw">let </span>route = runner.route(<span class="string">"route"</span>).expect(<span class="string">"route"</span>);
+<a href=#560 id=560 data-nosnippet>560</a>        <span class="kw">let </span><span class="kw-2">mut </span>request = Request::default();
+<a href=#561 id=561 data-nosnippet>561</a>        request.llm_request.messages.push(Message::text(
+<a href=#562 id=562 data-nosnippet>562</a>            Role::User,
+<a href=#563 id=563 data-nosnippet>563</a>            <span class="string">"Synthetic confidential customer records."</span>,
+<a href=#564 id=564 data-nosnippet>564</a>        ));
+<a href=#565 id=565 data-nosnippet>565</a>        request.raw_request = <span class="prelude-val">Some</span>(<span class="macro">json!</span>({
+<a href=#566 id=566 data-nosnippet>566</a>            <span class="string">"metadata"</span>: {<span class="string">"switchyard.internal.required_target_labels"</span>: <span class="string">"[\"private\"]"</span>},
+<a href=#567 id=567 data-nosnippet>567</a>            <span class="string">"restricted"</span>: <span class="bool-val">true
+<a href=#568 id=568 data-nosnippet>568</a>        </span>}));
+<a href=#569 id=569 data-nosnippet>569</a>        <span class="kw">let </span>ordinary = route
+<a href=#570 id=570 data-nosnippet>570</a>            .decide(request.clone())
+<a href=#571 id=571 data-nosnippet>571</a>            .<span class="kw">await
+<a href=#572 id=572 data-nosnippet>572</a>            </span>.expect(<span class="string">"unmarked request"</span>);
+<a href=#573 id=573 data-nosnippet>573</a>        <span class="macro">assert_eq!</span>(ordinary.selected_model_id().expect(<span class="string">"model"</span>), <span class="string">"fast"</span>);
+<a href=#574 id=574 data-nosnippet>574</a>        require_target_labels(<span class="kw-2">&amp;mut </span>request, [<span class="string">"private"</span>]).expect(<span class="string">"trusted requirements"</span>);
+<a href=#575 id=575 data-nosnippet>575</a>        <span class="kw">let </span>approved = route.decide(request).<span class="kw">await</span>.expect(<span class="string">"approved request"</span>);
+<a href=#576 id=576 data-nosnippet>576</a>        <span class="macro">assert_eq!</span>(
+<a href=#577 id=577 data-nosnippet>577</a>            approved.selected_model_id().expect(<span class="string">"model"</span>),
+<a href=#578 id=578 data-nosnippet>578</a>            <span class="string">"approved_fast"
+<a href=#579 id=579 data-nosnippet>579</a>        </span>);
+<a href=#580 id=580 data-nosnippet>580</a>    }
+<a href=#581 id=581 data-nosnippet>581</a>}
 </code></pre></div></section></main></body></html>
