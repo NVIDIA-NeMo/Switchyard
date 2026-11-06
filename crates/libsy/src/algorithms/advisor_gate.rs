@@ -113,6 +113,8 @@ pub struct AdvisorGateConfig {
     /// gate; higher values re-review later terminal turns, making the gate a
     /// sequential best-of-(N+1) with the advisor as judge.
     pub max_reviews: u32,
+    /// Consecutive APPROVE verdicts required to release one reviewed answer.
+    pub confirmations: u32,
     /// When > 0, additionally review (once per conversation, consuming budget)
     /// the first request already carrying at least this many assistant turns —
     /// a mid-task checkpoint for executors that grind without declaring
@@ -141,6 +143,7 @@ impl Default for AdvisorGateConfig {
             redo_feedback_prefix: REDO_FEEDBACK_PREFIX.to_string(),
             gate_trigger: GateTrigger::NoToolCall,
             max_reviews: 1,
+            confirmations: 1,
             gate_stall_turns: 0,
             gate_min_tool_results: 0,
             advisor_max_tokens: 2048,
@@ -171,6 +174,11 @@ impl AdvisorGate {
         if config.max_reviews < 1 {
             return Err(algorithm_error("max_reviews must be at least 1"));
         }
+        if config.confirmations == 0 || config.confirmations > config.max_reviews {
+            return Err(algorithm_error(
+                "confirmations must be between 1 and max_reviews",
+            ));
+        }
         if config.advisor_max_tokens < 1 {
             return Err(algorithm_error("advisor_max_tokens must be at least 1"));
         }
@@ -191,6 +199,25 @@ impl AdvisorGate {
         })
     }
 
+    /// Reviews the executor selected by a shared model pool.
+    pub(crate) async fn review_selected(
+        &self,
+        driver: &Driver,
+        request: Request,
+        executors: Vec<ModelId>,
+        reviewer: &ModelId,
+    ) -> Result<RoutingOutcome> {
+        let scope = budget_scope(&request);
+        let final_turn = request.metadata.as_ref().and_then(|m| m.session_final) == Some(true);
+        let result = self
+            .route_inner(driver, request, &scope, executors, Some(reviewer))
+            .await;
+        if final_turn {
+            self.budget.evict_scope(&scope);
+        }
+        result
+    }
+
     // ── Gate flow ───────────────────────────────────────────────────────────
 
     async fn route_inner(
@@ -198,8 +225,9 @@ impl AdvisorGate {
         driver: &Driver,
         request: Request,
         scope: &ScopeKey,
+        executor_models: Vec<ModelId>,
+        reviewer: Option<&ModelId>,
     ) -> Result<RoutingOutcome> {
-        let executor_models = driver.models_for(&Category::Efficient).to_vec();
         let executor = executor_models
             .first()
             .ok_or_else(|| LibsyError::AlgorithmError {
@@ -210,7 +238,13 @@ impl AdvisorGate {
         // verbatim preserved-body replay, zero buffering. Executor errors
         // (including ContextWindowExceeded) propagate for the host's
         // client-visible mapping.
-        if self.budget.check_exhausted(scope) {
+        let exhausted = if self.config.confirmations == 1 {
+            self.budget.check_exhausted(scope)
+        } else {
+            self.budget
+                .check_exhausted_for(scope, self.config.confirmations)
+        };
+        if exhausted {
             return Ok(RoutingOutcome::route_to(
                 executor.clone(),
                 executor_models[1..].to_vec(),
@@ -266,7 +300,13 @@ impl AdvisorGate {
                 turn.into_response(),
             ));
         }
-        if !self.budget.try_reserve(scope) {
+        let reserved = if self.config.confirmations == 1 {
+            self.budget.try_reserve(scope)
+        } else {
+            self.budget
+                .try_reserve_many(scope, self.config.confirmations)
+        };
+        if !reserved {
             if stall {
                 self.budget.clear_stall_fired(stall_key);
             }
@@ -282,7 +322,14 @@ impl AdvisorGate {
             reasoning_text(&turn.agg).map(|reasoning| format!("{REASONING_TAIL_LABEL}{reasoning}"))
         });
         match self
-            .consult(driver, &request, review_tail.as_deref(), trigger_label)
+            .consult_confirmations(
+                driver,
+                &request,
+                review_tail.as_deref(),
+                trigger_label,
+                reviewer,
+                scope,
+            )
             .await
         {
             Ok(ConsultOutcome::Approve) => {
@@ -371,6 +418,29 @@ impl AdvisorGate {
         RoutingOutcome::route_to(executor.clone(), executor_fallbacks.to_vec(), redo)
     }
 
+    /// Confirms one candidate repeatedly, returning unused reservations on early exit.
+    async fn consult_confirmations(
+        &self,
+        driver: &Driver,
+        request: &Request,
+        tail: Option<&str>,
+        trigger: &'static str,
+        reviewer: Option<&ModelId>,
+        scope: &ScopeKey,
+    ) -> Result<ConsultOutcome> {
+        for completed in 0..self.config.confirmations {
+            match self.consult(driver, request, tail, trigger, reviewer).await {
+                Ok(ConsultOutcome::Approve) => {}
+                other => {
+                    self.budget
+                        .refund_unused(scope, self.config.confirmations - completed - 1);
+                    return other;
+                }
+            }
+        }
+        Ok(ConsultOutcome::Approve)
+    }
+
     /// Consults the advisor over the buffered transcript and parses the
     /// verdict. `Ok(Failed)` covers fail-open errors and unparseable replies
     /// (the caller refunds); fail-closed errors return `Err`.
@@ -380,6 +450,7 @@ impl AdvisorGate {
         base: &Request,
         review_tail: Option<&str>,
         trigger: &'static str,
+        reviewer: Option<&ModelId>,
     ) -> Result<ConsultOutcome> {
         // The advisor reviews the FULL transcript: system/developer content is
         // normalized out of `messages` into `instructions`, so prepend it back
@@ -404,10 +475,13 @@ impl AdvisorGate {
         let started = Instant::now();
         // An unresolvable advisor is treated like any other consult failure, so
         // fail_open still returns the buffered executor turn to the client.
-        let reply = match driver.first_model_for(&Category::Judge) {
+        let reply = match reviewer.map_or_else(|| driver.first_model_for(&Category::Judge), Ok) {
             Ok(advisor) => {
                 let advisor = advisor.clone();
-                let advisor_models = driver.models_for(&Category::Judge).to_vec();
+                let advisor_models = reviewer.map_or_else(
+                    || driver.models_for(&Category::Judge).to_vec(),
+                    |model| vec![model.clone()],
+                );
                 match driver
                     .call_model_with_error_recovery(
                         consult_request,
@@ -552,7 +626,15 @@ impl Algorithm for AdvisorGate {
             .as_ref()
             .and_then(|metadata| metadata.session_final)
             == Some(true);
-        let result = self.route_inner(&driver, request, &scope).await;
+        let result = self
+            .route_inner(
+                &driver,
+                request,
+                &scope,
+                driver.models_for(&Category::Efficient).to_vec(),
+                None,
+            )
+            .await;
         if session_final {
             self.budget.evict_scope(&scope);
         }

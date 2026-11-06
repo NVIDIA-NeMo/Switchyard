@@ -248,7 +248,7 @@ impl Classifier for DecisionClassifier {
             Err(error) => return Err(error),
         };
         let cutoff = self.config.cutoff.unwrap_or(DEFAULT_CUTOFF);
-        let (target, category) = if score > cutoff {
+        let (_target, category) = if score > cutoff {
             (capable, Category::Capable)
         } else {
             (efficient, Category::Efficient)
@@ -260,9 +260,9 @@ impl Classifier for DecisionClassifier {
             "capable_threshold": cutoff,
         });
         let selected = Score {
-            target: target.clone(),
             confidence: 1.0,
-            category: Some(category),
+            needs: vec![category],
+            pin: None,
         };
         driver.record_judgment(Some(selected.clone()), Some(evidence.clone()));
         driver.set_evidence(evidence);
@@ -376,10 +376,12 @@ impl Classifier for DirectClassifier {
             "verdict": "direct",
             "selected": category.as_str(),
         });
+        // Errors if the category has no runtime model: a direct decision must land somewhere.
+        driver.first_model_for(category)?;
         let selected = Score {
-            target: driver.first_model_for(category)?.clone(),
             confidence: 1.0,
-            category: Some(category.clone()),
+            needs: vec![category.clone()],
+            pin: None,
         };
         driver.record_judgment(Some(selected.clone()), Some(evidence.clone()));
         driver.set_evidence(evidence);

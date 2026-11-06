@@ -463,6 +463,11 @@ impl Driver {
         *self.state.lock() = state;
     }
 
+    /// Snapshots a signal's evidence before another signal scores the turn.
+    pub(crate) fn evidence(&self) -> Option<Value> {
+        self.evidence.lock().outcome.clone()
+    }
+
     /// Replace the current run's evidence when a component makes the final decision.
     pub(crate) fn set_evidence(&self, evidence: Value) {
         self.evidence.lock().outcome = Some(evidence);
@@ -478,7 +483,17 @@ impl Driver {
 
     pub(crate) fn record_judgment(&self, selected: Option<crate::Score>, evidence: Option<Value>) {
         let (target, category) = selected
-            .map(|score| (Some(score.target), score.category))
+            .map(|score| {
+                // A pinned score already names its model; a capability need resolves
+                // through the runtime models, as the pool would.
+                let target = score.pin.clone().or_else(|| {
+                    score
+                        .needs
+                        .iter()
+                        .find_map(|need| self.models_for(need).first().cloned())
+                });
+                (target, score.needs.first().cloned())
+            })
             .unwrap_or_default();
         self.evidence.lock().judgments.push(crate::JudgeDecision {
             target,
@@ -795,20 +810,6 @@ impl Drop for AbortOnDrop {
     }
 }
 
-/// Errors unless `targets` contains `name`.
-///
-/// Config target names must be resolved before an algorithm is built. This list contains
-/// model IDs, not target names.
-pub(crate) fn ensure_model_is_target(targets: &[ModelId], name: &ModelId) -> Result<()> {
-    targets
-        .iter()
-        .any(|target| target == name)
-        .then_some(())
-        .ok_or_else(|| LibsyError::TargetNotFound {
-            target: name.clone(),
-        })
-}
-
 /// Key for routing affinity: a root request by its session, a child request by its session
 /// and agent.
 #[derive(Clone, Hash, PartialEq, Eq)]
@@ -1016,8 +1017,8 @@ mod tests {
                 .await?;
             driver.record_judgment(
                 Some(crate::Score {
-                    target: target.clone(),
-                    category: Some(Category::Capable),
+                    needs: vec![Category::Capable],
+                    pin: None,
                     confidence: 1.0,
                 }),
                 Some(serde_json::json!({"source": "judge"})),
@@ -1526,15 +1527,6 @@ mod tests {
         })
         .await
         .map_err(|error| LibsyError::external("waiting for typed driver boundaries", error))?
-    }
-
-    #[test]
-    fn target_lookup_returns_the_missing_target() {
-        let error = ensure_model_is_target(&target_set(&[]), &ModelId::from("missing")).err();
-        assert!(matches!(
-            error,
-            Some(LibsyError::TargetNotFound { target }) if target == "missing"
-        ));
     }
 
     /// Build a single-target algo, plus a `serve` that answers it as a token stream

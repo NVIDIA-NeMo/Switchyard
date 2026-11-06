@@ -649,3 +649,27 @@ built configuration retain their inner message unchanged.
 
 - [CLI Reference](../cli_reference.md)
 - [Routing Overview](../routing_algorithms/overview.md)
+
+## Shared pool and Auto signals
+
+Declare answer targets once under `[pool]`. A pool-based `type = "auto"` route
+uses `[routes.<name>.signals]` for task classification, tool evidence, and review.
+See the [Auto reference](../routing_algorithms/auto_routing.md) and
+[pool reference](../routing_algorithms/pool.md) for all keys and defaults.
+
+```toml
+[pool]
+models = [
+  { target = "strong", provides = ["capable"] },
+  { target = "fast", provides = ["efficient"] },
+]
+default = "capable"
+
+[routes.chat]
+id = "chat"
+type = "auto"
+
+[routes.chat.signals]
+task = { judge = "judge", trigger = "on_demand", threshold = 0.9 }
+tool_loop = { enabled = true, confidence = 0.5 }
+```

@@ -111,12 +111,12 @@ Start with Auto. Choose Task, Execution, or Composite when you need more control
 
 | Choice | How it chooses | TOML configuration |
 | --- | --- | --- |
-| **[Auto](docs/routing_algorithms/overview.md#auto)** | Uses the current default: Execution (Stage), efficient-first, with a confidence threshold of 0.5 and no classifier call. | `type = "auto"` |
+| **[Auto](docs/routing_algorithms/overview.md#auto)** | Combines configured signals against a shared model pool. | `type = "auto"` |
 | **[Task](docs/routing_algorithms/llm_classifier_routing.md)** | A model judges whether the efficient model can handle the task. | `type = "llm_classifier"`, `mode = "capability"` |
 | **[Execution](docs/routing_algorithms/stage_router_routing.md)** | Uses recent tool activity and outcome signals to choose a model as the agent runs. | `type = "stage_router"` |
 | **[Composite](docs/routing_algorithms/composite_routing.md)** | Combines Task and Execution: a classifier sets the default model tier when execution signals are uncertain. | `type = "composite"` |
 
-Auto is a fixed preset in v0.3.0. It does not compare strategies at runtime. The TOML runner supports `type = "auto"`. In Rust, use `StageRouterConfig::new(PickerMode::EfficientFirst, 0.5)` for the same preset.
+With a shared `[pool]`, [Auto](docs/routing_algorithms/auto_routing.md) combines task and tool signals and can review the selected answer. Existing Auto configurations naming `capable_target` and `efficient_target` retain the Stage preset.
 
 The [routing overview](docs/routing_algorithms/overview.md) lists all strategies, including the [Plan/Execute configuration for Stage](docs/routing_algorithms/stage_router_routing.md#plan-and-execute), [escalation](docs/routing_algorithms/escalation_router_routing.md), [advisor](docs/routing_algorithms/advisor_gate_routing.md), [sub-agent](docs/routing_algorithms/subagent_routing.md), and [random](docs/routing_algorithms/random_routing.md). Integration support varies: check the gateway guide before choosing an algorithm.
 

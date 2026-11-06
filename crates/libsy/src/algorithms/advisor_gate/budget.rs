@@ -60,12 +60,17 @@ impl ReviewBudget {
 
     /// Whether the scope's budget or failure cap is spent; logs once per scope.
     pub(super) fn check_exhausted(&self, scope: &ScopeKey) -> bool {
+        self.check_exhausted_for(scope, 1)
+    }
+
+    /// Checks whether enough budget remains for a complete confirmation group.
+    pub(super) fn check_exhausted_for(&self, scope: &ScopeKey, count: u32) -> bool {
         let mut state = self.state.lock();
         let Some(entry) = state.scopes.get_mut(scope) else {
             return false;
         };
-        let exhausted =
-            entry.reviews >= self.max_reviews || entry.failed_consults >= MAX_FAILED_CONSULTS;
+        let exhausted = count > self.max_reviews.saturating_sub(entry.reviews)
+            || entry.failed_consults >= MAX_FAILED_CONSULTS;
         if exhausted && !entry.exhaustion_logged {
             entry.exhaustion_logged = true;
             tracing::info!(
@@ -80,6 +85,11 @@ impl ReviewBudget {
     /// Atomically re-checks exhaustion and reserves one review, so concurrent
     /// same-scope requests cannot overdraw `max_reviews`.
     pub(super) fn try_reserve(&self, scope: &ScopeKey) -> bool {
+        self.try_reserve_many(scope, 1)
+    }
+
+    /// Reserves a complete group atomically, so concurrent requests cannot overdraw it.
+    pub(super) fn try_reserve_many(&self, scope: &ScopeKey, count: u32) -> bool {
         let mut state = self.state.lock();
         if state.scopes.len() >= MAX_TRACKED_SCOPES && !state.scopes.contains_key(scope) {
             let evict = state
@@ -93,11 +103,20 @@ impl ReviewBudget {
         }
         let max_reviews = self.max_reviews;
         let entry = state.scopes.entry(scope.clone()).or_default();
-        if entry.reviews >= max_reviews || entry.failed_consults >= MAX_FAILED_CONSULTS {
+        if count > max_reviews.saturating_sub(entry.reviews)
+            || entry.failed_consults >= MAX_FAILED_CONSULTS
+        {
             return false;
         }
-        entry.reviews += 1;
+        entry.reviews += count;
         true
+    }
+
+    /// Releases reviews reserved for confirmations that were never attempted.
+    pub(super) fn refund_unused(&self, scope: &ScopeKey, count: u32) {
+        if let Some(entry) = self.state.lock().scopes.get_mut(scope) {
+            entry.reviews = entry.reviews.saturating_sub(count);
+        }
     }
 
     /// Returns a reserved review after a failed consult and counts the
@@ -181,6 +200,19 @@ mod tests {
 
     fn scope() -> ScopeKey {
         ScopeKey::Session("s1".to_string())
+    }
+
+    #[test]
+    fn confirmation_groups_reserve_atomically_and_release_unattempted_reviews() {
+        let budget = ReviewBudget::new(3);
+        assert!(budget.try_reserve_many(&scope(), 2));
+        assert!(!budget.try_reserve_many(&scope(), 2));
+        budget.refund_unused(&scope(), 1);
+        assert!(budget.try_reserve_many(&scope(), 2));
+        assert!(budget.check_exhausted_for(&scope(), 1));
+        let largest = ReviewBudget::new(u32::MAX);
+        assert!(largest.try_reserve_many(&scope(), u32::MAX));
+        assert!(!largest.try_reserve(&scope()));
     }
 
     #[test]

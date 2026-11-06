@@ -41,21 +41,18 @@ impl JudgePolicy for TargetSelectorPolicy {
         verdict: Option<&Self::Verdict>,
         driver: &Driver,
     ) -> Result<Classification> {
-        let target = verdict
+        let category = verdict
             .and_then(|verdict| self.selector.resolve(verdict).ok())
             .and_then(Value::as_str)
             .and_then(|label| label.parse::<Category>().ok())
             // The judge decides the turn; it is not somewhere to route it.
             .filter(|category| *category != Category::Judge)
-            .and_then(|category| {
-                let target = driver.models_for(&category).first()?.clone();
-                Some((category, target))
-            });
-        match target {
-            Some((category, target)) => Ok(Classification::Scores(vec![Score {
-                target,
+            .filter(|category| !driver.models_for(category).is_empty());
+        match category {
+            Some(category) => Ok(Classification::Scores(vec![Score {
+                needs: vec![category],
+                pin: None,
                 confidence: 1.0,
-                category: Some(category),
             }])),
             None => Ok(Classification::Ambiguous(vec![])),
         }
@@ -93,8 +90,8 @@ mod tests {
         )?;
 
         assert_eq!(
-            classification.argmax(false)?.map(|score| score.target),
-            Some(ModelId::from("model/opus"))
+            classification.argmax(false)?.map(|score| score.needs),
+            Some(vec![Category::Capable])
         );
         Ok(())
     }

@@ -145,6 +145,11 @@ are the measured starting point. Their dial is the judge rubric in `prompt`.
 
 ### Auto
 
+[Unified Auto](auto_routing.md) resolves task and tool signals against one shared
+[model pool](pool.md). Optional review checks the selected executor's answer.
+The legacy model-pair form below remains the Stage preset for compatibility.
+
+
 Auto is a preset, not a separate routing algorithm. An `auto` route builds a
 stage router with these settings. It does not compare strategies at runtime.
 
