@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::future::{AbortHandle, Abortable};
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use http::{HeaderMap, HeaderName, HeaderValue};
 use napi::bindgen_prelude::Promise;
 use napi_derive::napi;
@@ -23,7 +23,9 @@ use switchyard_protocol::{
     AggLlmResponse, DecisionRequest, DecisionResponse, LlmClientError, LlmRequest, LlmResponse,
     LlmResponseStream, LlmResponseStreamEvent, Metadata, ModelId, Request, Response,
 };
-use switchyard_runner::AlgorithmFactory;
+use switchyard_runner::{
+    AlgorithmFactory, ConfiguredAlgorithm, RunnerError, require_target_labels,
+};
 use tokio::sync::mpsc;
 
 use crate::{error, parse, routing_error};
@@ -53,8 +55,28 @@ impl NativeAlgorithmFactory {
                 (
                     id,
                     NativeConfiguredAlgorithm {
-                        algorithm,
-                        models: Arc::new(models),
+                        inner: AlgorithmHandle::Bare {
+                            algorithm,
+                            models: Arc::new(models),
+                        },
+                    },
+                )
+            })
+            .collect())
+    }
+
+    #[napi]
+    pub fn build_configured(&self) -> napi::Result<BTreeMap<String, NativeConfiguredAlgorithm>> {
+        Ok(self
+            .inner
+            .build_configured()
+            .map_err(|err| error("ERR_CONFIG", err))?
+            .into_iter()
+            .map(|(id, algorithm)| {
+                (
+                    id,
+                    NativeConfiguredAlgorithm {
+                        inner: AlgorithmHandle::Governed(Arc::new(algorithm)),
                     },
                 )
             })
@@ -62,20 +84,86 @@ impl NativeAlgorithmFactory {
     }
 }
 
+#[derive(Clone)]
+enum AlgorithmHandle {
+    Bare {
+        algorithm: Arc<dyn Algorithm>,
+        models: Arc<RuntimeModels>,
+    },
+    Governed(Arc<ConfiguredAlgorithm>),
+}
+
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunOptions {
+    required_labels: Option<Vec<String>>,
+    task_id: Option<String>,
+}
+
+fn admission_error(err: RunnerError) -> napi::Error {
+    let code = match &err {
+        RunnerError::Configuration { .. } => "ERR_CONFIG",
+        RunnerError::Client(LlmClientError::InvalidRequest { .. }) => "ERR_INVALID_REQUEST",
+        _ => "ERR_ROUTING",
+    };
+    error(code, err)
+}
+
 #[napi]
 pub struct NativeConfiguredAlgorithm {
-    algorithm: Arc<dyn Algorithm>,
-    models: Arc<RuntimeModels>,
+    inner: AlgorithmHandle,
+}
+
+#[napi(object)]
+pub struct NativeTargetModel {
+    pub client: String,
+    pub id: String,
 }
 
 #[napi]
 impl NativeConfiguredAlgorithm {
     #[napi]
+    pub fn target_models(&self) -> napi::Result<BTreeMap<String, NativeTargetModel>> {
+        let AlgorithmHandle::Governed(algorithm) = &self.inner else {
+            return Err(error(
+                "ERR_INVALID_REQUEST",
+                "target discovery requires buildConfigured()",
+            ));
+        };
+        Ok(algorithm
+            .target_models()
+            .iter()
+            .map(|(name, target)| {
+                (
+                    name.to_string(),
+                    NativeTargetModel {
+                        client: target.client.clone(),
+                        id: target.id.to_string(),
+                    },
+                )
+            })
+            .collect())
+    }
+
+    #[napi]
     pub fn start(
         &self,
         request_json: String,
         headers_json: Option<String>,
+        options_json: Option<String>,
     ) -> napi::Result<NativeAlgorithmRun> {
+        let options: RunOptions = options_json
+            .as_deref()
+            .map(parse)
+            .transpose()?
+            .unwrap_or_default();
+        if options.required_labels.is_some() && matches!(&self.inner, AlgorithmHandle::Bare { .. })
+        {
+            return Err(error(
+                "ERR_INVALID_REQUEST",
+                "route does not accept target requirements; use buildConfigured()",
+            ));
+        }
         let headers: Option<BTreeMap<String, String>> =
             headers_json.as_deref().map(parse).transpose()?;
         let headers = headers
@@ -95,19 +183,32 @@ impl NativeConfiguredAlgorithm {
             .transpose()?;
         let mut llm_request = parse(&request_json)?;
         switchyard_translation::normalize_compaction(&mut llm_request, headers.as_ref());
-        let request = Request {
+        let mut request = Request {
             llm_request,
             raw_request: None,
             metadata: headers.map(|headers| Metadata::from_headers(&headers)),
         };
-        let algorithm = Arc::clone(&self.algorithm);
-        let models = Arc::clone(&self.models);
+        if let Some(task_id) = options.task_id {
+            request.metadata.get_or_insert_default().task_id = Some(task_id);
+        }
+        if let Some(labels) = options.required_labels {
+            require_target_labels(&mut request, labels)
+                .map_err(|err| error("ERR_INVALID_REQUEST", err))?;
+        }
+        let handle = self.inner.clone();
         // Algorithm startup must run on napi's Tokio runtime.
         let stream = futures::stream::once(async move {
-            algorithm.run_stream(request, models, State::default())
+            let stream = match handle {
+                AlgorithmHandle::Bare { algorithm, models } => {
+                    Ok(algorithm.run_stream(request, models, State::default()))
+                }
+                AlgorithmHandle::Governed(algorithm) => algorithm
+                    .run_stream(request, State::default())
+                    .map_err(admission_error),
+            }?;
+            Ok::<_, napi::Error>(stream.map(|step| step.map_err(routing_error)))
         })
-        .flatten()
-        .map(|step| step.map_err(routing_error));
+        .try_flatten();
         Ok(NativeAlgorithmRun {
             reader: Reader::new(stream),
         })

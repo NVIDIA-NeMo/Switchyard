@@ -56,6 +56,11 @@ export interface RoutingOutcome {
   readonly metadata: OutcomeMetadata | null;
 }
 
+export interface TargetModel {
+  readonly client: string;
+  readonly id: string;
+}
+
 export namespace Step {
   export class CallModel {
     constructor(readonly call: ModelCall) {}
@@ -96,11 +101,13 @@ interface NativeStep {
 }
 
 interface NativeConfigured {
-  start(request: string, headers: string | null): NativeReader<NativeStep>;
+  start(request: string, headers: string | null, options: string | null): NativeReader<NativeStep>;
+  targetModels(): Record<string, TargetModel>;
 }
 
 interface NativeFactory {
   build(): Record<string, NativeConfigured>;
+  buildConfigured(): Record<string, NativeConfigured>;
 }
 
 const native: { NativeAlgorithmFactory: new (source: string) => NativeFactory } =
@@ -265,6 +272,14 @@ export class AlgorithmFactory {
       throw publicError(error);
     }
   }
+
+  buildConfigured(): Record<string, ConfiguredAlgorithm> {
+    try {
+      return Object.fromEntries(Object.entries(this.#native.buildConfigured()).map(([id, route]) => [id, configured(route)]));
+    } catch (error) {
+      throw publicError(error);
+    }
+  }
 }
 
 export class ConfiguredAlgorithm {
@@ -278,9 +293,32 @@ export class ConfiguredAlgorithm {
     configured = (native) => new ConfiguredAlgorithm(native);
   }
 
-  runStream(request: JsonObject, options: { headers?: Record<string, string> } = {}): AsyncIterableIterator<AlgorithmStep> {
+  /** Resolve call targets to configured clients and provider IDs, not an eligible pool. */
+  targetModels(): Readonly<Record<string, TargetModel>> {
     try {
-      return reader(this.#native.start(json(request), options.headers === undefined ? null : json(options.headers)), decodeStep);
+      return this.#native.targetModels();
+    } catch (error) {
+      throw publicError(error);
+    }
+  }
+
+  runStream(request: JsonObject, options: {
+    headers?: Record<string, string>;
+    requiredLabels?: readonly string[];
+    taskId?: string;
+  } = {}): AsyncIterableIterator<AlgorithmStep> {
+    try {
+      if (options.requiredLabels !== undefined && !Array.isArray(options.requiredLabels)) {
+        throw new Error("ERR_INVALID_REQUEST: requiredLabels must be an array of strings");
+      }
+      if (options.taskId !== undefined && typeof options.taskId !== "string") {
+        throw new Error("ERR_INVALID_REQUEST: taskId must be a string");
+      }
+      const requirements = options.requiredLabels === undefined && options.taskId === undefined
+        ? null : json({ required_labels: options.requiredLabels, task_id: options.taskId });
+      return reader(this.#native.start(
+        json(request), options.headers === undefined ? null : json(options.headers), requirements,
+      ), decodeStep);
     } catch (error) {
       throw publicError(error);
     }
