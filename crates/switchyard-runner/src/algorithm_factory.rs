@@ -55,11 +55,9 @@ impl AlgorithmFactory {
             .collect()
     }
 
-    /// Builds reusable routes that check target requirements before yielding model calls.
-    ///
-    /// Keys are configured route IDs. The host executes all yielded calls and final answer
-    /// candidates, including their prompts, provider settings, credentials and transport.
-    /// No provider clients are constructed and no credential values are read.
+    /// Builds reusable algorithms keyed by route ID that check target requirements.
+    /// The host handles model/Decision calls, approved answer/fallback targets, prompts,
+    /// provider settings, credentials and transport. No provider clients are built or credentials read.
     pub fn build_configured(&self) -> Result<BTreeMap<String, ConfiguredAlgorithm>, RunnerError> {
         self.config.validate()?;
         self.config.validate_target_approvals()?;
@@ -118,7 +116,7 @@ impl ConfiguredEligibility {
         else {
             return Ok(standard.clone());
         };
-        // Building a setup is synchronous; no model I/O occurs under the lock.
+        // No model I/O under this lock.
         let mut setups = self.setups.lock();
         if let Some(setup) = setups.get(&bindings) {
             return Ok(setup.clone());
@@ -138,19 +136,17 @@ impl ConfiguredEligibility {
     }
 }
 
-/// A reusable algorithm that checks target requirements before host-owned model calls.
+/// A reusable algorithm with target requirement checks.
 pub struct ConfiguredAlgorithm {
     standard: AlgorithmSetup,
     eligibility: Option<ConfiguredEligibility>,
 }
 
 impl ConfiguredAlgorithm {
-    /// Checks requirements before returning model or Decision work for the host to execute.
-    ///
-    /// Invalid requirements or unavailable approved targets return an error without starting
-    /// the algorithm. Requires a Tokio runtime. Reuse this handle to retain task requirements
-    /// and algorithm-owned state; `state` supplies libsy's separate per-run routing state.
-    /// The host must keep final answer attempts within the returned candidates.
+    /// Checks requirements before yielding model or Decision calls.
+    /// Invalid requirements or unavailable approved targets fail before the algorithm starts.
+    /// Requires Tokio. Reuse the handle to retain task requirements and algorithm-owned state;
+    /// `state` is per-run routing state. Answer/fallback attempts must stay within returned candidates.
     pub fn run_stream(&self, request: Request, state: State) -> Result<StepStream, RunnerError> {
         let setup = match &self.eligibility {
             Some(eligibility) => eligibility.select(&request, &self.standard)?,

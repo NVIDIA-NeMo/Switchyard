@@ -232,7 +232,7 @@ fn check_random_targets(
     Ok(())
 }
 
-// Routing uses selected target names; provider model IDs below are for telemetry.
+// Routing uses target names; telemetry uses provider IDs.
 fn build_resolved_algorithm<'a>(
     route_name: &str,
     algorithm: &AlgorithmSpec,
@@ -504,7 +504,6 @@ impl DeploymentConfig {
         Ok((algorithm, models.with_target_restriction()))
     }
 
-    // The host-owned path checks declared Decision identities without building clients.
     fn resolve_decision_models<'a>(
         &'a self,
         route_name: &str,
