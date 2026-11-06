@@ -527,6 +527,10 @@ pub enum AlgorithmSpec {
         /// user message, kept out of the trace. Rejected together with `capable_target`.
         #[serde(default)]
         collection_note: Option<String>,
+        /// Merges an assistant text message with the tool-call-only assistant messages that
+        /// follow it, the shape some clients replay a step in, before the decision.
+        #[serde(default)]
+        coalesce_assistant_turns: bool,
     },
     Vgr {
         #[serde(flatten)]
@@ -2074,6 +2078,7 @@ fn build_algorithm(
             on_invalid,
             on_student_error,
             collection_note,
+            coalesce_assistant_turns,
         } => {
             resolve_target_model_id(route_name, efficient_target, targets)?;
             if let Some(capable_target) = capable_target {
@@ -2104,6 +2109,7 @@ fn build_algorithm(
                 on_invalid: *on_invalid,
                 on_student_error: *on_student_error,
                 collection_note: collection_note.clone(),
+                coalesce_assistant_turns: *coalesce_assistant_turns,
                 trace_jsonl: trace_jsonl.clone(),
             })))
         }
@@ -2416,12 +2422,14 @@ mod tests {
             lenient_cloud,
             on_invalid,
             on_student_error,
+            coalesce_assistant_turns,
             ..
         } = &spec
         else {
             unreachable!();
         };
         assert_eq!(capable_target.as_deref(), Some("strong"));
+        assert!(!*coalesce_assistant_turns);
         assert!(trace_jsonl.is_none());
         assert!(!*hide_route);
         assert!(*lenient_cloud);
@@ -2464,7 +2472,8 @@ mod tests {
              hide_route = true\n\
              lenient_cloud = false\n\
              on_invalid = { retry = 2, action = \"escalate\" }\n\
-             on_student_error = \"escalate\"",
+             on_student_error = \"escalate\"\n\
+             coalesce_assistant_turns = true",
         )
         .expect("explicit options parse");
         let AlgorithmSpec::SelfDelegation {
@@ -2473,11 +2482,13 @@ mod tests {
             lenient_cloud,
             on_invalid,
             on_student_error,
+            coalesce_assistant_turns,
             ..
         } = &spec
         else {
             unreachable!();
         };
+        assert!(*coalesce_assistant_turns);
         assert_eq!(
             trace_jsonl.as_deref(),
             Some(std::path::Path::new("/var/tmp/edgewise-trace.jsonl"))

@@ -110,6 +110,7 @@ trace_jsonl = "/var/tmp/edgewise-serve-trace.jsonl"
 | `on_invalid.action` | `"serve"` | `serve` the last invalid reply as it came, or `escalate` to the capable model. `escalate` needs `capable_target`. |
 | `on_student_error` | `"error"` | `error` returns a failed student call to the client; `escalate` calls the capable model instead. `escalate` needs `capable_target`. |
 | `collection_note` | unset | Collection mode only. Text appended to each teacher request as its last user message, as a per-reply reminder of the route line. Never recorded in the trace. Rejected together with `capable_target`. |
+| `coalesce_assistant_turns` | `false` | Merge an assistant message that has text and no tool calls with the tool-call-only assistant messages that directly follow it, before the decision and before the trace is captured. Codex replays each earlier step as a message item and then function-call items, which reach the route as two assistant messages per step; a student that produced the step as one message then sees its own history split, and one started to repeat the route line after about twenty steps. Claude Code sends one message per step and is unchanged. Preserved provider bodies are dropped when a merge happens, so every target receives the merged history, and the trace records it. |
 
 Both targets answer requests, so neither is a judge-only target. A
 `system_prompt` on `efficient_target` is prepended to the student call, because

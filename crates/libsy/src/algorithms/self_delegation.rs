@@ -15,7 +15,9 @@
 //!
 //! Both upstream calls ask for buffered replies. The answer is converted to a stream when the
 //! client asked for one. With `trace_jsonl` set, one JSON object per decision is appended for
-//! training-data export; the trace never changes what is served.
+//! training-data export; the trace never changes what is served. With
+//! `coalesce_assistant_turns`, assistant steps a client replays as separate messages are
+//! merged first, and the trace records the merged history.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -27,8 +29,8 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use switchyard_protocol::{
-    AggLlmResponse, Category, ContentBlock, LlmRequest, LlmResponse, Metadata, ModelId, Request,
-    Response, ResponseOutput, Role, StopReason, Usage, WireFormat,
+    AggLlmResponse, Category, ContentBlock, LlmRequest, LlmResponse, Message, Metadata, ModelId,
+    Request, Response, ResponseOutput, Role, StopReason, Usage, WireFormat,
 };
 use switchyard_translation::{append_note, encode_request};
 
@@ -102,6 +104,10 @@ pub struct SelfDelegationConfig {
     /// Collection mode only: a reminder appended to each teacher request as its last user
     /// message. The trace never records it.
     pub collection_note: Option<String>,
+    /// Merge an assistant text message with the tool-call-only assistant messages that follow
+    /// it before anything else happens, so a history a client replays as separate items reads
+    /// as one message per step.
+    pub coalesce_assistant_turns: bool,
     /// Append one JSON object per decision to this file.
     pub trace_jsonl: Option<PathBuf>,
 }
@@ -114,6 +120,7 @@ impl Default for SelfDelegationConfig {
             on_invalid: OnInvalid::default(),
             on_student_error: StudentErrorAction::Error,
             collection_note: None,
+            coalesce_assistant_turns: false,
             trace_jsonl: None,
         }
     }
@@ -427,6 +434,63 @@ fn clear_stream(request: &mut LlmRequest) {
     }
 }
 
+fn is_blank_text(block: &ContentBlock) -> bool {
+    matches!(block, ContentBlock::Text { text } if text.trim().is_empty())
+}
+
+fn has_visible_text(message: &Message) -> bool {
+    message
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Text { .. }) && !is_blank_text(block))
+}
+
+fn has_tool_calls(message: &Message) -> bool {
+    message
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::ToolCall(_)))
+}
+
+/// Merges an assistant message that has text and no tool calls with the assistant messages
+/// that directly follow it and have tool calls but no text, so a history a client replays as
+/// separate items reads as one message per step, the shape the model produced. Every other
+/// message is left alone. Preserved provider bodies still hold the split history, so they are
+/// dropped when a merge happens and encoding rebuilds the request. Returns whether anything
+/// was merged.
+pub fn coalesce_assistant_turns(request: &mut LlmRequest) -> bool {
+    let mut merged = false;
+    let mut messages: Vec<Message> = Vec::with_capacity(request.messages.len());
+    // The text-only assistant message that opened the current step, while its run lasts.
+    let mut head: Option<usize> = None;
+    for message in std::mem::take(&mut request.messages) {
+        if message.role != Role::Assistant {
+            head = None;
+        } else if let Some(index) = head
+            && has_tool_calls(&message)
+            && !has_visible_text(&message)
+        {
+            messages[index].content.extend(
+                message
+                    .content
+                    .into_iter()
+                    .filter(|block| !is_blank_text(block)),
+            );
+            merged = true;
+            continue;
+        } else {
+            head =
+                (has_visible_text(&message) && !has_tool_calls(&message)).then_some(messages.len());
+        }
+        messages.push(message);
+    }
+    request.messages = messages;
+    if merged {
+        request.preservation.requests.clear();
+    }
+    merged
+}
+
 /// A buffered upstream reply with the envelope fields the served response keeps.
 struct Buffered {
     agg: AggLlmResponse,
@@ -667,9 +731,12 @@ impl Algorithm for SelfDelegation {
         let efficient = driver.first_model_for(&Category::Efficient)?.clone();
         let capable = driver.models_for(&Category::Capable).first().cloned();
         let streaming = request.llm_request.stream;
-        // The request as received: no prompt is added here. The upstream copy only asks for
-        // buffered replies.
-        let neutral = request;
+        // The request as received, with split assistant steps merged when configured: no
+        // prompt is added here. The upstream copy only asks for buffered replies.
+        let mut neutral = request;
+        if self.config.coalesce_assistant_turns {
+            coalesce_assistant_turns(&mut neutral.llm_request);
+        }
         let mut upstream = neutral.clone();
         clear_stream(&mut upstream.llm_request);
 

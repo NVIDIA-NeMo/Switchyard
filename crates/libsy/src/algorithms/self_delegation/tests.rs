@@ -9,9 +9,9 @@ use parking_lot::Mutex;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use switchyard_protocol::{
-    AggLlmResponse, Category, ContentBlock, InstructionBlock, LlmClientError, LlmResponse,
+    AggLlmResponse, Category, ContentBlock, InstructionBlock, LlmClientError, LlmResponse, Message,
     Metadata, ModelId, Request, Response, ResponseOutput, Role, StopReason, ToolCall,
-    ToolDefinition, Usage, WireFormat, completion_text, text_request,
+    ToolDefinition, ToolResult, Usage, WireFormat, completion_text, text_request,
 };
 
 use super::*;
@@ -1004,6 +1004,224 @@ async fn the_trace_records_the_request_as_the_student_engine_receives_it() -> Re
     assert_eq!(body["tools"][0]["function"]["name"], "bash");
     assert!(body.get("stream").is_none(), "the student call is buffered");
     assert_eq!(record["student"]["target"], STUDENT);
+    Ok(())
+}
+
+fn assistant(blocks: Vec<ContentBlock>) -> Message {
+    Message {
+        role: Role::Assistant,
+        content: blocks,
+    }
+}
+
+fn text(text: &str) -> ContentBlock {
+    ContentBlock::Text {
+        text: text.to_string(),
+    }
+}
+
+fn call(id: &str) -> ContentBlock {
+    ContentBlock::ToolCall(ToolCall {
+        id: id.to_string(),
+        name: "bash".to_string(),
+        arguments: json!({"cmd": "ls"}),
+    })
+}
+
+fn tool_result(id: &str) -> Message {
+    Message {
+        role: Role::Tool,
+        content: vec![ContentBlock::ToolResult(ToolResult {
+            tool_call_id: id.to_string(),
+            content: vec![text("ok")],
+            is_error: None,
+        })],
+    }
+}
+
+/// Two steps as the Responses translation hands them over: the text, then the tool calls.
+fn codex_history() -> Vec<Message> {
+    vec![
+        Message::text(Role::System, "You are a coding agent."),
+        Message::text(Role::Developer, "Use the tools."),
+        Message::text(Role::User, "fix the parser"),
+        assistant(vec![text("{\"route\":\"local\"}\nStep one.")]),
+        assistant(vec![call("call_1")]),
+        tool_result("call_1"),
+        assistant(vec![text("{\"route\":\"local\"}\nStep two.")]),
+        assistant(vec![text("  "), call("call_2")]),
+        assistant(vec![call("call_3")]),
+        tool_result("call_2"),
+        tool_result("call_3"),
+        Message::text(Role::User, "continue"),
+    ]
+}
+
+/// The same two steps as one assistant message each.
+fn coalesced_history() -> Vec<Message> {
+    vec![
+        Message::text(Role::System, "You are a coding agent."),
+        Message::text(Role::Developer, "Use the tools."),
+        Message::text(Role::User, "fix the parser"),
+        assistant(vec![
+            text("{\"route\":\"local\"}\nStep one."),
+            call("call_1"),
+        ]),
+        tool_result("call_1"),
+        assistant(vec![
+            text("{\"route\":\"local\"}\nStep two."),
+            call("call_2"),
+            call("call_3"),
+        ]),
+        tool_result("call_2"),
+        tool_result("call_3"),
+        Message::text(Role::User, "continue"),
+    ]
+}
+
+#[test]
+fn coalescing_merges_codex_shaped_assistant_steps() {
+    let mut request = text_request(None, "unused");
+    request.messages = codex_history();
+    request
+        .preservation
+        .requests
+        .insert("openai_responses".into(), json!({"input": []}));
+
+    assert!(coalesce_assistant_turns(&mut request));
+
+    assert_eq!(request.messages, coalesced_history());
+    assert!(
+        request.preservation.requests.is_empty(),
+        "preserved bodies hold the split history and must go"
+    );
+    // Already merged: nothing changes and preserved bodies stay.
+    request
+        .preservation
+        .requests
+        .insert("openai_chat".into(), json!({"messages": []}));
+    assert!(!coalesce_assistant_turns(&mut request));
+    assert_eq!(request.messages, coalesced_history());
+    assert_eq!(request.preservation.requests.len(), 1);
+}
+
+#[test]
+fn coalescing_leaves_other_histories_alone() {
+    let claude = vec![
+        Message::text(Role::User, "fix the parser"),
+        assistant(vec![
+            text("{\"route\":\"local\"}\nStep one."),
+            call("call_1"),
+        ]),
+        tool_result("call_1"),
+        assistant(vec![
+            text("{\"route\":\"local\"}\nStep two."),
+            call("call_2"),
+        ]),
+        tool_result("call_2"),
+        Message::text(Role::User, "continue"),
+    ];
+    let text_only = vec![
+        Message::text(Role::User, "hi"),
+        assistant(vec![text("Hello.")]),
+        Message::text(Role::User, "thanks"),
+    ];
+    let tools_only = vec![
+        Message::text(Role::User, "fix it"),
+        assistant(vec![call("call_1")]),
+        tool_result("call_1"),
+        assistant(vec![call("call_2")]),
+        assistant(vec![call("call_3")]),
+        tool_result("call_2"),
+        tool_result("call_3"),
+    ];
+    let two_texts = vec![
+        Message::text(Role::User, "hi"),
+        assistant(vec![text("One.")]),
+        assistant(vec![text("Two.")]),
+    ];
+    for history in [claude, text_only, tools_only, two_texts] {
+        let mut request = text_request(None, "unused");
+        request.messages = history.clone();
+        request
+            .preservation
+            .requests
+            .insert("openai_chat".into(), json!({"messages": []}));
+        assert!(!coalesce_assistant_turns(&mut request));
+        assert_eq!(request.messages, history);
+        assert_eq!(request.preservation.requests.len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn coalescing_option_rewrites_the_history_both_calls_and_the_trace_see() -> Result<()> {
+    let trace = TraceFile::new("coalesce");
+    let config = SelfDelegationConfig {
+        coalesce_assistant_turns: true,
+        ..trace.config()
+    };
+    let mut request = request();
+    request.llm_request.messages = codex_history().into_iter().skip(2).collect();
+    request
+        .llm_request
+        .preservation
+        .requests
+        .insert("openai_responses".into(), json!({"input": []}));
+    let fake = Fake::new(
+        vec![Ok(reply(CLOUD_SENTINEL, 0))],
+        vec![Ok(reply("Editing.", 1))],
+    );
+
+    let (selected, _) = drive(config, request, models(true), &fake).await?;
+
+    assert_eq!(selected, STRONG);
+    let expected: Vec<Message> = coalesced_history().into_iter().skip(2).collect();
+    {
+        let calls = fake.calls.lock();
+        assert_eq!(calls.len(), 2);
+        for (_, call) in calls.iter() {
+            assert_eq!(call.llm_request.messages, expected);
+            assert!(call.llm_request.preservation.requests.is_empty());
+        }
+    }
+    let record = trace.record();
+    let messages = record["request"]["messages"]
+        .as_array()
+        .expect("messages array");
+    let assistants: Vec<&Value> = messages
+        .iter()
+        .filter(|message| message["role"] == "assistant")
+        .collect();
+    assert_eq!(assistants.len(), 2, "{messages:?}");
+    assert_eq!(
+        assistants[0]["tool_calls"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert!(assistants[0]["content"].to_string().contains("Step one."));
+    assert_eq!(
+        assistants[1]["tool_calls"].as_array().map(Vec::len),
+        Some(2)
+    );
+    assert!(assistants[1]["content"].to_string().contains("Step two."));
+    Ok(())
+}
+
+#[tokio::test]
+async fn coalescing_is_off_by_default() -> Result<()> {
+    let mut request = request();
+    request.llm_request.messages = codex_history();
+    let fake = Fake::new(vec![Ok(reply("{\"route\":\"local\"}\nok", 1))], vec![]);
+
+    drive(
+        SelfDelegationConfig::default(),
+        request,
+        models(true),
+        &fake,
+    )
+    .await?;
+
+    let calls = fake.calls.lock();
+    assert_eq!(calls[0].1.llm_request.messages, codex_history());
     Ok(())
 }
 

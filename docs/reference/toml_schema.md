@@ -658,6 +658,7 @@ reply is asked again unless it carries a route line and a step. See
 | `on_invalid.action` | No | `serve` | `serve` the last invalid reply, or `escalate` to the capable target. `escalate` without `capable_target` is rejected at load. |
 | `on_student_error` | No | `error` | `error` returns a failed efficient call to the client; `escalate` calls the capable target instead. `escalate` without `capable_target` is rejected at load. |
 | `collection_note` | No | unset | Collection mode only: text appended to each efficient-target request as its last user message, a per-reply reminder to start with the route line for a teacher that drops it on later turns. The trace never records it. Rejected at load when `capable_target` is set. |
+| `coalesce_assistant_turns` | No | `false` | Merges an assistant message with text and no tool calls into one message with the tool-call-only assistant messages that directly follow it, before the decision and the trace. Codex replays a step as a message item and function-call items, which arrive as two assistant messages; a model that produced the step as one message otherwise sees its history split. Preserved provider bodies are dropped when a merge happens. |
 
 ## Validation Errors
 

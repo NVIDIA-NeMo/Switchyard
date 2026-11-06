@@ -32,5 +32,7 @@ efficient_target = "student"
 capable_target = "strong"
 # One file per server process; every decision appends one JSON line.
 trace_jsonl = "/var/tmp/edgewise-serve-trace.jsonl"
+# Codex replays a step as a text item and function-call items; merge them back into one message.
+coalesce_assistant_turns = true
 on_invalid = { retry = 1, action = "serve" }
 on_student_error = "error"

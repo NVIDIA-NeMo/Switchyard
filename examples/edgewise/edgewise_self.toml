@@ -21,3 +21,5 @@ type = "self_delegation"
 efficient_target = "student"
 capable_target = "student"
 trace_jsonl = "/var/tmp/edgewise-self-trace.jsonl"
+# Codex replays a step as a text item and function-call items; merge them back into one message.
+coalesce_assistant_turns = true

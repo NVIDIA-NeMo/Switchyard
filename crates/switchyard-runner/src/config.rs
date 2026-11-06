@@ -2594,6 +2594,7 @@ efficient_target = "weak"
 capable_target = "strong"
 on_invalid = {{ retry = 1, action = "escalate" }}
 on_student_error = "escalate"
+coalesce_assistant_turns = true
 
 [routes.edgewise_collect]
 id = "switchyard/edgewise-collect"
