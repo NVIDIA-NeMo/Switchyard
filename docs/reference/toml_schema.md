@@ -579,7 +579,7 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `classifier.decision.instructions` | No | built in | Replaces the default question text. Keep the meaning of the choices. |
 | `classifier.decision.choices` | No | `capable`, `efficient` | Array of `{ id, description }` tables sent as the choice options. IDs must be unique. |
 | `classifier.decision.apply_cutoff_to` | No | `capable` | Choice ID whose probability is compared with `cutoff`. |
-| `classifier.fail_open` | No | capability: `false`, custom: `true` | Capability judge errors stop the request. Set `true` to retain the last tier or default to efficient. Custom classifiers always use that fallback. |
+| `classifier.fail_open` | No | `true` | On judge failure, retain the last classified tier or default to efficient. Set `false` to return the error. |
 | `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier. |
 | `classifier.recent_turn_window` | No | unset | LLM judges default to task messages. Decision judges default to 10 recent messages plus the opening task. An explicit value sets the trailing message window. |
 | `classifier.prompt` | No | packaged prompt | Replaces the classifier judge prompt. The verdict schema is unchanged. |

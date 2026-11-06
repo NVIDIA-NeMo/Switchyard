@@ -27,9 +27,6 @@ The efficient-first profile holds capable for two requests after escalation.
 Both profiles use three recent tool results. Explicit shared and profile settings
 override these defaults. Set `capable_system_prompt = ""` to disable the planning prompt.
 
-Capability judge errors stop the request by default. Set `fail_open = true` to retain
-the previous tier or default to efficient. Custom classifiers retain their existing fallback.
-
 The classifier can use an LLM judge or a decision model. A decision
 model is configured through a decision client and target, separately from the
 capable and efficient completion targets.
@@ -167,7 +164,7 @@ default choices are `capable` (start with the capable model) and `efficient`
 `probabilities.capable` is above `cutoff`. The Composite default cutoff is `0.92`.
 Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
 `base_threshold`, `threshold_step` and `prompt` when using a decision model.
-On judge failure, set `fail_open = true` to retain the last classified tier or use
+On judge failure, the default is to retain the last classified tier or use
 efficient for a new session. Set `classifier.fail_open = false` to return the error.
 
 To ask a custom question, set `instructions`, `choices`, and `apply_cutoff_to`

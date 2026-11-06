@@ -709,6 +709,37 @@ impl StageSettingsConfig {
 }
 
 impl StageTierConfig {
+    fn profile_config(
+        &self,
+        profile: &StageProfileConfig,
+        picker: PickerMode,
+    ) -> StageRouterConfig {
+        let threshold = match picker {
+            PickerMode::EfficientFirst => self.settings.confidence_threshold.unwrap_or(0.4),
+            PickerMode::CapableFirst => self.capable_first_threshold,
+        };
+        let mode = profile.picker.unwrap_or(picker);
+        let capable_first = mode == PickerMode::CapableFirst;
+        let mut config = profile
+            .settings
+            .stage_config(&self.settings, mode, threshold);
+        config.recent_window.get_or_insert(3);
+        config.capable_hold_turns = profile
+            .settings
+            .capable_hold_turns
+            .or(self.settings.capable_hold_turns)
+            .unwrap_or(if capable_first { 0 } else { 2 });
+        config
+            .efficient_hold_turns
+            .get_or_insert(if capable_first { -1 } else { 0 });
+        if capable_first {
+            config
+                .capable_system_prompt
+                .get_or_insert_with(|| COMPOSITE_PLANNING_PROMPT.into());
+        }
+        config
+    }
+
     /// Warns when both tiers name one target; see [`warn_identical_tiers`].
     fn warn_identical_tiers(&self, route_name: &str) {
         warn_identical_tiers(route_name, &self.capable_target, &self.efficient_target);
@@ -716,6 +747,24 @@ impl StageTierConfig {
 }
 
 impl StageClassifierConfig {
+    fn composite_judge_config(
+        &self,
+        route_name: &str,
+        capable: &str,
+        efficient: &str,
+    ) -> AlgorithmResult<CompositeJudgeConfig> {
+        if matches!(self.mode, Some(ClassifierMode::Custom)) {
+            return Ok(CompositeJudgeConfig::Custom(
+                self.custom_classifier_config(route_name)?,
+            ));
+        }
+        let mut config = self.task_classifier_config(route_name, capable, efficient)?;
+        if let CapabilityJudgeConfig::Decision(judge) = &mut config.judge {
+            judge.cutoff.get_or_insert(0.92);
+        }
+        Ok(CompositeJudgeConfig::Capability(config))
+    }
+
     fn task_classifier_config(
         &self,
         route_name: &str,
@@ -1924,78 +1973,41 @@ fn build_algorithm(
             subagents,
         } => {
             stage.warn_identical_tiers(route_name);
-            let judge = if matches!(classifier.mode, Some(ClassifierMode::Custom)) {
-                CompositeJudgeConfig::Custom(classifier.custom_classifier_config(route_name)?)
-            } else {
-                let mut classifier = classifier.clone();
-                classifier.fail_open.get_or_insert(false);
-                if let Some(decision) = &mut classifier.decision {
-                    decision.cutoff.get_or_insert(0.92);
-                }
-                CompositeJudgeConfig::Capability(classifier.task_classifier_config(
-                    route_name,
-                    &stage.capable_target,
-                    &stage.efficient_target,
-                )?)
-            };
-            let shared = &stage.settings;
-            let algorithm = {
-                let defaults = StageProfileConfig::default();
-                let profiles = [
-                    (
-                        efficient,
-                        PickerMode::EfficientFirst,
-                        shared.confidence_threshold.unwrap_or(0.4),
-                    ),
-                    (
-                        capable,
-                        PickerMode::CapableFirst,
-                        stage.capable_first_threshold,
-                    ),
-                ]
-                .map(|(profile, picker, threshold)| -> AlgorithmResult<_> {
-                    let profile = profile.as_deref().unwrap_or(&defaults);
-                    let mut config = profile.settings.stage_config(
-                        shared,
-                        profile.picker.unwrap_or(picker),
-                        threshold,
-                    );
-                    if profile.picker.unwrap_or(picker) == PickerMode::CapableFirst {
-                        if profile
-                            .settings
-                            .capable_hold_turns
-                            .or(shared.capable_hold_turns)
-                            .is_none()
-                        {
-                            config.capable_hold_turns = 0;
-                        }
-                        if config.capable_system_prompt.is_none() {
-                            config.capable_system_prompt = Some(COMPOSITE_PLANNING_PROMPT.into());
-                        }
-                    }
-                    config.llm_fallback = profile
-                        .classifier
-                        .as_ref()
-                        .map(|classifier| {
-                            classifier.stage_fallback(
-                                route_name,
-                                &stage.capable_target,
-                                &stage.efficient_target,
-                                targets,
-                            )
-                        })
-                        .transpose()?;
-                    Ok(config)
-                });
-                let [profile_0, profile_1] = profiles;
-                CompositeRouter::new_with_profiles(judge, profile_0?, profile_1?)
-            }
-            .map_err(|error| {
-                AlgorithmConfigError::with_source(
-                    format!("composite route {route_name}: {error}"),
-                    error,
-                )
-            })?;
+            let judge = classifier.composite_judge_config(
+                route_name,
+                &stage.capable_target,
+                &stage.efficient_target,
+            )?;
+            let defaults = StageProfileConfig::default();
+            let profiles = [
+                (efficient, PickerMode::EfficientFirst),
+                (capable, PickerMode::CapableFirst),
+            ]
+            .map(|(profile, picker)| -> AlgorithmResult<_> {
+                let profile = profile.as_deref().unwrap_or(&defaults);
+                let mut config = stage.profile_config(profile, picker);
+                config.llm_fallback = profile
+                    .classifier
+                    .as_ref()
+                    .map(|classifier| {
+                        classifier.stage_fallback(
+                            route_name,
+                            &stage.capable_target,
+                            &stage.efficient_target,
+                            targets,
+                        )
+                    })
+                    .transpose()?;
+                Ok(config)
+            });
+            let [profile_0, profile_1] = profiles;
+            let algorithm = CompositeRouter::new_with_profiles(judge, profile_0?, profile_1?)
+                .map_err(|error| {
+                    AlgorithmConfigError::with_source(
+                        format!("composite route {route_name}: {error}"),
+                        error,
+                    )
+                })?;
             let parent: Arc<dyn Algorithm> = Arc::new(algorithm);
             attach_subagent_router(route_name, parent, subagents.as_ref(), targets)
         }
@@ -2250,6 +2262,110 @@ fn resolve_runtime_models(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn composite_profile_defaults() -> AlgorithmResult<()> {
+        let stage: StageTierConfig =
+            toml::from_str("capable_target = 'strong'\nefficient_target = 'weak'").unwrap();
+        for (picker, threshold, capable_hold, efficient_hold, prompt) in [
+            (PickerMode::EfficientFirst, 0.4, 2, 0, None),
+            (
+                PickerMode::CapableFirst,
+                0.0,
+                0,
+                -1,
+                Some(COMPOSITE_PLANNING_PROMPT),
+            ),
+        ] {
+            let config = stage.profile_config(&StageProfileConfig::default(), picker);
+            assert_eq!(config.mode, picker);
+            assert_eq!(config.confidence_threshold, threshold);
+            assert_eq!(config.recent_window, Some(3));
+            assert_eq!(config.capable_hold_turns, capable_hold);
+            assert_eq!(config.efficient_hold_turns, Some(efficient_hold));
+            assert_eq!(config.capable_system_prompt.as_deref(), prompt);
+            assert!(config.llm_fallback.is_none());
+            assert!(config.handoff_notes.is_none());
+        }
+        let standalone = StageSettingsConfig::default().stage_config(
+            &StageSettingsConfig::default(),
+            PickerMode::CapableFirst,
+            0.5,
+        );
+        assert_eq!(standalone.capable_hold_turns, 2);
+        assert!(standalone.capable_system_prompt.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn composite_profile_overrides() {
+        let stage: StageTierConfig = toml::from_str(
+            r#"
+capable_target = "strong"
+efficient_target = "weak"
+efficient_first_threshold = 0.7
+capable_first_threshold = 0.2
+recent_turn_window = 5
+capable_hold_turns = 4
+efficient_hold_turns = 1
+capable_system_prompt = "Shared plan"
+"#,
+        )
+        .unwrap();
+        let shared = stage.profile_config(&StageProfileConfig::default(), PickerMode::CapableFirst);
+        assert_eq!(shared.confidence_threshold, 0.2);
+        assert_eq!(shared.recent_window, Some(5));
+        assert_eq!(shared.capable_hold_turns, 4);
+        assert_eq!(shared.efficient_hold_turns, Some(1));
+        assert_eq!(shared.capable_system_prompt.as_deref(), Some("Shared plan"));
+        assert_eq!(
+            stage
+                .profile_config(&StageProfileConfig::default(), PickerMode::EfficientFirst)
+                .confidence_threshold,
+            0.7
+        );
+        let profile: StageProfileConfig = toml::from_str(
+            r#"
+confidence_threshold = 0.0
+recent_turn_window = 2
+capable_hold_turns = 0
+efficient_hold_turns = 0
+capable_system_prompt = ""
+"#,
+        )
+        .unwrap();
+        let config = stage.profile_config(&profile, PickerMode::CapableFirst);
+        assert_eq!(config.confidence_threshold, 0.0);
+        assert_eq!(config.recent_window, Some(2));
+        assert_eq!(config.capable_hold_turns, 0);
+        assert_eq!(config.efficient_hold_turns, Some(0));
+        assert_eq!(config.capable_system_prompt.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn composite_decision_defaults_and_overrides() -> AlgorithmResult<()> {
+        for (settings, cutoff, fail_open) in [
+            ("[decision]", 0.92, true),
+            ("fail_open = false\n[decision]\ncutoff = 0.7", 0.7, false),
+        ] {
+            let classifier: StageClassifierConfig = toml::from_str(&format!(
+                "target = 'judge'\nclassify_trigger = 'new_session'\n{settings}"
+            ))
+            .unwrap();
+            let CompositeJudgeConfig::Capability(config) =
+                classifier.composite_judge_config("route", "strong", "weak")?
+            else {
+                panic!()
+            };
+            assert_eq!(config.classify_trigger, ClassifyTrigger::NewSession);
+            assert_eq!(config.fail_open, fail_open);
+            let CapabilityJudgeConfig::Decision(judge) = config.judge else {
+                panic!()
+            };
+            assert_eq!(judge.cutoff, Some(cutoff));
+        }
+        Ok(())
+    }
 
     #[test]
     fn restricted_random_preserves_weight_positions() -> AlgorithmResult<()> {
