@@ -3153,6 +3153,54 @@ classify_trigger"#,
     }
 
     #[test]
+    fn stage_router_validates_the_optional_balanced_target() -> RunnerResult<()> {
+        let balanced = VALID_CONFIG.replace(
+            "picker = \"capable_first\"",
+            "picker = \"capable_first\"\nbalanced_target = \"classifier\"",
+        );
+        runner_from_toml(&balanced)?;
+        runner_from_toml(&balanced.replace(
+            "balanced_target = \"classifier\"",
+            "balanced_target = \"classifier\"\ncapable_score_threshold = 0.55",
+        ))?;
+        assert!(
+            error_message(&balanced.replace(
+                "balanced_target = \"classifier\"",
+                "balanced_target = \"missing\""
+            ))
+            .contains("missing")
+        );
+        for value in ["-0.1", "1.1", "nan", "inf"] {
+            let invalid = balanced.replace(
+                "balanced_target = \"classifier\"",
+                &format!("balanced_target = \"classifier\"\ncapable_score_threshold = {value}"),
+            );
+            assert!(error_message(&invalid).contains("capable_score_threshold"));
+        }
+        let no_target = VALID_CONFIG.replace(
+            "picker = \"capable_first\"",
+            "picker = \"capable_first\"\ncapable_score_threshold = 0.55",
+        );
+        assert!(error_message(&no_target).contains("requires balanced_target"));
+        let unreachable =
+            balanced.replace("confidence_threshold = 0.0", "confidence_threshold = 0.6");
+        assert!(error_message(&unreachable).contains("above confidence_threshold"));
+        for conflict in [
+            balanced.replace(
+                "balanced_target = \"classifier\"",
+                "balanced_target = \"classifier\"\nescalation_hold_turns = 3",
+            ),
+            balanced.replace(
+                "efficient_hold_turns = -1",
+                "escalation_hold_turns = 3\ncapable_hold_turns = 2",
+            ),
+        ] {
+            assert!(error_message(&conflict).contains("cannot be combined"));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn auto_route_builds_a_stage_router_with_no_extra_fields() -> RunnerResult<()> {
         let config = format!(
             r#"{VALID_CONFIG}
