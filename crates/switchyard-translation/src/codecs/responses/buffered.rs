@@ -526,7 +526,7 @@ fn decode_responses_input(
                                 && pending_tool_outputs.is_empty()
                                 && pending_reasoning.is_empty())
                         {
-                            deferred_messages.push(Message { role, content });
+                            deferred_messages.push(Message::new(role, content));
                             continue;
                         }
                         // Reasoning that precedes an assistant message belongs to

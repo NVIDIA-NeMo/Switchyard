@@ -2218,10 +2218,9 @@ fn anthropic_reports_dropped_instruction_content() -> TestResult {
         role: Role::System,
         content: vec![text.clone(), image.clone()],
     });
-    inline.messages.push(Message {
-        role: Role::Developer,
-        content: vec![text, image],
-    });
+    inline
+        .messages
+        .push(Message::new(Role::Developer, vec![text, image]));
 
     let strict = TranslationPolicy {
         lossy_conversion_policy: LossyConversionPolicy::Reject,
