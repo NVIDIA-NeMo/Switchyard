@@ -788,20 +788,9 @@ fn handoff_preserves_existing_messages_and_non_text_content() {
     classifier.hand_off(&mut task, &mut state, Some("unchecked result"));
     // A notice may be appended, but all original content stays unchanged.
     let messages = &task.llm_request.messages;
-    assert_eq!(messages.len(), original.len());
-    assert_eq!(
-        &messages[..original.len() - 1],
-        &original[..original.len() - 1]
-    );
-    let last = messages.last().expect("last user message");
-    assert_eq!(
-        &last.content[..original
-            .last()
-            .expect("original last message")
-            .content
-            .len()],
-        &original.last().expect("original last message").content
-    );
+    assert_eq!(messages.len(), original.len() + 1);
+    assert_eq!(&messages[..original.len()], original.as_slice());
+    let last = messages.last().expect("handoff note");
     assert!(
         last.text_content("")
             .is_some_and(|text| text.contains("unchecked result"))

@@ -51,6 +51,8 @@ pub struct RuntimeModels {
     /// When using subagents this is the parent agent category.
     by_category: HashMap<Category, Vec<ModelId>>,
     subagent: Option<HashMap<Category, Vec<ModelId>>>,
+    has_target_restriction: bool,
+    provider_models: HashMap<ModelId, ModelId>,
 }
 
 impl RuntimeModels {
@@ -59,13 +61,66 @@ impl RuntimeModels {
         Self {
             by_category,
             subagent: None,
+            has_target_restriction: false,
+            provider_models: HashMap::new(),
         }
+    }
+
+    /// Supplies provider identities for telemetry while routing keeps using target keys.
+    pub fn with_provider_models(mut self, models: HashMap<ModelId, ModelId>) -> Self {
+        self.provider_models = models;
+        self
+    }
+
+    /// Returns the provider model for a routing key, or the key for direct library callers.
+    pub fn provider_model<'a>(&'a self, target: &'a ModelId) -> &'a ModelId {
+        self.provider_models.get(target).unwrap_or(target)
     }
 
     /// Adds the groups used for delegated sub-agent work.
     pub fn with_subagent(mut self, models: HashMap<Category, Vec<ModelId>>) -> Self {
         self.subagent = Some(models);
         self
+    }
+
+    /// Rejects routing calls and completion candidates outside the configured model groups.
+    /// Enforced by the driver and [`drive`]; hosts bind IDs to permitted deployments.
+    pub fn with_target_restriction(mut self) -> Self {
+        self.has_target_restriction = true;
+        self
+    }
+
+    fn check_targets(&self, targets: &[ModelId]) -> Result<()> {
+        if !self.has_target_restriction {
+            return Ok(());
+        }
+        // Include delegated groups: the parent driver publishes subagent outcomes too.
+        for target in targets {
+            if !self
+                .by_category
+                .values()
+                .chain(self.subagent.iter().flat_map(HashMap::values))
+                .any(|models| models.contains(target))
+            {
+                return Err(LibsyError::TargetNotFound {
+                    target: target.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn check_request_targets(&self, request: &Request, targets: &[ModelId]) -> Result<()> {
+        self.check_targets(targets)?;
+        if self.has_target_restriction {
+            let selected = targets.first().ok_or(LibsyError::NoTargets)?;
+            if request.llm_request.model.as_deref() != Some(selected.as_str()) {
+                return Err(LibsyError::AlgorithmError {
+                    message: "request model does not match selected target".into(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// The models in `category`, ordered best-first.
@@ -114,6 +169,7 @@ pub struct CallModel {
     pub models: Vec<ModelId>,
     /// Return client errors to the algorithm so it can apply its fallback policy.
     pub recover_errors: bool,
+    telemetry_model: ModelId,
     /// How to send the response back to the algorithm. `None` once the call is recorded.
     reply: Option<oneshot::Sender<Result<Response>>>,
     started: Instant,
@@ -165,10 +221,7 @@ impl CallModel {
     fn record(&self, is_ok: bool) {
         observability::record_llm_call(
             &self.algorithm,
-            self.models
-                .first()
-                .map(ModelId::as_str)
-                .unwrap_or("NoTargets"),
+            self.telemetry_model.as_str(),
             self.started.elapsed(),
             is_ok,
         );
@@ -348,6 +401,12 @@ impl AnswerSummary {
     }
 }
 
+#[derive(Default)]
+struct RunEvidence {
+    outcome: Option<Value>,
+    judgments: Vec<crate::JudgeDecision>,
+}
+
 /// An algorithm's handle for requesting external work and awaiting the host's typed replies.
 #[derive(Clone)]
 pub struct Driver {
@@ -357,7 +416,7 @@ pub struct Driver {
     algorithm: String,
 
     /// Run-scoped evidence shared by driver clones and attached only to a successful outcome.
-    evidence: Arc<Mutex<Option<Value>>>,
+    evidence: Arc<Mutex<RunEvidence>>,
 
     /// Caller-supplied routing state, read and updated when a request carries no session ID.
     state: Arc<Mutex<State>>,
@@ -386,7 +445,7 @@ impl Driver {
             Self {
                 step_tx,
                 algorithm: algorithm.to_string(),
-                evidence: Arc::new(Mutex::new(None)),
+                evidence: Arc::new(Mutex::new(RunEvidence::default())),
                 state: Arc::new(Mutex::new(State::default())),
                 models,
                 scope: Scope::Parent,
@@ -406,15 +465,26 @@ impl Driver {
 
     /// Replace the current run's evidence when a component makes the final decision.
     pub(crate) fn set_evidence(&self, evidence: Value) {
-        *self.evidence.lock() = Some(evidence);
+        self.evidence.lock().outcome = Some(evidence);
     }
 
     /// Supply fallback evidence without replacing a decision made earlier in the cascade.
     pub(crate) fn set_evidence_if_empty(&self, evidence: Value) {
         let mut current = self.evidence.lock();
-        if current.is_none() {
-            *current = Some(evidence);
+        if current.outcome.is_none() {
+            current.outcome = Some(evidence);
         }
+    }
+
+    pub(crate) fn record_judgment(&self, selected: Option<crate::Score>, evidence: Option<Value>) {
+        let (target, category) = selected
+            .map(|score| (Some(score.target), score.category))
+            .unwrap_or_default();
+        self.evidence.lock().judgments.push(crate::JudgeDecision {
+            target,
+            category: category.map(|category| category.as_str().to_string()),
+            evidence,
+        });
     }
 
     /// Publish a model call and await the consumer's response.
@@ -438,7 +508,7 @@ impl Driver {
         skip_all,
         fields(
             algorithm = self.algorithm,
-            selected_model = %models.first().map(ModelId::as_str).unwrap_or("NoTargets"),
+            selected_model = %models.first().map(|model| self.provider_model(model).as_str()).unwrap_or("NoTargets"),
             openinference.span.kind = "CHAIN",
             outcome = tracing::field::Empty,
             input_tokens = tracing::field::Empty,
@@ -456,12 +526,14 @@ impl Driver {
         let Some(selected_model_id) = models.first() else {
             return Err(LibsyError::NoTargets);
         };
+        self.models.check_targets(&models)?;
         request.llm_request.model = Some(selected_model_id.to_string());
         let started = Instant::now();
         let (reply, response) = oneshot::channel::<Result<Response>>();
         let call = CallModel {
             algorithm: self.algorithm.clone(),
             request,
+            telemetry_model: self.provider_model(selected_model_id).clone(),
             models,
             recover_errors,
             reply: Some(reply),
@@ -500,6 +572,7 @@ impl Driver {
         mut request: DecisionRequest,
         model: ModelId,
     ) -> Result<DecisionResponse> {
+        self.models.check_targets(std::slice::from_ref(&model))?;
         request.model = Some(model.clone());
         let started = Instant::now();
         let (reply, response) = oneshot::channel();
@@ -518,6 +591,11 @@ impl Driver {
         response
             .await
             .map_err(|_| LibsyError::from(DriverError::ResponseDropped))?
+    }
+
+    /// Provider identity for telemetry; algorithms still route on the original target key.
+    pub fn provider_model<'a>(&'a self, target: &'a ModelId) -> &'a ModelId {
+        self.models.provider_model(target)
     }
 
     /// The available models for this category, typically ordered best-first.
@@ -569,10 +647,17 @@ impl Driver {
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
         let result = result.map(|mut outcome| {
             outcome.state = self.take_state();
+            let evidence = std::mem::take(&mut *self.evidence.lock());
             let metadata = outcome.metadata.get_or_insert_with(|| {
-                crate::OutcomeMetadata::new(self.algorithm.clone(), self.evidence.lock().take())
+                crate::OutcomeMetadata::new(self.algorithm.clone(), evidence.outcome)
             });
-            observability::record_outcome(metadata, &outcome.selected_model_ids);
+            metadata.judgments.extend(evidence.judgments);
+            let provider_models = outcome
+                .selected_model_ids
+                .iter()
+                .map(|target| self.provider_model(target).clone())
+                .collect::<Vec<_>>();
+            observability::record_outcome(metadata, &provider_models);
             outcome
         });
         let selected_model = result
@@ -585,7 +670,7 @@ impl Driver {
             .await
             .map_err(|_| DriverError::StreamClosed)?;
         if let Some(selected_model) = selected_model {
-            observability::record_decision(&self.algorithm, &selected_model);
+            observability::record_decision(&self.algorithm, self.provider_model(&selected_model));
         }
         Ok(())
     }
@@ -646,7 +731,7 @@ where
     F: Fn(Call) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    let stream = algorithm.run_stream(request, models, state);
+    let stream = algorithm.run_stream(request, Arc::clone(&models), state);
     tokio::pin!(stream);
 
     let mut in_flight = futures::stream::FuturesUnordered::new();
@@ -662,11 +747,25 @@ where
                 match step {
                     None => break, // stream has ended, no more steps
                     Some(item) => match item? {
-                        Step::CallModel(call) => in_flight.push(serve(Call::Model(call))),
+                        Step::CallModel(call) => {
+                            models.check_request_targets(&call.request, &call.models)?;
+                            in_flight.push(serve(Call::Model(call)));
+                        }
                         Step::CallDecision(call) => {
+                            models.check_targets(std::slice::from_ref(&call.model))?;
+                            if models.has_target_restriction
+                                && call.request.model.as_ref() != Some(&call.model)
+                            {
+                                return Err(LibsyError::AlgorithmError {
+                                    message: "decision payload model does not match selected target".into(),
+                                });
+                            }
                             in_flight.push(serve(Call::Decision(call)));
                         }
                         Step::Done(outcome) => {
+                            if outcome.response.is_none() {
+                                models.check_request_targets(&outcome.request, &outcome.selected_model_ids)?;
+                            }
                             final_outcome = Some(*outcome);
                             break;
                         }
@@ -765,8 +864,9 @@ impl RoutingIdentity {
 /// alongside `selected_model_ids` (an ordered OpenTelemetry string array).
 /// `algorithm` and `switchyard.algorithm` retain the run's [`Algorithm::name`].
 /// Optional `evidence.source`, `evidence.verdict`, `evidence.trigger`, and
-/// `evidence.reason_code` are strings; `evidence.score`, `evidence.confidence`, and
-/// `evidence.threshold` are numbers. Unknown evidence fields are not exported.
+/// `evidence.reason_code` are strings; `evidence.score`, `evidence.confidence`,
+/// `evidence.threshold`, `evidence.capable_score`, and `evidence.capable_threshold`
+/// are numbers. Unknown evidence fields are not exported.
 /// These fields are span attributes, never metric labels.
 ///
 /// The run/call observability helpers retain `outcome` status and operational metrics,
@@ -817,15 +917,21 @@ pub trait Algorithm: Send + Sync + 'static {
                 let algorithm = self.name().to_string();
                 // Catch a panicking algorithm so the run still publishes a terminal step.
                 let route = AssertUnwindSafe(self.route(driver.clone(), request)).catch_unwind();
-                let result = observability::observe_run(&algorithm, async move {
-                    route.await.unwrap_or_else(|payload| {
+                let result = observability::observe_run(&algorithm, async {
+                    let outcome = route.await.unwrap_or_else(|payload| {
                         Err(LibsyError::AlgorithmError {
                             message: format!(
                                 "algorithm task panicked: {}",
                                 panic_message(payload.as_ref())
                             ),
                         })
-                    })
+                    })?;
+                    if outcome.response.is_none() {
+                        driver
+                            .models
+                            .check_request_targets(&outcome.request, &outcome.selected_model_ids)?;
+                    }
+                    Ok(outcome)
                 })
                 .await;
 
@@ -908,6 +1014,14 @@ mod tests {
             let response = driver
                 .call_model(request.clone(), vec![target.clone()])
                 .await?;
+            driver.record_judgment(
+                Some(crate::Score {
+                    target: target.clone(),
+                    category: Some(Category::Capable),
+                    confidence: 1.0,
+                }),
+                Some(serde_json::json!({"source": "judge"})),
+            );
             driver.set_evidence(serde_json::json!({"source": "test"}));
             driver.set_evidence_if_empty(serde_json::json!({"source": "ignored"}));
             Ok(RoutingOutcome::answered(target, request, response))
@@ -970,6 +1084,222 @@ mod tests {
 
     fn target_set(names: &[&str]) -> Vec<ModelId> {
         names.iter().map(|name| ModelId::from(*name)).collect()
+    }
+
+    enum TargetProbe {
+        Model(&'static [&'static str]),
+        Decision(&'static str),
+        Completion(&'static [&'static str]),
+        MismatchedCompletion,
+    }
+
+    #[async_trait]
+    impl Algorithm for TargetProbe {
+        fn name(&self) -> &str {
+            "target_probe"
+        }
+
+        async fn route(
+            self: Arc<Self>,
+            driver: Driver,
+            request: Request,
+        ) -> Result<RoutingOutcome> {
+            match &*self {
+                Self::Model(models) => {
+                    let response = driver
+                        .call_model(request.clone(), target_set(models))
+                        .await?;
+                    Ok(RoutingOutcome::answered(
+                        models[0].into(),
+                        request,
+                        response,
+                    ))
+                }
+                Self::Decision(model) => {
+                    driver
+                        .call_decision(
+                            DecisionRequest {
+                                model: None,
+                                input: Value::Null,
+                                questions: Default::default(),
+                            },
+                            (*model).into(),
+                        )
+                        .await?;
+                    Ok(RoutingOutcome::route_to("allowed".into(), vec![], request))
+                }
+                Self::Completion(models) => Ok(RoutingOutcome::route_to(
+                    models[0].into(),
+                    target_set(&models[1..]),
+                    request,
+                )),
+                Self::MismatchedCompletion => {
+                    let mut outcome = RoutingOutcome::route_to("allowed".into(), vec![], request);
+                    outcome.request.llm_request.model = Some("outside".into());
+                    Ok(outcome)
+                }
+            }
+        }
+    }
+
+    struct RewrittenSteps(Arc<TargetProbe>, fn(&mut Step));
+
+    #[async_trait]
+    impl Algorithm for RewrittenSteps {
+        fn name(&self) -> &str {
+            "rewritten_steps"
+        }
+
+        async fn route(
+            self: Arc<Self>,
+            driver: Driver,
+            request: Request,
+        ) -> Result<RoutingOutcome> {
+            Arc::clone(&self.0).route(driver, request).await
+        }
+
+        fn run_stream(
+            self: Arc<Self>,
+            request: Request,
+            models: Arc<RuntimeModels>,
+            state: State,
+        ) -> StepStream {
+            Box::pin(
+                Arc::clone(&self.0)
+                    .run_stream(request, models, state)
+                    .map(move |step| {
+                        step.map(|mut step| {
+                            (self.1)(&mut step);
+                            step
+                        })
+                    }),
+            )
+        }
+    }
+
+    fn restricted_models() -> RuntimeModels {
+        RuntimeModels::new(HashMap::from([
+            (Category::Any, target_set(&["allowed", "fallback"])),
+            (Category::Judge, target_set(&["judge"])),
+        ]))
+        .with_target_restriction()
+        .with_subagent(HashMap::from([(Category::Any, target_set(&["subagent"]))]))
+    }
+
+    #[tokio::test]
+    async fn target_restriction_checks_default_streams() {
+        for probe in [
+            TargetProbe::Model(&["outside"]),
+            TargetProbe::Model(&["allowed", "outside"]),
+            TargetProbe::Decision("outside"),
+            TargetProbe::Completion(&["outside"]),
+            TargetProbe::Completion(&["allowed", "outside"]),
+        ] {
+            let mut stream = Arc::new(probe).run_stream(
+                request(),
+                Arc::new(restricted_models()),
+                State::default(),
+            );
+            assert!(matches!(
+                stream.next().await,
+                Some(Err(LibsyError::TargetNotFound { target })) if target == "outside"
+            ));
+            assert!(stream.next().await.is_none());
+        }
+        let mut stream = Arc::new(TargetProbe::MismatchedCompletion).run_stream(
+            request(),
+            Arc::new(restricted_models()),
+            State::default(),
+        );
+        assert!(matches!(
+            stream.next().await,
+            Some(Err(LibsyError::AlgorithmError { .. }))
+        ));
+
+        let mut stream = Arc::new(TargetProbe::Model(&["outside"])).run_stream(
+            request(),
+            Arc::new(RuntimeModels::default()),
+            State::default(),
+        );
+        assert!(matches!(stream.next().await, Some(Ok(Step::CallModel(_)))));
+    }
+
+    #[tokio::test]
+    async fn target_restriction_rechecks_rewritten_steps() {
+        for probe in [
+            TargetProbe::Model(&["allowed"]),
+            TargetProbe::Decision("judge"),
+            TargetProbe::Completion(&["allowed"]),
+        ] {
+            let probe = Arc::new(probe);
+            let run = |rewrite| {
+                drive(
+                    Arc::new(RewrittenSteps(Arc::clone(&probe), rewrite)),
+                    request(),
+                    Arc::new(restricted_models()),
+                    |_| async { panic!("invalid work must not reach the host") },
+                )
+            };
+            let result = run(|step| match step {
+                Step::CallModel(call) => call.models.push("outside".into()),
+                Step::CallDecision(call) => call.model = "outside".into(),
+                Step::Done(outcome) => outcome.selected_model_ids.push("outside".into()),
+            })
+            .await;
+            assert!(
+                matches!(result, Err(LibsyError::TargetNotFound { target }) if target == "outside")
+            );
+
+            let result = run(|step| match step {
+                Step::CallModel(call) => call.request.llm_request.model = Some("outside".into()),
+                Step::CallDecision(call) => call.request.model = Some("allowed".into()),
+                Step::Done(outcome) => outcome.request.llm_request.model = Some("outside".into()),
+            })
+            .await;
+            assert!(matches!(result, Err(LibsyError::AlgorithmError { .. })));
+        }
+    }
+
+    #[tokio::test]
+    async fn target_restriction_preserves_allowed_work() -> Result<()> {
+        for (probe, expected) in [
+            (
+                TargetProbe::Model(&["allowed", "fallback"]),
+                &["allowed"][..],
+            ),
+            (TargetProbe::Model(&["judge"]), &["judge"][..]),
+            (TargetProbe::Decision("judge"), &["allowed"][..]),
+            (
+                TargetProbe::Completion(&["allowed", "fallback"]),
+                &["allowed", "fallback"][..],
+            ),
+            (TargetProbe::Completion(&["subagent"]), &["subagent"][..]),
+        ] {
+            let outcome = drive(
+                Arc::new(probe),
+                request(),
+                Arc::new(restricted_models()),
+                |call| async move {
+                    match call {
+                        Call::Model(call) => {
+                            call.respond(std::future::ready(Ok(reply("ok")))).await
+                        }
+                        Call::Decision(call) => serve_decision(*call).await,
+                    }
+                },
+            )
+            .await?;
+            assert_eq!(outcome.selected_model_ids, target_set(expected));
+        }
+        let outcome = drive(
+            Arc::new(crate::Noop {}),
+            request(),
+            Arc::new(RuntimeModels::default().with_target_restriction()),
+            |_| async { panic!("Noop must not request model calls") },
+        )
+        .await?;
+        assert!(outcome.response.is_some());
+        Ok(())
     }
 
     #[tokio::test]
@@ -1067,7 +1397,7 @@ mod tests {
             fn decision_request() -> DecisionRequest {
                 DecisionRequest {
                     model: Some("overwritten".into()),
-                    context: serde_json::json!({"task": "choose a route"}),
+                    input: serde_json::json!({"task": "choose a route"}),
                     questions: Default::default(),
                 }
             }
@@ -1154,7 +1484,7 @@ mod tests {
                             assert_eq!(call.algorithm, "mixed");
                             assert_eq!(call.model, "decision");
                             assert_eq!(call.request.model, Some("decision".into()));
-                            assert_eq!(call.request.context, decision_request().context);
+                            assert_eq!(call.request.input, decision_request().input);
                             match mode {
                                 "mock" => serve_decision(call).await,
                                 "reply" => call.respond(std::future::ready(Ok(decision_response()))).await,
@@ -1328,6 +1658,10 @@ mod tests {
                     assert_eq!(
                         metadata.evidence,
                         Some(serde_json::json!({"source": "test"}))
+                    );
+                    assert_eq!(
+                        metadata.judgments[0].evidence,
+                        Some(serde_json::json!({"source": "judge"}))
                     );
                     let response = outcome
                         .response

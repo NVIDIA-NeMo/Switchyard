@@ -105,6 +105,8 @@ async fn reflected_response(format: WireFormat, streaming: bool, fail: bool) {
         "routes": {"default": {"id": "switchyard/default", "type": "passthrough", "target": "default"}}
     });
     let runtime = SwitchyardRuntime::new(SwitchyardConfig {
+        capture_routing_payloads: false,
+        max_routing_payload_bytes: crate::config::DEFAULT_ROUTING_PAYLOAD_BYTES,
         priority: 0,
         switchyard_config_path: None,
         switchyard_config: Some(deployment.as_object().unwrap().clone()),
@@ -126,7 +128,7 @@ async fn reflected_response(format: WireFormat, streaming: bool, fail: bool) {
     let captured = Arc::new(Mutex::new(Vec::new()));
     let span_observed = Arc::clone(&captured);
     let redactor = Arc::clone(&runtime.redactor);
-    let span_capture = SpanCapture::new(move |mut span| {
+    let span_capture = SpanCapture::new(None, move |mut span| {
         span.sanitize(&redactor);
         span_observed.lock().unwrap().push(RoutingEvent::Span(span));
     });

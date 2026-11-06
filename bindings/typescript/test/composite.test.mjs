@@ -3,7 +3,6 @@
 
 import assert from "node:assert/strict";
 import { getEventListeners } from "node:events";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { CompositeRouter } from "../dist/index.js";
 
@@ -12,13 +11,8 @@ const options = {
   classifier: {
     classify_trigger: "user_turn",
     fail_open: false,
-    decision: {
-      cutoff: 0.4,
-      candidates: { a: "capable", b: "efficient" },
-      evidence: { description: "a handles complex work; b handles routine work" },
-    },
   },
-  stage: { efficient_first_threshold: 0.5, capable_first_threshold: 0.2 },
+  stage: { efficient_first: { threshold: 0.5 }, capable_first: { threshold: 0.2 } },
 };
 const messages = [{ role: "user", content: [{ type: "text", text: "Fix the parser" }] }];
 const continuation = [
@@ -26,37 +20,31 @@ const continuation = [
   { role: "assistant", content: [{ type: "tool_call", id: "read-1", name: "read", arguments: { path: "parser.rs" } }] },
   { role: "tool", content: [{ type: "tool_result", tool_call_id: "read-1", is_error: false, content: [{ type: "text", text: "fn parse() {}" }] }] },
 ];
-const instructions = JSON.parse(readFileSync(new URL(
-  "../../../crates/libsy/src/prompts/capability-classifier/relative_advantage.json", import.meta.url,
-), "utf8"));
 const unexpectedDecision = async () => assert.fail("unexpected decision call");
 
-function response(advantage) {
+function response(capable) {
   return { answers: { route: { value: {
-    type: "choice", data: { selected: "advantage", probabilities: { advantage, no_advantage: 1 - advantage } },
+    type: "choice", data: { selected: "capable", probabilities: { capable, efficient: 1 - capable } },
   } } } };
 }
 
 test("decision request, cutoff, and branch-owned state", async () => {
   const router = CompositeRouter.create(options);
-  const states = await Promise.all([0.41, 0.4].map(async (advantage) => {
+  const states = await Promise.all([0.61, 0.6].map(async (capable) => {
     let calls = 0;
     const selected = await router.route(messages, { decide: async (request) => {
       calls++;
       assert.equal(request.model, options.targets.classifier);
-      assert.deepEqual(request.context, {
-        task: messages, candidates: ["a", "b"], comparison: { capable: "a", efficient: "b" },
-        evidence: options.classifier.decision.evidence,
-        session: null,
-      });
+      assert.deepEqual(request.input, messages);
       assert.deepEqual(Object.keys(request.questions), ["route"]);
-      assert.deepEqual(request.questions.route.instructions, instructions);
+      assert.equal(typeof request.questions.route.instructions, "string");
+      assert.ok(request.questions.route.instructions.length > 0);
       assert.equal(request.questions.route.kind.type, "choice");
-      assert.deepEqual(request.questions.route.kind.data.options.map((option) => option.id), ["advantage", "no_advantage"]);
-      return response(advantage);
+      assert.deepEqual(request.questions.route.kind.data.options.map((option) => option.id), ["capable", "efficient"]);
+      return response(capable);
     } });
     assert.equal(calls, 1);
-    assert.equal(selected.model, advantage > 0.4 ? options.targets.capable : options.targets.efficient);
+    assert.equal(selected.model, capable > 0.6 ? options.targets.capable : options.targets.efficient);
     assert.ok(selected.state);
     return selected;
   }));
@@ -67,13 +55,13 @@ test("decision request, cutoff, and branch-owned state", async () => {
   }
   assert.deepEqual(await router.route(continuation, { decide: unexpectedDecision }), {
     model: options.targets.efficient,
-    state: { stage_previous_tier: { string: "weak" } },
+    state: { "composite.profile_0.stage_previous_tier": { string: "weak" } },
   });
 
   const once = structuredClone(options);
   once.classifier.classify_trigger = "new_session";
   const sessionRouter = CompositeRouter.create(once);
-  const { state } = await sessionRouter.route(messages, { decide: async () => response(0.41) });
+  const { state } = await sessionRouter.route(messages, { decide: async () => response(0.61) });
   assert.deepEqual(await sessionRouter.route(messages, { state, decide: unexpectedDecision }), { model: options.targets.capable });
 });
 
@@ -102,9 +90,9 @@ test("serialized state preserves capable holds until they expire", async () => {
 test("capable-first pins efficient by default and accepts an explicit opt-out", async () => {
   for (const turns of [undefined, 0]) {
     const config = structuredClone(options);
-    config.stage.efficient_hold_turns = turns;
+    config.stage.capable_first.efficient_hold_turns = turns;
     const router = CompositeRouter.create(config);
-    const initial = await router.route(messages, { decide: async () => response(0.41) });
+    const initial = await router.route(messages, { decide: async () => response(0.61) });
     assert.equal(initial.model, options.targets.capable);
     const write = structuredClone(continuation);
     write[1].content[0].name = "write";
@@ -123,13 +111,40 @@ test("capable-first pins efficient by default and accepts an explicit opt-out", 
   }
 });
 
+test("the cutoff selects a profile and the capable-first prompt follows the capable model", async () => {
+  const config = structuredClone(options);
+  config.classifier.cutoff = 0.9;
+  config.stage.capable_first.capable_system_prompt = "Plan first.";
+  const router = CompositeRouter.create(config);
+  assert.equal(
+    (await router.route(messages, { decide: async () => response(0.9) })).model, options.targets.efficient,
+  );
+  const initial = await router.route(messages, { decide: async () => response(0.91) });
+  assert.equal(initial.model, options.targets.capable);
+  assert.equal(initial.systemPrompt, "Plan first.");
+  const write = structuredClone(continuation);
+  write[1].content[0].name = "write";
+  const selected = await router.route(write, { state: initial.state, decide: unexpectedDecision });
+  assert.equal(selected.model, options.targets.efficient);
+  assert.equal(selected.systemPrompt, undefined);
+
+  const strict = structuredClone(config);
+  strict.stage.capable_first.threshold = 1.0;
+  const strictRouter = CompositeRouter.create(strict);
+  assert.equal(
+    (await strictRouter.route(write, { state: initial.state, decide: unexpectedDecision })).model,
+    options.targets.capable,
+  );
+});
+
 test("validation and decision failure policy", async () => {
   for (const change of [
     (config) => { config.targets.efficient = config.targets.capable; },
-    (config) => { config.classifier.decision.cutoff = 2; },
-    (config) => { config.classifier.decision.extra = true; },
+    (config) => { config.classifier.decision = { cutoff: 0.4 }; },
+    (config) => { config.classifier.cutoff = 1.5; },
+    (config) => { config.stage.efficient_first.picker = "capable_first"; },
     (config) => { config.classifier.classify_trigger = "every_request"; },
-    (config) => { config.stage.efficient_hold_turns = -2; },
+    (config) => { config.stage.capable_first.efficient_hold_turns = -2; },
   ]) {
     const config = structuredClone(options);
     change(config);
@@ -153,13 +168,26 @@ test("validation and decision failure policy", async () => {
   const config = structuredClone(options);
   config.classifier.fail_open = true;
   const fallback = CompositeRouter.create(config);
-  const { state } = await fallback.route(messages, { decide: async () => response(0.41) });
+  const { state } = await fallback.route(messages, { decide: async () => response(0.61) });
   assert.deepEqual(await fallback.route(messages, { state, decide }), { model: options.targets.capable });
   assert.deepEqual(await fallback.route(messages, { decide }), {
     model: options.targets.efficient,
-    state: { stage_previous_tier: { string: "weak" } },
+    state: { "composite.profile_0.stage_previous_tier": { string: "weak" } },
   });
-  assert.deepEqual(await router.route(messages, { state, decide: async () => ({ answers: {} }) }), { model: options.targets.capable });
+  for (const answer of [
+    { answers: {} },
+    { answers: { route: { value: { type: "boolean", data: { type: "value", data: true } } } } },
+    { answers: { route: { value: { type: "choice", data: { selected: "capable" } } } } },
+    { answers: { route: { value: { type: "choice", data: { selected: "efficient", probabilities: { efficient: 1 } } } } } },
+  ]) {
+    const decide = async () => answer;
+    await assert.rejects(router.route(messages, { state, decide }), { code: "ERR_ROUTING" });
+    assert.deepEqual(await fallback.route(messages, { state, decide }), { model: options.targets.capable });
+    assert.deepEqual(await fallback.route(messages, { decide }), {
+      model: options.targets.efficient,
+      state: { "composite.profile_0.stage_previous_tier": { string: "weak" } },
+    });
+  }
 });
 
 test("abort settles promptly, ignores late answers, and removes listeners", { timeout: 5000 }, async () => {
@@ -181,9 +209,9 @@ test("abort settles promptly, ignores late answers, and removes listeners", { ti
     await rejected;
     assert.equal(getEventListeners(controller.signal, "abort").length, 0);
     if (timing === "reject") pending.reject(new Error("late rejection"));
-    else pending.resolve(response(0.41));
+    else pending.resolve(response(0.61));
   }
   const controller = new AbortController();
-  await router.route(messages, { signal: controller.signal, decide: async () => response(0.4) });
+  await router.route(messages, { signal: controller.signal, decide: async () => response(0.6) });
   assert.equal(getEventListeners(controller.signal, "abort").length, 0);
 });

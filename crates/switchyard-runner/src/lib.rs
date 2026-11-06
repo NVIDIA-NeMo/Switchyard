@@ -11,6 +11,8 @@ mod algorithm_factory;
 #[cfg(not(target_os = "wasi"))]
 mod config;
 #[cfg(not(target_os = "wasi"))]
+mod eligibility;
+#[cfg(not(target_os = "wasi"))]
 mod failure;
 mod provider_key_redactor;
 #[cfg(not(target_os = "wasi"))]
@@ -20,15 +22,17 @@ mod runner;
 
 #[cfg(not(target_os = "wasi"))]
 pub use config::{ConfiguredTarget, RouteTargets, TargetModel, api_key_variables, route_targets};
+#[cfg(not(target_os = "wasi"))]
+pub use eligibility::require_target_labels;
 
 pub use algorithm::{
     AdvisorTriggerConfig, AlgorithmConfigError, AlgorithmSpec, CategoryModelConfig, ClassifierMode,
-    ClassifierPolicyConfig, DecisionJudgeRouteConfig, LlmClassifierRouteConfig, PlanExecuteTrigger,
+    ClassifierPolicyConfig, DecisionJudgeRouteConfig, LlmClassifierRouteConfig,
     StageClassifierConfig, StageProfileConfig, StageSettingsConfig, SubagentRouteConfig,
     VgrModeConfig, VgrRouteConfig,
 };
 #[cfg(not(target_os = "wasi"))]
-pub use algorithm_factory::AlgorithmFactory;
+pub use algorithm_factory::{AlgorithmFactory, ConfiguredAlgorithm};
 #[cfg(not(target_os = "wasi"))]
 pub use failure::{RouteErrorKind, RouteErrorPhase, RouteErrorSummary, stream_error_summary};
 // Re-exported because `Route::new` takes it, so a host wiring routes does not need a libsy dep.

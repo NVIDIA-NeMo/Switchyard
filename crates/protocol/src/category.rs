@@ -17,8 +17,8 @@ pub enum Category {
     Efficient,
     /// Models the algorithm can use to decide.
     Judge,
-    /// A deployment-defined group. Only a custom classifier's policy selects one,
-    /// and no algorithm ascribes meaning to the name.
+    /// A deployment-defined group. Only a custom classifier's policy or a direct
+    /// decision selects one, and no algorithm ascribes meaning to the name.
     Named(Arc<str>),
 }
 

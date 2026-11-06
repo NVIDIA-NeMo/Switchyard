@@ -41,8 +41,6 @@ strong_target = "capable"
 weak_target = "fast"
 [routes.classifier.decision]
 cutoff = 0.7
-candidates = { a = "capable", b = "fast" }
-evidence = { description = "Compare both targets." }
 "#;
 
 #[test]
@@ -62,19 +60,39 @@ fn full_deployment_builds_without_provider_credentials() {
     );
     assert_eq!(
         models.models_for(&Category::Capable),
-        [ModelId::from("upstream/capable")]
+        [ModelId::from("capable")]
     );
     assert_eq!(
         models.models_for(&Category::Efficient),
-        [ModelId::from("upstream/fast")]
+        [ModelId::from("fast")]
     );
     assert_eq!(
         models.models_for(&Category::Any),
-        [
-            ModelId::from("upstream/fast"),
-            ModelId::from("upstream/capable")
-        ]
+        [ModelId::from("fast"), ModelId::from("capable")]
     );
+
+    for (target, provider) in [
+        ("fast", "upstream/fast"),
+        ("capable", "upstream/capable"),
+        ("upstream/judge", "upstream/judge"),
+    ] {
+        assert_eq!(
+            models.provider_model(&ModelId::from(target)).as_str(),
+            provider
+        );
+    }
+
+    let configured = factory.build_configured().expect("configured handles");
+    let parent = configured["public/main"].target_models();
+    assert_eq!(
+        parent.keys().map(ModelId::as_str).collect::<Vec<_>>(),
+        ["capable", "fast"]
+    );
+    assert_eq!(parent[&ModelId::from("capable")].client, "answers");
+    assert_eq!(parent[&ModelId::from("capable")].id, "upstream/capable");
+    let judged = configured["public/classify"].target_models();
+    assert_eq!(judged[&ModelId::from("upstream/judge")].client, "judge");
+    assert!(!judged.contains_key(&ModelId::from("judge")));
 
     let error = Runner::from_toml(DEPLOYMENT)
         .err()
@@ -89,16 +107,13 @@ async fn configured_parent_and_subagent_targets_stay_separate() {
         .build()
         .expect("algorithms should build");
     let (algorithm, models) = algorithms.remove("public/main").expect("public route id");
-    assert_eq!(
-        models.models_for(&Category::Any),
-        [ModelId::from("upstream/fast")]
-    );
+    assert_eq!(models.models_for(&Category::Any), [ModelId::from("fast")]);
     assert_eq!(
         models.subagent_models_for(&Category::Any),
-        [ModelId::from("upstream/capable")]
+        [ModelId::from("capable")]
     );
     let models = Arc::new(models);
-    for (delegated, selected) in [(false, "upstream/fast"), (true, "upstream/capable")] {
+    for (delegated, selected) in [(false, "fast"), (true, "capable")] {
         let request = Request {
             llm_request: text_request(Some("public/main".to_string()), "hello"),
             metadata: delegated.then(|| Metadata {
@@ -126,6 +141,12 @@ async fn configured_parent_and_subagent_targets_stay_separate() {
 #[test]
 fn invalid_routing_configuration_is_rejected() {
     for (source, expected) in [
+        (
+            format!(
+                "{DEPLOYMENT}\n[routes.parent.eligibility]\nrequire_explicit_requirements = true\n"
+            ),
+            "target eligibility requires Runner admission",
+        ),
         (
             DEPLOYMENT.replacen("target = \"fast\"", "target = \"missing\"", 1),
             "unknown target missing",

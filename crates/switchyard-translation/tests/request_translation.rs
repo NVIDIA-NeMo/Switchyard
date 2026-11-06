@@ -8,13 +8,81 @@ pub mod common;
 use pretty_assertions::assert_eq;
 use serde_json::{Value, json};
 use switchyard_translation::{
-    ContentBlock, FormatId, LossyConversionPolicy, TranslationEngine, TranslationError,
-    TranslationPolicy, WireFormat, prepare_request_for_target, sanitize_anthropic_tool_use_id,
+    ContentBlock, FormatId, ImageSource, InstructionBlock, LlmRequest, LossyConversionPolicy,
+    Message, Role, TranslationEngine, TranslationError, TranslationPolicy, WireFormat,
+    prepare_request_for_target, sanitize_anthropic_tool_use_id,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+#[test]
+fn responses_assistant_phase_survives_rebuilds() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    for phase in [Some("commentary"), Some("final_answer"), None] {
+        let mut message = json!({"type": "message", "role": "assistant", "content": "Done."});
+        if let Some(phase) = phase {
+            message["phase"] = json!(phase);
+        }
+        let body = json!({"model": "route", "input": [message]});
+        let mut request = engine
+            .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+            .request;
+        // Force a rebuild with an unrelated edit.
+        request.preservation.requests.clear();
+        switchyard_translation::append_note(&mut request, "Check the result.");
+        request.model = Some("target".into());
+
+        let output = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+        assert_eq!(output.body["input"][0].get("phase"), message.get("phase"));
+        assert_eq!(output.body["input"].as_array().map(Vec::len), Some(2));
+        assert_eq!(output.body["model"], "target");
+    }
+    Ok(())
+}
+
+#[test]
+fn responses_assistant_phase_is_dropped_for_other_formats() -> TestResult {
+    let engine = TranslationEngine::default();
+    let strict = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..normalized_policy()
+    };
+    let body = json!({
+        "model": "route",
+        "input": [{"type": "message", "role": "assistant", "phase": "commentary", "content": "Done."}]
+    });
+    let request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &strict)?
+        .request;
+    for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+        let output = engine.encode_request(target, &request, &strict)?;
+        assert!(output.body["messages"][0].get("phase").is_none());
+        assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    }
+    Ok(())
+}
+
+#[test]
+fn responses_assistant_phase_survives_reasoning_only_turn() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "route",
+        "input": [
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "thinking"}]},
+            {"type": "message", "role": "assistant", "phase": "commentary", "content": []}
+        ]
+    });
+    let request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &normalized_policy())?
+        .request;
+    let output =
+        engine.encode_request(WireFormat::OpenAiResponses, &request, &normalized_policy())?;
+    assert_eq!(output.body["input"][1]["phase"], "commentary");
+    Ok(())
+}
 
 #[test]
 fn normalized_chat_requests_forward_logprobs_with_top_logprobs() -> TestResult {
@@ -57,15 +125,115 @@ fn normalized_chat_requests_forward_chat_template_kwargs() -> TestResult {
 }
 
 #[test]
+fn anthropic_server_tools_survive_request_reconstruction() -> TestResult {
+    use switchyard_translation::{InstructionBlock, Role, Tool};
+
+    let engine = TranslationEngine::default();
+    for policy in [TranslationPolicy::default(), normalized_policy()] {
+        for stream in [false, true] {
+            let mut body = json!({
+                "model": "route", "max_tokens": 400, "stream": stream,
+                "messages": [{"role": "user", "content": "Search before editing."}],
+                "tools": [
+                    {"type": "web_search_20250305", "name": "web_search", "max_uses": 1,
+                     "allowed_domains": ["rust-lang.org"]},
+                    {"type": "custom", "name": "edit", "description": "Edit a file",
+                     "input_schema": {"type": "object"}},
+                    {"type": "future_server_tool", "settings": {"enabled": true}}
+                ]
+            });
+            let mut request = engine
+                .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
+                .request;
+            assert!(matches!(&request.tools[0], Tool::Provider { provider, raw }
+                if provider.as_str() == WireFormat::AnthropicMessages.as_str()
+                    && raw == &body["tools"][0]));
+            let Tool::Function(function) = &mut request.tools[1] else {
+                panic!("custom tools must remain editable functions");
+            };
+            function.description = Some("Updated edit description".into());
+            request.instructions.push(InstructionBlock {
+                role: Role::System,
+                content: vec![ContentBlock::Text {
+                    text: "Plan first.".into(),
+                }],
+            });
+            request.preservation.requests.clear();
+            let output = engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
+            body["tools"][1].as_object_mut().unwrap().remove("type");
+            body["tools"][1]["description"] = json!("Updated edit description");
+            assert_eq!(output.body["tools"], body["tools"]);
+            assert_eq!(output.body["stream"].as_bool().unwrap_or(false), stream);
+            assert_eq!(output.body["system"], json!("Plan first."));
+
+            request.tools.remove(0);
+            let output = engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
+            assert_eq!(
+                output.body["tools"],
+                json!([body["tools"][1], body["tools"][2]])
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn anthropic_server_tools_are_rejected_for_other_formats() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "route", "max_tokens": 400,
+        "messages": [{"role": "user", "content": "Search the web."}],
+        "tools": [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}]
+    });
+    for lossy_conversion_policy in [
+        LossyConversionPolicy::AllowWithDiagnostics,
+        LossyConversionPolicy::Reject,
+    ] {
+        let policy = TranslationPolicy {
+            lossy_conversion_policy,
+            ..normalized_policy()
+        };
+        for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+            assert!(matches!(
+                engine.translate_request(WireFormat::AnthropicMessages, target, &body, &policy),
+                Err(TranslationError::LossyConversion(_))
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn anthropic_rejects_provider_tools_from_other_formats() {
+    use switchyard_translation::{LlmRequest, Tool};
+
+    let request = LlmRequest {
+        tools: vec![Tool::Provider {
+            provider: WireFormat::OpenAiResponses.into(),
+            raw: json!({"type": "web_search"}),
+        }],
+        ..LlmRequest::default()
+    };
+    assert!(matches!(
+        TranslationEngine::default().encode_request(
+            WireFormat::AnthropicMessages,
+            &request,
+            &normalized_policy()
+        ),
+        Err(TranslationError::LossyConversion(_))
+    ));
+}
+
+#[test]
 fn openai_chat_rejects_mcp_history_before_text_only_returns() {
     use switchyard_translation::{LlmRequest, McpContent, Message, Role};
 
     let engine = TranslationEngine::default();
     for role in [Role::User, Role::Assistant] {
         let request = LlmRequest {
-            messages: vec![Message {
+            messages: vec![Message::new(
                 role,
-                content: vec![
+                vec![
                     ContentBlock::Text {
                         text: "Keep this text".into(),
                     },
@@ -76,7 +244,7 @@ fn openai_chat_rejects_mcp_history_before_text_only_returns() {
                         error: None,
                     }),
                 ],
-            }],
+            )],
             ..LlmRequest::default()
         };
         for lossy_conversion_policy in [
@@ -1968,6 +2136,192 @@ fn responses_input_messages_translate_with_instruction_roles_intact() -> TestRes
     Ok(())
 }
 
+#[test]
+fn responses_rebuild_preserves_inline_instructions() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "gpt-4",
+        "instructions": "Top-level guidance.",
+        "input": [
+            {"type": "message", "role": "system", "content": "Initial system."},
+            {"type": "message", "role": "developer", "content": "Initial developer."},
+            {"type": "message", "role": "user", "content": "Hello."},
+            {"type": "message", "role": "system", "content": "Later system."},
+            {"type": "message", "role": "developer", "content": "Later developer."},
+            {"type": "message", "role": "developer", "content": "Separate message."},
+            {"type": "message", "role": "user", "content": "Original suffix."}
+        ]
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+    request.preservation.requests.clear();
+    assert_eq!(
+        engine
+            .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+            .body,
+        body
+    );
+    let anthropic = engine
+        .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
+        .body;
+    assert_eq!(
+        anthropic["system"],
+        "Top-level guidance.\n\nInitial system.\n\nInitial developer.\n\nLater system.\n\nLater developer.\n\nSeparate message."
+    );
+    assert_eq!(anthropic["messages"].as_array().map(Vec::len), Some(2));
+    request.messages.last_mut().ok_or("missing suffix")?.content = vec![ContentBlock::Text {
+        text: "Edited suffix.".into(),
+    }];
+    let expected = json!({
+        "model": "gpt-4",
+        "instructions": "Top-level guidance.",
+        "input": [
+            {"type": "message", "role": "system", "content": "Initial system."},
+            {"type": "message", "role": "developer", "content": "Initial developer."},
+            {"type": "message", "role": "user", "content": "Hello."},
+            {"type": "message", "role": "system", "content": "Later system."},
+            {"type": "message", "role": "developer", "content": "Later developer."},
+            {"type": "message", "role": "developer", "content": "Separate message."},
+            {"type": "message", "role": "user", "content": "Edited suffix."}
+        ]
+    });
+    assert_eq!(
+        engine
+            .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+            .body,
+        expected
+    );
+    Ok(())
+}
+
+// Anthropic `system` is text only, so non-text instruction content is lossy.
+#[test]
+fn anthropic_reports_dropped_instruction_content() -> TestResult {
+    let engine = TranslationEngine::default();
+    let image = ContentBlock::Image {
+        source: ImageSource::Url {
+            url: "https://example.test/layout.png".into(),
+            detail: None,
+        },
+    };
+    let text = ContentBlock::Text {
+        text: "Match this layout.".into(),
+    };
+    let mut top_level = LlmRequest {
+        messages: vec![Message::text(Role::User, "Hi")],
+        ..LlmRequest::default()
+    };
+    let mut inline = top_level.clone();
+    top_level.instructions.push(InstructionBlock {
+        role: Role::System,
+        content: vec![text.clone(), image.clone()],
+    });
+    inline
+        .messages
+        .push(Message::new(Role::Developer, vec![text, image]));
+
+    let strict = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..TranslationPolicy::default()
+    };
+    for (request, location) in [
+        (top_level, "system instruction 0"),
+        (inline, "developer message 1"),
+    ] {
+        let allowed = engine.encode_request(
+            WireFormat::AnthropicMessages,
+            &request,
+            &TranslationPolicy::default(),
+        )?;
+        assert_eq!(allowed.body["system"], "Match this layout.");
+        assert!(
+            allowed.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "lossy_conversion" && diagnostic.message.contains(location)
+            }),
+            "{location}: {:?}",
+            allowed.diagnostics
+        );
+        assert!(matches!(
+            engine.encode_request(WireFormat::AnthropicMessages, &request, &strict),
+            Err(TranslationError::LossyConversion(_))
+        ));
+    }
+    Ok(())
+}
+
+// An inline instruction between parallel tool outputs moves after the tool block.
+#[test]
+fn responses_inline_instruction_inside_tool_block_follows_the_block() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "gpt-4",
+        "input": [
+            {"type": "message", "role": "user", "content": "Hi"},
+            {"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"},
+            {"type": "function_call", "call_id": "c2", "name": "f", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": "one"},
+            {"type": "message", "role": "developer", "content": "Mid."},
+            {"type": "function_call_output", "call_id": "c2", "output": "two"},
+            {"type": "message", "role": "user", "content": "Next"}
+        ]
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+    request.preservation.requests.clear();
+
+    let chat = engine
+        .encode_request(WireFormat::OpenAiChat, &request, &policy)?
+        .body;
+    assert_eq!(
+        chat["messages"],
+        json!([
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": null, "tool_calls": [
+                {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}},
+                {"id": "c2", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "one"},
+            {"role": "tool", "tool_call_id": "c2", "content": "two"},
+            {"role": "developer", "content": "Mid."},
+            {"role": "user", "content": "Next"}
+        ])
+    );
+
+    let responses = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+    let items = responses["input"].as_array().ok_or("missing input")?;
+    let shape: Vec<(&str, &str)> = items
+        .iter()
+        .map(|item| {
+            (
+                item["type"].as_str().unwrap_or_default(),
+                item["call_id"]
+                    .as_str()
+                    .or_else(|| item["role"].as_str())
+                    .unwrap_or_default(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            ("message", "user"),
+            ("function_call", "c1"),
+            ("function_call_output", "c1"),
+            ("function_call", "c2"),
+            ("function_call_output", "c2"),
+            ("message", "developer"),
+            ("message", "user"),
+        ]
+    );
+    Ok(())
+}
+
 // Inline instruction items must not detach pending reasoning from the assistant
 // turn that produced it.
 #[test]
@@ -1996,6 +2350,43 @@ fn responses_inline_instruction_does_not_detach_reasoning() -> TestResult {
     assert_eq!(output["messages"][1]["role"], "assistant");
     assert_eq!(output["messages"][1]["content"], "hello");
     assert_eq!(output["messages"][1]["reasoning"], "thinking...");
+    Ok(())
+}
+
+// Standalone reasoning keeps its place before a later inline instruction.
+#[test]
+fn responses_standalone_reasoning_stays_before_inline_instruction() -> TestResult {
+    let engine = TranslationEngine::default();
+    let reasoning = json!({"type": "reasoning", "content": [{"type": "reasoning_text", "text": "thinking..."}], "summary": []});
+    let developer = json!({"type": "message", "role": "developer", "content": "Be terse."});
+    let user = json!({"type": "message", "role": "user", "content": "Next"});
+    for (input, expected) in [
+        (
+            json!([reasoning, developer, user]),
+            json!([
+                {"role": "assistant", "content": "", "reasoning": "thinking..."},
+                {"role": "developer", "content": "Be terse."},
+                {"role": "user", "content": "Next"}
+            ]),
+        ),
+        (
+            json!([reasoning, developer]),
+            json!([
+                {"role": "assistant", "content": "", "reasoning": "thinking..."},
+                {"role": "developer", "content": "Be terse."}
+            ]),
+        ),
+    ] {
+        let output = engine
+            .translate_request(
+                WireFormat::OpenAiResponses,
+                WireFormat::OpenAiChat,
+                &json!({"model": "gpt-4", "input": input}),
+                &TranslationPolicy::default(),
+            )?
+            .body;
+        assert_eq!(output["messages"], expected);
+    }
     Ok(())
 }
 
@@ -3505,6 +3896,23 @@ fn openai_tool_results_are_merged_when_translating_to_anthropic() -> TestResult 
             {"type": "tool_result", "tool_use_id": "call_2", "content": "two"}
         ])
     );
+    let policy = TranslationPolicy::default();
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiChat, &body, &policy)?
+        .request;
+    for role in [Role::System, Role::Developer] {
+        request
+            .messages
+            .insert(3, Message::text(role, "Keep results together."));
+    }
+    let with_instructions = engine
+        .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
+        .body;
+    assert_eq!(with_instructions["messages"], output["messages"]);
+    assert_eq!(
+        with_instructions["system"],
+        "Keep results together.\n\nKeep results together."
+    );
     Ok(())
 }
 
@@ -4093,43 +4501,32 @@ fn responses_parallel_tool_calls_pair_with_their_outputs() -> TestResult {
     Ok(())
 }
 
-// Verifies Codex `compaction_trigger` marker items never reach the upstream.
 #[test]
-fn responses_codex_compaction_markers_are_stripped() -> TestResult {
+fn responses_codex_compaction_trigger_survives_round_trip() -> TestResult {
     let engine = TranslationEngine::default();
-    let policy = TranslationPolicy {
-        preservation: switchyard_translation::PreservationPolicy::Disabled,
-        ..TranslationPolicy::default()
-    };
     let body = json!({
         "model": "gpt-5",
         "input": [
             {"type": "message", "role": "user", "content": "Continue"},
-            {"type": "compaction_trigger"},
-            {"type": "function_call", "name": "shell", "call_id": "call-a", "arguments": "{}"},
-            {"type": "function_call_output", "call_id": "call-a", "output": "ok"}
-        ]
+            {"type": "compaction_trigger"}
+        ],
+        "stream": true
     });
-
-    let output = engine
-        .translate_request(
-            WireFormat::OpenAiResponses,
-            WireFormat::OpenAiResponses,
-            &body,
-            &policy,
-        )?
-        .body;
-
-    let types = output["input"]
-        .as_array()
-        .ok_or("input is not an array")?
-        .iter()
-        .filter_map(|item| item["type"].as_str())
-        .collect::<Vec<_>>();
-    assert_eq!(
-        types,
-        vec!["message", "function_call", "function_call_output"]
-    );
+    for policy in [TranslationPolicy::default(), normalized_policy()] {
+        let request = engine
+            .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+            .request;
+        assert!(request.is_compaction);
+        assert!(!request.has_compaction);
+        let output = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+        assert_eq!(output.body["input"][1], body["input"][1]);
+        for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+            assert!(matches!(
+                engine.encode_request(target, &request, &policy),
+                Err(TranslationError::UnsupportedTranslation { .. })
+            ));
+        }
+    }
     Ok(())
 }
 

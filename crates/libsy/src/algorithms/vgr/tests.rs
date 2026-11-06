@@ -19,25 +19,25 @@ pub(super) fn request(messages: Vec<Message>) -> Request {
 }
 
 pub(super) fn call(id: &str) -> Message {
-    Message {
-        role: Role::Assistant,
-        content: vec![ContentBlock::ToolCall(ToolCall {
+    Message::new(
+        Role::Assistant,
+        vec![ContentBlock::ToolCall(ToolCall {
             id: id.into(),
             name: "bash".into(),
             arguments: serde_json::json!({"command": "ls"}),
         })],
-    }
+    )
 }
 
 pub(super) fn result(id: &str, text: &str) -> Message {
-    Message {
-        role: Role::Tool,
-        content: vec![ContentBlock::ToolResult(ToolResult {
+    Message::new(
+        Role::Tool,
+        vec![ContentBlock::ToolResult(ToolResult {
             tool_call_id: id.into(),
             content: vec![ContentBlock::Text { text: text.into() }],
             is_error: None,
         })],
-    }
+    )
 }
 
 fn branch(request: &Request, attempt: &str, task_type: Option<TaskType>) -> Branch {
@@ -77,6 +77,27 @@ fn tool_trajectory_respects_the_current_request_initiator() {
             expected,
             "finished={finished}, initiator={initiator:?}"
         );
+    }
+    for role in [Role::System, Role::Developer] {
+        for (previous, expected) in [
+            (Message::text(Role::Assistant, "done"), true),
+            (call("c1"), false),
+        ] {
+            let request = request(vec![
+                Message::text(Role::User, "fix the build"),
+                previous,
+                Message::text(role, "Follow repository instructions"),
+                Message::text(Role::User, "verify the change"),
+            ]);
+            assert_eq!(
+                super::text::starts_user_turn(&request.llm_request.messages, 3),
+                expected
+            );
+            assert_eq!(
+                super::text::turn_start(&request),
+                if expected { 3 } else { 0 }
+            );
+        }
     }
     assert!(!super::text::turn_has_tool_trajectory(&Request::default()));
 }
@@ -136,15 +157,15 @@ fn missing_or_unrepresentable_evidence_fails_closed() {
     assert_eq!(branch(&task, " ", None), Branch::Unknown);
     assert_eq!(branch(&request(Vec::new()), "done", None), Branch::Unknown);
 
-    let image = request(vec![Message {
-        role: Role::User,
-        content: vec![ContentBlock::Image {
+    let image = request(vec![Message::new(
+        Role::User,
+        vec![ContentBlock::Image {
             source: ImageSource::Url {
                 url: "https://example.test/a.png".into(),
                 detail: None,
             },
         }],
-    }]);
+    )]);
     assert_eq!(branch(&image, "done", None), Branch::Unknown);
 }
 
@@ -191,16 +212,16 @@ fn trajectory_labels_agree_with_tool_failure_counts() {
         let session = request(vec![
             Message::text(Role::User, "check the task"),
             call("c1"),
-            Message {
-                role: Role::Tool,
-                content: vec![ContentBlock::ToolResult(ToolResult {
+            Message::new(
+                Role::Tool,
+                vec![ContentBlock::ToolResult(ToolResult {
                     tool_call_id: "c1".into(),
                     content: vec![ContentBlock::Text {
                         text: output.into(),
                     }],
                     is_error,
                 })],
-            },
+            ),
         ]);
         let caps = derive_capabilities(&session, "checked", Some(TaskType::Agentic));
         assert_eq!(caps.tools.unwrap().errors, i32::from(failed), "{output}");

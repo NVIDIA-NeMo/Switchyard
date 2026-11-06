@@ -39,6 +39,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The standalone `switchyard-server` now binds to `127.0.0.1` by default.
   Existing deployments that accept remote clients must add `--host 0.0.0.0`.
   The provided Docker image and `dev-server/switchyard.service` set this explicitly.
+- **TypeScript composite stage profiles** - `CompositeRouter` options take
+  `stage.efficient_first` and `stage.capable_first` profiles in place of
+  `efficient_first_threshold`, `capable_first_threshold`, and
+  `efficient_hold_turns`. Each profile sets `threshold`, `recent_window`, holds,
+  and `capable_system_prompt`. `classifier.cutoff` sets the judge cutoff.
+  `Selection.systemPrompt` returns the routed prompt. Stage state keys gain a
+  `composite.profile_<n>.` prefix. State saved earlier keeps its tier and drops
+  its stage holds. The Pi example adds a planning prompt to capable-first turns.
+  **API and state change (breaking).**
+- **Simpler decision requests and routing question** — `DecisionRequest.context`
+  is renamed to `input`. Decision judges send the conversation messages as
+  `input`, with string instructions and a description for every choice. The
+  decision judge now asks whether to start with the `capable` or the `efficient` model.
+  The `cutoff` applies to the `capable` probability and defaults to `0.6`.
+  Decision settings drop `candidates`, `evidence`, and `criteria`; use
+  `choices` (`DecisionChoice` values) and `apply_cutoff_to` for a custom question. Routing evidence
+  reports `capable_score` and `capable_threshold`. Re-evaluate existing cutoffs.
+  **Config and API change (breaking).**
 - **Stage fallback-judge knobs that had no effect are now rejected** — a
   `stage_router` route no longer loads with a `classifier.classify_trigger` other
   than `every_request` or with `classifier.message_hash_fallback`. The stage
@@ -48,6 +66,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   a route's two tiers name the same target, and when an `llm_classifier` route
   that selects escalation mode through its `escalation` table carries capability
   keys that mode ignores.
+
+### Fixed
+
+- **Responses reasoning history reaches non-OpenAI targets** - the default
+  `responses_reasoning` is now `"auto"`. Targets other than OpenAI keep plaintext
+  reasoning `summary` and `content` in place, for any `store` value. Before, it
+  was removed, so models such as GLM lost their earlier reasoning. These targets
+  lose opaque `encrypted_content`, because its issuer is unknown. OpenAI targets
+  keep the previous behavior. **Rust source-breaking change:** callers that match
+  exhaustively on `ResponsesReasoningPolicy` must handle `Auto` and
+  `PreservePlaintext`.
 
 ## [0.3.0]
 

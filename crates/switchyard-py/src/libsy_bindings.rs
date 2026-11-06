@@ -11,6 +11,7 @@ use http::HeaderMap;
 use http::header::{HeaderName, HeaderValue};
 use pyo3::exceptions::{PyBaseException, PyStopAsyncIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use serde_json::Value;
 use switchyard_libsy::{
     Algorithm, CallDecision, CallModel, CapabilityJudgeConfig, ClassifierContractConfig,
@@ -25,7 +26,7 @@ use switchyard_protocol::{
     Category, DecisionResponse, LlmClientError, LlmResponse, LlmResponseStream,
     LlmResponseStreamEvent, Metadata, ModelId, Request, Response,
 };
-use switchyard_runner::AlgorithmFactory;
+use switchyard_runner::{AlgorithmFactory, require_target_labels};
 use tokio::sync::Mutex;
 
 use crate::errors::{ContextWindowExceededError, py_libsy_error};
@@ -84,8 +85,10 @@ fn request_from_python(
     headers: Option<HashMap<String, String>>,
 ) -> PyResult<Request> {
     let headers = headers.as_ref().map(header_map_from_python).transpose()?;
+    let mut llm_request = from_python(request)?;
+    switchyard_translation::normalize_compaction(&mut llm_request, headers.as_ref());
     Ok(Request {
-        llm_request: from_python(request)?,
+        llm_request,
         raw_request: None,
         metadata: headers.map(|headers| Metadata::from_headers(&headers)),
     })
@@ -164,6 +167,7 @@ struct PyEscalationClassifierConfig {
     contract: ClassifierContractConfig,
     judge: EscalationJudgeConfig,
     max_output_tokens: u64,
+    judge_deadline_ms: Option<u64>,
 }
 
 #[pymethods]
@@ -176,6 +180,7 @@ impl PyEscalationClassifierConfig {
         window_message_chars=500,
         deescalation=None,
         max_output_tokens=4096,
+        judge_deadline_ms=None,
         prompt=None,
         response_format_type="json_schema"
     ))]
@@ -187,6 +192,7 @@ impl PyEscalationClassifierConfig {
         window_message_chars: usize,
         deescalation: Option<Py<PyDeescalationConfig>>,
         max_output_tokens: u64,
+        judge_deadline_ms: Option<u64>,
         prompt: Option<String>,
         response_format_type: &str,
     ) -> PyResult<Self> {
@@ -201,6 +207,7 @@ impl PyEscalationClassifierConfig {
                     .transpose()?,
             },
             max_output_tokens,
+            judge_deadline_ms,
         })
     }
 }
@@ -234,7 +241,8 @@ impl PyCustomClassifierConfig {
         session_affinity=false,
         message_hash_fallback=false,
         recent_turn_window=None,
-        max_output_tokens=4096
+        max_output_tokens=4096,
+        judge_deadline_ms=None
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -245,6 +253,7 @@ impl PyCustomClassifierConfig {
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
         max_output_tokens: u64,
+        judge_deadline_ms: Option<u64>,
     ) -> PyResult<Self> {
         // Convert the Python schema into serde JSON and pair it with the target-selector policy;
         // conversion failures propagate to Python through `PyResult`.
@@ -257,6 +266,7 @@ impl PyCustomClassifierConfig {
         inner.message_hash_fallback = message_hash_fallback;
         inner.recent_turn_window = recent_turn_window;
         inner.max_output_tokens = max_output_tokens;
+        inner.judge_deadline_ms = judge_deadline_ms;
         Ok(Self { inner })
     }
 }
@@ -295,6 +305,7 @@ impl PyLlmClassifierConfig {
                 contract: config.contract.clone(),
                 config: config.judge.clone(),
                 max_output_tokens: config.max_output_tokens,
+                judge_deadline_ms: config.judge_deadline_ms,
             },
         })
     }
@@ -319,27 +330,26 @@ impl PyLlmClassifierConfig {
 
 #[pymethods]
 impl PyTaskClassifierConfig {
-    /// Apply a cutoff to relative advantage or a custom candidate choice score.
+    /// Route capable when a decision model's choice probability exceeds a cutoff.
     #[staticmethod]
-    #[pyo3(signature = (*, cutoff, candidates, evidence, instructions=None, criteria=None))]
+    #[pyo3(signature = (*, cutoff=None, instructions=None, choices=None, apply_cutoff_to=None))]
     fn decision(
-        cutoff: f64,
-        candidates: BTreeMap<String, String>,
-        evidence: &Bound<'_, PyAny>,
-        instructions: Option<&Bound<'_, PyAny>>,
-        criteria: Option<&Bound<'_, PyAny>>,
+        cutoff: Option<f64>,
+        instructions: Option<String>,
+        choices: Option<&Bound<'_, PyAny>>,
+        apply_cutoff_to: Option<String>,
     ) -> PyResult<Self> {
+        let defaults = DecisionJudgeConfig::default();
         Ok(Self {
             inner: TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
                     cutoff,
-                    candidates: candidates
-                        .into_iter()
-                        .map(|(label, model)| (label, ModelId::from(model)))
-                        .collect(),
-                    evidence: from_python(evidence)?,
-                    instructions: instructions.map(from_python).transpose()?,
-                    criteria: criteria.map(from_python).transpose()?,
+                    instructions,
+                    choices: match choices {
+                        Some(choices) => from_python(choices)?,
+                        None => defaults.choices,
+                    },
+                    apply_cutoff_to: apply_cutoff_to.unwrap_or(defaults.apply_cutoff_to),
                 }),
                 ..TaskClassifierConfig::default()
             },
@@ -355,6 +365,7 @@ impl PyTaskClassifierConfig {
         message_hash_fallback=false,
         recent_turn_window=None,
         max_output_tokens=4096,
+        judge_deadline_ms=None,
         prompt=None,
         response_format_type="json_schema"
     ))]
@@ -366,6 +377,7 @@ impl PyTaskClassifierConfig {
         message_hash_fallback: bool,
         recent_turn_window: Option<usize>,
         max_output_tokens: u64,
+        judge_deadline_ms: Option<u64>,
         prompt: Option<String>,
         response_format_type: &str,
     ) -> PyResult<Self> {
@@ -377,6 +389,7 @@ impl PyTaskClassifierConfig {
                     unmatched_steps: DEFAULT_UNMATCHED_STEPS,
                     contract: classifier_contract(prompt, response_format_type)?,
                     max_output_tokens,
+                    judge_deadline_ms,
                 }),
                 fail_open: true,
                 classify_trigger: classify_trigger(session_affinity),
@@ -880,6 +893,10 @@ impl PyRunStream {
             let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
             Arc::clone(algorithm).run_stream(request, models, State::default())
         };
+        Self::from_stream(stream)
+    }
+
+    fn from_stream(stream: StepStream) -> Self {
         Self {
             inner: Arc::new(Mutex::new(stream)),
         }
@@ -984,45 +1001,109 @@ impl PyAlgorithmFactory {
         algorithms
             .into_iter()
             .map(|(id, (algorithm, models))| {
-                Ok((
-                    id,
-                    Py::new(
-                        py,
-                        PyConfiguredAlgorithm {
-                            algorithm,
-                            models: Arc::new(models),
-                        },
-                    )?,
-                ))
+                let handle = PyConfiguredAlgorithm {
+                    inner: ConfiguredBackend::Bare {
+                        algorithm,
+                        models: Arc::new(models),
+                    },
+                };
+                Ok((id, Py::new(py, handle)?))
             })
             .collect()
     }
+
+    /// Build handles that check target requirements before yielding host-owned calls.
+    fn build_configured(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<BTreeMap<String, Py<PyConfiguredAlgorithm>>> {
+        let algorithms = py
+            .detach(|| self.inner.build_configured())
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        algorithms
+            .into_iter()
+            .map(|(id, algorithm)| {
+                let handle = PyConfiguredAlgorithm {
+                    inner: ConfiguredBackend::Governed(algorithm),
+                };
+                Ok((id, Py::new(py, handle)?))
+            })
+            .collect()
+    }
+}
+
+enum ConfiguredBackend {
+    Bare {
+        algorithm: Arc<dyn Algorithm>,
+        models: Arc<RuntimeModels>,
+    },
+    Governed(switchyard_runner::ConfiguredAlgorithm),
 }
 
 /// A reusable algorithm paired with its deployment's parent and subagent model groups.
 /// The host applies target prompts and provider settings when serving model calls.
 #[pyclass(name = "ConfiguredAlgorithm", module = "switchyard.libsy", frozen)]
 struct PyConfiguredAlgorithm {
-    algorithm: Arc<dyn Algorithm>,
-    models: Arc<RuntimeModels>,
+    inner: ConfiguredBackend,
 }
 
 #[pymethods]
 impl PyConfiguredAlgorithm {
+    /// All possible targets and their client/provider IDs, not the eligible pool for a request.
+    fn target_models<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let ConfiguredBackend::Governed(algorithm) = &self.inner else {
+            return Err(py_libsy_error(
+                "target model lookup requires AlgorithmFactory.build_configured()",
+            ));
+        };
+        let targets = PyDict::new(py);
+        for (name, target) in algorithm.target_models() {
+            let model = PyDict::new(py);
+            model.set_item("client", &target.client)?;
+            model.set_item("id", target.id.as_str())?;
+            targets.set_item(name.as_str(), model)?;
+        }
+        Ok(targets)
+    }
+
     /// Yield host-owned model and decision calls for a normalized request.
+    /// Omitted labels mean no assessment; an empty collection supplies no new requirements.
+    /// The host authorizes `task_id`, which overrides any task ID in `headers`.
     /// Libsy's per-run `State` is not carried forward, as in `Algorithm.run_stream`.
-    #[pyo3(signature = (request, *, headers=None))]
+    #[pyo3(signature = (request, *, headers=None, required_labels=None, task_id=None))]
     fn run_stream(
         &self,
+        py: Python<'_>,
         request: &Bound<'_, PyAny>,
         headers: Option<&Bound<'_, PyAny>>,
+        required_labels: Option<Vec<String>>,
+        task_id: Option<String>,
     ) -> PyResult<PyRunStream> {
         let headers = headers.map(from_python).transpose()?;
-        Ok(PyRunStream::new(
-            &self.algorithm,
-            request_from_python(request, headers)?,
-            Arc::clone(&self.models),
-        ))
+        let mut request = request_from_python(request, headers)?;
+        if let Some(task_id) = task_id {
+            request.metadata.get_or_insert_default().task_id = Some(task_id);
+        }
+        match &self.inner {
+            ConfiguredBackend::Bare { algorithm, models } => {
+                if required_labels.is_some() {
+                    return Err(py_libsy_error(
+                        "target requirements require AlgorithmFactory.build_configured()",
+                    ));
+                }
+                Ok(PyRunStream::new(algorithm, request, Arc::clone(models)))
+            }
+            ConfiguredBackend::Governed(algorithm) => {
+                if let Some(labels) = required_labels {
+                    require_target_labels(&mut request, labels).map_err(py_libsy_error)?;
+                }
+                let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
+                let stream = py
+                    .detach(|| algorithm.run_stream(request, State::default()))
+                    .map_err(py_libsy_error)?;
+                Ok(PyRunStream::from_stream(stream))
+            }
+        }
     }
 }
 

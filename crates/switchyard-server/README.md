@@ -6,9 +6,8 @@ algorithm routes served by the process.
 
 The standalone binary listens on `127.0.0.1` unless `--host` is set. Pass
 `--host 0.0.0.0` to accept remote clients. The provided Docker image and
-`dev-server/switchyard.service` opt into that address explicitly. The user service
-created by `scripts/linux/install.sh` stays on `127.0.0.1`. A later `--host`
-argument overrides the container's default.
+`dev-server/switchyard.service` opt into that address explicitly. A later
+`--host` argument overrides the container's default.
 
 ```toml
 # routes.toml

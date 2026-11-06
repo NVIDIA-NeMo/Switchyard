@@ -724,14 +724,14 @@ async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard
         })?);
     let request = Request {
         llm_request: LlmRequest {
-            messages: vec![Message {
-                role: Role::User,
-                content: vec![ContentBlock::Reasoning {
+            messages: vec![Message::new(
+                Role::User,
+                vec![ContentBlock::Reasoning {
                     text: "provider reasoning".to_string(),
                     signature: None,
                     details: Vec::new(),
                 }],
-            }],
+            )],
             ..LlmRequest::default()
         },
         raw_request: None,
@@ -775,6 +775,7 @@ async fn stateful_escalation_warns_once_without_a_session_id() -> switchyard_lib
         contract: ClassifierContractConfig::default(),
         config: EscalationJudgeConfig::default(),
         max_output_tokens: 64,
+        judge_deadline_ms: None,
     })?) as Arc<dyn Algorithm>;
     let client = Arc::new(JudgeClient {
         judge_model: "warning-judge".into(),
@@ -825,6 +826,7 @@ async fn deescalation_evidence_stays_pending_until_confirmed() -> switchyard_lib
             ..EscalationJudgeConfig::default()
         },
         max_output_tokens: 64,
+        judge_deadline_ms: None,
     })?) as Arc<dyn Algorithm>;
     let client = |verdict| {
         Arc::new(JudgeClient {
@@ -1014,6 +1016,7 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
         ALGO.to_string(),
         Some(json!({
             "source": "llm-classifier", "score": 0.9, "threshold": 0.5,
+            "capable_score": 0.7, "capable_threshold": 0.6,
             "verdict": "continue", "trigger": "turn", "reason_code": "test",
             "confidence": "wrong type", "unknown": LEAKED_CONTENT,
         })),
@@ -1104,6 +1107,8 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
         ("evidence.source", "llm-classifier"),
         ("evidence.score", "0.9"),
         ("evidence.threshold", "0.5"),
+        ("evidence.capable_score", "0.7"),
+        ("evidence.capable_threshold", "0.6"),
         ("evidence.verdict", "continue"),
         ("evidence.trigger", "turn"),
         ("evidence.reason_code", "test"),
@@ -1272,24 +1277,24 @@ async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Res
             model: Some("auto".to_string()),
             messages: vec![
                 Message::text(Role::User, "fix the build"),
-                Message {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::ToolCall(ToolCall {
+                Message::new(
+                    Role::Assistant,
+                    vec![ContentBlock::ToolCall(ToolCall {
                         id: "call_1".to_string(),
                         name: "Bash".to_string(),
                         arguments: json!({"command": "cargo test"}),
                     })],
-                },
-                Message {
-                    role: Role::Tool,
-                    content: vec![ContentBlock::ToolResult(ToolResult {
+                ),
+                Message::new(
+                    Role::Tool,
+                    vec![ContentBlock::ToolResult(ToolResult {
                         tool_call_id: "call_1".to_string(),
                         content: vec![ContentBlock::Text {
                             text: "fatal runtime error: out of memory".to_string(),
                         }],
                         is_error: Some(true),
                     })],
-                },
+                ),
             ],
             ..LlmRequest::default()
         },
@@ -1695,7 +1700,7 @@ async fn decision_calls_record_each_terminal_path_once() -> switchyard_libsy::Re
                 .call_decision(
                     DecisionRequest {
                         model: None,
-                        context: json!(LEAKED_CONTENT),
+                        input: json!(LEAKED_CONTENT),
                         questions: Default::default(),
                     },
                     self.0.clone().into(),
@@ -2291,5 +2296,144 @@ async fn in_flight_gauge_clears_when_a_run_is_abandoned() -> switchyard_libsy::R
         call_span.fields.get("outcome").map(String::as_str),
         Some("error")
     );
+    Ok(())
+}
+
+/// Routing keys remain distinct while both routing-time and answer metrics aggregate by provider.
+#[tokio::test]
+async fn target_aliases_preserve_provider_model_metric_labels() -> switchyard_libsy::Result<()> {
+    let _guard = serialize_test().lock().await;
+    let (store, exporter, provider, span_exporter, _) = telemetry();
+    struct MappedClient {
+        model: ModelId,
+    }
+    #[async_trait]
+    impl RoutedLlmClient for MappedClient {
+        fn provider_model<'a>(&'a self, _: &'a ModelId) -> &'a ModelId {
+            &self.model
+        }
+        async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
+            UsageClient {
+                usage: Usage::default(),
+            }
+            .call(request)
+            .await
+        }
+    }
+    for routing_time in [false, true] {
+        let name = if routing_time {
+            "mapped-routing"
+        } else {
+            "mapped-answer"
+        };
+        let provider_model = ModelId::from(format!("provider/{name}"));
+        let client = Arc::new(MappedClient {
+            model: provider_model.clone(),
+        });
+        let models = Arc::new(
+            RuntimeModels::default().with_provider_models(
+                ["efficient", "capable"]
+                    .into_iter()
+                    .map(|target| (ModelId::from(target), provider_model.clone()))
+                    .chain([("fallback".into(), "provider/fallback".into())])
+                    .collect(),
+            ),
+        );
+        for target in ["efficient", "capable"] {
+            let algorithm = if routing_time {
+                Arc::new(RoutingCallAlgo {
+                    name: name.into(),
+                    target: target.into(),
+                }) as Arc<dyn Algorithm>
+            } else {
+                Arc::new(SingleCallAlgo {
+                    name: name.into(),
+                    target_set: vec![target.into(), "fallback".into(), "provider/direct".into()],
+                    metadata: None,
+                })
+            };
+            let (selected, _) = switchyard_llm_client::run(
+                algorithm,
+                ClientRouter::single(client.clone()),
+                Request {
+                    llm_request: text_request(None, "hello"),
+                    ..Request::default()
+                },
+                models.clone(),
+                None,
+            )
+            .await?;
+            assert_eq!(selected, target);
+            let spans = store
+                .spans()
+                .into_iter()
+                .rev()
+                .filter(|span| span.fields.get("algorithm").map(String::as_str) == Some(name))
+                .collect::<Vec<_>>();
+            let span = find_span(&spans, "libsy.client_call", "selected_target", target);
+            assert_eq!(span.fields["selected_model"], provider_model.as_str());
+            assert_eq!(span.fields["gen_ai.request.model"], provider_model.as_str());
+            assert_eq!(span.fields["otel.name"], format!("chat {provider_model}"));
+            let run_span = find_span(&spans, "libsy.run", "algorithm", name);
+            let exported = span_exporter.get_finished_spans().expect("exported spans");
+            let exported_run = exported
+                .iter()
+                .find(|span| {
+                    span.name == "libsy.run"
+                        && otel_attribute(span, "outcome_id")
+                            .is_some_and(|id| id.as_str() == run_span.fields["outcome_id"])
+                })
+                .expect("outcome span exported");
+            let mut expected_models = vec![provider_model.to_string().into()];
+            if !routing_time {
+                expected_models.extend(["provider/fallback".into(), "provider/direct".into()]);
+            }
+            assert_eq!(
+                otel_attribute(exported_run, "selected_model_ids"),
+                Some(&OtelValue::Array(OtelArray::String(expected_models)))
+            );
+        }
+        let exported = find_otel_span(
+            span_exporter,
+            &format!("chat {provider_model}"),
+            &provider_model,
+        );
+        assert_eq!(
+            otel_attribute(&exported, "selected_model"),
+            Some(&OtelValue::String(provider_model.to_string().into()))
+        );
+        let snapshots = flushed_metrics(exporter, provider);
+        for metric in ["switchyard.decisions", "switchyard.llm_calls"] {
+            assert_eq!(
+                u64_counter_value(
+                    &snapshots,
+                    metric,
+                    &[
+                        ("algorithm", name),
+                        ("selected_model", provider_model.as_str())
+                    ]
+                ),
+                Some(2)
+            );
+            for target in ["efficient", "capable"] {
+                assert_eq!(
+                    u64_counter_value(
+                        &snapshots,
+                        metric,
+                        &[("algorithm", name), ("selected_model", target)]
+                    ),
+                    None
+                );
+            }
+        }
+        assert_eq!(
+            u64_counter_value(
+                &snapshots,
+                "switchyard.requests",
+                &[("model", provider_model.as_str())]
+            ),
+            Some(2)
+        );
+    }
     Ok(())
 }

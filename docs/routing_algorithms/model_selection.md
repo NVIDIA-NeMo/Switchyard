@@ -5,6 +5,9 @@ you put in each role change results more than any threshold does. This page says
 what each role needs, how to check a model before you route to it, which pairs
 have measured results, and the mistakes we have seen in real runs.
 
+For a worked comparison of cost and task success, see the
+[model-pair selection example](../tuning/examples.md#model-pair-selection-with-fixed-algorithm-settings).
+
 ## Roles
 
 Each strategy names its models by role. The TOML keys differ by route type:
@@ -12,7 +15,7 @@ Each strategy names its models by role. The TOML keys differ by route type:
 | Route `type` | Serves most turns | Takes the hard turns | Decides |
 |---|---|---|---|
 | `auto`, `stage_router`, `composite` | `efficient_target` | `capable_target` | Tool-result signals. `composite` adds a classifier. |
-| `plan_execute` | `efficient_target`, after the first edit | `capable_target`, while planning | The first file edit. |
+| `stage_router`, [plan/execute settings](stage_router_routing.md#plan-and-execute) | `efficient_target` serves after handoff. | `capable_target` serves while planning. | Stage uses tool results to select a tier, then holds efficient after a switch. |
 | `llm_classifier` (capability, escalation) | `weak_target` | `strong_target` | The judge at `classifier_target`. |
 | `llm_classifier` (custom) | Your target names | Your target names | The judge in `models.judge`. |
 | `advisor` | `executor_target` | `advisor_target` reviews. It does not serve turns. | The gate rules. |

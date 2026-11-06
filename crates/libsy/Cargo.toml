@@ -33,6 +33,7 @@ rand.workspace = true
 regex.workspace = true
 shlex = "2"
 switchyard-protocol.workspace = true
+switchyard-translation.workspace = true
 thiserror.workspace = true
 tokio-stream = "0.1"
 tracing.workspace = true

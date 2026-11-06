@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -18,10 +18,10 @@ const request = (fields = {}) => ({
   reason: "user", messages: [{ role: "user", content: "task" }],
   thinkingLevel: "high", signal: new AbortController().signal, ...fields,
 });
-const result = (advantage = 0.6) => ({
+const result = (capable = 0.7) => ({
   provider: "openrouter", model: "inception/mercury-decide:free", stopReason: "stop",
   answers: { route: {
-    type: "choice", choice: advantage > 0.5 ? "advantage" : "no_advantage", probabilities: { advantage, no_advantage: 1 - advantage }, confidence: 0.9,
+    type: "choice", choice: capable > 0.5 ? "capable" : "efficient", probabilities: { capable, efficient: 1 - capable }, confidence: 0.9,
   } },
 });
 
@@ -42,8 +42,15 @@ function setup(t, answer = result()) {
     classify: t.mock.fn(async () => answer),
   };
   let definition;
-  extension({ registerVirtualModel: (value) => { definition = value; } });
-  return { definition, registry, path, route: (req) => definition.route(req, { modelRegistry: registry }) };
+  const handlers = {};
+  extension({
+    registerVirtualModel: (value) => { definition = value; },
+    on: (event, handler) => { handlers[event] = handler; },
+  });
+  return {
+    definition, registry, path, route: (req) => definition.route(req, { modelRegistry: registry }),
+    context: (messages) => handlers.context_with_system({ type: "context_with_system", messages }),
+  };
 }
 
 function tool(id, name, args, text, isError = false) {
@@ -67,15 +74,11 @@ test("Pi classifies the libsy question and retains the capable tier on a read co
   const [judge, context, options] = registry.classify.mock.calls[0].arguments;
   assert.equal(judge, registry.findOfType.mock.calls[0].result);
   assert.deepEqual(options, { signal: req.signal });
-  assert.deepEqual(context.state.comparison, { capable: "a", efficient: "b" });
-  assert.equal(context.state.evidence.description, "Candidate a is the larger reasoning-oriented coding and thinking model. It is intended for complex problems. Candidate b is the smaller fast coding model. It is intended for simple questions, simple local reads and edits, routine tests and straightforward fixes. These are qualitative deployment roles, not empirical success rates.");
-  assert.deepEqual(context.state.task, [{ role: "user", content: [{ type: "text", text: "task" }] }]);
+  assert.deepEqual(context.state, { input: [{ role: "user", content: [{ type: "text", text: "task" }] }] });
   assert.equal(context.questions.route.type, "choice");
   assert.equal(typeof context.questions.route.instructions, "string");
-  assert.deepEqual(JSON.parse(context.questions.route.instructions), JSON.parse(readFileSync(new URL(
-    "../../../crates/libsy/src/prompts/capability-classifier/relative_advantage.json", import.meta.url,
-  ), "utf8")));
-  assert.deepEqual(Object.keys(context.questions.route.criteria), ["advantage", "no_advantage"]);
+  assert.ok(context.questions.route.instructions.length > 0);
+  assert.deepEqual(Object.keys(context.questions.route.criteria), ["capable", "efficient"]);
   const continued = await route(request({
     reason: "continuation", state: initial.state,
     messages: [...req.messages, ...tool("read", "read", { path: "parser.rs" }, "fn parse() {}")],
@@ -86,14 +89,14 @@ test("Pi classifies the libsy question and retains the capable tier on a read co
 });
 
 test("cutoff equality selects efficient, then a tool failure holds capable for two requests", async (t) => {
-  const { route, registry } = setup(t, result(0.4));
+  const { route, registry } = setup(t, result(0.6));
   const messages = request().messages;
   let selected = await route(request({ messages }));
   assert.equal(selected.model.id, "gpt-6-luna");
   messages.push(...tool("failed", "bash", { command: "pytest" }, "out of memory", true));
   selected = await route(request({ reason: "continuation", messages, state: selected.state }));
   assert.equal(selected.model.id, "gpt-6.1-sol");
-  assert.deepEqual(selected.state.capable_hold_turns, { count: 2 });
+  assert.deepEqual(selected.state["composite.profile_0.capable_hold_turns"], { count: 2 });
   for (let i = 0; i < 3; i++) messages.push(...tool(`write-${i}`, "write", { path: `file-${i}` }, "wrote file"));
   let state = selected.state;
   for (const expected of ["gpt-6.1-sol", "gpt-6.1-sol", "gpt-6-luna"]) {
@@ -102,6 +105,46 @@ test("cutoff equality selects efficient, then a tool failure holds capable for t
     assert.equal(selected.model.id, expected);
   }
   assert.equal(registry.classify.mock.callCount(), 1);
+});
+
+test("capable-first adds the planning prompt until the first edit hands off to efficient", async (t) => {
+  const { route, context } = setup(t);
+  const system = { role: "system", content: "rules", sections: { tools: "tool rules" }, timestamp: 1 };
+  const user = { role: "user", content: "task", timestamp: 2 };
+  assert.equal(await context([system, user]), undefined);
+
+  const messages = request().messages;
+  let selected = await route(request({ messages }));
+  assert.equal(selected.model.id, "gpt-6.1-sol");
+  const { messages: [prompted, ...rest] } = await context([system, user]);
+  assert.deepEqual(rest, [user]);
+  assert.deepEqual(prompted.sections, system.sections);
+  assert.equal(prompted.content.length, 2);
+  assert.match(prompted.content[0].text, /^You are in the planning phase\./);
+  assert.deepEqual(prompted.content[1], { type: "text", text: "rules" });
+  // The prompt applies to one request only.
+  assert.equal(await context([system, user]), undefined);
+
+  // Pi's structured prompt has empty content, which gains no empty text block.
+  await route(request({ messages }));
+  const structured = { ...system, content: "" };
+  const { messages: [only] } = await context([structured, user]);
+  assert.deepEqual(only.content.map((block) => block.text), [prompted.content[0].text]);
+  assert.deepEqual(only.sections, system.sections);
+
+  // A direct request leaves the pending prompt alone.
+  await route(request({ messages }));
+  await route(request({ reason: "direct", messages }));
+  assert.ok(await context([system, user]));
+
+  messages.push(...tool("edit", "write", { path: "parser.rs" }, "wrote file"));
+  const handoff = await route(request({ reason: "continuation", messages, state: selected.state }));
+  assert.equal(handoff.model.id, "gpt-6-luna");
+  assert.equal(await context([system, user]), undefined);
+  // A failure after the handoff stays on efficient.
+  messages.push(...tool("failed", "bash", { command: "pytest" }, "out of memory", true));
+  selected = await route(request({ reason: "continuation", messages, state: handoff.state ?? selected.state }));
+  assert.equal(selected.model.id, "gpt-6-luna");
 });
 
 test("classifier lookup, answer validation, failures, and cancellation", async (t) => {
@@ -157,18 +200,19 @@ test("config loads lazily, names missing fields, and is cached until reload", as
 
 test("message and classifier adapters preserve content and model identities", async (t) => {
   const { route, registry } = setup(t);
+  const input = [{ role: "user", content: [{ type: "text", text: "task" }] }];
   const nativeRoute = t.mock.fn(async (_, { decide }) => {
-    const response = await decide({ context: { task: "task" }, questions: { route: {
+    const response = await decide({ input, questions: { route: {
       instructions: "Choose a model",
       kind: { type: "choice", data: { options: [
-        { id: "advantage", description: "Complex work" }, { id: "no_advantage", description: { task: "Simple work" } }, { id: "unspecified" },
+        { id: "capable", description: "Complex work" }, { id: "efficient", description: "Simple work" },
       ] } },
     } } });
     assert.deepEqual(response, { model: config.decision_model, answers: { route: {
-      value: { type: "choice", data: { selected: "advantage", probabilities: result().answers.route.probabilities } },
+      value: { type: "choice", data: { selected: "capable", probabilities: result().answers.route.probabilities } },
       provider_confidence: 0.9,
     } } });
-    await assert.rejects(decide({ context: {}, questions: { route: { kind: { type: "score" } } } }), /Expected a choice question/);
+    await assert.rejects(decide({ input: [], questions: { route: { kind: { type: "score" } } } }), /Expected a choice question/);
     return { model: "openrouter/vendor/model" };
   });
   t.mock.method(CompositeRouter, "create", () => ({ route: nativeRoute }));
@@ -190,8 +234,8 @@ test("message and classifier adapters preserve content and model identities", as
   assert.equal(options.signal, req.signal);
   assert.equal(options.state, req.state);
   assert.deepEqual(registry.classify.mock.calls[0].arguments[1], {
-    state: { task: "task" }, questions: { route: {
-      type: "choice", instructions: "Choose a model", criteria: { advantage: "Complex work", no_advantage: '{"task":"Simple work"}', unspecified: "null" },
+    state: { input }, questions: { route: {
+      type: "choice", instructions: "Choose a model", criteria: { capable: "Complex work", efficient: "Simple work" },
     } },
   });
 });

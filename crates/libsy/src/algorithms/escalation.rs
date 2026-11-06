@@ -59,13 +59,13 @@ fn clear_streak(state: &mut State) {
 }
 
 fn assistant_message(response: &AggLlmResponse) -> Message {
-    Message {
-        role: Role::Assistant,
-        content: response
+    Message::new(
+        Role::Assistant,
+        response
             .first_output()
             .map(|output| output.content.clone())
             .unwrap_or_default(),
-    }
+    )
 }
 
 /// Calls the efficient model, judges its response, and latches to capable once the streak
@@ -89,6 +89,7 @@ pub(super) fn build_classifier(
     contract_config: ClassifierContractConfig,
     config: EscalationJudgeConfig,
     max_output_tokens: u64,
+    judge_deadline_ms: Option<u64>,
 ) -> Result<Arc<dyn Classifier>> {
     let confirmations = config.confirmations;
     let deescalation = match config.deescalation {
@@ -99,6 +100,7 @@ pub(super) fn build_classifier(
                 config.clone(),
                 Some(EvaluationPhase::Strong),
                 max_output_tokens,
+                judge_deadline_ms,
             )?,
         }),
         None => None,
@@ -110,6 +112,7 @@ pub(super) fn build_classifier(
             config,
             is_phase_aware.then_some(EvaluationPhase::Efficient),
             max_output_tokens,
+            judge_deadline_ms,
         )?,
         confirmations,
         deescalation,
@@ -361,7 +364,9 @@ impl Classifier for EscalationClassifier {
         let verdict = self
             .escalation_judge
             .verdict(state, &judge_request, driver, judge_models)
-            .await;
+            .await?;
+        self.escalation_judge.classify_verdict(&verdict, driver)?;
+        let verdict = verdict.ok();
 
         let held = count(state, STREAK_KEY);
         let held_category = category(state).map(str::to_string);
@@ -539,6 +544,7 @@ mod tests {
                     ..EscalationJudgeConfig::default()
                 },
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+                judge_deadline_ms: None,
             },
         )?))
     }
@@ -553,6 +559,7 @@ mod tests {
                     ..EscalationJudgeConfig::default()
                 },
                 max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+                judge_deadline_ms: None,
             },
         )?))
     }
@@ -640,8 +647,13 @@ mod tests {
         )
         .await?;
 
+        let metadata = outcome.metadata.expect("routing outcome metadata");
+        assert_eq!(metadata.judgments.len(), 1);
+        assert_eq!(metadata.judgments[0].target, Some("efficient".into()));
+        assert_eq!(metadata.judgments[0].category.as_deref(), Some("efficient"));
+        assert_eq!(metadata.judgments[0].evidence, metadata.evidence);
         assert_eq!(
-            outcome.metadata.and_then(|metadata| metadata.evidence),
+            metadata.evidence,
             Some(serde_json::json!({
                 "source": "escalation",
                 "verdict": "continue",
@@ -681,6 +693,7 @@ mod tests {
                 ..EscalationJudgeConfig::default()
             },
             max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+            judge_deadline_ms: None,
         })?);
 
         test_drive_with_models(router, classify_request(), runtime_models(), serve).await?;

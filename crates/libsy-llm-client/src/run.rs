@@ -99,7 +99,7 @@ pub async fn run(
             .ok()
             .and_then(Response::served_model)
             .unwrap_or(&selected_model_id);
-        let served_model = served_model.clone();
+        let served_model = clients.provider_model(served_model).clone();
         metrics::observe_routed_request(&algorithm_name, &served_model, None, result)
     } else {
         let observe = |observation| {
@@ -397,12 +397,13 @@ impl CallPhase {
         switchyard.candidate = index + 1,
         switchyard.candidate_count = count,
         switchyard.call_phase = phase.as_str(),
-        selected_model = %model_id,
+        selected_model = %clients.provider_model(model_id),
+        selected_target = %model_id,
         otel.kind = "client",
-        otel.name = %format_args!("chat {model_id}"),
+        otel.name = %format_args!("chat {}", clients.provider_model(model_id)),
         openinference.span.kind = "LLM",
         gen_ai.operation.name = "chat",
-        gen_ai.request.model = %model_id,
+        gen_ai.request.model = %clients.provider_model(model_id),
         gen_ai.request.stream = tracing::field::Empty,
         gen_ai.request.temperature = tracing::field::Empty,
         gen_ai.request.top_p = tracing::field::Empty,
@@ -475,7 +476,12 @@ async fn call_one(
     let result = if is_routing {
         result
     } else {
-        metrics::observe_routed_request(algorithm, model_id, Some(duration), result)
+        metrics::observe_routed_request(
+            algorithm,
+            clients.provider_model(model_id),
+            Some(duration),
+            result,
+        )
     };
     observe(ModelCallObservation {
         selected_model: model_id.clone(),
@@ -839,6 +845,12 @@ impl ClientRouter {
         self
     }
 
+    /// Resolves a target for model telemetry, including calls that fail before a response.
+    fn provider_model<'a>(&'a self, target: &'a ModelId) -> &'a ModelId {
+        self.route(target)
+            .map_or(target, |client| client.provider_model(target))
+    }
+
     /// The client that serves `model`.
     ///
     /// Errors with [`LlmClientError::Configuration`] when the router maps models and has no
@@ -1063,10 +1075,12 @@ impl ClientRouter {
             return Ok(());
         }
         let mut segment = input.messages.to_vec();
-        segment.extend(response.outputs.iter().map(|output| Message {
-            role: output.role,
-            content: output.content.clone(),
-        }));
+        segment.extend(
+            response
+                .outputs
+                .iter()
+                .map(|output| Message::new(output.role, output.content.clone())),
+        );
         let history = Arc::new(MessageHistory::new(
             input.parent.clone(),
             Arc::from(segment),
@@ -1324,13 +1338,13 @@ mod tests {
             Err(LlmClientError::Configuration { .. })
         ));
         let mixed: DecisionRequest = serde_json::from_value(json!({
-            "model": "judge", "context": {"task": "A simple task"},
+            "model": "judge", "input": [Message::text(Role::User, "A simple task")],
             "questions": {
                 "boolean": {"instructions": "Is it simple?", "kind": {"type": "boolean", "data": {
                     "true_description": ["Simple"], "false_description": null
                 }}},
-                "route": {"instructions": {"task": "Choose"}, "kind": {"type": "choice", "data": {
-                    "options": [{"id": "advantage", "description": "A wins"}, {"id": "no_advantage"}]
+                "route": {"instructions": "Choose", "kind": {"type": "choice", "data": {
+                    "options": [{"id": "capable", "description": "A wins"}, {"id": "efficient", "description": "B wins"}]
                 }}},
                 "score": {"instructions": "Rate difficulty", "kind": {"type": "score", "data": {
                     "levels": ["Easy", {"description": "Hard"}]
@@ -1341,8 +1355,8 @@ mod tests {
             "model": "jev-1.13.0", "usage": {"input_tokens": 42, "output_tokens": 3},
             "answers": {
                 "boolean": {"type": "noul", "noul": 0.9},
-                "route": {"type": "choice", "choice": "no_advantage", "confidence": 0.7,
-                    "probabilities": {"advantage": 0.2, "no_advantage": 0.8}},
+                "route": {"type": "choice", "choice": "efficient", "confidence": 0.7,
+                    "probabilities": {"capable": 0.2, "efficient": 0.8}},
                 "score": {"type": "score", "score": 0.6, "confidence": 0.3,
                     "legend": {"0": "Easy", "1": {"description": "Hard"}},
                     "probabilities": {"1": 0.6, "0": 0.4}}
@@ -1352,11 +1366,11 @@ mod tests {
             .and(path("/v1/systemone"))
             .and(header("authorization", "Bearer test-key"))
             .and(body_partial_json(json!({
-                "model": "judge", "state": mixed.context,
+                "model": "judge", "state": mixed.input,
                 "questions": {
                     "boolean": {"type": "noul", "criteria": {"true": ["Simple"]}},
-                    "route": {"type": "choice", "instructions": {"task": "Choose"},
-                        "criteria": {"advantage": "A wins", "no_advantage": null}},
+                    "route": {"type": "choice", "instructions": "Choose",
+                        "criteria": {"capable": "A wins", "efficient": "B wins"}},
                     "score": {"type": "score", "criteria": ["Easy", {"description": "Hard"}]}
                 }
             })))
@@ -1398,7 +1412,7 @@ mod tests {
             (
                 "route",
                 json!({"type": "choice", "choice": "unknown-option",
-                    "probabilities": {"advantage": 0.2, "no_advantage": 0.8}}),
+                    "probabilities": {"capable": 0.2, "efficient": 0.8}}),
             ),
             ("score", json!({"type": "score", "score": -0.1})),
             (
@@ -1448,14 +1462,8 @@ mod tests {
                 LlmClassifierConfig::Capability {
                     config: TaskClassifierConfig {
                         judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
-                            criteria: None,
-                            cutoff: 0.4,
-                            instructions: None,
-                            candidates: BTreeMap::from([
-                                ("a".into(), "capable".into()),
-                                ("b".into(), "efficient".into()),
-                            ]),
-                            evidence: json!({}),
+                            cutoff: Some(0.4),
+                            ..DecisionJudgeConfig::default()
                         }),
                         ..TaskClassifierConfig::default()
                     },
@@ -2128,16 +2136,16 @@ mod tests {
             .extensions
             .fields
             .insert("previous_response_id".to_string(), json!("msg_stream"));
-        follow.llm_request.messages = vec![Message {
-            role: Role::Tool,
-            content: vec![ContentBlock::ToolResult(ToolResult {
+        follow.llm_request.messages = vec![Message::new(
+            Role::Tool,
+            vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "toolu_stream".to_string(),
                 content: vec![ContentBlock::Text {
                     text: "ready".to_string(),
                 }],
                 is_error: None,
             })],
-        }];
+        )];
         assert!(clients.stored_state_owner(&follow).is_none());
         response
             .llm_response

@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use humantime::format_rfc3339_millis;
+use libsy::OutcomeMetadata;
 use serde::{Deserialize, Serialize};
 use switchyard_protocol::{Metadata, ModelId, Usage};
 
@@ -53,6 +54,7 @@ impl RoutingLog {
     pub(crate) fn append(
         &mut self,
         context: RoutingLogContext,
+        target: &str,
         model: &str,
         tier: Option<&str>,
         usage: &Usage,
@@ -65,6 +67,7 @@ impl RoutingLog {
             .unwrap_or(0);
         let usage = token_usage(usage);
         let record = RoutingRecord {
+            outcome: None,
             cost,
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
             route_id: context.route_id.into(),
@@ -81,6 +84,8 @@ impl RoutingLog {
             agent_role: context.agent.role.map(Cow::Owned),
             subagent_identity_unsupported: context.agent.identity_unsupported,
             model: model.into(),
+            target: target.into(),
+            reasoning_effort: context.reasoning_effort.map(Cow::Owned),
             tier: tier.unwrap_or("").into(),
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
@@ -90,7 +95,29 @@ impl RoutingLog {
             reasoning_tokens: usage.reasoning_tokens,
             total_tokens: usage.prompt_tokens.saturating_add(usage.completion_tokens),
         };
-        let mut line = serde_json::to_vec(&record).map_err(std::io::Error::other)?;
+        self.append_record(&record)
+    }
+
+    pub(crate) fn append_outcome(
+        &mut self,
+        context: &RoutingLogContext,
+        metadata: OutcomeMetadata,
+    ) -> std::io::Result<()> {
+        self.append_record(&serde_json::json!({
+            "session_id": context.session_id,
+            "outcome": LoggedOutcome {
+                ts: format_rfc3339_millis(SystemTime::now()).to_string(),
+                route_id: context.route_id.clone(),
+                turn_id: context.turn_id.clone(),
+                agent_id: context.agent.agent_id.clone(),
+                parent_agent_id: context.agent.parent_agent_id.clone(),
+                metadata,
+            },
+        }))
+    }
+
+    fn append_record(&mut self, record: &impl Serialize) -> std::io::Result<()> {
+        let mut line = serde_json::to_vec(record).map_err(std::io::Error::other)?;
         line.push(b'\n');
 
         self.file.write_all(&line)
@@ -119,10 +146,10 @@ pub(crate) fn snapshot(
         let Ok(record) = serde_json::from_slice::<RoutingRecord>(&line) else {
             continue;
         };
-        snapshot.add_record(&record, session_id);
+        snapshot.add_record(record, session_id);
     }
     snapshot.sum_totals();
-    Ok((snapshot.total_calls > 0).then_some(snapshot))
+    Ok((snapshot.total_calls > 0 || !snapshot.outcomes.is_empty()).then_some(snapshot))
 }
 
 /// Which agent made a call. A child agent can share its parent's session id, so
@@ -167,6 +194,7 @@ pub(crate) struct RoutingLogContext {
     session_id: Option<String>,
     turn_id: Option<String>,
     agent: AgentIdentity,
+    reasoning_effort: Option<String>,
 }
 
 impl RoutingLogContext {
@@ -192,7 +220,14 @@ impl RoutingLogContext {
                     .map(str::to_string)
             }),
             agent: AgentIdentity::from_metadata(metadata),
+            reasoning_effort: None,
         }
+    }
+
+    /// Captures configured effort for this particular target's call.
+    pub(crate) fn with_reasoning_effort(mut self, effort: Option<&str>) -> Self {
+        self.reasoning_effort = effort.map(str::to_owned);
+        self
     }
 
     /// Attaches the resolved route identity shared by every log entry for this request.
@@ -209,6 +244,8 @@ impl RoutingLogContext {
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default)]
 struct RoutingRecord<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<LoggedOutcome>,
     #[serde(default)]
     cost: Option<RecordedCost>,
     ts: Cow<'a, str>,
@@ -238,7 +275,13 @@ struct RoutingRecord<'a> {
     agent_role: Option<Cow<'a, str>>,
     #[serde(skip_serializing_if = "is_false")]
     subagent_identity_unsupported: bool,
+    /// Provider model that served the call, which is what cost tools price.
     model: Cow<'a, str>,
+    /// Configured target that served the call. Targets may share a model.
+    #[serde(default, borrow)]
+    target: Cow<'a, str>,
+    #[serde(borrow, skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<Cow<'a, str>>,
     tier: Cow<'a, str>,
     prompt_tokens: u64,
     cached_tokens: u64,
@@ -268,6 +311,22 @@ pub(crate) struct SessionStatsSnapshot {
     total_cache_creation_tokens: u64,
     total_completion_tokens: u64,
     models: BTreeMap<ModelId, SessionModelStats>,
+    targets: BTreeMap<ModelId, SessionTargetStats>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    outcomes: Vec<LoggedOutcome>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct LoggedOutcome {
+    ts: String,
+    route_id: String,
+    turn_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    parent_agent_id: Option<String>,
+    #[serde(flatten)]
+    metadata: OutcomeMetadata,
 }
 
 #[derive(Default, Serialize)]
@@ -280,9 +339,36 @@ struct SessionModelStats {
     completion_tokens: u64,
 }
 
+#[derive(Serialize)]
+struct SessionTargetStats {
+    model: String,
+    reasoning_effort: Option<String>,
+    #[serde(flatten)]
+    stats: SessionModelStats,
+}
+
+impl SessionModelStats {
+    fn add_record(&mut self, record: &RoutingRecord<'_>) {
+        self.cost.add(record.cost);
+        self.calls = self.calls.saturating_add(1);
+        self.prompt_tokens = self.prompt_tokens.saturating_add(record.prompt_tokens);
+        self.cached_tokens = self.cached_tokens.saturating_add(record.cached_tokens);
+        self.cache_creation_tokens = self
+            .cache_creation_tokens
+            .saturating_add(record.cache_creation_tokens);
+        self.completion_tokens = self
+            .completion_tokens
+            .saturating_add(record.completion_tokens);
+    }
+}
+
 impl SessionStatsSnapshot {
-    fn add_record(&mut self, record: &RoutingRecord<'_>, session_id: &str) {
+    fn add_record(&mut self, mut record: RoutingRecord<'_>, session_id: &str) {
         if record.session_id.as_deref() != Some(session_id) {
+            return;
+        }
+        if let Some(outcome) = record.outcome.take() {
+            self.outcomes.push(outcome);
             return;
         }
         let model = match record.model.as_ref() {
@@ -290,22 +376,25 @@ impl SessionStatsSnapshot {
             model => model,
         };
         let stats = self.models.entry(ModelId::from(model)).or_default();
-        stats.cost.add(record.cost);
+        stats.add_record(&record);
+        // Older logs have no target identity; keep them only in the model aggregate.
+        if !record.target.is_empty() {
+            self.targets
+                .entry(ModelId::from(record.target.as_ref()))
+                .or_insert_with(|| SessionTargetStats {
+                    model: model.to_string(),
+                    reasoning_effort: record.reasoning_effort.as_deref().map(str::to_owned),
+                    stats: SessionModelStats::default(),
+                })
+                .stats
+                .add_record(&record);
+        }
         self.cost.add(record.cost);
         if record.tier == "classifier" {
             self.routing_cost.add(record.cost);
         } else {
             self.answer_cost.add(record.cost);
         }
-        stats.calls = stats.calls.saturating_add(1);
-        stats.prompt_tokens = stats.prompt_tokens.saturating_add(record.prompt_tokens);
-        stats.cached_tokens = stats.cached_tokens.saturating_add(record.cached_tokens);
-        stats.cache_creation_tokens = stats
-            .cache_creation_tokens
-            .saturating_add(record.cache_creation_tokens);
-        stats.completion_tokens = stats
-            .completion_tokens
-            .saturating_add(record.completion_tokens);
     }
 
     /// Session totals are exactly the sum of the per-model stats, so they are
@@ -396,6 +485,7 @@ mod tests {
         let mut log = RoutingLog::new(&path).expect("routing log");
         log.append(
             RoutingLogContext::from_metadata(&metadata).with_route("model-router", "passthrough"),
+            "worker",
             "worker-model",
             None,
             &Usage::default(),
@@ -439,6 +529,7 @@ mod tests {
         assert_eq!(stats.total_prompt_tokens, 15);
         assert_eq!(stats.total_completion_tokens, 2);
         assert_eq!(stats.models["m1"].calls, 1);
+        assert!(stats.targets.is_empty());
         assert_eq!(stats.models["unknown"].prompt_tokens, 5);
         assert!(snapshot(&path, "missing").expect("read log").is_none());
     }

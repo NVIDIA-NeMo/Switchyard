@@ -1,9 +1,11 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Composite routing with caller-owned decision calls and state.
+//! Node bindings for routing algorithms and buffered JSON translation.
 
-use std::collections::BTreeMap;
+mod algorithm;
+mod translation;
+
 use std::future::ready;
 use std::sync::Arc;
 
@@ -12,14 +14,13 @@ use futures::future::{AbortHandle, Abortable};
 use napi_derive::napi;
 use parking_lot::Mutex;
 use serde::Deserialize;
-use serde_json::Value;
 use switchyard_libsy::{
     Algorithm, CallDecision, CapabilityJudgeConfig, ClassifyTrigger, CompositeJudgeConfig,
-    CompositeRouter, CompositeRouterConfig, DecisionJudgeConfig, LibsyError, PickerMode,
-    RuntimeModels, StageRouterConfig, State, Step, StepStream, TaskClassifierConfig,
+    CompositeRouter, DecisionJudgeConfig, LibsyError, PickerMode, RuntimeModels, StageRouterConfig,
+    State, Step, StepStream, TaskClassifierConfig,
 };
 use switchyard_protocol::{
-    Category, DecisionResponse, LlmClientError, LlmRequest, ModelId, Request,
+    Category, ContentBlock, DecisionResponse, LlmClientError, LlmRequest, ModelId, Request,
 };
 
 // The JS wrapper turns these prefixes into public Error codes.
@@ -56,32 +57,37 @@ struct Targets {
 struct ClassifierOptions {
     classify_trigger: ClassifyTrigger,
     fail_open: bool,
-    decision: DecisionOptions,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct DecisionOptions {
-    cutoff: f64,
-    candidates: BTreeMap<String, Candidate>,
-    evidence: Value,
-    instructions: Option<Value>,
-    criteria: Option<BTreeMap<String, Value>>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum Candidate {
-    Capable,
-    Efficient,
+    cutoff: Option<f64>,
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StageOptions {
-    efficient_first_threshold: f64,
-    capable_first_threshold: f64,
+    efficient_first: StageProfile,
+    capable_first: StageProfile,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StageProfile {
+    threshold: f64,
+    recent_window: Option<usize>,
+    capable_hold_turns: Option<i64>,
     efficient_hold_turns: Option<i64>,
+    capable_system_prompt: Option<String>,
+}
+
+impl StageProfile {
+    fn config(self, mode: PickerMode) -> StageRouterConfig {
+        let mut config = StageRouterConfig::new(mode, self.threshold);
+        config.recent_window = self.recent_window;
+        if let Some(turns) = self.capable_hold_turns {
+            config.capable_hold_turns = turns;
+        }
+        config.efficient_hold_turns = self.efficient_hold_turns;
+        config.capable_system_prompt = self.capable_system_prompt;
+        config
+    }
 }
 
 #[napi]
@@ -105,37 +111,20 @@ impl NativeComposite {
                 "capable and efficient targets must differ",
             ));
         }
-        let decision = classifier.decision;
-        let candidates = decision
-            .candidates
-            .into_iter()
-            .map(|(id, tier)| {
-                let model = match tier {
-                    Candidate::Capable => &targets.capable,
-                    Candidate::Efficient => &targets.efficient,
-                };
-                (id, model.clone())
-            })
-            .collect();
-        let mut stage_config =
-            StageRouterConfig::new(PickerMode::EfficientFirst, stage.efficient_first_threshold);
-        stage_config.capable_first_threshold = stage.capable_first_threshold;
-        stage_config.efficient_hold_turns = stage.efficient_hold_turns;
-        let router = CompositeRouter::new(CompositeRouterConfig {
-            judge: CompositeJudgeConfig::Capability(TaskClassifierConfig {
+        // The judge's efficient tier selects profile 0 and its capable tier profile 1.
+        let router = CompositeRouter::new_with_profiles(
+            CompositeJudgeConfig::Capability(TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
-                    cutoff: decision.cutoff,
-                    candidates,
-                    evidence: decision.evidence,
-                    instructions: decision.instructions,
-                    criteria: decision.criteria,
+                    cutoff: classifier.cutoff,
+                    ..Default::default()
                 }),
                 classify_trigger: classifier.classify_trigger,
                 fail_open: classifier.fail_open,
                 ..Default::default()
             }),
-            stage: stage_config,
-        })
+            stage.efficient_first.config(PickerMode::EfficientFirst),
+            stage.capable_first.config(PickerMode::CapableFirst),
+        )
         .map_err(|err| error("ERR_CONFIG", err))?;
         let models = RuntimeModels::new(
             [
@@ -158,7 +147,7 @@ impl NativeComposite {
         messages_json: String,
         state_json: Option<String>,
     ) -> napi::Result<NativeRun> {
-        let request = Request {
+        let mut request = Request {
             llm_request: LlmRequest {
                 model: Some("switchyard/auto".into()),
                 messages: parse(&messages_json)?,
@@ -166,6 +155,7 @@ impl NativeComposite {
             },
             ..Default::default()
         };
+        switchyard_translation::normalize_compaction(&mut request.llm_request, None);
         let initial_state: State = state_json
             .as_deref()
             .map(parse)
@@ -198,6 +188,7 @@ pub struct NativeStep {
     pub request: Option<String>,
     pub model: Option<String>,
     pub state: Option<String>,
+    pub system_prompt: Option<String>,
 }
 
 struct Run {
@@ -251,6 +242,20 @@ impl Run {
                         .map_err(routing_error)?
                         .to_string(),
                 );
+                // `start` sends no instructions, so a first instruction block is the
+                // routing prompt that libsy prepended for the selected model.
+                result.system_prompt = outcome
+                    .request
+                    .llm_request
+                    .instructions
+                    .into_iter()
+                    .next()
+                    .and_then(|block| {
+                        block.content.into_iter().find_map(|content| match content {
+                            ContentBlock::Text { text } => Some(text),
+                            _ => None,
+                        })
+                    });
                 if outcome.state != self.initial_state {
                     result.state =
                         Some(serde_json::to_string(&outcome.state).map_err(routing_error)?);

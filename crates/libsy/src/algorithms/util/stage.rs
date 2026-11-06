@@ -738,7 +738,7 @@ impl Classifier for StageClassifier {
         ] {
             if Self::consume_hold(state, &Self::agent_key(request, key)) {
                 let target = driver.first_model_for(&category)?.clone();
-                record_routing_decision(source, &target);
+                record_routing_decision(source, driver.provider_model(&target));
                 driver.set_evidence(serde_json::json!({"source": source.as_str()}));
                 return Ok((
                     Classification::Scores(vec![Score {
@@ -783,7 +783,7 @@ impl Classifier for StageClassifier {
                 {
                     Self::set_hold(state, &capable_hold_key, self.capable_hold_turns);
                 }
-                record_routing_decision(source, target);
+                record_routing_decision(source, driver.provider_model(target));
                 if source == DecisionSource::Override
                     && let Some(reason) = override_reason(&signal)
                 {
@@ -1497,7 +1497,7 @@ mod tests {
             .score(&mut state, &mut request, &driver)
             .await?;
 
-        assert_eq!(trailing_text(&request), Some(format!("hi|{ESCALATION}")));
+        assert_eq!(trailing_text(&request), Some(ESCALATION.to_string()));
         Ok(())
     }
 
@@ -1509,7 +1509,7 @@ mod tests {
 
         let mut first = request();
         classifier.score(&mut state, &mut first, &driver).await?;
-        assert_eq!(trailing_text(&first), Some(format!("hi|{ESCALATION}")));
+        assert_eq!(trailing_text(&first), Some(ESCALATION.to_string()));
 
         for _ in 0..2 {
             let mut held = request();
@@ -1535,7 +1535,7 @@ mod tests {
             .score(&mut state, &mut request, &driver)
             .await?;
 
-        assert_eq!(trailing_text(&request), Some(format!("hi|{DEESCALATION}")));
+        assert_eq!(trailing_text(&request), Some(DEESCALATION.to_string()));
         Ok(())
     }
 

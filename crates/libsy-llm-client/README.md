@@ -71,6 +71,7 @@ fn build_client() -> switchyard_llm_client::Result<TranslatingLlmClient> {
         forward_auth: false,
         extra_headers: BTreeMap::new(),
         extra_body: BTreeMap::new(),
+        omit_body_fields: Default::default(),
         reasoning_effort: None,
         max_retries: 2,
         failure_cooldown: std::time::Duration::from_secs(5),
@@ -278,11 +279,13 @@ fn build_multi_format_client(
   fields, array input, non-Codex endpoints, and the translation codec's exact
   preservation remain unchanged.
 - `ModelConfig::with_responses_reasoning` controls Responses reasoning replay.
-  Every Responses model defaults to `PreserveEncrypted`: plaintext is removed,
-  encrypted provider state is retained. Stored reasoning IDs are retained unless
-  the request sets `store: false`. Switchyard's translated Anthropic reasoning is
-  removed. Set `Drop` for
-  a backend that cannot consume provider reasoning. Messages and tool history are retained.
+  The default, `Auto`, chooses per request from the target. OpenAI targets use
+  `PreserveEncrypted`: plaintext is removed and encrypted provider state is
+  retained. Stored reasoning IDs are retained unless the request sets
+  `store: false`. Other targets use `PreservePlaintext`: `summary` and `content`
+  are retained and opaque `encrypted_content` is removed. Switchyard's translated
+  Anthropic reasoning payload is always removed. Set `Drop` for a backend that
+  cannot consume provider reasoning. Messages and tool history are retained.
 - `HttpBackendConfig::failure_cooldown` skips completion calls to a backend briefly
   after an exhausted transient failure. Zero disables it. State is shared per model
   within the client. Calls resume when the cooldown expires. Deployment TOML defaults

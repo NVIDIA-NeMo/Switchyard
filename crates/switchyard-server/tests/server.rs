@@ -153,6 +153,7 @@ async fn upstream_chat(
             } else {
                 StatusCode::TOO_MANY_REQUESTS
             },
+            [("retry-after", "0")],
             Json(json!({"error": {"message": "quota exhausted", "code": "usage_limit"}})),
         )
             .into_response();
@@ -830,6 +831,7 @@ fn random_state_with_retries(
                     format: WireFormat::OpenAiChat,
                     base_url: base_url.to_string(),
                     extra_body: BTreeMap::new(),
+                    reasoning_effort: None,
                 })
                 .collect();
             Ok((
@@ -921,6 +923,7 @@ async fn stats_exposes_the_exact_empty_schema_and_no_legacy_alias() -> TestResul
             "total_errors": 0,
             "total_tokens": empty_token_totals(),
             "models": {},
+            "targets": {},
             "routing_overhead": {
                 "count": 0,
                 "total_ms": 0.0,
@@ -939,6 +942,7 @@ async fn stats_exposes_the_exact_empty_schema_and_no_legacy_alias() -> TestResul
                 "total_errors": 0,
                 "total_tokens": empty_token_totals(),
                 "models": {},
+            "targets": {},
             },
             "algorithm_stats": {},
         })
@@ -1185,7 +1189,9 @@ async fn failed_responses_return_errors_and_try_fallback_across_endpoints() -> T
     }
     let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
     assert_eq!(stats["models"]["model/failed"]["errors"], requests.len());
+    assert_eq!(stats["targets"]["first"]["errors"], requests.len());
     assert_eq!(stats["models"]["model/fallback"]["calls"], requests.len());
+    assert_eq!(stats["targets"]["second"]["calls"], requests.len());
     Ok(())
 }
 
@@ -1695,7 +1701,8 @@ impl Response {
 async fn models_probes_routes_concurrently_and_caches_failed_discovery() -> TestResult {
     for stalled in [false, true] {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let barrier = Arc::new(tokio::sync::Barrier::new(4));
+        let probe_barrier = Arc::clone(&barrier);
         let captured = Arc::clone(&calls);
         let upstream_app = Router::new().route(
             "/props",
@@ -1752,13 +1759,23 @@ llm_client = "efficient"
             upstream.base_url
         ))?);
 
-        let (first, concurrent) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
-            tokio::join!(
-                send(&app, "GET", "/v1/models", None),
-                send(&app, "GET", "/v1/models", None)
-            )
-        })
-        .await?;
+        let (first, concurrent, ()) =
+            tokio::time::timeout(std::time::Duration::from_secs(3), async {
+                tokio::join!(
+                    send(&app, "GET", "/v1/models", None),
+                    send(&app, "GET", "/v1/models", None),
+                    async {
+                        probe_barrier.wait().await;
+                        if stalled {
+                            // All probes have reached the server and started their deadlines.
+                            tokio::time::pause();
+                            tokio::time::advance(std::time::Duration::from_secs(2)).await;
+                            tokio::time::resume();
+                        }
+                    }
+                )
+            })
+            .await?;
         let models = first?.json()?;
         assert_eq!(concurrent?.json()?, models);
         assert_eq!(models["data"].as_array().unwrap().len(), 3);
@@ -2461,6 +2478,11 @@ escalation = {{ confirmations = 1 }}
             "metadata": {
                 "algorithm": "llm_task_classifier",
                 "evidence": {"source": "llm-classifier", "score": 0.9, "threshold": 0.5},
+                "judgments": [{
+                    "target": "economy",
+                    "category": "efficient",
+                    "evidence": {"source": "llm-classifier", "score": 0.9, "threshold": 0.5},
+                }],
             },
         })
     );
@@ -2655,6 +2677,162 @@ reasoning = true
 }
 
 #[tokio::test]
+async fn targets_sharing_a_model_keep_their_own_settings() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let state = load_test_config(&format!(
+        r#"
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "{base_url}"
+
+[targets.efficient]
+id = "model/shared"
+llm_client = "upstream"
+reasoning_effort = "medium"
+system_prompt = "efficient prompt"
+
+[targets.capable]
+id = "model/shared"
+llm_client = "upstream"
+reasoning_effort = "max"
+system_prompt = "capable prompt"
+
+[routes.random]
+id = "switchyard/random"
+type = "random"
+targets = ["efficient", "capable"]
+seed = 17
+"#,
+        base_url = upstream.base_url
+    ))?;
+    let log_dir = tempfile::tempdir()?;
+    let log_path = log_dir.path().join("routing.jsonl");
+    let app = build_switchyard_router(state.with_routing_log(&log_path)?);
+
+    let requests = 16;
+    for index in 0..requests {
+        let streaming = index % 2 == 0;
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/random",
+                "messages": [{"role": "user", "content": "hello"}],
+                "reasoning_effort": "high",
+                "stream": streaming
+            })),
+            &[("x-switchyard-session-id", "shared-efforts")],
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response.headers["x-model-router-selected-model"],
+            "model/shared"
+        );
+        if streaming {
+            assert!(response.text()?.contains("model/shared"));
+        } else {
+            assert_eq!(response.json()?["model"], "model/shared");
+        }
+    }
+
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), requests);
+    for call in calls.iter() {
+        assert_eq!(call["model"], "model/shared");
+        let effort = call["reasoning_effort"].as_str().unwrap_or_default();
+        let expected_prompt = match effort {
+            "medium" => "efficient prompt",
+            "max" => "capable prompt",
+            other => panic!("unexpected effort {other}"),
+        };
+        assert!(has_system_prompt(call, expected_prompt), "{call}");
+    }
+    drop(calls);
+
+    let decision = send(
+        &app,
+        "POST",
+        "/v1/decision",
+        Some(json!({
+            "input_format": "openai_chat",
+            "request": {
+                "model": "switchyard/random",
+                "messages": [{"role": "user", "content": "hello"}]
+            }
+        })),
+    )
+    .await?
+    .json()?;
+    let selected = &decision["selected"];
+    assert_eq!(selected["model"], "model/shared");
+    let expected_effort = match selected["target"].as_str() {
+        Some("capable") => "max",
+        Some("efficient") => "medium",
+        other => panic!("unexpected target {other:?}"),
+    };
+    assert_eq!(selected["reasoning_effort"], expected_effort);
+
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    let efficient = stats["targets"]["efficient"]["calls"].as_u64().unwrap_or(0);
+    let capable = stats["targets"]["capable"]["calls"].as_u64().unwrap_or(0);
+    assert!(efficient > 0 && capable > 0, "{}", stats["models"]);
+    assert_eq!(efficient + capable, requests as u64);
+    assert_eq!(stats["models"].as_object().unwrap().len(), 1);
+    assert_eq!(stats["models"]["model/shared"]["calls"], requests);
+    for (target, effort) in [("capable", "max"), ("efficient", "medium")] {
+        assert_eq!(stats["targets"][target]["model"], "model/shared");
+        assert_eq!(stats["targets"][target]["reasoning_effort"], effort);
+    }
+    assert_eq!(
+        stats["models"]["model/shared"]["prompt_tokens"],
+        stats["total_tokens"]["prompt"]
+    );
+    let session = send(
+        &app,
+        "GET",
+        "/v1/routing/session-stats?session_id=shared-efforts",
+        None,
+    )
+    .await?
+    .json()?;
+    assert_eq!(session["total_calls"], requests);
+    assert_eq!(session["models"]["model/shared"]["calls"], requests);
+    for target in ["capable", "efficient"] {
+        assert_eq!(
+            session["targets"][target]["calls"],
+            stats["targets"][target]["calls"]
+        );
+        assert_eq!(
+            session["targets"][target]["reasoning_effort"],
+            stats["targets"][target]["reasoning_effort"]
+        );
+        assert_eq!(
+            session["targets"][target]["prompt_tokens"],
+            stats["targets"][target]["prompt_tokens"]
+        );
+    }
+    for line in std::fs::read_to_string(log_path)?.lines() {
+        let record: Value = serde_json::from_str(line)?;
+        assert_eq!(record["model"], "model/shared");
+        let target = record["target"].as_str().unwrap();
+        assert_eq!(
+            record["reasoning_effort"],
+            stats["targets"][target]["reasoning_effort"]
+        );
+    }
+    send(&app, "POST", "/v1/stats/reset", None).await?;
+    let reset = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(reset["total_requests"], 0);
+    assert_eq!(reset["models"], json!({}));
+    assert_eq!(reset["targets"], json!({}));
+    Ok(())
+}
+
+#[tokio::test]
 async fn toml_config_constructs_and_serves_multiple_algorithms() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let state = load_test_config(&format!(
@@ -2824,6 +3002,86 @@ mutate = ["send_payment_request"]
             .get("x-model-router-selected-model")
             .and_then(|value| value.to_str().ok()),
         Some("model/weak")
+    );
+    Ok(())
+}
+
+/// The executor receives the plan and write result, but not the planner's prompt.
+#[tokio::test]
+async fn stage_plan_execute_handoff_preserves_history_and_prompts() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    // Stage metrics are process-wide, so unique model IDs keep this test's counts separate.
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.local]
+format = "openai_chat"
+base_url = "{}"
+[targets]
+planner = {{ id = "model/plan-execute-planner", llm_client = "local" }}
+executor = {{ id = "model/plan-execute-executor", llm_client = "local" }}
+[routes.plan_execute]
+id = "plan-execute"
+type = "stage_router"
+capable_target = "planner"
+efficient_target = "executor"
+picker = "capable_first"
+confidence_threshold = 0.0
+capable_hold_turns = 0
+efficient_hold_turns = -1
+capable_system_prompt = "Inspect the task and plan before modifying files."
+"#,
+        upstream.base_url,
+    ))?);
+    let planning_history = json!([{"role": "user", "content": "implement the task"}]);
+    let execution_history = json!([
+        {"role": "user", "content": "implement the task"},
+        {"role": "assistant", "content": "The plan is to update the file.",
+            "tool_calls": [{"id": "call", "type": "function",
+                "function": {"name": "write_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call", "content": "file written"}
+    ]);
+    for (messages, expected) in [
+        (&planning_history, "model/plan-execute-planner"),
+        (&execution_history, "model/plan-execute-executor"),
+    ] {
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({"model": "plan-execute", "messages": messages, "stream": false})),
+            &[("x-switchyard-session-id", "plan-execute-session")],
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected),
+        );
+    }
+    {
+        let calls = upstream.calls.lock().await;
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["model"], "model/plan-execute-planner");
+        assert!(has_system_prompt(
+            &calls[0],
+            "Inspect the task and plan before modifying files.",
+        ));
+        assert_eq!(calls[1]["model"], "model/plan-execute-executor");
+        assert_eq!(calls[1]["messages"], execution_history);
+        assert!(!has_system_prompt(
+            &calls[1],
+            "Inspect the task and plan before modifying files.",
+        ));
+    }
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["classifier"]["total_requests"], 0);
+    assert_eq!(
+        stats["algorithm_stats"]["stage_router"]["routing_decisions"]["dimensions"]["targets"]["model/plan-execute-executor"],
+        1
     );
     Ok(())
 }
@@ -3331,6 +3589,7 @@ escalation = {{ confirmations = 1 }}
     assert_eq!(stats["total_calls"], 2);
     assert_eq!(stats["total_prompt_tokens"], 20);
     assert_eq!(stats["total_completion_tokens"], 4);
+    // Session stats come from the routing log, which prices by provider model.
     assert_eq!(stats["models"]["model/weak"]["calls"], 1);
     assert_eq!(stats["models"]["model/strong"]["calls"], 1);
 
@@ -4674,12 +4933,14 @@ format = "openai_chat"
 base_url = "{base_url}"
 
 [targets.shared]
-id = "model/shared"
+id = "model/route-sanity"
 llm_client = "upstream"
+reasoning_effort = "medium"
 
 [targets.capable]
-id = "model/capable"
+id = "model/route-sanity"
 llm_client = "upstream"
+reasoning_effort = "max"
 
 [routes.passthrough]
 id = "route/passthrough"
@@ -4699,39 +4960,158 @@ confidence_threshold = 1.0
     .with_routing_log(&log_path)?;
     let app = build_switchyard_router(state);
 
-    for route_id in ["route/passthrough", "route/stage"] {
-        let response = send(
-            &app,
-            "POST",
-            "/v1/chat/completions",
-            Some(json!({
-                "model": route_id,
-                "messages": [{"role": "user", "content": "hello"}]
-            })),
-        )
-        .await?;
-        assert_eq!(response.status, StatusCode::OK, "{route_id}");
-        assert_eq!(
-            response
-                .headers
-                .get("x-model-router-selected-model")
-                .and_then(|value| value.to_str().ok()),
-            Some("model/shared"),
-            "{route_id}"
-        );
+    let before = send(&app, "GET", "/metrics", None).await?;
+    let normal = json!([{"role": "user", "content": "hello"}]);
+    let critical = json!([
+        {"role": "user", "content": "fix the build"},
+        {"role": "assistant", "tool_calls": [{
+            "id": "call_1", "type": "function",
+            "function": {"name": "Bash", "arguments": "{\"command\": \"cargo test\"}"}
+        }]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "fatal runtime error: out of memory"}
+    ]);
+    for (route_id, messages) in [
+        ("route/passthrough", &normal),
+        ("route/stage", &normal),
+        ("route/stage", &critical),
+    ] {
+        for streaming in [false, true] {
+            let response = send_with_headers(
+                &app,
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({"model": route_id, "messages": messages, "stream": streaming})),
+                &[("x-switchyard-session-id", "route-sanity")],
+            )
+            .await?;
+            assert_eq!(response.status, StatusCode::OK, "{route_id}");
+            assert_eq!(
+                response.headers["x-model-router-selected-model"],
+                "model/route-sanity"
+            );
+            if streaming {
+                assert!(response.text()?.contains("model/route-sanity"));
+            } else {
+                assert_eq!(response.json()?["model"], "model/route-sanity");
+            }
+        }
     }
 
     let records = std::fs::read_to_string(&log_path)?
         .lines()
         .map(serde_json::from_str::<Value>)
         .collect::<Result<Vec<_>, _>>()?;
-    assert_eq!(records.len(), 2);
-    assert_eq!(records[0]["route_id"], "route/passthrough");
-    assert_eq!(records[0]["algorithm"], "passthrough");
-    assert_eq!(records[0]["model"], "model/shared");
-    assert_eq!(records[1]["route_id"], "route/stage");
-    assert_eq!(records[1]["algorithm"], "stage_router");
-    assert_eq!(records[1]["model"], "model/shared");
+    assert_eq!(records.len(), 6);
+    for (index, record) in records.iter().enumerate() {
+        let (route, algorithm) = if index < 2 {
+            ("route/passthrough", "passthrough")
+        } else {
+            ("route/stage", "stage_router")
+        };
+        let (target, effort) = if index < 4 {
+            ("shared", "medium")
+        } else {
+            ("capable", "max")
+        };
+        assert_eq!(record["route_id"], route);
+        assert_eq!(record["algorithm"], algorithm);
+        assert_eq!(record["model"], "model/route-sanity");
+        assert_eq!(record["target"], target);
+        assert_eq!(record["reasoning_effort"], effort);
+        assert_eq!(record["session_id"], "route-sanity");
+    }
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 6);
+    for (index, call) in calls.iter().enumerate() {
+        assert_eq!(call["model"], "model/route-sanity");
+        assert_eq!(
+            call["reasoning_effort"],
+            if index < 4 { "medium" } else { "max" }
+        );
+    }
+    drop(calls);
+
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    let session = send(
+        &app,
+        "GET",
+        "/v1/routing/session-stats?session_id=route-sanity",
+        None,
+    )
+    .await?
+    .json()?;
+    assert_eq!(stats["total_requests"], 6);
+    assert_eq!(stats["total_errors"], 0);
+    assert_eq!(session["total_calls"], 6);
+    for snapshot in [&stats, &session] {
+        assert_eq!(snapshot["models"].as_object().unwrap().len(), 1);
+        assert_eq!(snapshot["models"]["model/route-sanity"]["calls"], 6);
+        for (target, effort, calls) in [("shared", "medium", 4), ("capable", "max", 2)] {
+            assert_eq!(snapshot["targets"][target]["model"], "model/route-sanity");
+            assert_eq!(snapshot["targets"][target]["reasoning_effort"], effort);
+            assert_eq!(snapshot["targets"][target]["calls"], calls);
+        }
+    }
+    assert_eq!(
+        stats["total_tokens"]["prompt"],
+        session["total_prompt_tokens"]
+    );
+    assert_eq!(
+        stats["total_tokens"]["completion"],
+        session["total_completion_tokens"]
+    );
+    for source in ["override", "capable_hold"] {
+        assert_eq!(
+            stats["algorithm_stats"]["stage_router"]["routing_decisions"][source]["targets"]["model/route-sanity"],
+            1
+        );
+    }
+
+    let after = send(&app, "GET", "/metrics", None).await?;
+    for (metric, label, expected) in [
+        ("switchyard_requests_total", "model", 6.0),
+        (
+            "switchyard_prompt_tokens_total",
+            "model",
+            session["total_prompt_tokens"].as_f64().unwrap(),
+        ),
+        (
+            "switchyard_completion_tokens_total",
+            "model",
+            session["total_completion_tokens"].as_f64().unwrap(),
+        ),
+    ] {
+        assert_eq!(
+            metric_delta(
+                before.text()?,
+                after.text()?,
+                metric,
+                &[(label, "model/route-sanity")]
+            ),
+            Some(expected),
+            "{metric}"
+        );
+        for target in ["shared", "capable"] {
+            assert!(
+                metric_line(after.text()?, metric, &[(label, target)]).is_none(),
+                "{metric}"
+            );
+        }
+    }
+    for (algorithm, calls) in [("passthrough", 2.0), ("stage_router", 4.0)] {
+        assert_eq!(
+            metric_delta(
+                before.text()?,
+                after.text()?,
+                "switchyard_decisions_total",
+                &[
+                    ("algorithm", algorithm),
+                    ("selected_model", "model/route-sanity")
+                ],
+            ),
+            Some(calls),
+        );
+    }
     Ok(())
 }
 
@@ -4926,7 +5306,9 @@ async fn unavailable_target_fails_over_across_endpoints_and_stops_when_exhausted
         records
             .iter()
             .filter(|record| {
-                record["model"] == "model/strong" && record.get("fallback_reason").is_none()
+                record["model"] == "model/strong"
+                    && record["target"] == "second"
+                    && record.get("fallback_reason").is_none()
             })
             .count(),
         3
@@ -5546,6 +5928,7 @@ async fn advisor_route_routing_log_records_classifier_tier() -> TestResult {
         .iter()
         .find(|record| record["model"] == "model/advisor")
         .ok_or("consult row present")?;
+    assert_eq!(consult["target"], "advisor");
     assert_eq!(consult["tier"], "classifier");
     assert_eq!(consult["route_id"], "switchyard/advisor");
     assert_eq!(consult["algorithm"], "advisor_gate");
@@ -5913,11 +6296,25 @@ async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
     Ok(())
 }
 
+// Mirrors the GLM baseline: passthrough to a Responses target with a reasoning effort
+// default, called by Codex with `store: false`.
 #[tokio::test]
 async fn configured_responses_reasoning_policy_reaches_upstream() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let base_url = upstream.base_url.replace("/v1", "/buffered");
-    for (setting, expected_reasoning) in [("", 2), ("responses_reasoning = \"drop\"", 0)] {
+    let plaintext = json!({"type": "reasoning", "id": "rs_1", "summary": [{"type": "summary_text", "text": "plan"}], "encrypted_content": null});
+    let foreign =
+        json!({"type": "reasoning", "id": "rs_2", "summary": [], "encrypted_content": "opaque"});
+    let mut kept_foreign = foreign.clone();
+    kept_foreign["content"] = json!([]);
+    for (setting, expected_reasoning) in [
+        ("", vec![plaintext.clone()]),
+        (
+            "responses_reasoning = \"preserve_encrypted\"",
+            vec![kept_foreign],
+        ),
+        ("responses_reasoning = \"drop\"", vec![]),
+    ] {
         let config = format!(
             r#"
 schema_version = 1
@@ -5925,40 +6322,42 @@ schema_version = 1
 format = "openai_responses"
 base_url = "{base_url}"
 {setting}
-[targets]
-answer = {{ id = "model/efficient", llm_client = "upstream" }}
-[routes.route]
-id = "route"
+[targets.glm]
+id = "model/efficient"
+llm_client = "upstream"
+extra_body = {{ reasoning = {{ effort = "high" }} }}
+[routes.switchyard]
+id = "switchyard"
 type = "passthrough"
-target = "answer"
+target = "glm"
 "#
         );
         let app = build_switchyard_router(load_test_config(&config)?);
-        let response = send(&app, "POST", "/v1/responses", Some(json!({
-            "model": "route", "input": [
-                {"type": "message", "role": "user", "content": "continue"},
-                {"type": "reasoning", "encrypted_content": "opaque", "summary": []},
-                {"type": "reasoning", "id": "rs_stored", "summary": []},
-                {"type": "reasoning", "content": [{"type": "reasoning_text", "text": "local"}], "summary": []}
-            ]
-        }))).await?;
+        let response = send(
+            &app,
+            "POST",
+            "/v1/responses",
+            Some(json!({
+                "model": "switchyard", "store": false, "input": [
+                    {"type": "message", "role": "user", "content": "continue"},
+                    plaintext,
+                    foreign
+                ]
+            })),
+        )
+        .await?;
         assert_eq!(response.status, StatusCode::OK, "{}", response.json()?);
         let calls = upstream.calls.lock().await;
-        let input = calls.last().expect("upstream request")["input"]
+        let body = calls.last().expect("upstream request");
+        let reasoning: Vec<_> = body["input"]
             .as_array()
-            .expect("input array");
-        assert_eq!(
-            input
-                .iter()
-                .filter(|item| item["type"] == "reasoning")
-                .count(),
-            expected_reasoning
-        );
-        assert!(
-            input
-                .iter()
-                .any(|item| item["type"] == "message" && item["role"] == "user")
-        );
+            .expect("input array")
+            .iter()
+            .filter(|item| item["type"] == "reasoning")
+            .cloned()
+            .collect();
+        assert_eq!(reasoning, expected_reasoning, "{setting}");
+        assert_eq!(body["reasoning"], json!({"effort": "high"}));
     }
     Ok(())
 }

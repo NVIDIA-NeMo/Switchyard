@@ -9,10 +9,11 @@ use std::time::{Instant, SystemTime};
 
 use nemo_relay_plugin::{Json, PluginRuntime, ScopeType};
 use serde_json::{Map, Value};
+use switchyard_llm_client::with_payload_capture;
 use switchyard_runner::ProviderKeyRedactor;
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
-use tracing::{Metadata, Subscriber};
+use tracing::{Event, Metadata, Subscriber};
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::{LevelFilter, filter_fn};
 use tracing_subscriber::layer::Context;
@@ -21,13 +22,22 @@ use tracing_subscriber::registry::LookupSpan;
 
 const CLIENT_CALL: &str = "libsy.client_call";
 const UPSTREAM_ATTEMPT: &str = "libsy.upstream_attempt";
+const PAYLOAD_TARGET: &str = "switchyard.payload";
+const MAX_PAYLOAD_REDACTION_DEPTH: usize = 64;
 
 type SpanEmitter = Box<dyn Fn(CapturedSpan) + Send + Sync>;
+
+#[derive(Debug, Default)]
+struct Payloads {
+    request: Option<Json>,
+    response: Option<Json>,
+}
 
 #[derive(Debug)]
 pub(crate) struct CapturedSpan {
     name: &'static str,
     fields: Map<String, Value>,
+    payloads: Payloads,
     started_at: SystemTime,
     ended_at: SystemTime,
     children: Vec<CapturedSpan>,
@@ -36,6 +46,7 @@ pub(crate) struct CapturedSpan {
 struct OpenSpan {
     name: &'static str,
     fields: Map<String, Value>,
+    payloads: Payloads,
     started_at: SystemTime,
     started: Instant,
     children: Vec<CapturedSpan>,
@@ -43,12 +54,55 @@ struct OpenSpan {
 
 struct CaptureLayer {
     emit: SpanEmitter,
+    payload_limit: Option<usize>,
 }
 
 impl<S> Layer<S> for CaptureLayer
 where
     S: Subscriber + for<'lookup> LookupSpan<'lookup>,
 {
+    fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+        if event.metadata().target() != PAYLOAD_TARGET {
+            return;
+        }
+        let Some(limit) = self.payload_limit else {
+            return;
+        };
+        let Some(span) = ctx.event_span(event) else {
+            return;
+        };
+        let is_routing = span.scope().any(|ancestor| {
+            ancestor.extensions().get::<OpenSpan>().is_some_and(|open| {
+                open.name == CLIENT_CALL
+                    && open
+                        .fields
+                        .get("switchyard.call_phase")
+                        .and_then(Value::as_str)
+                        == Some("routing")
+            })
+        });
+        if !is_routing || span.name() != UPSTREAM_ATTEMPT {
+            return;
+        }
+        let mut payload = PayloadVisitor {
+            phase: None,
+            body: BoundedText {
+                text: String::new(),
+                truncated: false,
+                limit,
+            },
+        };
+        event.record(&mut payload);
+        if let Some(open) = span.extensions_mut().get_mut::<OpenSpan>() {
+            let data = payload.body.into_payload();
+            match payload.phase {
+                Some(PayloadPhase::Request) => open.payloads.request = Some(data),
+                Some(PayloadPhase::Response) => open.payloads.response = Some(data),
+                None => (),
+            }
+        }
+    }
+
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let name = attrs.metadata().name();
         let mut fields = Map::new();
@@ -57,6 +111,7 @@ where
             span.extensions_mut().insert(OpenSpan {
                 name,
                 fields,
+                payloads: Payloads::default(),
                 started_at: SystemTime::now(),
                 started: Instant::now(),
                 children: Vec::new(),
@@ -85,6 +140,7 @@ where
         let OpenSpan {
             name,
             mut fields,
+            payloads,
             started_at,
             started,
             children,
@@ -96,6 +152,7 @@ where
         let captured = CapturedSpan {
             name,
             fields,
+            payloads,
             started_at,
             ended_at: started_at
                 .checked_add(started.elapsed())
@@ -120,6 +177,23 @@ impl CapturedSpan {
         {
             self.fields = fields;
         }
+        for payload in [&mut self.payloads.request, &mut self.payloads.response]
+            .into_iter()
+            .flatten()
+        {
+            if !redactor.is_empty()
+                && let Some(body) = payload.get_mut("body")
+            {
+                *body = body
+                    .as_str()
+                    .and_then(|text| serde_json::from_str::<Json>(text).ok())
+                    .and_then(|decoded| {
+                        redact_captured_json(decoded, redactor, MAX_PAYLOAD_REDACTION_DEPTH)
+                    })
+                    .map(|decoded| Json::String(decoded.to_string()))
+                    .unwrap_or(Json::Null);
+            }
+        }
         for child in &mut self.children {
             child.sanitize(redactor);
         }
@@ -127,20 +201,24 @@ impl CapturedSpan {
 
     pub(crate) fn emit(self, runtime: &PluginRuntime) -> Result<(), String> {
         let mut metadata = Json::Object(self.fields);
-        let output = if self.name == CLIENT_CALL {
-            response_data(&metadata)
-        } else {
-            None
-        };
+        let output = self.payloads.response.or_else(|| {
+            if self.name == CLIENT_CALL {
+                response_data(&metadata)
+            } else {
+                None
+            }
+        });
         if let Some(session_id) = metadata.get("gen_ai.conversation.id").cloned() {
             metadata["session_id"] = session_id;
         }
         if let Some(status) = span_status(&metadata) {
             metadata["otel.status_code"] = status["otel.status_code"].clone();
         }
-        let input = metadata
-            .get("gen_ai.request.model")
-            .map(|model| serde_json::json!({"model": model}));
+        let input = self.payloads.request.or_else(|| {
+            metadata
+                .get("gen_ai.request.model")
+                .map(|model| serde_json::json!({"model": model}))
+        });
         let mut scope = runtime.scope_at(
             self.name,
             relay_scope_type(self.name),
@@ -155,6 +233,50 @@ impl CapturedSpan {
         }
         let close_result = scope.close_at(output.as_ref(), Some(&metadata), self.ended_at);
         child_result.and(close_result)
+    }
+}
+
+fn redact_captured_json(value: Json, redactor: &ProviderKeyRedactor, depth: usize) -> Option<Json> {
+    let depth = depth.checked_sub(1)?;
+    Some(match value {
+        Json::String(text) => Json::String(redact_captured_text(text, redactor, depth)?),
+        Json::Array(values) => Json::Array(
+            values
+                .into_iter()
+                .map(|value| redact_captured_json(value, redactor, depth))
+                .collect::<Option<_>>()?,
+        ),
+        Json::Object(fields) => Json::Object(
+            fields
+                .into_iter()
+                .map(|(name, value)| {
+                    Some((
+                        redact_captured_text(name, redactor, depth)?,
+                        redact_captured_json(value, redactor, depth)?,
+                    ))
+                })
+                .collect::<Option<_>>()?,
+        ),
+        value => value,
+    })
+}
+
+fn redact_captured_text(
+    text: String,
+    redactor: &ProviderKeyRedactor,
+    depth: usize,
+) -> Option<String> {
+    // The existing redaction marker is plain text, not a JSON array.
+    if text.trim() != "[REDACTED]"
+        && matches!(
+            text.trim_start().as_bytes().first(),
+            Some(b'{' | b'[' | b'"')
+        )
+    {
+        let decoded = serde_json::from_str::<Json>(&text).ok()?;
+        Some(redact_captured_json(decoded, redactor, depth)?.to_string())
+    } else {
+        Some(redactor.text(text))
     }
 }
 
@@ -229,11 +351,25 @@ pub(crate) struct SpanCapture {
 }
 
 impl SpanCapture {
-    pub(crate) fn new(emit: impl Fn(CapturedSpan) + Send + Sync + 'static) -> Self {
+    pub(crate) fn new(
+        payload_limit: Option<usize>,
+        emit: impl Fn(CapturedSpan) + Send + Sync + 'static,
+    ) -> Self {
         let layer = CaptureLayer {
             emit: Box::new(emit),
+            payload_limit,
         }
-        .with_filter(filter_fn(captures).with_max_level_hint(LevelFilter::DEBUG));
+        .with_filter(
+            filter_fn(move |metadata| {
+                captures(metadata)
+                    || (payload_limit.is_some() && metadata.target() == PAYLOAD_TARGET)
+            })
+            .with_max_level_hint(if payload_limit.is_some() {
+                LevelFilter::TRACE
+            } else {
+                LevelFilter::DEBUG
+            }),
+        );
         Self {
             dispatch: tracing::Dispatch::new(tracing_subscriber::registry().with(layer)),
         }
@@ -241,11 +377,67 @@ impl SpanCapture {
 
     /// Polls a future with the capture subscriber as its default.
     pub(crate) async fn capture<T>(&self, future: impl Future<Output = T>) -> T {
-        CaptureFuture {
+        with_payload_capture(CaptureFuture {
             inner: Some(Box::pin(future)),
             dispatch: self.dispatch.clone(),
-        }
+        })
         .await
+    }
+}
+
+struct PayloadVisitor {
+    phase: Option<PayloadPhase>,
+    body: BoundedText,
+}
+
+enum PayloadPhase {
+    Request,
+    Response,
+}
+
+impl Visit for PayloadVisitor {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        if field.name() == "phase" {
+            self.phase = match value {
+                "request" => Some(PayloadPhase::Request),
+                "response" => Some(PayloadPhase::Response),
+                _ => None,
+            };
+        }
+    }
+
+    fn record_debug(&mut self, field: &Field, value: &dyn fmt::Debug) {
+        if field.name() == "body" {
+            let _ = fmt::write(&mut self.body, format_args!("{value:?}"));
+        }
+    }
+}
+
+struct BoundedText {
+    text: String,
+    truncated: bool,
+    limit: usize,
+}
+
+impl BoundedText {
+    fn into_payload(self) -> Json {
+        // A retained prefix could end inside a credential before redaction runs.
+        let mut payload = serde_json::json!({"body": null, "truncated": self.truncated});
+        if !self.truncated {
+            payload["body"] = self.text.into();
+        }
+        payload
+    }
+}
+
+impl fmt::Write for BoundedText {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        if value.len() > self.limit - self.text.len() {
+            self.truncated = true;
+            return Err(fmt::Error);
+        }
+        self.text.push_str(value);
+        Ok(())
     }
 }
 
@@ -386,6 +578,256 @@ mod tests {
 
     use super::*;
 
+    // Real loopback HTTP proves capture sees the encoded judge body, not the outer task.
+    #[tokio::test]
+    async fn captures_final_judge_payload_only_when_enabled() {
+        use crate::{config::SwitchyardConfig, runtime::SwitchyardRuntime};
+        use switchyard_protocol::{Request, WireFormat, text_request};
+        use wiremock::matchers::{body_partial_json, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        for (model, content) in [
+            ("judge/model", r#"{"target":"efficient"}"#),
+            ("answer/model", "answer"),
+        ] {
+            let response = serde_json::json!({
+                "id": "smoke", "model": model,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}],
+                "debug_canary": "final-body-only", "final-body-only": "ordinary diagnostics"
+            })
+            .to_string()
+            .replace("final-body-only", r"\u0066inal-body-only");
+            Mock::given(method("POST"))
+                .and(body_partial_json(serde_json::json!({"model": model})))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "application/json")
+                        .set_body_string(response),
+                )
+                .mount(&server)
+                .await;
+        }
+        let config: SwitchyardConfig = serde_json::from_value(serde_json::json!({
+            "switchyard_config": {
+                "schema_version": 1,
+                "llm_clients": {"local": {"format": "openai_chat", "base_url": format!("{}/v1", server.uri())}},
+                "targets": {
+                    "judge": {"id": "judge/model", "llm_client": "local", "extra_body": {"debug_canary": "final-body-only"}},
+                    "answer": {"id": "answer/model", "llm_client": "local"}
+                },
+                "routes": {"test": {
+                    "id": "switchyard/test", "type": "llm_classifier", "mode": "custom",
+                    "models": {"judge": ["judge"], "efficient": ["answer"], "any": ["answer"]},
+                    "default_target": "efficient", "prompt": "Judge task complexity.",
+                    "response_schema": r#"{"type":"object","properties":{"target":{"type":"string","enum":["efficient"]}},"required":["target"],"additionalProperties":false}"#,
+                    "policy": {"type": "target_selector", "selector": "/target"}
+                }}
+            }
+        })).unwrap();
+        let runtime = SwitchyardRuntime::new(config).unwrap();
+        for enabled in [false, true] {
+            let (sender, spans) = mpsc::channel();
+            let capture = SpanCapture::new(
+                enabled.then_some(crate::config::DEFAULT_ROUTING_PAYLOAD_BYTES),
+                move |span| sender.send(span).unwrap(),
+            );
+            let execution = capture
+                .capture(runtime.execute_buffered(
+                    WireFormat::OpenAiChat,
+                    Request {
+                        llm_request: text_request(
+                            Some("switchyard/test".into()),
+                            "Fix a failing Rust test.\nPreserve \"雪\" and \\ exactly.",
+                        ),
+                        raw_request: None,
+                        metadata: None,
+                    },
+                ))
+                .await;
+            assert!(execution.result.is_ok(), "{:?}", execution.result);
+            let received = server.received_requests().await.unwrap();
+            let mut spans: Vec<_> = spans.try_iter().collect();
+            let judge = spans
+                .iter_mut()
+                .find(|span| span.fields["selected_model"] == "judge/model")
+                .unwrap();
+            assert_eq!(judge.fields["switchyard.call_phase"], "routing");
+            assert_eq!(judge.children.len(), 1);
+            let attempt = &mut judge.children[0];
+            assert_eq!(attempt.payloads.request.is_some(), enabled);
+            assert_eq!(attempt.payloads.response.is_some(), enabled);
+            if enabled {
+                let actual = received
+                    .into_iter()
+                    .rev()
+                    .find(|request| request.body_json::<Value>().unwrap()["model"] == "judge/model")
+                    .unwrap();
+                let captured_body = attempt.payloads.request.as_ref().unwrap()["body"]
+                    .as_str()
+                    .unwrap();
+                assert_eq!(captured_body.as_bytes(), actual.body);
+                let captured: Value = serde_json::from_str(captured_body).unwrap();
+                assert_eq!(captured["debug_canary"], "final-body-only");
+                assert_eq!(captured["messages"][0]["content"], "Judge task complexity.");
+                assert_eq!(
+                    attempt.payloads.request.as_ref().unwrap()["truncated"],
+                    false
+                );
+                assert!(
+                    attempt.payloads.response.as_ref().unwrap()["body"]
+                        .as_str()
+                        .unwrap()
+                        .contains("efficient")
+                );
+                judge.sanitize(&ProviderKeyRedactor::new(&["final-body-only".into()]));
+                assert!(!format!("{judge:?}").contains("final-body-only"));
+                for payload in [
+                    &judge.children[0].payloads.request,
+                    &judge.children[0].payloads.response,
+                ] {
+                    let decoded: Value =
+                        serde_json::from_str(payload.as_ref().unwrap()["body"].as_str().unwrap())
+                            .unwrap();
+                    assert_eq!(decoded["debug_canary"], "[REDACTED]");
+                    assert!(!decoded.to_string().contains("final-body-only"));
+                }
+            }
+            let answer = spans
+                .iter()
+                .find(|span| span.fields["selected_model"] == "answer/model")
+                .unwrap();
+            for attempt in &answer.children {
+                assert!(attempt.payloads.request.is_none());
+                assert!(attempt.payloads.response.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn captured_classifier_content_and_tool_arguments_redact_nested_json() {
+        let nested = r#"{"credential":"qa-\u0073ecret","qa-\u0073ecret":"ordinary"}"#;
+        let request = serde_json::json!({"messages": [{"role": "assistant", "tool_calls": [{
+            "function": {"name": "lookup", "arguments": nested}
+        }]}]});
+        let response = serde_json::json!({"choices": [{"message": {
+            "role": "assistant", "content": nested
+        }}], "ordinary": {"text": "Keep ordinary diagnostics", "number": 3, "flag": true, "missing": null}});
+        let mut span = span_with_payloads(Payloads {
+            request: Some(serde_json::json!({"body": request.to_string(), "truncated": false})),
+            response: Some(serde_json::json!({"body": response.to_string(), "truncated": false})),
+        });
+        span.sanitize(&ProviderKeyRedactor::new(&["qa-secret".into()]));
+        span.sanitize(&ProviderKeyRedactor::new(&["qa-secret".into()]));
+        for (payload, path) in [
+            (
+                &span.payloads.request,
+                "/messages/0/tool_calls/0/function/arguments",
+            ),
+            (&span.payloads.response, "/choices/0/message/content"),
+        ] {
+            let body: Json =
+                serde_json::from_str(payload.as_ref().unwrap()["body"].as_str().unwrap()).unwrap();
+            let decoded: Json =
+                serde_json::from_str(body.pointer(path).unwrap().as_str().unwrap()).unwrap();
+            assert_eq!(
+                decoded,
+                serde_json::json!({
+                    "credential": "[REDACTED]", "[REDACTED]": "ordinary"
+                })
+            );
+        }
+        let response_body: Json = serde_json::from_str(
+            span.payloads.response.as_ref().unwrap()["body"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(response_body["ordinary"], response["ordinary"]);
+    }
+
+    #[test]
+    fn captured_payload_redaction_bounds_structural_and_encoded_depth() {
+        let redactor = ProviderKeyRedactor::new(&["qa-secret".into()]);
+        assert!(
+            redact_captured_json(
+                serde_json::json!({"content": r#"{"credential":"qa-\u0073ecret""#}),
+                &redactor,
+                MAX_PAYLOAD_REDACTION_DEPTH,
+            )
+            .is_none()
+        );
+        for (arrays, encoded_strings, omitted) in [
+            (MAX_PAYLOAD_REDACTION_DEPTH - 1, 0, false),
+            (MAX_PAYLOAD_REDACTION_DEPTH, 0, true),
+            (MAX_PAYLOAD_REDACTION_DEPTH - 8, 7, false),
+            (MAX_PAYLOAD_REDACTION_DEPTH - 8, 8, true),
+        ] {
+            let mut body = Json::String("qa-secret".into());
+            for _ in 0..encoded_strings {
+                body = Json::String(body.to_string());
+            }
+            for _ in 0..arrays {
+                body = Json::Array(vec![body]);
+            }
+            let mut span = span_with_payloads(Payloads {
+                request: Some(serde_json::json!({"body": body.to_string(), "truncated": false})),
+                response: None,
+            });
+            span.sanitize(&redactor);
+            let payload = span.payloads.request.unwrap();
+            assert_eq!(payload["body"].is_null(), omitted);
+            if !omitted {
+                assert!(payload["body"].as_str().unwrap().contains("[REDACTED]"));
+                assert!(!payload["body"].as_str().unwrap().contains("qa-secret"));
+            }
+        }
+    }
+
+    #[test]
+    fn payload_sanitization_omits_undecodable_json_when_keys_are_configured() {
+        let body = r#"invalid JSON with qa-\u0073ecret"#;
+        let mut span = span_with_payloads(Payloads {
+            request: Some(serde_json::json!({"body": body, "truncated": false})),
+            response: Some(serde_json::json!({"body": null, "truncated": true})),
+        });
+        span.sanitize(&ProviderKeyRedactor::default());
+        assert_eq!(span.payloads.request.as_ref().unwrap()["body"], body);
+        span.sanitize(&ProviderKeyRedactor::new(&["qa-secret".into()]));
+        assert_eq!(
+            span.payloads.request,
+            Some(serde_json::json!({"body": null, "truncated": false}))
+        );
+        assert_eq!(
+            span.payloads.response,
+            Some(serde_json::json!({"body": null, "truncated": true}))
+        );
+    }
+
+    #[test]
+    fn payload_limit_preserves_complete_bodies_and_omits_oversized_ones() {
+        use std::fmt::Write;
+        for (parts, limit, expected) in [
+            (["plain", " text"], 10, Some("plain text")),
+            (["caf", "é"], 5, Some("café")),
+            (["caf", "é"], 4, None),
+            (["prefix-", "synthetic-secret"], 16, None),
+        ] {
+            let mut body = BoundedText {
+                text: String::new(),
+                truncated: false,
+                limit,
+            };
+            let result = write!(&mut body, "{}{}", parts[0], parts[1]);
+            assert_eq!(result.is_err(), expected.is_none());
+            assert!(body.text.len() <= limit);
+            assert_eq!(
+                body.into_payload(),
+                serde_json::json!({"body": expected, "truncated": expected.is_none()})
+            );
+        }
+    }
+
     struct PanicOnDebug;
 
     impl fmt::Debug for PanicOnDebug {
@@ -394,9 +836,20 @@ mod tests {
         }
     }
 
+    fn span_with_payloads(payloads: Payloads) -> CapturedSpan {
+        CapturedSpan {
+            name: UPSTREAM_ATTEMPT,
+            fields: Map::new(),
+            payloads,
+            started_at: SystemTime::now(),
+            ended_at: SystemTime::now(),
+            children: Vec::new(),
+        }
+    }
+
     fn recorder() -> (SpanCapture, mpsc::Receiver<CapturedSpan>) {
         let (sender, receiver) = mpsc::channel();
-        let capture = SpanCapture::new(move |span| sender.send(span).unwrap());
+        let capture = SpanCapture::new(None, move |span| sender.send(span).unwrap());
         (capture, receiver)
     }
 

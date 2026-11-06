@@ -10,7 +10,7 @@ pub use core::algorithm::{
     Step, StepStream, drive,
 };
 pub use core::classifier::{Classification, Classifier, Score};
-pub use core::outcome_metadata::OutcomeMetadata;
+pub use core::outcome_metadata::{JudgeDecision, OutcomeMetadata};
 pub use core::processor::{Event, Processor};
 pub use core::state::{State, StateValue};
 
@@ -23,12 +23,11 @@ pub use algorithms::composite::{CompositeJudgeConfig, CompositeRouter, Composite
 pub use algorithms::infra::InfraPolicy;
 pub use algorithms::llm_class::{
     CapabilityJudgeConfig, CustomClassifierConfig, CustomClassifierPolicy, DEFAULT_UNMATCHED_STEPS,
-    DecisionJudgeConfig, LlmCapabilityConfig, LlmClassifierConfig, LlmTaskClassifier,
-    TaskClassifierConfig,
+    DecisionChoice, DecisionJudgeConfig, DirectClassifierConfig, LlmCapabilityConfig,
+    LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
 };
 pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::Passthrough;
-pub use algorithms::plan_execute::{PlanExecute, PlanExecuteConfig};
 pub use algorithms::rand::{Random, RandomClassifier};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::subagent::{SubagentRouter, SubagentRouterConfig};

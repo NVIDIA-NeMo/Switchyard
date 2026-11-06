@@ -63,7 +63,7 @@ async fn upstream(
     };
     if model == "backoff" || (model == "retry-body" && attempt == 1) {
         if model == "retry-body" {
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
         let delay = if model == "backoff" { "1" } else { "0" };
         return (
@@ -105,7 +105,7 @@ async fn upstream(
         "choices":[{"index":0,"message":{"role":"assistant","content":content},"finish_reason":"stop"}],
         "usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}});
     if model == "slow-body" || model == "retry-body" {
-        let delay = if model == "retry-body" { 450 } else { 3000 };
+        let delay = if model == "retry-body" { 150 } else { 3000 };
         let stream = async_stream::stream! {
             yield Ok::<_, Infallible>(Bytes::from_static(b" "));
             tokio::time::sleep(Duration::from_millis(delay)).await;
@@ -297,15 +297,15 @@ async fn client_deadline_stops_routing_and_counts_attempts() -> TestResult {
     for (judge, expected_calls, counts) in [
         ("slow-body", &["slow-body"][..], [0., 0., 1.]),
         ("backoff", &["backoff"][..], [0., 1., 0.]),
-        // The first attempt waits 300 ms and the retry body waits 450 ms.
-        // Each fits the 600 ms deadline alone; together they exceed it.
+        // The first attempt waits 100 ms and the retry body waits 150 ms.
+        // Each fits the 200 ms deadline alone; together they exceed it.
         (
             "retry-body",
             &["retry-body", "retry-body"][..],
             [0., 1., 1.],
         ),
     ] {
-        let app = app(&upstream, "classifier", judge, "weak", 600)?;
+        let app = app(&upstream, "classifier", judge, "weak", 200)?;
         let (status, body) = check(
             &upstream,
             &app,
@@ -315,7 +315,7 @@ async fn client_deadline_stops_routing_and_counts_attempts() -> TestResult {
         )
         .await?;
         assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "{judge}: {body}");
-        assert!(body.contains("600 ms"), "{body}");
+        assert!(body.contains("200 ms"), "{body}");
     }
     let failed_stream = app(&upstream, "classifier", "stream-error", "weak", 100)?;
     let (status, body) = check(

@@ -29,10 +29,10 @@ Use it with [Claude Code or Codex](recipes/single_provider_coding_agents.md),
 - [Mechanics of Libsy](mechanics_of_libsy.md): understand steps, calls, and outcomes
 - [Switchyard Protocols](protocols/index.md): connect your model data to libsy
 - [Routing Algorithms](routing_algorithms/overview.md): choose how requests select a model
+- [Tuning](tuning/index.md): find a configuration that meets your objective on your workload
 - [Host Integration](reference/host_integration.md): connect your clients and application lifecycle
 - [Rust API](reference/rust_api.md): browse the core library, protocols, translation, clients, and runner
 - [Context-Window Handling](operations/context_window.md): configure eviction and retry behavior
-- [Tuning](tuning/index.md): the loop from verifying routing to recording a result
 - [Troubleshooting](operations/troubleshooting.md): symptoms, silent misconfigurations, and fixes
 
 ## Reference

@@ -62,7 +62,7 @@ static ERROR_PATTERNS: &[(&str, f32, &[&str])] = &[
     (
         "cmd_not_found",
         HARD,
-        &["command not found", "not found\n", "/usr/bin/env: "],
+        &["command not found", "/usr/bin/env: "],
     ),
     ("assertion", HARD, &["assertionerror"]),
     ("value_error", HARD, &["valueerror:"]),
@@ -1068,7 +1068,6 @@ fn extract_tool_signals_with_window_and_semantics(
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
     // IDs whose latest call is a retrieval tool.
     let mut retrieval_calls: HashSet<&str> = HashSet::new();
-    let mut compacted = false;
     let mut tool_result_count = 0usize;
     let mut assistant_turn_count = 0usize;
 
@@ -1078,8 +1077,7 @@ fn extract_tool_signals_with_window_and_semantics(
         }
         for block in &message.content {
             match block {
-                // Only context-compaction markers carry across user turns.
-                _ if index < start && !matches!(block, ContentBlock::Text { .. }) => continue,
+                _ if index < start => continue,
                 ContentBlock::ToolCall(call) => {
                     // Responses namespaced tools arrive as `<namespace>__<tool>`.
                     let bare_name = namespaces
@@ -1245,18 +1243,6 @@ fn extract_tool_signals_with_window_and_semantics(
                     let text = texts.join("\n");
                     tool_texts.push((text, is_error));
                 }
-                // Compaction is detected anywhere in the conversation: the summary
-                // stays in the prefix on every later turn, so this self-latches
-                // once it fires.
-                ContentBlock::Text { text } => {
-                    let text = text.to_lowercase();
-                    compacted |= text.contains(COMPACTION_MARKER)
-                        || text.lines().any(|line| {
-                            HERMES_COMPACTION_MARKERS
-                                .iter()
-                                .any(|marker| line.trim_start().starts_with(marker))
-                        });
-                }
                 _ => {}
             }
         }
@@ -1269,21 +1255,11 @@ fn extract_tool_signals_with_window_and_semantics(
         recent_window,
         semantics,
     );
-    signal.compacted = compacted;
+    signal.compacted = request.llm_request.has_compaction;
     signal.tool_result_count = u32::try_from(tool_result_count).unwrap_or(u32::MAX);
     signal.assistant_turn_count = u32::try_from(assistant_turn_count).unwrap_or(u32::MAX);
     signal
 }
-
-/// Distinctive preamble Claude Code injects as a user message when it compacts an
-/// overflowed context. Matched case-insensitively; normal task text never contains it.
-const COMPACTION_MARKER: &str = "session is being continued";
-
-// Hermes can merge the summary into an existing message or restate an active task.
-const HERMES_COMPACTION_MARKERS: &[&str] = &[
-    "[context compaction \u{2014} reference only]",
-    "[still in progress \u{2014} this is the active request, restated after the compaction boundary",
-];
 
 /// The tool part of an `mcp__<server>__<tool>` name, the form Claude Code uses
 /// for MCP tools. The server name is assumed not to contain `__`; the tool name
@@ -1530,6 +1506,7 @@ pub(crate) fn classify_text(text: &str) -> (f32, Vec<String>) {
         ("runtime_exception", has_runtime_exception(&lower)),
         ("runtime_panic", has_runtime_panic(&lower)),
         ("patch_error", has_patch_failure(&lower)),
+        ("cmd_not_found", ends_with_not_found(&lower)),
     ] {
         if matched && !patterns.iter().any(|pattern| pattern == name) {
             patterns.push(name.to_string());
@@ -1658,6 +1635,20 @@ fn has_patch_failure(lower: &str) -> bool {
     })
 }
 
+/// Shell "not found" line (e.g. `git: not found`, `sh: 1: git: not found`)
+/// anchored to end-of-line so it still fires when the caller has trimmed the
+/// tool result's trailing newline, without matching prose that merely mentions
+/// "not found" mid-sentence.
+///
+/// The `: ` separator is required because `classify_text` lowercases its input,
+/// so a bare end-of-line match would also claim successful output such as
+/// `HTTP/1.1 404 Not Found`.
+fn ends_with_not_found(lower: &str) -> bool {
+    lower
+        .lines()
+        .any(|line| line.trim_end().ends_with(": not found"))
+}
+
 /// Detects `exit_nonzero` only when a supported exit phrase is followed by a
 /// nonzero decimal status.
 ///
@@ -1761,52 +1752,54 @@ mod tests {
     };
 
     fn with_messages(messages: Vec<Message>) -> Request {
-        Request {
+        let mut request = Request {
             llm_request: LlmRequest {
                 messages,
                 ..LlmRequest::default()
             },
             raw_request: None,
             metadata: None,
-        }
+        };
+        switchyard_translation::normalize_compaction(&mut request.llm_request, None);
+        request
     }
 
     // assistant message with a single named tool call
     fn tc(name: &str) -> Message {
-        Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
+        Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolCall(ToolCall {
                 id: String::new(),
                 name: name.to_string(),
                 arguments: json!({}),
             })],
-        }
+        )
     }
 
     // assistant Bash message carrying `command`
     fn bash(command: &str) -> Message {
-        Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
+        Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolCall(ToolCall {
                 id: String::new(),
                 name: "Bash".to_string(),
                 arguments: json!({"command": command}),
             })],
-        }
+        )
     }
 
     // a tool result message (goes in a user-role message, as in Anthropic's normalised form)
     fn tr(text: &str) -> Message {
-        Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult(ToolResult {
+        Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: String::new(),
                 content: vec![ContentBlock::Text {
                     text: text.to_string(),
                 }],
                 is_error: None,
             })],
-        }
+        )
     }
 
     #[test]
@@ -1983,6 +1976,46 @@ mod tests {
         }
     }
 
+    /// A harness that strips the trailing newline from captured output must not
+    /// silently drop a shell "not found" error to severity 0.0.
+    #[test]
+    fn trimmed_command_not_found_is_still_hard() {
+        let cases = [
+            "git: not found",
+            "sh: 1: git: not found",
+            "/bin/sh: 1: git: not found",
+        ];
+        for text in cases {
+            let (sev, patterns) = classify_text(text);
+            assert_eq!(sev, HARD, "expected hard severity for {text}");
+            assert!(patterns.contains(&"cmd_not_found".to_string()));
+        }
+    }
+
+    /// Precision guard: "not found" must end the line to count as a shell error,
+    /// so prose that merely mentions it does not trip a false error.
+    #[test]
+    fn not_found_mid_sentence_stays_clean() {
+        let (sev, _) =
+            classify_text("Looking for config key, not found in environment, using default.");
+        assert_eq!(sev, 0.0);
+    }
+
+    /// Precision guard: a line may end in "not found" and still report success.
+    /// Only the shell's `<name>: not found` shape counts.
+    #[test]
+    fn not_found_without_shell_separator_stays_clean() {
+        for text in [
+            "HTTP/1.1 404 Not Found",
+            "lookup finished, key not found",
+            "GET /healthz -> 404 Not Found",
+        ] {
+            let (sev, patterns) = classify_text(text);
+            assert_eq!(sev, 0.0, "expected clean classification for {text}");
+            assert!(!patterns.contains(&"cmd_not_found".to_string()));
+        }
+    }
+
     #[test]
     fn source_text_that_names_exceptions_stays_clean() {
         let text =
@@ -2066,23 +2099,27 @@ mod tests {
 
     #[test]
     fn retrieved_file_contents_are_ignored() {
-        let call = |id: &str, name: &str, arguments: Value| Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
-                id: id.to_string(),
-                name: name.to_string(),
-                arguments,
-            })],
+        let call = |id: &str, name: &str, arguments: Value| {
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolCall(ToolCall {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    arguments,
+                })],
+            )
         };
-        let result = |id: &str, text: &str| Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult(ToolResult {
-                tool_call_id: id.to_string(),
-                content: vec![ContentBlock::Text {
-                    text: text.to_string(),
-                }],
-                is_error: None,
-            })],
+        let result = |id: &str, text: &str| {
+            Message::new(
+                Role::User,
+                vec![ContentBlock::ToolResult(ToolResult {
+                    tool_call_id: id.to_string(),
+                    content: vec![ContentBlock::Text {
+                        text: text.to_string(),
+                    }],
+                    is_error: None,
+                })],
+            )
         };
         let signal = extract_tool_signals_with_window(
             &with_messages(vec![
@@ -2227,14 +2264,14 @@ mod tests {
                 "exit_code": exit_code,
                 "error": null,
             });
-            let call = Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::ToolCall(ToolCall {
+            let call = Message::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolCall(ToolCall {
                     id: String::new(),
                     name: "terminal".to_string(),
                     arguments: json!({"command": "cat run.log"}),
                 })],
-            };
+            );
             ToolSignals::from_request(&call_with_result(call, tr(&output.to_string())), None)
                 .severity
         };
@@ -2381,13 +2418,13 @@ mod tests {
                     .map(|call_id| {
                         let mut raw = raw.clone();
                         raw["call_id"] = json!(call_id);
-                        Message {
-                            role: Role::User,
-                            content: vec![ContentBlock::Unknown {
+                        Message::new(
+                            Role::User,
+                            vec![ContentBlock::Unknown {
                                 provider: WireFormat::OpenAiResponses.into(),
                                 raw,
                             }],
-                        }
+                        )
                     })
                     .collect(),
             );
@@ -2419,13 +2456,13 @@ mod tests {
             };
             for index in 0..3 {
                 success["call_id"] = json!(format!("success_{index}"));
-                request.llm_request.messages.push(Message {
-                    role: Role::User,
-                    content: vec![ContentBlock::Unknown {
+                request.llm_request.messages.push(Message::new(
+                    Role::User,
+                    vec![ContentBlock::Unknown {
                         provider: WireFormat::OpenAiResponses.into(),
                         raw: success.clone(),
                     }],
-                });
+                ));
             }
             let recovered = ToolSignals::from_request(&request, Some(3));
             assert_eq!(recovered.severity, 0.0, "{raw}");
@@ -2450,15 +2487,15 @@ mod tests {
         let request = with_messages(vec![
             Message::text(Role::User, "do something"),
             Message::text(Role::Assistant, "working"),
-            Message {
-                role: Role::User,
-                content: vec![
+            Message::new(
+                Role::User,
+                vec![
                     result(vec![ContentBlock::Text {
                         text: "ok".to_string(),
                     }]),
                     result(Vec::new()),
                 ],
-            },
+            ),
             tc("Bash"),
         ]);
         let sig = ToolSignals::from_request(&request, None);
@@ -2501,14 +2538,14 @@ mod tests {
     }
 
     fn exec_command(cmd: Value) -> Message {
-        Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
+        Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolCall(ToolCall {
                 id: String::new(),
                 name: "exec_command".to_string(),
                 arguments: cmd,
             })],
-        }
+        )
     }
 
     #[test]
@@ -2826,14 +2863,14 @@ mod tests {
             json!(r#"{"command":"view","path":"/app/main.py"}"#),
         ];
         for arguments in arguments {
-            let call = Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::ToolCall(ToolCall {
+            let call = Message::new(
+                Role::Assistant,
+                vec![ContentBlock::ToolCall(ToolCall {
                     id: String::new(),
                     name: "str_replace_based_edit_tool".to_string(),
                     arguments,
                 })],
-            };
+            );
             let request = with_messages(vec![call, tr("print('hi')")]);
             let sig = ToolSignals::from_request(&request, None);
             assert_eq!(sig.read_count, 1);

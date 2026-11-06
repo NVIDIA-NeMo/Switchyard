@@ -27,6 +27,26 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
         WireFormat::OpenAiResponses.into()
     }
 
+    fn is_terminal_event(&self, event: &Value) -> bool {
+        matches!(
+            event
+                .get("type")
+                .or_else(|| event.get("event"))
+                .and_then(Value::as_str),
+            Some("response.completed" | "response.incomplete" | "response.failed")
+        )
+    }
+
+    fn sse_done_is_terminal(&self) -> bool {
+        true
+    }
+
+    fn stamp_streamed_response_model(&self, event: &mut Value, served_model: &str) {
+        if let Some(response) = event.get_mut("response").and_then(Value::as_object_mut) {
+            response.insert("model".to_string(), Value::String(served_model.to_string()));
+        }
+    }
+
     fn decode_event(
         &self,
         state: &mut StreamTranslationState,
@@ -284,17 +304,7 @@ fn decode_responses_stream(
                     }
                 }
             }
-            if let Some(usage) = event
-                .get("response")
-                .and_then(Value::as_object)
-                .and_then(|response| response.get("usage"))
-                .and_then(Value::as_object)
-            {
-                let usage = responses_usage(usage);
-                state.usage = usage.clone();
-                state.saw_backend_usage = true;
-                out.push(LlmResponseChunk::Usage(usage));
-            }
+            decode_terminal_usage(state, event, &mut out);
             // A completed response that produced a tool call ended the turn to run that
             // tool, not because the assistant was done. The buffered decoder reports tool
             // use for such output; the stream must too, or stop-reason-driven tool loops
@@ -305,9 +315,14 @@ fn decode_responses_stream(
             out
         }
         // Carries the Anthropic spelling because every encoder already maps it.
-        Some("response.incomplete") => vec![LlmResponseChunk::MessageStop {
-            reason: Some("max_tokens".to_string()),
-        }],
+        Some("response.incomplete") => {
+            let mut out = Vec::new();
+            decode_terminal_usage(state, event, &mut out);
+            out.push(LlmResponseChunk::MessageStop {
+                reason: Some("max_tokens".to_string()),
+            });
+            out
+        }
         Some("response.failed") => vec![LlmResponseChunk::StreamError {
             message: event
                 .get("response")
@@ -1147,6 +1162,25 @@ fn encode_responses_tool_delta(
     out
 }
 
+// Both completed and token-limited Responses events can carry final usage and provider cost.
+fn decode_terminal_usage(
+    state: &mut StreamTranslationState,
+    event: &Value,
+    out: &mut Vec<LlmResponseChunk>,
+) {
+    if let Some(usage) = event
+        .get("response")
+        .and_then(Value::as_object)
+        .and_then(|response| response.get("usage"))
+        .and_then(Value::as_object)
+    {
+        let usage = responses_usage(usage);
+        state.usage = usage.clone();
+        state.saw_backend_usage = true;
+        out.push(LlmResponseChunk::Usage(usage));
+    }
+}
+
 // Normalizes OpenAI Responses token usage fields.
 fn responses_usage(usage: &serde_json::Map<String, Value>) -> Usage {
     let aggregate_input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
@@ -1225,4 +1259,41 @@ fn responses_id(state: &StreamTranslationState) -> String {
     target_message_id_or_source_message_id(state)
         .unwrap_or("resp_switchyard")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_stream_completion() {
+        let codec = OpenAiResponsesStreamCodec;
+        assert!(codec.sse_done_is_terminal());
+        for kind in [
+            "response.completed",
+            "response.incomplete",
+            "response.failed",
+        ] {
+            assert!(codec.is_terminal_event(&json!({"type": kind})));
+            assert!(codec.is_terminal_event(&json!({"event": kind})));
+        }
+        assert!(!codec.is_terminal_event(&json!({"type": "response.created"})));
+    }
+
+    #[test]
+    fn responses_replay_stamps_the_served_model_inside_response() {
+        let mut event = json!({
+            "type": "response.created",
+            "response": {
+                "id": "resp_1",
+                "model": "provider/model",
+                "provider_extension": true,
+            },
+        });
+
+        OpenAiResponsesStreamCodec.stamp_streamed_response_model(&mut event, "served/model");
+
+        assert_eq!(event["response"]["model"], "served/model");
+        assert_eq!(event["response"]["provider_extension"], true);
+    }
 }

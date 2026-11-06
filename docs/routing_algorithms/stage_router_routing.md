@@ -273,6 +273,7 @@ required columns.
 | `classifier.prompt` | packaged | Replaces the judge prompt. |
 | `classifier.response_format_type` | `json_schema` | `json_object` for providers without JSON Schema. |
 | `classifier.max_output_tokens` | `4096` | Token budget for the verdict. |
+| `classifier.judge_deadline_ms` | unset | Whole-consultation bound in milliseconds on the judge call, response drain included. On expiry the judge counts as failed and `classifier.fail_open` applies. Must be at least `1`. |
 | `subagents` | unset | Separate policy for delegated sub-agent work. |
 
 `classifier.response_schema`, `classifier.policy`, and any `classifier.mode`
@@ -319,6 +320,44 @@ switchyard-server --config routes.toml --port 4000
 ```
 
 This is the recommended default: routing on tool signals alone, no classifier.
+
+### Plan and execute
+
+To start with the capable model and keep using the efficient model after a
+switch, add this route to the [minimal configuration](#minimal-route):
+
+```toml
+[routes.plan_execute]
+id = "switchyard/plan-execute"
+type = "stage_router"
+capable_target = "capable"
+efficient_target = "efficient"
+picker = "capable_first"
+confidence_threshold = 0.0
+capable_hold_turns = 0
+efficient_hold_turns = -1
+capable_system_prompt = "Inspect the task and plan before modifying files."
+```
+
+With no tool history, Stage selects capable and adds the planning prompt.
+After successful writes, Stage can select efficient; critical failures can keep
+capable selected. A switch from capable to efficient starts a hold that keeps
+selecting efficient while the session state remains. Later tool errors do not
+end it. Only capable requests receive the planning prompt. See
+[How it works](#how-it-works) for scoring and hold behavior.
+
+Send requests to `switchyard/plan-execute` with the same
+`x-switchyard-session-id` from the first planning request onward. Include the
+full conversation, including the plan, tool calls, and results. For the Responses
+API, send that history in `input` and omit both `previous_response_id` and
+`conversation`. Known continuation IDs bypass Stage even with full input
+history. Send `x-switchyard-session-final: true` when the shared session ends to
+clear all of its agents' state.
+
+When migrating from the removed `plan_execute` type, use this recipe and replace
+`planning_prompt` with `capable_system_prompt`. Stage has no exact equivalent
+for the old judged handoff or reasoning-to-text conversion; keep the plan in
+ordinary conversation text so the executor receives it.
 
 ### Optional: custom tool semantics
 
@@ -453,3 +492,4 @@ the `stage router override` log line carries it for overrides:
 - [Mechanics of Libsy](../mechanics_of_libsy.md): the execution model and host responsibilities.
 - [TOML Schema](../reference/toml_schema.md#stage_router): the complete
   configuration reference.
+- [Tuning](../tuning/index.md): check your current route and compare candidate settings on your workload.

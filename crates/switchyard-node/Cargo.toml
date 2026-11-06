@@ -19,11 +19,15 @@ crate-type = ["cdylib"]
 napi = { version = "3", default-features = false, features = ["napi8", "tokio_rt", "dyn-symbols"] }
 napi-derive = "3"
 futures.workspace = true
+http.workspace = true
 parking_lot.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 switchyard-libsy.workspace = true
 switchyard-protocol.workspace = true
+switchyard-runner.workspace = true
+switchyard-translation.workspace = true
+tokio.workspace = true
 
 [build-dependencies]
 napi-build = "2"

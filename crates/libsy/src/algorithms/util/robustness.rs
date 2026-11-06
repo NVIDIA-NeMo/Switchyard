@@ -33,6 +33,7 @@ pub(crate) fn safe_error_summary(error: &LibsyError) -> String {
         // from static text today, but nothing stops one embedding a response or an
         // upstream error, so only the class is reported.
         LibsyError::AlgorithmError { .. } => "algorithm error".to_string(),
+        LibsyError::InvalidDecision { .. } => "invalid decision answer".to_string(),
         LibsyError::Driver(_) => "algorithm driver failed".to_string(),
         // The operation is a static label, but the boxed source comes from a user
         // extension and is unvetted.
@@ -83,6 +84,13 @@ mod tests {
 
     /// The conversation text a leaking log line would expose.
     const SECRET: &str = "patient name is Jane Doe";
+
+    #[test]
+    fn invalid_decision_details_are_redacted() {
+        let error = LibsyError::invalid_decision("judge", SECRET);
+        assert_eq!(safe_error_summary(&error), "invalid decision answer");
+        assert!(error.to_string().contains(SECRET));
+    }
 
     #[test]
     fn an_upstream_body_never_reaches_the_summary() {
