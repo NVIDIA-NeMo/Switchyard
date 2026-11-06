@@ -9,7 +9,8 @@
 //! served as it came. The cloud sentinel makes the route call the capable target with the
 //! client's request, unchanged, and serve that reply behind the sentinel, so the transcript
 //! carries the decision and the executed step together. Nothing else is parsed or rewritten.
-//! Without a capable target the sentinel is served as is (collection mode).
+//! Without a capable target (collection mode) nothing is delegated: a reply is kept when it
+//! carries a route line and a step, the shape the exporter accepts, and asked again otherwise.
 //!
 //! Both upstream calls ask for buffered replies. The answer is converted to a stream when the
 //! client asked for one. With `trace_jsonl` set, one JSON object per decision is appended for
@@ -168,6 +169,15 @@ enum RouteLine {
     Cloud,
 }
 
+impl RouteLine {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Cloud => "cloud",
+        }
+    }
+}
+
 /// A route line is a line that, trimmed, is a JSON object with the single key `route` whose
 /// value is `local` or `cloud`.
 fn route_line(line: &str) -> Option<RouteLine> {
@@ -253,6 +263,17 @@ pub fn is_valid(text: &str, tool_calls: usize) -> bool {
         RouteLine::Cloud => tool_calls == 0 && rest.trim().is_empty(),
         RouteLine::Local => tool_calls > 0 || !rest.trim().is_empty(),
     }
+}
+
+/// The collection profile for teacher replies: a route line first, a non-empty step after it
+/// (a tool call or text), and no other route line. Returns the label when the reply passes.
+pub fn collection_route(text: &str, tool_calls: usize) -> Option<&'static str> {
+    let (first, rest) = split_first_line(text.trim_start());
+    let route = route_line(first)?;
+    if rest.lines().any(|line| route_line(line).is_some()) {
+        return None;
+    }
+    (tool_calls > 0 || !rest.trim().is_empty()).then_some(route.as_str())
 }
 
 /// Drops leading whitespace, a leading route line, and one line break after it. Text without a
@@ -454,6 +475,8 @@ struct Attempt {
     latency_ms: u128,
     classification: Option<Classification>,
     valid: bool,
+    /// The collection-profile check; `None` in serving mode and for a failed call.
+    collection_valid: Option<bool>,
     error: Option<String>,
 }
 
@@ -467,6 +490,7 @@ impl Attempt {
             "latency_ms": self.latency_ms,
             "classification": self.classification.map(Classification::as_str),
             "valid": self.valid,
+            "collection_valid": self.collection_valid,
             "error": self.error,
         })
     }
@@ -649,14 +673,20 @@ impl Algorithm for SelfDelegation {
         let mut student_usage = Usage::default();
         let mut student_error = None;
         let mut classification = None;
+        // Collection keeps only replies the exporter accepts: a route line and a step. A reply
+        // without them is a wasted trajectory, so it is asked again like an invalid one.
+        let collecting = capable.is_none();
+        let mut collection_label = None;
         for _ in 0..=self.config.on_invalid.retry {
             let started = Instant::now();
             match call_buffered(&driver, upstream.clone(), &efficient).await {
                 Ok(buffered) => {
                     let (text, tool_calls) = text_and_tools(&buffered.agg);
                     let class = classify(&text, tool_calls.len(), self.config.lenient_cloud);
+                    let collection = collecting.then(|| collection_route(&text, tool_calls.len()));
                     attempts.push(Attempt {
                         valid: is_valid(&text, tool_calls.len()),
+                        collection_valid: collection.map(|label| label.is_some()),
                         content: text,
                         tool_calls,
                         finish_reason: finish_reason(&buffered.agg),
@@ -668,7 +698,12 @@ impl Algorithm for SelfDelegation {
                     add_usage(&mut student_usage, &buffered.agg.usage);
                     student = Some(buffered);
                     classification = Some(class);
-                    if class != Classification::Invalid {
+                    collection_label = collection.flatten();
+                    let accepted = match collection {
+                        Some(label) => label.is_some(),
+                        None => class != Classification::Invalid,
+                    };
+                    if accepted {
                         break;
                     }
                 }
@@ -682,6 +717,7 @@ impl Algorithm for SelfDelegation {
                         latency_ms: started.elapsed().as_millis(),
                         classification: None,
                         valid: false,
+                        collection_valid: None,
                         error: Some(error.to_string()),
                     });
                     student_error = Some(error);
@@ -690,7 +726,11 @@ impl Algorithm for SelfDelegation {
             }
         }
 
-        let decision = classification.map_or("invalid", Classification::decision);
+        let decision = if collecting {
+            collection_label.unwrap_or("invalid")
+        } else {
+            classification.map_or("invalid", Classification::decision)
+        };
         let (escalate, fallback) = match (&student_error, classification) {
             (Some(_), _) => (
                 self.config.on_student_error == StudentErrorAction::Escalate,

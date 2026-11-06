@@ -294,6 +294,7 @@ async fn local_reply_is_served_unchanged() -> Result<()> {
     assert_eq!(attempt["usage"]["output_tokens"], 5);
     assert!(attempt["latency_ms"].is_u64());
     assert!(attempt["error"].is_null());
+    assert!(attempt["collection_valid"].is_null());
     assert!(record["strong"].is_null());
     assert_eq!(record["served"]["by"], "student");
     assert_eq!(record["served"]["content"], text);
@@ -601,21 +602,121 @@ async fn compaction_flags_are_recorded_and_the_reply_is_served_unchanged() -> Re
 }
 
 #[tokio::test]
-async fn collection_mode_serves_the_sentinel_as_is() -> Result<()> {
+async fn collection_mode_retries_a_bare_sentinel_then_serves_it_as_is() -> Result<()> {
     let trace = TraceFile::new("collect");
-    let fake = Fake::new(vec![Ok(reply(CLOUD_SENTINEL, 0))], vec![]);
+    let fake = Fake::new(
+        vec![Ok(reply(CLOUD_SENTINEL, 0)), Ok(reply(CLOUD_SENTINEL, 0))],
+        vec![],
+    );
 
     let (selected, agg) = drive(trace.config(), request(), models(false), &fake).await?;
 
     assert_eq!(selected, STUDENT);
     assert_eq!(completion_text(&agg), CLOUD_SENTINEL);
-    assert_eq!(fake.targets(), [STUDENT]);
+    // A bare sentinel is a missing step for the teacher, so it is asked once more.
+    assert_eq!(fake.targets(), [STUDENT, STUDENT]);
     let record = trace.record();
     assert_eq!(record["mode"], "collect");
-    assert_eq!(record["decision"], "cloud");
+    assert_eq!(record["decision"], "invalid");
+    let attempts = record["student"]["attempts"]
+        .as_array()
+        .expect("attempts array");
+    assert_eq!(attempts.len(), 2);
+    for attempt in attempts {
+        assert_eq!(attempt["classification"], "cloud");
+        assert_eq!(attempt["valid"], true);
+        assert_eq!(attempt["collection_valid"], false);
+    }
     assert!(record["strong"].is_null());
     assert_eq!(record["served"]["by"], "student");
     assert_eq!(record["served"]["content"], CLOUD_SENTINEL);
+    Ok(())
+}
+
+#[tokio::test]
+async fn collection_mode_retries_an_empty_tool_call_reply_then_serves_it() -> Result<()> {
+    let trace = TraceFile::new("collect_empty");
+    let fake = Fake::new(vec![Ok(reply("", 1)), Ok(reply("", 1))], vec![]);
+
+    let (selected, agg) = drive(trace.config(), request(), models(false), &fake).await?;
+
+    assert_eq!(selected, STUDENT);
+    assert!(!has_text_block(&agg));
+    assert_eq!(tool_calls(&agg), 1);
+    assert_eq!(fake.targets(), [STUDENT, STUDENT]);
+    let record = trace.record();
+    assert_eq!(record["decision"], "invalid");
+    let attempts = record["student"]["attempts"]
+        .as_array()
+        .expect("attempts array");
+    assert_eq!(attempts.len(), 2);
+    for attempt in attempts {
+        assert_eq!(attempt["classification"], "local");
+        assert_eq!(attempt["valid"], false);
+        assert_eq!(attempt["collection_valid"], false);
+    }
+    assert_eq!(record["served"]["by"], "student");
+    assert_eq!(record["served"]["tool_calls"], 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn serving_mode_serves_an_empty_tool_call_reply_without_retry() -> Result<()> {
+    let trace = TraceFile::new("serve_empty");
+    let fake = Fake::new(vec![Ok(reply("", 1))], vec![]);
+
+    let (selected, agg) = drive(trace.config(), request(), models(true), &fake).await?;
+
+    assert_eq!(selected, STUDENT);
+    assert_eq!(tool_calls(&agg), 1);
+    assert_eq!(fake.targets(), [STUDENT]);
+    let record = trace.record();
+    assert_eq!(record["decision"], "local");
+    assert_eq!(record["student"]["attempts"][0]["classification"], "local");
+    assert!(record["student"]["attempts"][0]["collection_valid"].is_null());
+    Ok(())
+}
+
+#[tokio::test]
+async fn collection_mode_accepts_a_route_line_with_tool_calls_without_retry() -> Result<()> {
+    let trace = TraceFile::new("collect_local");
+    let fake = Fake::new(vec![Ok(reply(LOCAL_LINE, 1))], vec![]);
+
+    let (selected, agg) = drive(trace.config(), request(), models(false), &fake).await?;
+
+    assert_eq!(selected, STUDENT);
+    assert_eq!(completion_text(&agg), LOCAL_LINE);
+    assert_eq!(tool_calls(&agg), 1);
+    assert_eq!(fake.targets(), [STUDENT]);
+    let record = trace.record();
+    assert_eq!(record["decision"], "local");
+    let attempt = &record["student"]["attempts"][0];
+    assert_eq!(attempt["classification"], "local");
+    assert_eq!(attempt["valid"], true);
+    assert_eq!(attempt["collection_valid"], true);
+    Ok(())
+}
+
+#[tokio::test]
+async fn collection_mode_accepts_a_cloud_labelled_step() -> Result<()> {
+    let trace = TraceFile::new("collect_cloud");
+    let text = "{\"route\":\"cloud\"}\nThis needs care; editing the parser.";
+    let fake = Fake::new(vec![Ok(reply(text, 1))], vec![]);
+
+    let (selected, agg) = drive(trace.config(), request(), models(false), &fake).await?;
+
+    assert_eq!(selected, STUDENT);
+    assert_eq!(completion_text(&agg), text);
+    assert_eq!(tool_calls(&agg), 1);
+    assert_eq!(fake.targets(), [STUDENT]);
+    let record = trace.record();
+    assert_eq!(record["decision"], "cloud");
+    assert!(record["strong"].is_null());
+    let attempt = &record["student"]["attempts"][0];
+    // The serving profile reads tool calls as local; the collection profile keeps the label.
+    assert_eq!(attempt["classification"], "local");
+    assert_eq!(attempt["valid"], false);
+    assert_eq!(attempt["collection_valid"], true);
     Ok(())
 }
 
@@ -964,5 +1065,31 @@ fn fixture_merge_cases_match() {
             "{}: imitated_route_line",
             case.name
         );
+    }
+}
+
+#[test]
+fn fixture_collection_cases_match_the_collection_profile() {
+    let collection: Vec<_> = fixtures()
+        .cases
+        .into_iter()
+        .filter(|case| case.profile == "collection")
+        .collect();
+    assert!(
+        collection.len() >= 9,
+        "collection cases: {}",
+        collection.len()
+    );
+    for case in collection {
+        let label = collection_route(&case.content, case.tool_calls);
+        assert_eq!(label.is_some(), case.expect.valid, "{}: valid", case.name);
+        if case.expect.valid {
+            assert_eq!(
+                label,
+                Some(case.expect.route.as_str()),
+                "{}: route",
+                case.name
+            );
+        }
     }
 }

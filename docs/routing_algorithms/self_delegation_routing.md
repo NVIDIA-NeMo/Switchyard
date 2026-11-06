@@ -28,6 +28,10 @@ student every reply is invalid and the route serves it as it came.
      route line, or prose without a route line and without tool calls. The
      `on_invalid` policy asks the student again, then serves the last reply or
      escalates.
+
+   Without `capable_target`, this step uses the collection profile instead; see
+   [Collection mode](#collection-mode).
+
 3. On cloud, the route calls the capable model with the same request. If the
    capable model starts its text with a route line, that line is removed and
    the trace records `imitated_route_line`. The served text is
@@ -98,11 +102,11 @@ trace_jsonl = "/var/tmp/edgewise-serve-trace.jsonl"
 | Key | Default | Meaning |
 |---|---|---|
 | `efficient_target` | required | The student. In collection mode, the teacher. |
-| `capable_target` | unset | The strong model called on the cloud sentinel. Unset selects collection mode: the sentinel is served as it came. |
+| `capable_target` | unset | The strong model called on the cloud sentinel. Unset selects collection mode: nothing is delegated, and a reply is kept only when it carries a route line and a step. |
 | `trace_jsonl` | unset | File that receives one JSON object per decision. Use one file per server process. A failed write is logged and never fails the request. |
 | `hide_route` | `false` | Remove the route line from served text. |
 | `lenient_cloud` | `true` | Treat a damaged sentinel as cloud at serving. |
-| `on_invalid.retry` | `1` | How many times an invalid reply is asked again, with the same request. |
+| `on_invalid.retry` | `1` | How many times a reply is asked again, with the same request: an invalid reply at serving, or a reply without a route line or without a step in collection mode. |
 | `on_invalid.action` | `"serve"` | `serve` the last invalid reply as it came, or `escalate` to the capable model. `escalate` needs `capable_target`. |
 | `on_student_error` | `"error"` | `error` returns a failed student call to the client; `escalate` calls the capable model instead. `escalate` needs `capable_target`. |
 
@@ -141,9 +145,19 @@ efficient_target = "teacher"
 trace_jsonl = "/var/tmp/edgewise-collect-trace.jsonl"
 ```
 
-In collection mode a cloud reply is served as it came, so the teacher must put
-its step after the cloud line. The export tooling applies its own, stricter
-rules to teacher replies.
+In collection mode nothing is delegated, so the teacher must put its step after
+the route line for both labels. The route checks each teacher reply with the
+collection profile: the first line is a route line, a step follows (a tool call,
+or text after the line), and no later line is a route line. A reply that fails
+the check, for example a tool call with empty content, is asked again up to
+`on_invalid.retry` times, and the last reply is then served as it came; the
+export tooling drops it. The trace records the check as `collection_valid` on
+every attempt, and `decision` carries the teacher's label (`local` or `cloud`)
+or `invalid`.
+
+The teacher follows the rubric more often at a lower temperature. The CLIs send
+none, so the example collection file sets one on the teacher target with
+`extra_body = { temperature = 0.6 }`.
 
 ## Hiding the route line
 
@@ -191,6 +205,7 @@ null when the provider did not report them.
       "latency_ms": 412,
       "classification": "cloud",
       "valid": true,
+      "collection_valid": null,
       "error": null
     }]
   },
@@ -218,7 +233,8 @@ null when the provider did not report them.
 | `wire_format` | The client's API: `anthropic_messages`, `openai_responses`, `openai_chat`, or null. |
 | `is_compaction`, `has_compaction` | The request performs a compaction, or its history carries a compaction marker. |
 | `student.attempts[]` | Every student call, in order. `classification` is `local`, `cloud`, `cloud_lenient`, or `invalid`, and null when the call failed; `error` holds the failure message. |
-| `decision` | The classification of the last student reply, with `cloud_lenient` collapsed to `cloud`. `invalid` when every student call failed. |
+| `student.attempts[].collection_valid` | In collection mode, whether the reply passed the collection profile. Null in serving mode and for a failed call. |
+| `decision` | In serving mode, the classification of the last student reply with `cloud_lenient` collapsed to `cloud`. In collection mode, the teacher's label when the last reply passed the collection profile. `invalid` otherwise, including when every student call failed. |
 | `strong` | The capable model's call, or null when it was not made. `content` is its text before the merge. `fallback` is true when the call came from `on_invalid` or `on_student_error` rather than from a cloud decision. |
 | `served` | What the client received, or null when the request failed. `tool_calls` is a count. `stripped_route_line` is true when `hide_route` removed or withheld a route line. |
 

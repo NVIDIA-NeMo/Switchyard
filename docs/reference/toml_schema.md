@@ -643,8 +643,8 @@ advisor's plan. See
 Serves the efficient target, whose replies start with a route line. When the
 reply is the cloud sentinel `{"route":"cloud"}`, the route calls the capable
 target with the client's request unchanged and serves that reply behind the
-sentinel. Without `capable_target` the sentinel is served as it came
-(collection mode). See
+sentinel. Without `capable_target` nothing is delegated (collection mode): a
+reply is asked again unless it carries a route line and a step. See
 [Self-Delegation Routing](../routing_algorithms/self_delegation_routing.md).
 
 | Key | Required | Default | Meaning |
@@ -654,7 +654,7 @@ sentinel. Without `capable_target` the sentinel is served as it came
 | `trace_jsonl` | No | unset | File that receives one JSON object per decision. A failed write is logged and never fails the request. |
 | `hide_route` | No | `false` | Removes the route line from served text. |
 | `lenient_cloud` | No | `true` | Treats a sentinel with cosmetic damage as cloud at serving. |
-| `on_invalid.retry` | No | `1` | Times an invalid reply is asked again with the same request. |
+| `on_invalid.retry` | No | `1` | Times a reply is asked again with the same request: an invalid reply at serving, or a reply without a route line or without a step in collection mode. |
 | `on_invalid.action` | No | `serve` | `serve` the last invalid reply, or `escalate` to the capable target. `escalate` without `capable_target` is rejected at load. |
 | `on_student_error` | No | `error` | `error` returns a failed efficient call to the client; `escalate` calls the capable target instead. `escalate` without `capable_target` is rejected at load. |
 

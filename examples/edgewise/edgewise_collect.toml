@@ -17,6 +17,8 @@ api_key_env = "NVIDIA_API_KEY"
 [targets.teacher]
 id = "nvidia/moonshotai/kimi-k3"
 llm_client = "inference_hub"
+# The CLIs send no temperature; a lower one raises the teacher's route-line compliance.
+extra_body = { temperature = 0.6 }
 system_prompt = """
 PLACEHOLDER RUBRIC. Start every reply with exactly one line, {"route":"local"} or
 {"route":"cloud"}, then the step: tool calls or text. Label the step "local"
