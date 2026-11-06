@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Serving: a local student decides each turn and hands the hard ones to a strong
+# model. Replace the student model name, the trace path, and the strong model
+# for your deployment. No prompt is added anywhere in this file: the student's
+# chat template carries the routing instruction.
+schema_version = 1
+
+[llm_clients.local_vllm]
+format = "openai_chat"
+base_url = "http://127.0.0.1:8000/v1"
+
+[llm_clients.inference_hub]
+format = "openai_chat"
+base_url = "https://inference-api.nvidia.com/v1"
+api_key_env = "NVIDIA_API_KEY"
+
+[targets.student]
+# The served model name of the fine-tuned student on the local vLLM.
+id = "edgewise-9b"
+llm_client = "local_vllm"
+
+[targets.strong]
+id = "nvidia/moonshotai/kimi-k3"
+llm_client = "inference_hub"
+
+[routes.edgewise]
+id = "switchyard/edgewise"
+type = "self_delegation"
+efficient_target = "student"
+capable_target = "strong"
+# One file per server process; every decision appends one JSON line.
+trace_jsonl = "/var/tmp/edgewise-serve-trace.jsonl"
+on_invalid = { retry = 1, action = "serve" }
+on_student_error = "error"

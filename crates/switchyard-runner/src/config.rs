@@ -1119,7 +1119,8 @@ impl DeploymentConfig {
         if !policy.prompts.contains_key(response.name) {
             return Ok(policy);
         }
-        if std::iter::once(dependency_name)
+        if dependency_name
+            .into_iter()
             .chain(route.judge_target_names())
             .any(|name| {
                 targets
@@ -2573,6 +2574,115 @@ classify_trigger"#,
         assert_eq!(
             error_message(&configured),
             "route classifier cannot apply system_prompt to target weak: it is also the routing-only target"
+        );
+    }
+
+    #[test]
+    fn self_delegation_routes_build_from_toml() -> RunnerResult<()> {
+        let config = format!(
+            r#"{VALID_CONFIG}
+
+[targets.teacher]
+id = "teacher/model"
+llm_client = "primary"
+system_prompt = "Start your reply with the route line."
+
+[routes.edgewise]
+id = "switchyard/edgewise"
+type = "self_delegation"
+efficient_target = "weak"
+capable_target = "strong"
+on_invalid = {{ retry = 1, action = "escalate" }}
+on_student_error = "escalate"
+
+[routes.edgewise_collect]
+id = "switchyard/edgewise-collect"
+type = "self_delegation"
+efficient_target = "teacher"
+trace_jsonl = "/var/tmp/edgewise-trace.jsonl"
+
+[routes.edgewise_self]
+id = "switchyard/edgewise-self"
+type = "self_delegation"
+efficient_target = "weak"
+capable_target = "weak"
+hide_route = true
+"#
+        );
+
+        let runner = runner_from_toml(&config)?;
+
+        let serve = runner.route("switchyard/edgewise").expect("serve route");
+        assert_eq!(
+            serve.models().models_for(&Category::Efficient),
+            [ModelId::from("weak")]
+        );
+        assert_eq!(
+            serve.models().models_for(&Category::Capable),
+            [ModelId::from("strong")]
+        );
+        assert_eq!(
+            serve.models().models_for(&Category::Any),
+            [ModelId::from("weak"), ModelId::from("strong")]
+        );
+        // The teacher's prompt is accepted: the route declares the teacher as its answer target.
+        let collect = runner
+            .route("switchyard/edgewise-collect")
+            .expect("collection route");
+        assert_eq!(
+            collect.models().models_for(&Category::Efficient),
+            [ModelId::from("teacher")]
+        );
+        assert!(collect.models().models_for(&Category::Capable).is_empty());
+        let own = runner
+            .route("switchyard/edgewise-self")
+            .expect("self route");
+        assert_eq!(
+            own.models().models_for(&Category::Capable),
+            [ModelId::from("weak")]
+        );
+
+        let routes: Vec<_> = route_targets(&config)?
+            .into_iter()
+            .filter(|route| route.kind == "self_delegation")
+            .map(|route| {
+                let answers: Vec<_> = route
+                    .answer_targets
+                    .iter()
+                    .map(|target| target.name.clone())
+                    .collect();
+                (route.name, answers, route.judge_targets.len())
+            })
+            .collect();
+        assert_eq!(
+            routes,
+            [
+                (
+                    "edgewise".to_string(),
+                    vec!["weak".to_string(), "strong".to_string()],
+                    0
+                ),
+                (
+                    "edgewise_collect".to_string(),
+                    vec!["teacher".to_string()],
+                    0
+                ),
+                ("edgewise_self".to_string(), vec!["weak".to_string()], 0),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn self_delegation_rejects_escalation_without_a_capable_target() {
+        let config = format!(
+            "{VALID_CONFIG}\n[routes.edgewise]\nid = \"switchyard/edgewise\"\n\
+             type = \"self_delegation\"\nefficient_target = \"weak\"\non_student_error = \"escalate\"\n"
+        );
+        let message = error_message(&config);
+        assert!(
+            message.contains("on_student_error = \"escalate\" requires capable_target"),
+            "{message}"
         );
     }
 

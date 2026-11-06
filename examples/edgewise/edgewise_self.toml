@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Evaluation arm: the student answers its own cloud sentinel. A cloud decision
+# costs a second student call with the same request and is served behind the
+# sentinel like a delegated step, so this arm isolates what training did to the
+# student's own capability. Replace the student model name and the trace path.
+schema_version = 1
+
+[llm_clients.local_vllm]
+format = "openai_chat"
+base_url = "http://127.0.0.1:8000/v1"
+
+[targets.student]
+id = "edgewise-9b"
+llm_client = "local_vllm"
+
+[routes.edgewise_self]
+id = "switchyard/edgewise-self"
+type = "self_delegation"
+efficient_target = "student"
+capable_target = "student"
+trace_jsonl = "/var/tmp/edgewise-self-trace.jsonl"

@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Collection: the teacher is the efficient target and there is no capable
+# target, so its cloud sentinel is served as it came and nothing is delegated.
+# The labeling rubric is the teacher target's system_prompt. The route
+# declares the teacher as its answer target, so the prompt is prepended in the
+# client layer below the algorithm and the recorded request stays neutral.
+# Replace the placeholder rubric and the trace path for your run.
+schema_version = 1
+
+[llm_clients.inference_hub]
+format = "openai_chat"
+base_url = "https://inference-api.nvidia.com/v1"
+api_key_env = "NVIDIA_API_KEY"
+
+[targets.teacher]
+id = "nvidia/moonshotai/kimi-k3"
+llm_client = "inference_hub"
+system_prompt = """
+PLACEHOLDER RUBRIC. Start every reply with exactly one line, {"route":"local"} or
+{"route":"cloud"}, then the step: tool calls or text. Label the step "local"
+when the student model named in the rubric would do it correctly on its own,
+and "cloud" otherwise.
+"""
+
+[routes.edgewise_collect]
+id = "switchyard/edgewise-collect"
+type = "self_delegation"
+efficient_target = "teacher"
+trace_jsonl = "/var/tmp/edgewise-collect-trace.jsonl"

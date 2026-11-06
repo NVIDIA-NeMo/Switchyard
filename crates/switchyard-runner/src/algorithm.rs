@@ -14,10 +14,11 @@ use libsy::{
     ClassifierContractConfig, ClassifierResponseFormat, ClassifyTrigger, CompositeJudgeConfig,
     CompositeRouter, CompositeRouterConfig, CustomClassifierConfig, CustomClassifierPolicy,
     DEFAULT_UNMATCHED_STEPS, DecisionChoice, DecisionJudgeConfig, DirectClassifierConfig,
-    EscalationJudgeConfig, GateTrigger, HandoffNoteConfig, LlmCapabilityConfig,
-    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, Passthrough, PickerMode, Random,
-    RuntimeModels, StageRouter, StageRouterConfig, SubagentRouter, SubagentRouterConfig,
-    TaskClassifierConfig, ToolSemantics, Vgr, VgrConfig,
+    EscalationJudgeConfig, GateTrigger, HandoffNoteConfig, InvalidAction, LlmCapabilityConfig,
+    LlmClassifierConfig, LlmFallback, LlmTaskClassifier, Noop, OnInvalid, Passthrough, PickerMode,
+    Random, RuntimeModels, SelfDelegation, SelfDelegationConfig, StageRouter, StageRouterConfig,
+    StudentErrorAction, SubagentRouter, SubagentRouterConfig, TaskClassifierConfig, ToolSemantics,
+    Vgr, VgrConfig,
 };
 use serde::Deserialize;
 use strum_macros::IntoStaticStr;
@@ -497,6 +498,31 @@ pub enum AlgorithmSpec {
         /// Lets the turn through when the advisor fails, instead of erroring.
         #[serde(default = "default_fail_open")]
         fail_open: bool,
+    },
+    /// Serves the efficient target, and calls the capable target when the efficient reply is
+    /// the cloud sentinel `{"route":"cloud"}`.
+    SelfDelegation {
+        /// The student, or the teacher in collection mode. Its `system_prompt` applies to
+        /// the routing call.
+        efficient_target: String,
+        /// The strong model. Omitted for collection mode: the sentinel is then served as is.
+        #[serde(default)]
+        capable_target: Option<String>,
+        /// Appends one JSON object per decision to this file.
+        #[serde(default)]
+        trace_jsonl: Option<PathBuf>,
+        /// Removes the route line from served text.
+        #[serde(default)]
+        hide_route: bool,
+        /// Treats a sentinel with cosmetic damage as cloud at serving.
+        #[serde(default = "default_true")]
+        lenient_cloud: bool,
+        /// Retry budget and final action for an invalid student reply.
+        #[serde(default)]
+        on_invalid: OnInvalid,
+        /// What to do when the student call fails.
+        #[serde(default)]
+        on_student_error: StudentErrorAction,
     },
     Vgr {
         #[serde(flatten)]
@@ -996,6 +1022,20 @@ impl AlgorithmSpec {
             Self::Advisor {
                 executor_target, ..
             } => vec![executor_target],
+            // Both tiers answer requests; the capable target is called only on the sentinel.
+            // An evaluation arm may point both tiers at one target.
+            Self::SelfDelegation {
+                efficient_target,
+                capable_target,
+                ..
+            } => std::iter::once(efficient_target)
+                .chain(
+                    capable_target
+                        .iter()
+                        .filter(|name| *name != efficient_target),
+                )
+                .map(String::as_str)
+                .collect(),
             Self::Vgr { config } => {
                 vec![
                     config.efficient_target.as_str(),
@@ -1137,6 +1177,26 @@ impl AlgorithmSpec {
                 (Category::Any, vec![executor_target.clone()]),
                 (Category::Judge, vec![advisor_target.clone()]),
             ]),
+            Self::SelfDelegation {
+                efficient_target,
+                capable_target,
+                ..
+            } => {
+                let mut models = category_models([
+                    (Category::Efficient, vec![efficient_target.clone()]),
+                    (
+                        Category::Any,
+                        self.routing_target_names()
+                            .into_iter()
+                            .map(str::to_string)
+                            .collect(),
+                    ),
+                ]);
+                if let Some(capable_target) = capable_target {
+                    models.insert(Category::Capable, vec![capable_target.clone()]);
+                }
+                models
+            }
             Self::Vgr { config } => {
                 let judge = config
                     .judge_target
@@ -1177,28 +1237,36 @@ impl AlgorithmSpec {
     }
 
     /// Response target and routing-only dependency for routers that answer while routing.
+    /// The dependency is `None` when every target the route calls may answer the request.
     #[cfg(not(target_os = "wasi"))]
-    pub(crate) fn routing_response_and_dependency(&self) -> Option<(&str, &str)> {
+    pub(crate) fn routing_response_and_dependency(&self) -> Option<(&str, Option<&str>)> {
         match self {
             Self::LlmClassifier { config, .. }
                 if matches!(config.classifier_mode(), ClassifierMode::Escalation) =>
             {
                 Some((
                     config.weak_target.as_deref()?,
-                    config.classifier_target.as_str(),
+                    Some(config.classifier_target.as_str()),
                 ))
             }
             Self::Advisor {
                 executor_target,
                 advisor_target,
                 ..
-            } => Some((executor_target, advisor_target)),
+            } => Some((executor_target, Some(advisor_target))),
+            // The student's `system_prompt` (the collection rubric) reaches its routing call;
+            // the capable target receives the client's request unchanged.
+            Self::SelfDelegation {
+                efficient_target, ..
+            } => Some((efficient_target, None)),
             Self::Vgr { config } => Some((
                 &config.efficient_target,
-                config
-                    .judge_target
-                    .as_deref()
-                    .unwrap_or(&config.efficient_target),
+                Some(
+                    config
+                        .judge_target
+                        .as_deref()
+                        .unwrap_or(&config.efficient_target),
+                ),
             )),
             Self::Noop { .. }
             | Self::Random { .. }
@@ -1993,6 +2061,40 @@ fn build_algorithm(
             })?;
             Ok(Arc::new(algorithm))
         }
+        AlgorithmSpec::SelfDelegation {
+            efficient_target,
+            capable_target,
+            trace_jsonl,
+            hide_route,
+            lenient_cloud,
+            on_invalid,
+            on_student_error,
+        } => {
+            resolve_target_model_id(route_name, efficient_target, targets)?;
+            if let Some(capable_target) = capable_target {
+                resolve_target_model_id(route_name, capable_target, targets)?;
+            } else {
+                // Without a capable target there is nothing to escalate to, so the policy
+                // would silently serve instead; reject it at load.
+                if on_invalid.action == InvalidAction::Escalate {
+                    return Err(AlgorithmConfigError::new(format!(
+                        "self_delegation route {route_name}: on_invalid.action = \"escalate\" requires capable_target"
+                    )));
+                }
+                if *on_student_error == StudentErrorAction::Escalate {
+                    return Err(AlgorithmConfigError::new(format!(
+                        "self_delegation route {route_name}: on_student_error = \"escalate\" requires capable_target"
+                    )));
+                }
+            }
+            Ok(Arc::new(SelfDelegation::new(SelfDelegationConfig {
+                hide_route: *hide_route,
+                lenient_cloud: *lenient_cloud,
+                on_invalid: *on_invalid,
+                on_student_error: *on_student_error,
+                trace_jsonl: trace_jsonl.clone(),
+            })))
+        }
         AlgorithmSpec::Vgr { config } => build_vgr(route_name, config, targets),
         AlgorithmSpec::PrefillRouter {
             targets: names,
@@ -2280,5 +2382,161 @@ mod tests {
             efficient_target: "public".into(),
         };
         assert!(stage.restricted_to(&BTreeSet::from(["private"])).is_err());
+    }
+
+    fn self_delegation_targets() -> BTreeMap<String, ModelId> {
+        BTreeMap::from([
+            ("student".into(), ModelId::from("student")),
+            ("strong".into(), ModelId::from("strong")),
+        ])
+    }
+
+    #[test]
+    fn self_delegation_parses_with_defaults_and_builds() -> AlgorithmResult<()> {
+        let spec: AlgorithmSpec = toml::from_str(
+            "type = \"self_delegation\"\nefficient_target = \"student\"\ncapable_target = \"strong\"",
+        )
+        .expect("self_delegation route parses");
+        let AlgorithmSpec::SelfDelegation {
+            capable_target,
+            trace_jsonl,
+            hide_route,
+            lenient_cloud,
+            on_invalid,
+            on_student_error,
+            ..
+        } = &spec
+        else {
+            unreachable!();
+        };
+        assert_eq!(capable_target.as_deref(), Some("strong"));
+        assert!(trace_jsonl.is_none());
+        assert!(!*hide_route);
+        assert!(*lenient_cloud);
+        assert_eq!(
+            *on_invalid,
+            OnInvalid {
+                retry: 1,
+                action: InvalidAction::Serve,
+            }
+        );
+        assert_eq!(*on_student_error, StudentErrorAction::Error);
+        assert_eq!(<&'static str>::from(&spec), "self_delegation");
+        assert_eq!(spec.routing_target_names(), ["student", "strong"]);
+        assert!(spec.judge_target_names().is_empty());
+        assert_eq!(
+            spec.routing_response_and_dependency(),
+            Some(("student", None))
+        );
+        let (algorithm, models) =
+            spec.build_with_runtime_models("edgewise", &self_delegation_targets())?;
+        assert_eq!(algorithm.name(), "self_delegation");
+        assert_eq!(
+            models.models_for(&Category::Efficient),
+            [ModelId::from("student")]
+        );
+        assert_eq!(
+            models.models_for(&Category::Capable),
+            [ModelId::from("strong")]
+        );
+        assert_eq!(
+            models.models_for(&Category::Any),
+            [ModelId::from("student"), ModelId::from("strong")]
+        );
+
+        let spec: AlgorithmSpec = toml::from_str(
+            "type = \"self_delegation\"\n\
+             efficient_target = \"student\"\n\
+             capable_target = \"strong\"\n\
+             trace_jsonl = \"/var/tmp/edgewise-trace.jsonl\"\n\
+             hide_route = true\n\
+             lenient_cloud = false\n\
+             on_invalid = { retry = 2, action = \"escalate\" }\n\
+             on_student_error = \"escalate\"",
+        )
+        .expect("explicit options parse");
+        let AlgorithmSpec::SelfDelegation {
+            trace_jsonl,
+            hide_route,
+            lenient_cloud,
+            on_invalid,
+            on_student_error,
+            ..
+        } = &spec
+        else {
+            unreachable!();
+        };
+        assert_eq!(
+            trace_jsonl.as_deref(),
+            Some(std::path::Path::new("/var/tmp/edgewise-trace.jsonl"))
+        );
+        assert!(*hide_route);
+        assert!(!*lenient_cloud);
+        assert_eq!(
+            *on_invalid,
+            OnInvalid {
+                retry: 2,
+                action: InvalidAction::Escalate,
+            }
+        );
+        assert_eq!(*on_student_error, StudentErrorAction::Escalate);
+        spec.build("edgewise", &self_delegation_targets())?;
+
+        // Collection mode has no capable tier; an evaluation arm may name one target twice.
+        let collect: AlgorithmSpec =
+            toml::from_str("type = \"self_delegation\"\nefficient_target = \"student\"")
+                .expect("collection route parses");
+        assert_eq!(collect.routing_target_names(), ["student"]);
+        let (_, models) =
+            collect.build_with_runtime_models("edgewise", &self_delegation_targets())?;
+        assert!(models.models_for(&Category::Capable).is_empty());
+        assert_eq!(
+            models.models_for(&Category::Any),
+            [ModelId::from("student")]
+        );
+        let own: AlgorithmSpec = toml::from_str(
+            "type = \"self_delegation\"\nefficient_target = \"student\"\ncapable_target = \"student\"",
+        )
+        .expect("self arm parses");
+        assert_eq!(own.routing_target_names(), ["student"]);
+        let (_, models) = own.build_with_runtime_models("edgewise", &self_delegation_targets())?;
+        assert_eq!(
+            models.models_for(&Category::Capable),
+            [ModelId::from("student")]
+        );
+        assert_eq!(
+            models.models_for(&Category::Any),
+            [ModelId::from("student")]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn self_delegation_escalation_policies_require_a_capable_target() {
+        for options in [
+            "on_invalid = { action = \"escalate\" }",
+            "on_student_error = \"escalate\"",
+        ] {
+            let spec: AlgorithmSpec = toml::from_str(&format!(
+                "type = \"self_delegation\"\nefficient_target = \"student\"\n{options}"
+            ))
+            .expect("route parses");
+            let error = match spec.build("edgewise", &self_delegation_targets()) {
+                Ok(_) => panic!("{options} must be rejected without capable_target"),
+                Err(error) => error.to_string(),
+            };
+            assert!(error.contains("requires capable_target"), "{error}");
+        }
+
+        assert!(
+            toml::from_str::<AlgorithmSpec>(
+                "type = \"self_delegation\"\nefficient_target = \"student\"\non_invalid = { retries = 1 }"
+            )
+            .is_err()
+        );
+        let spec: AlgorithmSpec =
+            toml::from_str("type = \"self_delegation\"\nefficient_target = \"missing\"")
+                .expect("route parses");
+        assert!(spec.build("edgewise", &self_delegation_targets()).is_err());
     }
 }
