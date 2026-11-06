@@ -49,8 +49,8 @@ impl AlgorithmFactory {
         self.config
             .build_algorithms()
             .map(|entry| {
-                let (_, config, algorithm) = entry?;
-                Ok((config.id.to_string(), algorithm))
+                let setup = entry?;
+                Ok((setup.config.id.to_string(), (setup.algorithm, setup.models)))
             })
             .collect()
     }
@@ -64,23 +64,23 @@ impl AlgorithmFactory {
         self.config
             .build_algorithms()
             .map(|entry| {
-                let (name, route, (algorithm, mut models)) = entry?;
-                let policy = self.config.eligibility_policy(name);
+                let mut setup = entry?;
+                let policy = self.config.eligibility_policy(setup.route_name);
                 if policy.is_some() {
-                    self.config.validate_decision_models(name)?;
-                    models = models.with_target_restriction();
+                    self.config.validate_decision_models(setup.route_name)?;
+                    setup.models = setup.models.with_target_restriction();
                 }
                 Ok((
-                    route.id.to_string(),
+                    setup.config.id.to_string(),
                     ConfiguredAlgorithm {
                         standard: AlgorithmSetup {
-                            algorithm,
-                            models: Arc::new(models),
+                            algorithm: setup.algorithm,
+                            models: Arc::new(setup.models),
                         },
                         eligibility: policy.map(|policy| ConfiguredEligibility {
                             policy,
                             deployment: Arc::clone(&self.config),
-                            route_name: name.to_owned(),
+                            route_name: setup.route_name.to_owned(),
                             setups: Mutex::default(),
                         }),
                     },
@@ -112,7 +112,7 @@ impl ConfiguredEligibility {
         let requirements = self.policy.admit(request)?;
         let Some(bindings) = self
             .deployment
-            .resolve_target_bindings(&self.route_name, requirements.required_labels())?
+            .select_eligible_targets(&self.route_name, requirements.required_labels())?
         else {
             return Ok(standard.clone());
         };

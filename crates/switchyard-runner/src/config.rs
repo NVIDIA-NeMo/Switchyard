@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use libsy::{Algorithm, RuntimeModels};
 use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
@@ -167,6 +168,14 @@ pub(crate) struct RouteConfig {
     eligibility: Option<TargetEligibilityConfig>,
 }
 
+/// A route's algorithm and model groups with their source configuration.
+pub(crate) struct RouteSetup<'a> {
+    pub(crate) route_name: &'a str,
+    pub(crate) config: &'a RouteConfig,
+    pub(crate) algorithm: Arc<dyn Algorithm>,
+    pub(crate) models: RuntimeModels,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetEligibilityConfig {
@@ -274,7 +283,7 @@ impl EligibleLanes {
     ) -> RunnerResult<Arc<ExecutionLane>> {
         let Some(key) = self
             .deployment
-            .resolve_target_bindings(&self.route_name, requirements)?
+            .select_eligible_targets(&self.route_name, requirements)?
         else {
             return Ok(Arc::clone(standard));
         };
@@ -319,6 +328,11 @@ impl EligibleLanes {
         lanes.insert(key, Arc::clone(&lane));
         Ok(lane)
     }
+}
+
+struct DecisionTargetMapping<'a> {
+    target_name: &'a str,
+    model_id: &'a ModelId,
 }
 
 #[derive(Clone, Copy)]
@@ -419,7 +433,9 @@ impl DeploymentConfig {
         ))
     }
 
-    pub(crate) fn resolve_target_bindings(
+    /// None keeps the standard setup; Some contains eligible target mappings.
+    /// An empty selection never falls back to standard targets.
+    pub(crate) fn select_eligible_targets(
         &self,
         route_name: &str,
         requirements: &BTreeSet<String>,
@@ -498,9 +514,12 @@ impl DeploymentConfig {
             &targets,
             bindings.iter().any(|(name, target)| name != target),
         )?;
-        let decisions = self.resolve_decision_models(route_name, &algorithm, &overrides)?;
+        let decisions = self
+            .resolve_decision_models(route_name, &algorithm, &overrides)?
+            .into_iter()
+            .map(|mapping| (mapping.target_name, mapping.model_id));
         let (algorithm, models) =
-            build_resolved_algorithm(route_name, &algorithm, &targets, decisions.into_iter())?;
+            build_resolved_algorithm(route_name, &algorithm, &targets, decisions)?;
         Ok((algorithm, models.with_target_restriction()))
     }
 
@@ -509,7 +528,7 @@ impl DeploymentConfig {
         route_name: &str,
         algorithm: &'a AlgorithmSpec,
         overrides: &TargetOverrides<'_>,
-    ) -> RunnerResult<BTreeMap<&'a str, &'a ModelId>> {
+    ) -> RunnerResult<Vec<DecisionTargetMapping<'a>>> {
         let mut decision_clients = HashMap::new();
         algorithm
             .decision_target_names()
@@ -530,7 +549,10 @@ impl DeploymentConfig {
                         target.id
                     )));
                 }
-                Ok((name, &target.id))
+                Ok(DecisionTargetMapping {
+                    target_name: name,
+                    model_id: &target.id,
+                })
             })
             .collect()
     }
@@ -670,9 +692,7 @@ impl DeploymentConfig {
     }
 
     /// Resolves each route once; native and host-owned execution share this path.
-    pub(crate) fn build_algorithms(
-        &self,
-    ) -> impl Iterator<Item = RunnerResult<(&str, &RouteConfig, AlgorithmAndModels)>> {
+    pub(crate) fn build_algorithms(&self) -> impl Iterator<Item = RunnerResult<RouteSetup<'_>>> {
         let targets = self.build_targets();
         self.routes.iter().map(move |(route_name, config)| {
             let decision_targets = config.algorithm.decision_target_names();
@@ -728,7 +748,12 @@ impl DeploymentConfig {
                     RunnerError::configuration_source(format!("route {route_name}: {error}"), error)
                 })?;
             }
-            Ok((route_name.as_str(), config, (algorithm, models)))
+            Ok(RouteSetup {
+                route_name: route_name.as_str(),
+                config,
+                algorithm,
+                models,
+            })
         })
     }
 
@@ -759,7 +784,12 @@ impl DeploymentConfig {
         let mut routes = Vec::with_capacity(self.routes.len());
         let mut model_properties_probes = BTreeMap::new();
         for entry in self.build_algorithms() {
-            let (route_name, config, (algorithm, models)) = entry?;
+            let RouteSetup {
+                route_name,
+                config,
+                algorithm,
+                models,
+            } = entry?;
             let capabilities = config.capabilities();
             if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
                 && let Some(probe) =
