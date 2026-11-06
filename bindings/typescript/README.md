@@ -91,9 +91,12 @@ its HTTP request alive until stream completion or cancellation.
 
 ## CompositeRouter
 
-Capable-first routing defaults to pinning the efficient tier after switching to
-it. Set `stage.efficient_hold_turns: 0` to disable this hold. Efficient-first
-defaults to no efficient hold. Persist the returned state to retain holds.
+The classifier picks one of two stage profiles for each turn: `efficient_first`
+or `capable_first`. Each profile keeps its own holds. The capable-first profile
+defaults to pinning the efficient tier after switching to it. Set
+`stage.capable_first.efficient_hold_turns: 0` to disable this hold. The
+efficient-first profile defaults to no efficient hold. Persist the returned state
+to retain holds.
 
 ```ts
 import { CompositeRouter, type DecisionRequest, type DecisionResponse } from "@switchyard/libsy";
@@ -108,7 +111,10 @@ const router = CompositeRouter.create({
     classify_trigger: "user_turn",
     fail_open: false,
   },
-  stage: { efficient_first_threshold: 0.5, capable_first_threshold: 0.2 },
+  stage: {
+    efficient_first: { threshold: 0.5 },
+    capable_first: { threshold: 0.2 },
+  },
 });
 
 // Supply an adapter for your classifier provider.
@@ -119,6 +125,11 @@ const selection = await router.route([
 ], { decide, signal: controller.signal });
 // selection.model is a configured target model ID.
 ```
+
+Each profile accepts `threshold`, `recent_window`, `capable_hold_turns`,
+`efficient_hold_turns`, and `capable_system_prompt`. When a profile routes to
+the capable model with a `capable_system_prompt`, `selection.systemPrompt` holds
+that prompt. Prepend it to the system prompt of the request you send.
 
 `create` synchronously validates the options. Reuse the router for concurrent
 requests. `route` takes `RoutingMessage` values with text, tool calls, and tool
@@ -140,8 +151,9 @@ const response: DecisionResponse = {
 };
 ```
 
-The judge selects capable when `probabilities.capable` is above `0.6`.
-Stage tool signals then select the final model. `user_turn` judges new user
+The judge selects capable-first when `probabilities.capable` is above
+`classifier.cutoff`, which defaults to `0.6`. Stage tool signals in the selected
+profile then select the final model. `user_turn` judges new user
 messages; `new_session` judges when carried state has no tier.
 
 Store `selection.state` when present and pass it as `options.state` on the next
@@ -159,7 +171,7 @@ Treat `CompositeState` as opaque. It carries the judge's tier and stage holds.
 
 A rejected `decide` call follows `classifier.fail_open`. With `false`, routing
 fails with the original error as `cause`. With `true`, routing keeps the previous
-tier or uses the stage default. An answer without a usable probability for the
+tier or uses the efficient-first profile. An answer without a usable probability for the
 `apply_cutoff_to` choice (`capable` by default) follows the same policy.
 
 An aborted signal closes the Rust run and rejects promptly, including while

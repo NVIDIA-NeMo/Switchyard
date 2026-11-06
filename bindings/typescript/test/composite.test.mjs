@@ -12,7 +12,7 @@ const options = {
     classify_trigger: "user_turn",
     fail_open: false,
   },
-  stage: { efficient_first_threshold: 0.5, capable_first_threshold: 0.2 },
+  stage: { efficient_first: { threshold: 0.5 }, capable_first: { threshold: 0.2 } },
 };
 const messages = [{ role: "user", content: [{ type: "text", text: "Fix the parser" }] }];
 const continuation = [
@@ -55,7 +55,7 @@ test("decision request, cutoff, and branch-owned state", async () => {
   }
   assert.deepEqual(await router.route(continuation, { decide: unexpectedDecision }), {
     model: options.targets.efficient,
-    state: { stage_previous_tier: { string: "weak" } },
+    state: { "composite.profile_0.stage_previous_tier": { string: "weak" } },
   });
 
   const once = structuredClone(options);
@@ -90,7 +90,7 @@ test("serialized state preserves capable holds until they expire", async () => {
 test("capable-first pins efficient by default and accepts an explicit opt-out", async () => {
   for (const turns of [undefined, 0]) {
     const config = structuredClone(options);
-    config.stage.efficient_hold_turns = turns;
+    config.stage.capable_first.efficient_hold_turns = turns;
     const router = CompositeRouter.create(config);
     const initial = await router.route(messages, { decide: async () => response(0.61) });
     assert.equal(initial.model, options.targets.capable);
@@ -111,12 +111,40 @@ test("capable-first pins efficient by default and accepts an explicit opt-out", 
   }
 });
 
+test("the cutoff selects a profile and the capable-first prompt follows the capable model", async () => {
+  const config = structuredClone(options);
+  config.classifier.cutoff = 0.9;
+  config.stage.capable_first.capable_system_prompt = "Plan first.";
+  const router = CompositeRouter.create(config);
+  assert.equal(
+    (await router.route(messages, { decide: async () => response(0.9) })).model, options.targets.efficient,
+  );
+  const initial = await router.route(messages, { decide: async () => response(0.91) });
+  assert.equal(initial.model, options.targets.capable);
+  assert.equal(initial.systemPrompt, "Plan first.");
+  const write = structuredClone(continuation);
+  write[1].content[0].name = "write";
+  const selected = await router.route(write, { state: initial.state, decide: unexpectedDecision });
+  assert.equal(selected.model, options.targets.efficient);
+  assert.equal(selected.systemPrompt, undefined);
+
+  const strict = structuredClone(config);
+  strict.stage.capable_first.threshold = 1.0;
+  const strictRouter = CompositeRouter.create(strict);
+  assert.equal(
+    (await strictRouter.route(write, { state: initial.state, decide: unexpectedDecision })).model,
+    options.targets.capable,
+  );
+});
+
 test("validation and decision failure policy", async () => {
   for (const change of [
     (config) => { config.targets.efficient = config.targets.capable; },
     (config) => { config.classifier.decision = { cutoff: 0.4 }; },
+    (config) => { config.classifier.cutoff = 1.5; },
+    (config) => { config.stage.efficient_first.picker = "capable_first"; },
     (config) => { config.classifier.classify_trigger = "every_request"; },
-    (config) => { config.stage.efficient_hold_turns = -2; },
+    (config) => { config.stage.capable_first.efficient_hold_turns = -2; },
   ]) {
     const config = structuredClone(options);
     change(config);
@@ -144,7 +172,7 @@ test("validation and decision failure policy", async () => {
   assert.deepEqual(await fallback.route(messages, { state, decide }), { model: options.targets.capable });
   assert.deepEqual(await fallback.route(messages, { decide }), {
     model: options.targets.efficient,
-    state: { stage_previous_tier: { string: "weak" } },
+    state: { "composite.profile_0.stage_previous_tier": { string: "weak" } },
   });
   for (const answer of [
     { answers: {} },
@@ -157,7 +185,7 @@ test("validation and decision failure policy", async () => {
     assert.deepEqual(await fallback.route(messages, { state, decide }), { model: options.targets.capable });
     assert.deepEqual(await fallback.route(messages, { decide }), {
       model: options.targets.efficient,
-      state: { stage_previous_tier: { string: "weak" } },
+      state: { "composite.profile_0.stage_previous_tier": { string: "weak" } },
     });
   }
 });
