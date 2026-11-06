@@ -1457,6 +1457,69 @@ impl RoutedLlmClient for StreamingUsageClient {
     }
 }
 
+#[tokio::test]
+async fn buffered_routing_closes_observation_before_replay() -> switchyard_libsy::Result<()> {
+    use tracing::Instrument;
+
+    let _guard = serialize_test().lock().await;
+    let (_, _, _, exporter, _) = telemetry();
+    for drain in [false, true] {
+        let model = if drain {
+            "routing-replay-drained"
+        } else {
+            "routing-replay-dropped"
+        };
+        let mut request = request_with_metadata(model, model);
+        request.llm_request.stream = true;
+        let (_, response) = run(
+            Arc::new(RoutingCallAlgo {
+                name: model.into(),
+                target: model.into(),
+            }),
+            Arc::new(StreamingUsageClient),
+            request,
+        )
+        .instrument(tracing::info_span!(
+            "buffered-workflow",
+            gen_ai.request.model = model
+        ))
+        .await?;
+
+        // Upstream I/O is complete, so usage and parentage must export before replay.
+        let call = find_otel_span(exporter, &format!("chat {model}"), model);
+        let workflow = find_otel_span(exporter, "buffered-workflow", model);
+        assert_eq!(call.parent_span_id, workflow.span_context.span_id());
+        for (field, tokens) in [
+            ("gen_ai.usage.input_tokens", 21),
+            ("gen_ai.usage.output_tokens", 5),
+        ] {
+            assert_eq!(otel_attribute(&call, field), Some(&OtelValue::I64(tokens)));
+        }
+        let count = exporter.get_finished_spans().expect("exported spans").len();
+        if drain {
+            let replay = response
+                .llm_response
+                .into_agg()
+                .await
+                .expect("valid replay");
+            assert_eq!(
+                replay.outputs[0].content,
+                vec![ContentBlock::Text {
+                    text: "hello".into()
+                }]
+            );
+        } else {
+            drop(response);
+        }
+        assert_eq!(
+            exporter.get_finished_spans().expect("exported spans").len(),
+            count,
+            "consuming or dropping replay must not export another observation"
+        );
+    }
+    Ok(())
+}
+
 struct TimeoutClient;
 
 #[async_trait]
