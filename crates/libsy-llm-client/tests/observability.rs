@@ -10,7 +10,7 @@
 //! and model name. Counters are cumulative across flushes; the helpers take the
 //! latest (max) matching data point.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -39,7 +39,10 @@ use switchyard_libsy::{
     LlmClassifierConfig, LlmTaskClassifier, PickerMode, RoutingOutcome, RuntimeModels, StageRouter,
     StageRouterConfig, Step, TaskClassifierConfig,
 };
-use switchyard_llm_client::{ClientRouter, RunObservation, RunObserver};
+use switchyard_llm_client::{
+    Backend, ClientRouter, HttpBackendConfig, ModelConfig, RunObservation, RunObserver,
+    TranslatingLlmClient,
+};
 use switchyard_protocol::{Category, ModelId};
 use switchyard_protocol::{
     ContentBlock, LlmRequest, LlmResponse, Message, Metadata, Request, Response, Role,
@@ -215,6 +218,117 @@ fn telemetry() -> &'static Telemetry {
 fn serialize_test() -> &'static tokio::sync::Mutex<()> {
     static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+#[tokio::test]
+async fn cancelled_http_attempt_logs_its_actual_pending_phase()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let _guard = serialize_test().lock().await;
+    let (store, exporter, provider, _, _) = telemetry();
+    for (model, headers_first, phase) in [
+        ("obs-await-headers", false, "upstream_headers"),
+        ("obs-await-event", true, "upstream_first_event"),
+    ] {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        let upstream = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept upstream request");
+            let mut buffer = [0_u8; 4096];
+            let received = socket
+                .read(&mut buffer)
+                .await
+                .expect("read upstream request");
+            assert!(received > 0, "upstream request was empty");
+            if headers_first {
+                socket
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+                    .await
+                    .expect("send upstream headers");
+            }
+            ready_tx.send(()).expect("signal upstream readiness");
+            std::future::pending::<()>().await;
+        });
+        let backend = HttpBackendConfig {
+            base_url: format!("http://{address}/v1"),
+            api_key: None,
+            forward_auth: false,
+            extra_headers: BTreeMap::new(),
+            extra_body: BTreeMap::new(),
+            omit_body_fields: BTreeSet::new(),
+            reasoning_effort: None,
+            max_retries: 0,
+            failure_cooldown: Duration::ZERO,
+            timeout: None,
+        };
+        let client = TranslatingLlmClient::new(&[ModelConfig::new(
+            model,
+            Backend::OpenAiChat(backend),
+            None,
+        )])?;
+        let correlation_id = format!("correlation-{model}");
+        let mut request = Request {
+            llm_request: text_request(Some(model.to_string()), "hi"),
+            metadata: Some(Metadata {
+                correlation_id: Some(correlation_id.clone()),
+                wire_format: Some(WireFormat::OpenAiChat),
+                ..Metadata::default()
+            }),
+            ..Request::default()
+        };
+        request.llm_request.stream = true;
+        let call = tokio::spawn(async move { client.call_rewrite_model(request, None).await });
+        ready_rx.await?;
+        if headers_first {
+            // The HTTP client must have consumed the headers before it can wait for SSE data.
+            tokio::time::timeout(Duration::from_secs(2), async {
+                loop {
+                    let snapshots = flushed_metrics(exporter, provider);
+                    if f64_histogram_count(
+                        &snapshots,
+                        "switchyard.upstream_headers_latency_ms",
+                        &[("model", model)],
+                    ) == Some(1)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await?;
+        }
+        call.abort();
+        let _ = call.await;
+        upstream.abort();
+
+        let attempts: Vec<_> = store
+            .events()
+            .into_iter()
+            .filter(|event| {
+                event.target == "libsy"
+                    && event
+                        .fields
+                        .get("model")
+                        .is_some_and(|value| value.contains(model))
+                    && event.fields.contains_key("phase")
+            })
+            .collect();
+        assert_eq!(attempts.len(), 1, "{attempts:?}");
+        assert!(attempts[0].fields["phase"].contains(phase), "{attempts:?}");
+        assert!(attempts[0].fields["correlation_id"].contains(&correlation_id));
+        let snapshots = flushed_metrics(exporter, provider);
+        assert_eq!(
+            f64_histogram_count(
+                &snapshots,
+                "switchyard.upstream_headers_latency_ms",
+                &[("model", model)],
+            ),
+            headers_first.then_some(1),
+        );
+    }
+    Ok(())
 }
 
 /// Flushes the metric pipeline and returns every exported snapshot.

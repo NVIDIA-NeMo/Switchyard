@@ -571,6 +571,24 @@ impl TranslatingLlmClient {
         model: &ModelId,
         streaming: bool,
     ) -> std::result::Result<EncodedResponse, AttemptFailure> {
+        let mut timing = AttemptTiming::new(model, backend.wire_format(), metadata);
+        let result = self
+            .send_once_inner(url, backend, body, metadata, streaming, &mut timing)
+            .await;
+        timing.finish();
+        result
+    }
+
+    async fn send_once_inner(
+        &self,
+        url: &str,
+        backend: &Backend,
+        body: &Value,
+        metadata: Option<&Metadata>,
+        streaming: bool,
+        timing: &mut AttemptTiming<'_>,
+    ) -> std::result::Result<EncodedResponse, AttemptFailure> {
+        let model = timing.model;
         let client = if backend.is_forwarding_auth() {
             &self.forward_auth_client
         } else {
@@ -582,15 +600,23 @@ impl TranslatingLlmClient {
         let builder = apply_extra_headers(builder, backend);
         let builder = backend.apply_auth(builder);
 
-        let response = match async {
-            let request = builder.build()?;
-            if let Some(body) = request.body().and_then(reqwest::Body::as_bytes) {
-                crate::payload_capture::record("request", || String::from_utf8_lossy(body));
+        let request = match builder.build() {
+            Ok(request) => request,
+            Err(error) => {
+                metrics::record_upstream_attempt(None);
+                return Err(AttemptFailure {
+                    error: convert_reqwest_error(error),
+                    status: None,
+                    retry_after: None,
+                });
             }
-            client.execute(request).await
+        };
+        if let Some(body) = request.body().and_then(reqwest::Body::as_bytes) {
+            crate::payload_capture::record("request", || String::from_utf8_lossy(body));
         }
-        .await
-        {
+
+        timing.dispatched();
+        let response = match client.execute(request).await {
             Ok(response) => response,
             Err(error) => {
                 metrics::record_upstream_attempt(None);
@@ -601,11 +627,13 @@ impl TranslatingLlmClient {
                 });
             }
         };
+        timing.headers_received();
         let status = response.status();
         if status.is_success() {
             if streaming {
                 let upstream_headers = response.headers().clone();
-                let chunks = match prepare_response_stream(response, backend, model).await {
+                timing.waiting_for_first_event();
+                let chunks = match prepare_response_stream(response, backend, model, timing).await {
                     Ok(chunks) => chunks,
                     Err(error) => {
                         metrics::record_upstream_attempt(None);
@@ -913,6 +941,70 @@ struct AttemptFailure {
     retry_after: Option<Duration>,
 }
 
+// The attempt may be dropped by a downstream disconnect or a retry deadline.
+// Record the pending phase without treating every such drop as a client disconnect.
+struct AttemptTiming<'a> {
+    model: &'a ModelId,
+    wire_format: WireFormat,
+    correlation_id: Option<String>,
+    started: Instant,
+    pending: Option<&'static str>,
+    span: tracing::Span,
+}
+
+impl<'a> AttemptTiming<'a> {
+    fn new(model: &'a ModelId, wire_format: WireFormat, metadata: Option<&Metadata>) -> Self {
+        Self {
+            model,
+            wire_format,
+            correlation_id: metadata.and_then(|metadata| metadata.correlation_id.clone()),
+            started: Instant::now(),
+            pending: None,
+            span: tracing::Span::current(),
+        }
+    }
+
+    fn dispatched(&mut self) {
+        self.started = Instant::now();
+        self.pending = Some("upstream_headers");
+    }
+
+    fn headers_received(&mut self) {
+        metrics::record_upstream_headers_latency(self.model, self.started.elapsed());
+        self.pending = None;
+    }
+
+    fn waiting_for_first_event(&mut self) {
+        self.pending = Some("upstream_first_event");
+    }
+
+    fn first_event_received(&mut self) {
+        self.pending = None;
+    }
+
+    fn finish(&mut self) {
+        self.pending = None;
+    }
+}
+
+impl Drop for AttemptTiming<'_> {
+    fn drop(&mut self) {
+        if let Some(phase) = self.pending {
+            self.span.in_scope(|| {
+                tracing::warn!(
+                    target: "libsy",
+                    model = %self.model,
+                    wire_format = %self.wire_format,
+                    correlation_id = self.correlation_id.as_deref(),
+                    phase,
+                    elapsed_ms = self.started.elapsed().as_secs_f64() * 1_000.0,
+                    "upstream attempt stopped before response readiness"
+                );
+            });
+        }
+    }
+}
+
 fn deadline_error(timeout: Duration) -> LlmClientError {
     LlmClientError::Timeout {
         source: Box::new(std::io::Error::new(
@@ -965,6 +1057,7 @@ async fn prepare_response_stream(
     response: reqwest::Response,
     backend: &Backend,
     model: &ModelId,
+    timing: &mut AttemptTiming<'_>,
 ) -> Result<LlmResponseStream> {
     let bytes = response.bytes_stream().map(|chunk| {
         chunk
@@ -986,6 +1079,7 @@ async fn prepare_response_stream(
                     message,
                 });
             }
+            timing.first_event_received();
             Ok(stream::once(ready(first)).chain(chunks).boxed())
         }
     }
@@ -1673,6 +1767,8 @@ mod tests {
 
     use serde_json::json;
     use switchyard_protocol::{completion_text, text_request};
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::{Context, SubscriberExt};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1692,6 +1788,54 @@ mod tests {
             failure_cooldown: Duration::ZERO,
             timeout: None,
         }
+    }
+
+    #[derive(Clone, Default)]
+    struct AttemptLogCapture(Arc<parking_lot::Mutex<Vec<String>>>);
+
+    impl<S: tracing::Subscriber> Layer<S> for AttemptLogCapture {
+        fn on_event(&self, event: &tracing::Event<'_>, _: Context<'_, S>) {
+            if event.metadata().target() != "libsy" {
+                return;
+            }
+            let mut fields = String::new();
+            event.record(
+                &mut |field: &tracing::field::Field, value: &dyn std::fmt::Debug| {
+                    fields.push_str(&format!("{}={value:?} ", field.name()));
+                },
+            );
+            self.0.lock().push(fields);
+        }
+    }
+
+    #[test]
+    fn abandoned_attempt_reports_only_the_pending_phase() {
+        let capture = AttemptLogCapture::default();
+        let subscriber = tracing_subscriber::registry().with(capture.clone());
+        tracing::subscriber::with_default(subscriber, || {
+            let model = ModelId::from("phase-test");
+            let mut waiting = AttemptTiming::new(&model, WireFormat::OpenAiChat, None);
+            waiting.dispatched();
+            drop(waiting);
+
+            let mut waiting = AttemptTiming::new(&model, WireFormat::OpenAiChat, None);
+            waiting.dispatched();
+            waiting.headers_received();
+            waiting.waiting_for_first_event();
+            drop(waiting);
+
+            let mut answered = AttemptTiming::new(&model, WireFormat::OpenAiChat, None);
+            answered.dispatched();
+            answered.headers_received();
+            answered.waiting_for_first_event();
+            answered.first_event_received();
+            answered.finish();
+        });
+        let events = capture.0.lock();
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert!(events[0].contains("phase=\"upstream_headers\""));
+        assert!(events[1].contains("phase=\"upstream_first_event\""));
+        assert!(events.iter().all(|event| event.contains("phase-test")));
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //! Process-wide Prometheus export for Switchyard's OpenTelemetry metrics.
 
 use std::sync::OnceLock;
+use std::time::Duration;
 
 use opentelemetry::{KeyValue, global};
 use opentelemetry_sdk::metrics::{Aggregation, Instrument, SdkMeterProvider, Stream};
@@ -11,6 +12,16 @@ use prometheus::{Encoder, Registry, TextEncoder};
 use switchyard_llm_client::metrics::{http_outcome_label, http_status_code_label};
 
 pub(crate) use switchyard_llm_client::metrics::record_translation_diagnostics;
+
+pub(crate) fn record_first_stream_event_latency(model: &str, latency: Duration) {
+    global::meter("switchyard")
+        .f64_histogram("switchyard.first_stream_event_latency_ms")
+        .build()
+        .record(
+            latency.as_secs_f64() * 1_000.0,
+            &[KeyValue::new("model", model.to_string())],
+        );
+}
 
 pub(crate) const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
@@ -101,7 +112,10 @@ fn routing_overhead_buckets(instrument: &Instrument) -> Option<Stream> {
 fn llm_latency_buckets(instrument: &Instrument) -> Option<Stream> {
     if !matches!(
         instrument.name(),
-        "switchyard.model_call_latency_ms" | "switchyard.total_latency_ms"
+        "switchyard.model_call_latency_ms"
+            | "switchyard.total_latency_ms"
+            | "switchyard.upstream_headers_latency_ms"
+            | "switchyard.first_stream_event_latency_ms"
     ) {
         return None;
     }
