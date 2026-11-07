@@ -31,7 +31,8 @@ use crate::{
 };
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
-const MAX_CONFIGURED_RETRIES: u32 = 10;
+const MAX_CONFIGURED_RETRIES: u32 = 20;
+const MAX_RETRY_BACKOFF_MS: u64 = 60_000;
 
 /// This function returns a deployment's declared credential variable names without reading their values.
 /// It parses the deployment and checks its schema version before returning names from LLM and decision clients.
@@ -1294,6 +1295,10 @@ struct LlmClientConfig {
     /// Cooldown after an exhausted transient completion failure. Defaults to 5 seconds; zero disables it.
     #[serde(default = "default_failure_cooldown_ms")]
     failure_cooldown_ms: u64,
+    /// Longest backoff in milliseconds between two retries without an upstream Retry-After; the backoff
+    /// doubles from 250 ms up to it. Defaults to 2000; at most 60000.
+    #[serde(default = "default_retry_backoff_max_ms")]
+    retry_backoff_max_ms: u64,
     /// Deadline in milliseconds for all attempts and the complete response. Unset is unbounded.
     timeout_ms: Option<u64>,
     responses_reasoning: Option<ResponsesReasoningPolicy>,
@@ -1387,6 +1392,11 @@ fn build_backend(
             "llm client {client_name} max_retries must be at most {MAX_CONFIGURED_RETRIES}"
         )));
     }
+    if !(250..=MAX_RETRY_BACKOFF_MS).contains(&config.retry_backoff_max_ms) {
+        return Err(RunnerError::configuration(format!(
+            "llm client {client_name} retry_backoff_max_ms must be between 250 and {MAX_RETRY_BACKOFF_MS}"
+        )));
+    }
     if config.timeout_ms == Some(0) {
         return Err(RunnerError::configuration(format!(
             "llm client {client_name} timeout_ms must be at least 1"
@@ -1412,6 +1422,7 @@ fn build_backend(
         reasoning_effort,
         max_retries: config.max_retries,
         failure_cooldown: Duration::from_millis(config.failure_cooldown_ms),
+        retry_backoff_max: Duration::from_millis(config.retry_backoff_max_ms),
         timeout: config.timeout_ms.map(Duration::from_millis),
     };
     let backend = match config.format {
@@ -1459,6 +1470,10 @@ const fn default_max_retries() -> u32 {
 
 const fn default_fallback_on_rate_limit() -> bool {
     true
+}
+
+const fn default_retry_backoff_max_ms() -> u64 {
+    2000
 }
 
 const fn default_failure_cooldown_ms() -> u64 {
@@ -3429,12 +3444,48 @@ target = "azure"
     fn retry_budget_rejects_excessive_values() {
         let invalid = VALID_CONFIG.replacen(
             "base_url = \"https://example.test/v1\"",
-            "base_url = \"https://example.test/v1\"\nmax_retries = 11",
+            "base_url = \"https://example.test/v1\"\nmax_retries = 21",
             1,
         );
         assert!(
-            error_message(&invalid).contains("llm client primary max_retries must be at most 10")
+            error_message(&invalid).contains("llm client primary max_retries must be at most 20")
         );
+    }
+
+    #[test]
+    fn retry_backoff_cap_is_bounded_and_defaults_to_two_seconds() -> RunnerResult<()> {
+        let default: DeploymentConfig = toml::from_str(VALID_CONFIG).map_err(|error| {
+            RunnerError::configuration(format!("failed to parse default config: {error}"))
+        })?;
+        let Some(primary) = default.llm_clients.get("primary") else {
+            return Err(RunnerError::configuration("primary llm client is missing"));
+        };
+        assert_eq!(primary.retry_backoff_max_ms, 2000);
+
+        let long = VALID_CONFIG.replacen(
+            "base_url = \"https://example.test/v1\"",
+            "base_url = \"https://example.test/v1\"\nretry_backoff_max_ms = 15000",
+            1,
+        );
+        let config: DeploymentConfig = toml::from_str(&long).map_err(|error| {
+            RunnerError::configuration(format!("failed to parse backoff config: {error}"))
+        })?;
+        let Some(primary) = config.llm_clients.get("primary") else {
+            return Err(RunnerError::configuration("primary llm client is missing"));
+        };
+        assert_eq!(primary.retry_backoff_max_ms, 15_000);
+
+        for value in ["100", "60001"] {
+            let invalid = VALID_CONFIG.replacen(
+                "base_url = \"https://example.test/v1\"",
+                &format!("base_url = \"https://example.test/v1\"\nretry_backoff_max_ms = {value}"),
+                1,
+            );
+            assert!(error_message(&invalid).contains(
+                "llm client primary retry_backoff_max_ms must be between 250 and 60000"
+            ));
+        }
+        Ok(())
     }
 
     #[test]

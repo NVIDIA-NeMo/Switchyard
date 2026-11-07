@@ -56,7 +56,6 @@ const NON_FORWARDABLE_HEADERS: &[&str] = &[
 ];
 
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
-const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
 /// How one model is served: the `default_backend` used when the request does not
@@ -546,7 +545,8 @@ impl TranslatingLlmClient {
                         span.record("retry_delay_ms", 0_u64);
                         continue;
                     }
-                    let delay = retry_delay(attempt, failure.retry_after);
+                    let delay =
+                        retry_delay(attempt, failure.retry_after, backend.retry_backoff_max());
                     span.record("retry_delay_ms", duration_millis(delay));
                     // Close the attempt span before sleeping so backoff is not attempt latency.
                     drop(span);
@@ -1024,13 +1024,13 @@ fn retry_after_delay(headers: &HeaderMap) -> Option<Duration> {
     Some(delay.min(MAX_RETRY_AFTER))
 }
 
-fn retry_delay(retry_number: u64, retry_after: Option<Duration>) -> Duration {
-    // Retry-After wins; otherwise double 250 ms up to the two-second cap.
+fn retry_delay(retry_number: u64, retry_after: Option<Duration>, backoff_max: Duration) -> Duration {
+    // Retry-After wins; otherwise double 250 ms up to the backend's cap (two seconds by default).
     retry_after.unwrap_or_else(|| {
-        let multiplier = 1_u32 << retry_number.min(3);
+        let multiplier = 1_u32 << retry_number.min(8);
         INITIAL_RETRY_DELAY
             .saturating_mul(multiplier)
-            .min(MAX_RETRY_BACKOFF)
+            .min(backoff_max)
     })
 }
 
@@ -1690,6 +1690,7 @@ mod tests {
             reasoning_effort: None,
             max_retries: 0,
             failure_cooldown: Duration::ZERO,
+            retry_backoff_max: Duration::from_secs(2),
             timeout: None,
         }
     }
@@ -3333,6 +3334,7 @@ mod tests {
             let backend = HttpBackendConfig {
                 forward_auth,
                 failure_cooldown: Duration::from_secs(60),
+                retry_backoff_max: Duration::from_secs(2),
                 ..config_with_retries(&format!("{}/v1", server.uri()), 2)
             };
             let client = TranslatingLlmClient::new(&[ModelConfig::new(

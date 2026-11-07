@@ -1810,6 +1810,7 @@ mod tests {
                         reasoning_effort: None,
                         max_retries: 0,
                         failure_cooldown: std::time::Duration::ZERO,
+                        retry_backoff_max: Duration::from_secs(2),
                         timeout: None,
                     };
                     let backend = if responses {
@@ -1957,6 +1958,7 @@ mod tests {
                     reasoning_effort: None,
                     max_retries: 0,
                     failure_cooldown: std::time::Duration::ZERO,
+                    retry_backoff_max: Duration::from_secs(2),
                     timeout: None,
                 }),
                 None,
@@ -2717,6 +2719,7 @@ mod tests {
                     reasoning_effort: None,
                     max_retries: 2,
                     failure_cooldown: cooldown,
+                    retry_backoff_max: Duration::from_secs(2),
                     timeout: None,
                 })
             };
@@ -2790,6 +2793,7 @@ mod tests {
                 reasoning_effort: None,
                 max_retries: 0,
                 failure_cooldown: std::time::Duration::ZERO,
+                retry_backoff_max: Duration::from_secs(2),
                 timeout: None,
             })
         };
@@ -2890,6 +2894,7 @@ mod tests {
                 reasoning_effort: None,
                 max_retries: 0,
                 failure_cooldown: std::time::Duration::ZERO,
+                retry_backoff_max: Duration::from_secs(2),
                 timeout: None,
             })
         };

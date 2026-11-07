@@ -84,6 +84,10 @@ pub struct HttpBackendConfig {
     pub max_retries: u32,
     /// Cooldown after an exhausted transient completion failure. Zero disables it.
     pub failure_cooldown: Duration,
+    /// Longest wait between two retries when the upstream sends no Retry-After: the backoff
+    /// doubles from 250 ms up to this cap. Two seconds keeps the historical behaviour; a
+    /// shared endpoint whose capacity bursts last a minute needs a longer cap.
+    pub retry_backoff_max: Duration,
     /// Deadline for one complete response, including retries, retry delays, and stream reads.
     /// `None` leaves the wait unbounded.
     pub timeout: Option<Duration>,
@@ -341,6 +345,11 @@ impl Backend {
         self.config().failure_cooldown
     }
 
+    /// Longest backoff between two retries without an upstream Retry-After.
+    pub fn retry_backoff_max(&self) -> Duration {
+        self.config().retry_backoff_max
+    }
+
     /// Deadline for all attempts and the complete response; `None` leaves the wait unbounded.
     pub fn timeout(&self) -> Option<Duration> {
         self.config().timeout
@@ -462,6 +471,7 @@ mod tests {
             reasoning_effort: None,
             max_retries: 0,
             failure_cooldown: Duration::ZERO,
+            retry_backoff_max: Duration::from_secs(2),
             timeout: None,
         }
     }
