@@ -465,13 +465,40 @@ fn openai_finish_reason(reason: Option<&str>) -> String {
         Some("max_tokens") => "length".to_string(),
         Some("tool_use") => "tool_calls".to_string(),
         Some("refusal") => "content_filter".to_string(),
-        Some(other) => other.to_string(),
+        // OpenAI-native values arrive unchanged from OpenAI-compatible sources.
+        Some(reason @ ("stop" | "length" | "tool_calls" | "function_call" | "content_filter")) => {
+            reason.to_string()
+        }
+        // Anything else (e.g. `pause_turn`) has no OpenAI equivalent; match the buffered
+        // path, which maps unknown reasons to `stop`.
+        Some(_) => "stop".to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finish_reason_maps_unknown_provider_reasons_into_openai_vocabulary() {
+        assert_eq!(openai_finish_reason(Some("end_turn")), "stop");
+        assert_eq!(openai_finish_reason(Some("max_tokens")), "length");
+        assert_eq!(openai_finish_reason(Some("tool_use")), "tool_calls");
+        assert_eq!(openai_finish_reason(Some("refusal")), "content_filter");
+        // OpenAI-native values pass through unchanged.
+        assert_eq!(openai_finish_reason(Some("length")), "length");
+        assert_eq!(openai_finish_reason(Some("tool_calls")), "tool_calls");
+        assert_eq!(
+            openai_finish_reason(Some("content_filter")),
+            "content_filter"
+        );
+        // Reasons with no OpenAI equivalent must not leak through verbatim.
+        assert_eq!(openai_finish_reason(Some("pause_turn")), "stop");
+        assert_eq!(
+            openai_finish_reason(Some("model_context_window_exceeded")),
+            "stop"
+        );
+    }
 
     #[test]
     fn recognizes_stream_completion() {
