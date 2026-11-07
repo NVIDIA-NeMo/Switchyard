@@ -6,8 +6,8 @@
 use serde_json::{Map, Value, json};
 
 use crate::codecs::common::{
-    first_nonempty_string, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
-    reasoning_text_from_details, text_from_blocks,
+    first_nonempty_string, is_known_role_name, openai_effort_for_request, provider_extensions,
+    reasoning_text_from_blocks, reasoning_text_from_details, text_from_blocks,
 };
 use crate::codecs::openai_media::{
     ImagePayload, file_payload, file_source_text, image_payload, image_source_text,
@@ -253,11 +253,8 @@ impl FormatCodec for OpenAiChatCodec {
         if request.stream {
             body.insert("stream".to_string(), Value::Bool(true));
         }
-        if let Some(effort) = &request.reasoning.effort {
-            body.insert(
-                "reasoning_effort".to_string(),
-                Value::String(effort.clone()),
-            );
+        if let Some(effort) = openai_effort_for_request(request, &mut diagnostics, policy)? {
+            body.insert("reasoning_effort".to_string(), Value::String(effort));
         }
         if let Some(format) = encode_openai_format(&request.output, &mut diagnostics, policy)? {
             body.insert("response_format".to_string(), format);
