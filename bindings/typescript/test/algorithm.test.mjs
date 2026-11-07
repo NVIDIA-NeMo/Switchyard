@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { test } from "node:test";
-import { AlgorithmFactory, ConfiguredAlgorithm, LibsyError, LlmResponse, Step } from "../dist/index.js";
+import { AlgorithmFactory, ConfiguredAlgorithm, ConfiguredRoute, LibsyError, LlmResponse, Step } from "../dist/index.js";
 
 const deployment = `
 schema_version = 1
@@ -52,6 +52,40 @@ const answer = { answers: { route: { value: {
   type: "choice", data: { selected: "capable", probabilities: { capable: 0.9, efficient: 0.1 } },
 } } } };
 
+function labelledDeployment(scope) {
+  const targets = [
+    ["private_fast", ["private"]], ["private_capable", ["private"]],
+    ["both_fast", ["private", "customer_data"]], ["both_capable", ["private", "customer_data"]],
+    ["llm_judge", []], ["private_judge", ["private", "customer_data"]],
+  ].map(([name, labels]) => `[targets.${name}]\nid = "upstream/${name}"\nllm_client = "answers"\nlabels = ${JSON.stringify(labels)}\n`).join("");
+  const eligibility = [
+    ["parent", ""], ["classifier", 'judge = ["private_decision"]'],
+    ["llm", 'llm_judge = ["private_judge"]'],
+  ].map(([name, judge]) => `
+[routes.${name}.eligibility]
+require_explicit_requirements = true
+scope = "${scope}"
+[routes.${name}.eligibility.target_alternatives]
+fast = ["private_fast", "both_fast"]
+capable = ["private_capable", "both_capable"]
+${judge}
+`).join("");
+  return `${deployment}${targets}
+[decision_targets.private_decision]
+id = "upstream/private_decision"
+decision_client = "judge"
+labels = ["private", "customer_data"]
+[routes.llm]
+id = "public/llm"
+type = "llm_classifier"
+classifier_target = "llm_judge"
+strong_target = "capable"
+weak_target = "fast"
+fail_open = false
+base_threshold = 0.5
+${eligibility}`;
+}
+
 async function collect(source) {
   const result = [];
   for await (const item of source) result.push(item);
@@ -90,6 +124,89 @@ test("factory rejects configuration requiring Runner admission", () => {
   assert.throws(() => AlgorithmFactory.fromToml(`${deployment}\n[routes.parent.eligibility]\n`).build(), {
     code: "ERR_CONFIG", message: /requires Runner admission/,
   });
+});
+
+test("configured routes check labels before yielding and retain task requirements", async () => {
+  assert.equal(process.env.SWITCHYARD_FACTORY_TEST_KEY_THAT_IS_NOT_SET, undefined);
+  const configured = AlgorithmFactory.fromToml(labelledDeployment("task")).buildConfigured();
+  const route = configured["public/main"];
+  assert.ok(route instanceof ConfiguredAlgorithm);
+  assert.ok(route instanceof ConfiguredRoute);
+  assert.deepEqual(route.targetModels(), Object.fromEntries([
+    "fast", "capable", "private_fast", "private_capable", "both_fast", "both_capable",
+  ].map((name) => [name, { client: "answers", id: `upstream/${name}` }])));
+  for (const options of [
+    { taskId: "missing-assessment" },
+    { requiredLabels: [] },
+    { requiredLabels: ["unapproved"], taskId: "unapproved" },
+  ]) {
+    const run = route.runStream(request, options);
+    await assert.rejects(run.next(), { code: "ERR_INVALID_REQUEST" });
+    assert.deepEqual(await run.next(), { done: true, value: undefined });
+  }
+  for (const options of [
+    { requiredLabels: "private" }, { requiredLabels: null }, { requiredLabels: [1] },
+    { requiredLabels: [""] }, { taskId: 1 }, { taskId: null },
+  ]) {
+    assert.throws(() => route.runStream(request, options), { code: "ERR_INVALID_REQUEST" });
+  }
+  for (const [taskId, requiredLabels, expected] of [
+    ["shared", ["private"], "private_fast"],
+    ["shared", ["customer_data"], "both_fast"],
+    ["shared", [], "both_fast"],
+    ["other", [], "fast"],
+  ]) {
+    const steps = await collect(route.runStream(request, {
+      requiredLabels, taskId, headers: { "x-switchyard-task-id": "shared" },
+    }));
+    assert.equal(steps[0].outcome.selected_model_ids[0], expected);
+  }
+  for (const options of [
+    { requiredLabels: [] },
+    { taskId: "trusted", headers: { "x-switchyard-task-id": "from-header" } },
+  ]) {
+    assert.throws(() => routes["public/main"].runStream(request, options), {
+      code: "ERR_INVALID_REQUEST", message: /buildConfigured/,
+    });
+  }
+  assert.equal("targetModels" in routes["public/main"], false);
+  await assert.rejects(configured["public/advisor"].runStream(request, { requiredLabels: [] }).next(), {
+    code: "ERR_INVALID_REQUEST",
+  });
+});
+
+test("configured routes yield approved LLM and Decision judges for the host", async (t) => {
+  const configured = AlgorithmFactory.fromToml(labelledDeployment("request")).buildConfigured();
+  for (const decision of [false, true]) {
+    const route = configured[decision ? "public/classify" : "public/llm"];
+    const targets = route.targetModels();
+    const run = route.runStream(request, {
+      requiredLabels: ["private", "customer_data"],
+    });
+    t.after(() => run.return());
+    const step = (await run.next()).value;
+    if (decision) {
+      assert.ok(step instanceof Step.CallDecision);
+      assert.equal(step.call.model, "upstream/private_decision");
+      assert.equal(step.call.request.model, step.call.model);
+      assert.deepEqual(targets[step.call.model], { client: "judge", id: "upstream/private_decision" });
+      await step.call.respond(Promise.resolve(answer));
+    } else {
+      assert.ok(step instanceof Step.CallModel);
+      assert.deepEqual(step.call.models, ["private_judge"]);
+      assert.equal(step.call.request.model, "private_judge");
+      const target = targets[step.call.models[0]];
+      assert.deepEqual(target, { client: "answers", id: "upstream/private_judge" });
+      const response = aggregate(JSON.stringify({
+        crux: "bounded task", primary_rule: "SUP-1", capability_boundary: "supported", p_solve: 0.9,
+      }));
+      response.model = target.id;
+      await step.call.respond(Promise.resolve(new LlmResponse.Agg(response)));
+    }
+    const done = (await run.next()).value;
+    assert.deepEqual([...done.outcome.selected_model_ids].sort(), ["both_capable", "both_fast"]);
+    assert.deepEqual(await run.next(), { done: true, value: undefined });
+  }
 });
 
 test("decision calls accept async replies and failures", async (t) => {

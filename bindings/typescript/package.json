@@ -16,7 +16,7 @@
   "files": ["dist", "LICENSE", "NOTICE", "README.md"],
   "scripts": {
     "build": "node scripts/build.mjs && tsc",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {

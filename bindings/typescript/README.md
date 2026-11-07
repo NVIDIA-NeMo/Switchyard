@@ -41,8 +41,46 @@ const steps = routes["public/main"].runStream(request, { headers });
 `source` is deployment TOML and `request` is a normalized Switchyard request.
 The factory validates configuration without resolving credentials or creating
 provider clients. Reuse configured algorithms to retain algorithm-owned state.
-Configurations that require target eligibility checks must use Runner admission;
-the factory rejects them.
+`build()` rejects configurations that require target eligibility checks. Use
+`buildConfigured()` to return `ConfiguredRoute` handles with those checks while
+keeping model calls in the host:
+
+```ts
+const routes = AlgorithmFactory.fromToml(source).buildConfigured();
+const coding = routes["switchyard/coding"];
+const targetModels = coding.targetModels();
+const steps = coding.runStream(request, {
+  requiredLabels: ["private", "customer_data"],
+  taskId: trustedTaskId,
+});
+```
+
+The application owns the labels and task identity. Omitted `requiredLabels` means
+no assessment was supplied; `[]` explicitly supplies no new requirements.
+`runStream()` throws immediately for malformed options or invalid label syntax.
+Target eligibility is checked on the first iterator read, before any model call is
+yielded; failures reject that read. Handle errors from both creating and reading
+the iterator. Routes configured with `scope = "task"`
+retain requirements on the reused handle; later requests can add labels but
+cannot clear them. `taskId` takes precedence over a task ID derived from headers.
+Retained requirements are local to that handle and process.
+Handles from `build()` accept only headers; supplied labels (including `[]`) or
+`taskId` are rejected.
+
+`coding.targetModels()` maps every possible call target to `{ client, id }`,
+including judges, subagents and ordered alternatives. Keys match emitted calls:
+logical target names for LLM calls, provider model IDs for Decision calls.
+This is a lookup, not an eligible pool; serve only emitted calls and outcome
+candidates. `targetModels()` is available only on `ConfiguredRoute` handles from
+`buildConfigured()`.
+
+For an emitted model `call`, use the host's existing client registry:
+
+```ts
+const { client, id } = targetModels[call.models[0]];
+const work = clients[client].call({ ...call.request, model: id });
+await call.respond(work);
+```
 
 The iterator yields Python-compatible routing steps:
 
