@@ -5,7 +5,10 @@
 
 use serde_json::{Value, json};
 use switchyard_llm_client::AuxiliaryOperation;
-use switchyard_protocol::{LlmClientError, ModelId, Request, text_request};
+use switchyard_protocol::{
+    ContentBlock, LlmClientError, Message, ModelId, Request, Role, ToolCall, ToolResult,
+    text_request,
+};
 use switchyard_runner::{Runner, RunnerError, require_target_labels};
 use wiremock::matchers::{body_partial_json, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -144,6 +147,101 @@ async fn configured_stage_keeps_answer_fallbacks_approved() {
         ["approved/fast", "approved/capable"]
     );
     server.verify().await;
+}
+
+#[tokio::test]
+async fn three_tier_stage_routes_moderate_recovery_and_keeps_fallbacks_approved() {
+    let server = MockServer::start().await;
+    let mut recovery = request("moderate", Some(&["private", "customer_data"]));
+    recovery.llm_request.messages.extend([
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolCall(ToolCall {
+                id: "call_1".into(),
+                name: "Bash".into(),
+                arguments: json!({"command": "cargo test"}),
+            })],
+        },
+        Message {
+            role: Role::Tool,
+            content: vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "call_1".into(),
+                content: vec![ContentBlock::Text {
+                    text: "connection refused".into(),
+                }],
+                is_error: Some(true),
+            })],
+        },
+    ]);
+    let algorithm = STAGE.replace(
+        "confidence_threshold = 0.6",
+        "confidence_threshold = 0.2\nbalanced_target = \"approved_judge\"",
+    );
+    let runner =
+        Runner::from_toml(&config(&server.uri(), &algorithm, "")).expect("three-tier stage");
+    let route = runner.route("chat").expect("route");
+    let decision = route
+        .decide(recovery.clone())
+        .await
+        .expect("moderate recovery");
+    assert_eq!(
+        decision.selected_model_ids,
+        ["approved_judge", "both_capable", "both_fast"]
+    );
+    let quiet = route
+        .decide(request("quiet", Some(&["private", "customer_data"])))
+        .await
+        .expect("picker default");
+    assert_eq!(quiet.selected_model_ids[0], "both_fast");
+    let mut critical = recovery.clone();
+    critical.metadata.as_mut().expect("metadata").task_id = Some("critical".into());
+    if let ContentBlock::ToolResult(result) = &mut critical.llm_request.messages[2].content[0] {
+        result.content = vec![ContentBlock::Text {
+            text: "out of memory".into(),
+        }];
+    }
+    let severe = route.decide(critical).await.expect("hard override");
+    assert_eq!(severe.selected_model_ids[0], "both_capable");
+    respond(&server, "approved/judge", ResponseTemplate::new(503), 1).await;
+    respond(
+        &server,
+        "approved/capable",
+        completion("approved/capable", "recovered"),
+        1,
+    )
+    .await;
+    route
+        .execute(recovery.clone(), None)
+        .await
+        .expect("approved fallback");
+    assert_eq!(
+        models_called(&server).await,
+        ["approved/judge", "approved/capable"]
+    );
+    server.verify().await;
+
+    let blocked = Runner::from_toml(&config(
+        &server.uri(),
+        &algorithm.replace(
+            "balanced_target = \"approved_judge\"",
+            "balanced_target = \"judge\"",
+        ),
+        "",
+    ))
+    .expect("valid route");
+    assert!(
+        blocked
+            .route("chat")
+            .expect("route")
+            .decide(recovery)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        models_called(&server).await.len(),
+        2,
+        "unapproved middle tier must fail before I/O"
+    );
 }
 
 #[tokio::test]

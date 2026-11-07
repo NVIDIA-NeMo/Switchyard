@@ -471,11 +471,14 @@ the signals work and for tuning.
 | `capable_target` | Yes | — | Capable tier. |
 | `efficient_target` | Yes | — | Efficient tier. |
 | `picker` | Yes | — | `efficient_first`, or `capable_first` (experimental, unbenchmarked). Tier used when the signals are not confident. |
+| `balanced_target` | No | unset | Middle tier for moderate positive tool scores. Omit to keep two-tier routing. |
+| `capable_score_threshold` | No | `0.55` with `balanced_target` | Positive tool-score confidence at or above this value selects capable; lower decisive positive scores select balanced. In `[0, 1]` and above `confidence_threshold`. Requires `balanced_target`. Overrides select capable. |
 | `confidence_threshold` | Yes | — | Corroboration a decisive pick needs. In `[0, 1]`. `efficient_first_threshold` is accepted as an alias. |
 | `capable_first_threshold` | No | `0.0` | Threshold used after an outer classifier selects the capable tier. Only a [composite](#composite) route sets that tier, so this key has no effect on a standalone `stage_router` route. |
 | `capable_system_prompt` | No | unset | System prompt prepended for capable requests. |
 | `efficient_system_prompt` | No | unset | System prompt prepended for efficient requests. |
 | `recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
+| `balanced_hold_turns` | No | `0` | Requests kept on balanced that would otherwise use efficient. Signals still run, so a capable decision takes effect at once. `-1` keeps balanced until a capable decision. Requires `balanced_target`. |
 | `capable_hold_turns` | No | `2` | Requests kept on capable after a switch. Signal-driven capable decisions also start finite holds. Active holds skip signal processing and classification; `0` disables; `-1` pins after a switch. |
 | `efficient_hold_turns` | No | `0` | Requests kept on efficient after a switch, even when errors appear. `0` disables; `-1` pins after a switch. |
 | `tool_semantics.observe` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as read-only investigation. |
