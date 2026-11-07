@@ -315,6 +315,20 @@ pub fn merge_cloud(strong_text: &str, hide_route: bool) -> (String, bool) {
 }
 
 /// The first output's text and its tool calls.
+/// The reasoning blocks of the first output joined with newlines; `None` when there are none.
+fn reasoning_text(response: &AggLlmResponse) -> Option<String> {
+    let parts: Vec<&str> = response
+        .first_output()
+        .into_iter()
+        .flat_map(|output| &output.content)
+        .filter_map(|block| match block {
+            ContentBlock::Reasoning { text, .. } if !text.is_empty() => Some(text.as_str()),
+            _ => None,
+        })
+        .collect();
+    (!parts.is_empty()).then(|| parts.join("\n"))
+}
+
 fn text_and_tools(response: &AggLlmResponse) -> (String, Vec<Value>) {
     let mut text = String::new();
     let mut tools = Vec::new();
@@ -538,6 +552,10 @@ async fn call_buffered(driver: &Driver, request: Request, target: &ModelId) -> R
 /// One student call as recorded in the trace.
 struct Attempt {
     content: String,
+    /// The model's reasoning (thinking) text, when the provider returned it; the
+    /// visible `content` never contains it. Recorded so collection traces keep the
+    /// teacher's thinking for students trained with thinking on.
+    reasoning: Option<String>,
     tool_calls: Vec<Value>,
     finish_reason: Value,
     usage: Usage,
@@ -553,6 +571,7 @@ impl Attempt {
     fn to_json(&self) -> Value {
         json!({
             "content": self.content,
+            "reasoning": self.reasoning,
             "tool_calls": self.tool_calls,
             "finish_reason": self.finish_reason,
             "usage": usage_json(&self.usage),
@@ -766,6 +785,7 @@ impl Algorithm for SelfDelegation {
                         valid: is_valid(&text, tool_calls.len()),
                         collection_valid: collection.map(|label| label.is_some()),
                         content: text,
+                        reasoning: reasoning_text(&buffered.agg),
                         tool_calls,
                         finish_reason: finish_reason(&buffered.agg),
                         usage: buffered.agg.usage.clone(),
@@ -789,6 +809,7 @@ impl Algorithm for SelfDelegation {
                     tracing::warn!(target = %efficient, %error, "self_delegation student call failed");
                     attempts.push(Attempt {
                         content: String::new(),
+                        reasoning: None,
                         tool_calls: Vec::new(),
                         finish_reason: Value::Null,
                         usage: Usage::default(),

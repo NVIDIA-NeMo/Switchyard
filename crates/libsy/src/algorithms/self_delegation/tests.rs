@@ -295,6 +295,7 @@ async fn local_reply_is_served_unchanged() -> Result<()> {
     assert!(attempt["latency_ms"].is_u64());
     assert!(attempt["error"].is_null());
     assert!(attempt["collection_valid"].is_null());
+    assert!(attempt["reasoning"].is_null(), "no reasoning block, no reasoning field");
     assert!(record["strong"].is_null());
     assert_eq!(record["served"]["by"], "student");
     assert_eq!(record["served"]["content"], text);
@@ -1004,6 +1005,33 @@ async fn the_trace_records_the_request_as_the_student_engine_receives_it() -> Re
     assert_eq!(body["tools"][0]["function"]["name"], "bash");
     assert!(body.get("stream").is_none(), "the student call is buffered");
     assert_eq!(record["student"]["target"], STUDENT);
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_trace_records_the_student_reasoning_apart_from_the_content() -> Result<()> {
+    let trace = TraceFile::new("reasoning");
+    let mut agg = reply("{\"route\":\"local\"}\nok", 1);
+    agg.outputs[0].content.insert(
+        0,
+        ContentBlock::Reasoning {
+            text: "The test names the parser; read it first.".to_string(),
+            signature: None,
+            details: Vec::new(),
+        },
+    );
+    let fake = Fake::new(vec![Ok(agg)], vec![]);
+
+    let (_, served) = drive(trace.config(), request(), RuntimeModels::new(models(true)), &fake).await?;
+
+    assert!(has_text_block(&served), "the reply is served with its text");
+    let attempt = &trace.record()["student"]["attempts"][0];
+    assert_eq!(attempt["content"], "{\"route\":\"local\"}\nok");
+    assert_eq!(
+        attempt["reasoning"],
+        "The test names the parser; read it first."
+    );
+    assert_eq!(attempt["classification"], "local");
     Ok(())
 }
 
