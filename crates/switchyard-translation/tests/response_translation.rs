@@ -19,6 +19,73 @@ use common::{
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
+fn buffered_response_content_reports_or_rejects_loss() -> TestResult {
+    use switchyard_translation::{DiagnosticSeverity, LossyConversionPolicy, TranslationError};
+
+    let engine = TranslationEngine::default();
+    for source in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+        for malformed in [false, true] {
+            let mut content = vec![json!({"type": "text", "text": "Visible answer"})];
+            if malformed {
+                content.insert(0, json!(31));
+            }
+            let body = match source {
+                WireFormat::OpenAiChat => json!({
+                    "id": "reply", "model": "provider", "choices": [{"index": 0,
+                        "message": {"role": "assistant", "content": content},
+                        "finish_reason": "stop"}]
+                }),
+                WireFormat::AnthropicMessages => json!({
+                    "id": "reply", "model": "provider", "type": "message",
+                    "role": "assistant", "content": content, "stop_reason": "end_turn",
+                    "usage": {"input_tokens": 3, "output_tokens": 2}
+                }),
+                _ => unreachable!(),
+            };
+            let policy = TranslationPolicy::default();
+            let decoded = engine.decode_response(source, &body, &policy)?;
+            assert_eq!(
+                decoded.response.outputs[0].content,
+                vec![ContentBlock::Text {
+                    text: "Visible answer".to_string()
+                }]
+            );
+            assert_eq!(decoded.diagnostics.len(), usize::from(malformed));
+            if malformed {
+                assert_eq!(decoded.diagnostics[0].code, "lossy_conversion");
+                assert_eq!(decoded.diagnostics[0].severity, DiagnosticSeverity::Warning);
+            }
+            let translated =
+                engine.translate_response(source, WireFormat::OpenAiResponses, &body, &policy)?;
+            let expected = decoded
+                .diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.with_formats(source, WireFormat::OpenAiResponses))
+                .collect::<Vec<_>>();
+            assert_eq!(translated.diagnostics, expected);
+            let strict = TranslationPolicy {
+                lossy_conversion_policy: LossyConversionPolicy::Reject,
+                ..policy
+            };
+            let decoded = engine.decode_response(source, &body, &strict);
+            let translated =
+                engine.translate_response(source, WireFormat::OpenAiResponses, &body, &strict);
+            if malformed {
+                assert!(matches!(decoded, Err(TranslationError::LossyConversion(_))));
+                assert!(matches!(
+                    translated,
+                    Err(TranslationError::LossyConversion(_))
+                ));
+            } else {
+                assert!(decoded?.diagnostics.is_empty());
+                assert!(translated?.diagnostics.is_empty());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn responses_native_output_is_preserved_or_rejected() -> TestResult {
     use switchyard_translation::{StreamTranslationState, TranslationError};
     let engine = TranslationEngine::default();

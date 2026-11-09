@@ -268,12 +268,9 @@ impl FormatCodec for OpenAiChatCodec {
         Ok(EncodedRequest { body, diagnostics })
     }
 
-    fn decode_response(
-        &self,
-        body: &Value,
-        _policy: &TranslationPolicy,
-    ) -> Result<DecodedResponse> {
+    fn decode_response(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedResponse> {
         let object = object(body, "$")?;
+        let mut diagnostics = Vec::new();
         // `abort`, `error` and `repetition` mean the generation did not complete.
         if let Some(reason @ ("abort" | "error" | "repetition")) = object
             .get("choices")
@@ -303,7 +300,7 @@ impl FormatCodec for OpenAiChatCodec {
             preservation: capture_response_preservation(
                 WireFormat::OpenAiChat,
                 &Value::Object(object.clone()),
-                _policy,
+                policy,
             ),
         };
         if let Some(choice) = object
@@ -327,8 +324,8 @@ impl FormatCodec for OpenAiChatCodec {
                 Some(content) => decode_openai_content(
                     content,
                     WireFormat::OpenAiChat,
-                    &mut Vec::new(),
-                    &TranslationPolicy::default(),
+                    &mut diagnostics,
+                    policy,
                     "$.choices[0].message.content",
                 )?,
             };
@@ -374,7 +371,7 @@ impl FormatCodec for OpenAiChatCodec {
 
         Ok(DecodedResponse {
             response,
-            diagnostics: Vec::new(),
+            diagnostics,
         })
     }
 
