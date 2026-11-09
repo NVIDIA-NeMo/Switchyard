@@ -378,7 +378,7 @@ impl TranslatingLlmClient {
                 .get(model)
                 .map(|config| config.responses_reasoning)
                 .unwrap_or_default()
-                .normalize(&mut body, backend.base_url(), model);
+                .normalize(&mut body, backend.base_url(), upstream_model);
         }
         // After the merge on purpose: the effort override must win over both the caller's
         // value and any `reasoning` default a target set through `extra_body`. Token counting
@@ -2964,17 +2964,37 @@ mod tests {
         ]);
         // An explicit policy wins over the target. `Auto` follows the target.
         let cases = [
-            (Auto, "openai/gpt-5", PreserveEncrypted),
-            (Auto, "nvidia/zai-org/glm-5.3-flash", PreservePlaintext),
+            (Auto, "openai/gpt-5", None, PreserveEncrypted),
+            (Auto, "executor", Some("openai/gpt-5"), PreserveEncrypted),
+            (
+                Auto,
+                "nvidia/zai-org/glm-5.3-flash",
+                None,
+                PreservePlaintext,
+            ),
+            (
+                Auto,
+                "openai/gpt-5",
+                Some("nvidia/zai-org/glm-5.3-flash"),
+                PreservePlaintext,
+            ),
             (
                 PreserveEncrypted,
                 "nvidia/zai-org/glm-5.3-flash",
+                None,
                 PreserveEncrypted,
             ),
-            (Drop, "openai/gpt-5", Drop),
+            (
+                PreservePlaintext,
+                "executor",
+                Some("openai/gpt-5"),
+                PreservePlaintext,
+            ),
+            (Drop, "openai/gpt-5", None, Drop),
+            (Drop, "executor", Some("openai/gpt-5"), Drop),
         ];
         for store in [Some(true), Some(false), None] {
-            for (policy, model, behavior) in cases {
+            for (policy, model, provider_model, behavior) in cases {
                 for has_input_override in [false, true] {
                     let server = MockServer::start().await;
                     Mock::given(method("POST"))
@@ -2994,12 +3014,13 @@ mod tests {
                             .extra_body
                             .insert("input".to_string(), history.clone());
                     }
-                    let client = TranslatingLlmClient::new(&[ModelConfig::new(
-                        model,
-                        Backend::OpenAiResponses(backend),
-                        None,
-                    )
-                    .with_responses_reasoning(policy)])?;
+                    let mut model_config =
+                        ModelConfig::new(model, Backend::OpenAiResponses(backend), None)
+                            .with_responses_reasoning(policy);
+                    if let Some(provider_model) = provider_model {
+                        model_config = model_config.with_provider_model(provider_model);
+                    }
+                    let client = TranslatingLlmClient::new(&[model_config])?;
                     let mut request = json!({"model": "switchyard", "input": history});
                     if let Some(store) = store {
                         request["store"] = json!(store);
@@ -3014,6 +3035,7 @@ mod tests {
                         .await?;
                     let requests = server.received_requests().await.ok_or("missing requests")?;
                     let body: Value = serde_json::from_slice(&requests[0].body)?;
+                    assert_eq!(body["model"], json!(provider_model.unwrap_or(model)));
                     let stored = store != Some(false);
                     let mut expected = vec![history[0].clone()];
                     match behavior {
@@ -3044,7 +3066,7 @@ mod tests {
                     assert_eq!(
                         body["input"],
                         json!(expected),
-                        "store={store:?}, policy={policy:?}, model={model}, replace={has_input_override}"
+                        "store={store:?}, policy={policy:?}, model={model}, provider={provider_model:?}, replace={has_input_override}"
                     );
                 }
             }
