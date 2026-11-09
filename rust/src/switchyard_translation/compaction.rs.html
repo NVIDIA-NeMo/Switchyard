@@ -10,17 +10,17 @@
 <a href=#10 id=10 data-nosnippet>10</a>        .and_then(|headers| headers.get(<span class="string">"x-codex-turn-metadata"</span>))
 <a href=#11 id=11 data-nosnippet>11</a>        .and_then(|value| serde_json::from_slice::&lt;serde_json::Value&gt;(value.as_bytes()).ok())
 <a href=#12 id=12 data-nosnippet>12</a>        .is_some_and(|metadata| metadata[<span class="string">"request_kind"</span>] == <span class="string">"compaction"</span>);
-<a href=#13 id=13 data-nosnippet>13</a>    request.has_compaction |= request
-<a href=#14 id=14 data-nosnippet>14</a>        .messages
-<a href=#15 id=15 data-nosnippet>15</a>        .iter()
-<a href=#16 id=16 data-nosnippet>16</a>        .flat_map(|message| <span class="kw-2">&amp;</span>message.content)
-<a href=#17 id=17 data-nosnippet>17</a>        .any(|block| <span class="kw">match </span>block {
-<a href=#18 id=18 data-nosnippet>18</a>            ContentBlock::Text { text } =&gt; {
-<a href=#19 id=19 data-nosnippet>19</a>                <span class="kw">let </span>text = text.to_lowercase();
-<a href=#20 id=20 data-nosnippet>20</a>                text.contains(<span class="string">"session is being continued"</span>) || has_hermes_marker(<span class="kw-2">&amp;</span>text)
-<a href=#21 id=21 data-nosnippet>21</a>            }
-<a href=#22 id=22 data-nosnippet>22</a>            <span class="kw">_ </span>=&gt; <span class="bool-val">false</span>,
-<a href=#23 id=23 data-nosnippet>23</a>        });
+<a href=#13 id=13 data-nosnippet>13</a>    request.has_compaction |= request.messages.iter().any(|message| {
+<a href=#14 id=14 data-nosnippet>14</a>        message.content.iter().any(|block| <span class="kw">match </span>block {
+<a href=#15 id=15 data-nosnippet>15</a>            ContentBlock::Text { text } =&gt; {
+<a href=#16 id=16 data-nosnippet>16</a>                <span class="kw">let </span>text = text.to_lowercase();
+<a href=#17 id=17 data-nosnippet>17</a>                text.contains(<span class="string">"session is being continued"</span>)
+<a href=#18 id=18 data-nosnippet>18</a>                    || (message.role == Role::User &amp;&amp; text.trim_start().starts_with(CODEX_SUMMARY))
+<a href=#19 id=19 data-nosnippet>19</a>                    || has_hermes_marker(<span class="kw-2">&amp;</span>text)
+<a href=#20 id=20 data-nosnippet>20</a>            }
+<a href=#21 id=21 data-nosnippet>21</a>            <span class="kw">_ </span>=&gt; <span class="bool-val">false</span>,
+<a href=#22 id=22 data-nosnippet>22</a>        })
+<a href=#23 id=23 data-nosnippet>23</a>    });
 <a href=#24 id=24 data-nosnippet>24</a>    request.is_compaction |= is_compaction
 <a href=#25 id=25 data-nosnippet>25</a>        || request
 <a href=#26 id=26 data-nosnippet>26</a>            .messages
@@ -64,7 +64,7 @@
 <a href=#64 id=64 data-nosnippet>64</a>        ),
 <a href=#65 id=65 data-nosnippet>65</a>        ContentBlock::Text { text } =&gt; {
 <a href=#66 id=66 data-nosnippet>66</a>            <span class="kw">let </span>text = text.trim().to_ascii_lowercase();
-<a href=#67 id=67 data-nosnippet>67</a>            text.starts_with(<span class="string">"another language model started to solve this problem and produced a summary of its thinking process."</span>)
+<a href=#67 id=67 data-nosnippet>67</a>            text.starts_with(CODEX_SUMMARY)
 <a href=#68 id=68 data-nosnippet>68</a>                || text.starts_with(<span class="string">"this session is being continued from a previous conversation that ran out of context."</span>)
 <a href=#69 id=69 data-nosnippet>69</a>                || (text.starts_with(<span class="string">"the conversation history before this point was compacted into the following summary:"</span>)
 <a href=#70 id=70 data-nosnippet>70</a>                    &amp;&amp; text.ends_with(<span class="string">"&lt;/summary&gt;"</span>))
@@ -78,61 +78,119 @@
 <a href=#78 id=78 data-nosnippet>78</a>    }
 <a href=#79 id=79 data-nosnippet>79</a>}
 <a href=#80 id=80 data-nosnippet>80</a>
-<a href=#81 id=81 data-nosnippet>81</a><span class="kw">const </span>HERMES_REPLAY: <span class="kw-2">&amp;</span>str = <span class="string">"[still in progress \u{2014} this is the active request, restated after the compaction boundary"</span>;
+<a href=#81 id=81 data-nosnippet>81</a><span class="kw">const </span>CODEX_SUMMARY: <span class="kw-2">&amp;</span>str = <span class="string">"another language model started to solve this problem and produced a summary of its thinking process."</span>;
 <a href=#82 id=82 data-nosnippet>82</a>
-<a href=#83 id=83 data-nosnippet>83</a><span class="kw">fn </span>is_hermes_summary(text: <span class="kw-2">&amp;</span>str) -&gt; bool {
-<a href=#84 id=84 data-nosnippet>84</a>    <span class="kw">const </span>END: <span class="kw-2">&amp;</span>str = <span class="string">"--- end of context summary \u{2014} respond to the message below, not the summary above ---"</span>;
-<a href=#85 id=85 data-nosnippet>85</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>((<span class="kw">_</span>, tail)) = text.rsplit_once(END)
-<a href=#86 id=86 data-nosnippet>86</a>        &amp;&amp; !tail.trim().is_empty()
-<a href=#87 id=87 data-nosnippet>87</a>        &amp;&amp; !tail.trim_start().starts_with(HERMES_REPLAY)
-<a href=#88 id=88 data-nosnippet>88</a>    {
-<a href=#89 id=89 data-nosnippet>89</a>        <span class="kw">return </span><span class="bool-val">false</span>;
-<a href=#90 id=90 data-nosnippet>90</a>    }
-<a href=#91 id=91 data-nosnippet>91</a>    has_hermes_marker(text)
-<a href=#92 id=92 data-nosnippet>92</a>        || text
-<a href=#93 id=93 data-nosnippet>93</a>            .lines()
-<a href=#94 id=94 data-nosnippet>94</a>            .any(|line| line.trim_start().starts_with(<span class="string">"[context summary]:"</span>))
-<a href=#95 id=95 data-nosnippet>95</a>}
-<a href=#96 id=96 data-nosnippet>96</a>
-<a href=#97 id=97 data-nosnippet>97</a><span class="kw">fn </span>has_hermes_marker(text: <span class="kw-2">&amp;</span>str) -&gt; bool {
-<a href=#98 id=98 data-nosnippet>98</a>    text.lines().any(|line| {
-<a href=#99 id=99 data-nosnippet>99</a>        <span class="kw">let </span>line = line.trim_start();
-<a href=#100 id=100 data-nosnippet>100</a>        line.starts_with(<span class="string">"[context compaction \u{2014} reference only]"</span>)
-<a href=#101 id=101 data-nosnippet>101</a>            || line.starts_with(HERMES_REPLAY)
-<a href=#102 id=102 data-nosnippet>102</a>    })
-<a href=#103 id=103 data-nosnippet>103</a>}
-<a href=#104 id=104 data-nosnippet>104</a>
-<a href=#105 id=105 data-nosnippet>105</a><span class="attr">#[cfg(test)]
-<a href=#106 id=106 data-nosnippet>106</a></span><span class="kw">mod </span>tests {
-<a href=#107 id=107 data-nosnippet>107</a>    <span class="kw">use crate</span>::{WireFormat, decode_request};
-<a href=#108 id=108 data-nosnippet>108</a>    <span class="kw">use </span>serde_json::json;
-<a href=#109 id=109 data-nosnippet>109</a>
-<a href=#110 id=110 data-nosnippet>110</a>    <span class="attr">#[test]
-<a href=#111 id=111 data-nosnippet>111</a>    </span><span class="kw">fn </span>summary_continues_but_fresh_user_input_does_not() {
-<a href=#112 id=112 data-nosnippet>112</a>        <span class="kw">let </span><span class="kw-2">mut </span>body = <span class="macro">json!</span>({<span class="string">"messages"</span>: [
-<a href=#113 id=113 data-nosnippet>113</a>            {<span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"content"</span>: [
-<a href=#114 id=114 data-nosnippet>114</a>                {<span class="string">"type"</span>: <span class="string">"text"</span>, <span class="string">"text"</span>: <span class="string">"prior context\n[CONTEXT COMPACTION \u{2014} REFERENCE ONLY] summary"</span>},
-<a href=#115 id=115 data-nosnippet>115</a>                {<span class="string">"type"</span>: <span class="string">"image_url"</span>, <span class="string">"image_url"</span>: {<span class="string">"url"</span>: <span class="string">"https://example.com/image.png"</span>}}
-<a href=#116 id=116 data-nosnippet>116</a>            ]},
-<a href=#117 id=117 data-nosnippet>117</a>            {<span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"content"</span>: <span class="string">"&lt;environment_context&gt;updated&lt;/environment_context&gt;"</span>}
-<a href=#118 id=118 data-nosnippet>118</a>        ]});
-<a href=#119 id=119 data-nosnippet>119</a>        <span class="kw">let </span>request = decode_request(WireFormat::OpenAiChat, <span class="kw-2">&amp;</span>body).unwrap();
-<a href=#120 id=120 data-nosnippet>120</a>        <span class="macro">assert!</span>(request.is_compaction &amp;&amp; request.has_compaction);
-<a href=#121 id=121 data-nosnippet>121</a>        <span class="kw">for </span>role <span class="kw">in </span>[<span class="kw">super</span>::Role::System, <span class="kw">super</span>::Role::Developer] {
-<a href=#122 id=122 data-nosnippet>122</a>            <span class="kw">let </span><span class="kw-2">mut </span>with_instruction = request.clone();
-<a href=#123 id=123 data-nosnippet>123</a>            with_instruction
-<a href=#124 id=124 data-nosnippet>124</a>                .messages
-<a href=#125 id=125 data-nosnippet>125</a>                .push(<span class="kw">super</span>::Message::text(role, <span class="string">"Follow repository instructions"</span>));
-<a href=#126 id=126 data-nosnippet>126</a>            with_instruction.is_compaction = <span class="bool-val">false</span>;
-<a href=#127 id=127 data-nosnippet>127</a>            <span class="kw">super</span>::normalize_compaction(<span class="kw-2">&amp;mut </span>with_instruction, <span class="prelude-val">None</span>);
-<a href=#128 id=128 data-nosnippet>128</a>            <span class="macro">assert!</span>(with_instruction.is_compaction);
-<a href=#129 id=129 data-nosnippet>129</a>        }
-<a href=#130 id=130 data-nosnippet>130</a>        body[<span class="string">"messages"</span>]
-<a href=#131 id=131 data-nosnippet>131</a>            .as_array_mut()
-<a href=#132 id=132 data-nosnippet>132</a>            .unwrap()
-<a href=#133 id=133 data-nosnippet>133</a>            .push(<span class="macro">json!</span>({<span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"content"</span>: <span class="string">"Now fix the parser"</span>}));
-<a href=#134 id=134 data-nosnippet>134</a>        <span class="kw">let </span>followup = decode_request(WireFormat::OpenAiChat, <span class="kw-2">&amp;</span>body).unwrap();
-<a href=#135 id=135 data-nosnippet>135</a>        <span class="macro">assert!</span>(!followup.is_compaction &amp;&amp; followup.has_compaction);
-<a href=#136 id=136 data-nosnippet>136</a>    }
-<a href=#137 id=137 data-nosnippet>137</a>}
+<a href=#83 id=83 data-nosnippet>83</a><span class="kw">const </span>HERMES_REPLAY: <span class="kw-2">&amp;</span>str = <span class="string">"[still in progress \u{2014} this is the active request, restated after the compaction boundary"</span>;
+<a href=#84 id=84 data-nosnippet>84</a>
+<a href=#85 id=85 data-nosnippet>85</a><span class="kw">fn </span>is_hermes_summary(text: <span class="kw-2">&amp;</span>str) -&gt; bool {
+<a href=#86 id=86 data-nosnippet>86</a>    <span class="kw">const </span>END: <span class="kw-2">&amp;</span>str = <span class="string">"--- end of context summary \u{2014} respond to the message below, not the summary above ---"</span>;
+<a href=#87 id=87 data-nosnippet>87</a>    <span class="kw">if let </span><span class="prelude-val">Some</span>((<span class="kw">_</span>, tail)) = text.rsplit_once(END)
+<a href=#88 id=88 data-nosnippet>88</a>        &amp;&amp; !tail.trim().is_empty()
+<a href=#89 id=89 data-nosnippet>89</a>        &amp;&amp; !tail.trim_start().starts_with(HERMES_REPLAY)
+<a href=#90 id=90 data-nosnippet>90</a>    {
+<a href=#91 id=91 data-nosnippet>91</a>        <span class="kw">return </span><span class="bool-val">false</span>;
+<a href=#92 id=92 data-nosnippet>92</a>    }
+<a href=#93 id=93 data-nosnippet>93</a>    has_hermes_marker(text)
+<a href=#94 id=94 data-nosnippet>94</a>        || text
+<a href=#95 id=95 data-nosnippet>95</a>            .lines()
+<a href=#96 id=96 data-nosnippet>96</a>            .any(|line| line.trim_start().starts_with(<span class="string">"[context summary]:"</span>))
+<a href=#97 id=97 data-nosnippet>97</a>}
+<a href=#98 id=98 data-nosnippet>98</a>
+<a href=#99 id=99 data-nosnippet>99</a><span class="kw">fn </span>has_hermes_marker(text: <span class="kw-2">&amp;</span>str) -&gt; bool {
+<a href=#100 id=100 data-nosnippet>100</a>    text.lines().any(|line| {
+<a href=#101 id=101 data-nosnippet>101</a>        <span class="kw">let </span>line = line.trim_start();
+<a href=#102 id=102 data-nosnippet>102</a>        line.starts_with(<span class="string">"[context compaction \u{2014} reference only]"</span>)
+<a href=#103 id=103 data-nosnippet>103</a>            || line.starts_with(HERMES_REPLAY)
+<a href=#104 id=104 data-nosnippet>104</a>    })
+<a href=#105 id=105 data-nosnippet>105</a>}
+<a href=#106 id=106 data-nosnippet>106</a>
+<a href=#107 id=107 data-nosnippet>107</a><span class="attr">#[cfg(test)]
+<a href=#108 id=108 data-nosnippet>108</a></span><span class="kw">mod </span>tests {
+<a href=#109 id=109 data-nosnippet>109</a>    <span class="kw">use crate</span>::{WireFormat, decode_request};
+<a href=#110 id=110 data-nosnippet>110</a>    <span class="kw">use </span>serde_json::json;
+<a href=#111 id=111 data-nosnippet>111</a>
+<a href=#112 id=112 data-nosnippet>112</a>    <span class="attr">#[test]
+<a href=#113 id=113 data-nosnippet>113</a>    </span><span class="kw">fn </span>codex_summary_remains_in_history_after_a_new_user_turn() {
+<a href=#114 id=114 data-nosnippet>114</a>        <span class="kw">let </span>summary = <span class="string">"  Another language model started to solve this problem and produced a summary of its thinking process. Continue the task."</span>;
+<a href=#115 id=115 data-nosnippet>115</a>        <span class="kw">for </span>format <span class="kw">in </span>[
+<a href=#116 id=116 data-nosnippet>116</a>            WireFormat::OpenAiChat,
+<a href=#117 id=117 data-nosnippet>117</a>            WireFormat::OpenAiResponses,
+<a href=#118 id=118 data-nosnippet>118</a>            WireFormat::AnthropicMessages,
+<a href=#119 id=119 data-nosnippet>119</a>        ] {
+<a href=#120 id=120 data-nosnippet>120</a>            <span class="kw">let </span>field = <span class="kw">if </span>format == WireFormat::OpenAiResponses {
+<a href=#121 id=121 data-nosnippet>121</a>                <span class="string">"input"
+<a href=#122 id=122 data-nosnippet>122</a>            </span>} <span class="kw">else </span>{
+<a href=#123 id=123 data-nosnippet>123</a>                <span class="string">"messages"
+<a href=#124 id=124 data-nosnippet>124</a>            </span>};
+<a href=#125 id=125 data-nosnippet>125</a>            <span class="kw">let </span><span class="kw-2">mut </span>body = <span class="macro">json!</span>({<span class="string">"model"</span>: <span class="string">"model"</span>, <span class="string">"max_tokens"</span>: <span class="number">32</span>});
+<a href=#126 id=126 data-nosnippet>126</a>            body[field] = <span class="macro">json!</span>([{<span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"content"</span>: summary}]);
+<a href=#127 id=127 data-nosnippet>127</a>            <span class="kw">let </span>request = decode_request(format, <span class="kw-2">&amp;</span>body).unwrap();
+<a href=#128 id=128 data-nosnippet>128</a>            <span class="macro">assert!</span>(
+<a href=#129 id=129 data-nosnippet>129</a>                request.is_compaction &amp;&amp; request.has_compaction,
+<a href=#130 id=130 data-nosnippet>130</a>                <span class="string">"{format:?}"
+<a href=#131 id=131 data-nosnippet>131</a>            </span>);
+<a href=#132 id=132 data-nosnippet>132</a>            body[field]
+<a href=#133 id=133 data-nosnippet>133</a>                .as_array_mut()
+<a href=#134 id=134 data-nosnippet>134</a>                .unwrap()
+<a href=#135 id=135 data-nosnippet>135</a>                .push(<span class="macro">json!</span>({<span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"content"</span>: <span class="string">"Now fix the parser"</span>}));
+<a href=#136 id=136 data-nosnippet>136</a>            <span class="kw">let </span>request = decode_request(format, <span class="kw-2">&amp;</span>body).unwrap();
+<a href=#137 id=137 data-nosnippet>137</a>            <span class="macro">assert!</span>(
+<a href=#138 id=138 data-nosnippet>138</a>                !request.is_compaction &amp;&amp; request.has_compaction,
+<a href=#139 id=139 data-nosnippet>139</a>                <span class="string">"{format:?}"
+<a href=#140 id=140 data-nosnippet>140</a>            </span>);
+<a href=#141 id=141 data-nosnippet>141</a>        }
+<a href=#142 id=142 data-nosnippet>142</a>    }
+<a href=#143 id=143 data-nosnippet>143</a>
+<a href=#144 id=144 data-nosnippet>144</a>    <span class="attr">#[test]
+<a href=#145 id=145 data-nosnippet>145</a>    </span><span class="kw">fn </span>compaction_request_and_quoted_summary_do_not_mark_history() {
+<a href=#146 id=146 data-nosnippet>146</a>        <span class="kw">let </span>summary = <span class="string">"Another language model started to solve this problem and produced a summary of its thinking process."</span>;
+<a href=#147 id=147 data-nosnippet>147</a>        <span class="kw">for </span>message <span class="kw">in </span>[
+<a href=#148 id=148 data-nosnippet>148</a>            <span class="macro">json!</span>({<span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"content"</span>: <span class="string">"Summarize existing work."</span>}),
+<a href=#149 id=149 data-nosnippet>149</a>            <span class="macro">json!</span>({<span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"content"</span>: <span class="macro">format!</span>(<span class="string">"Explain this phrase: {summary}"</span>)}),
+<a href=#150 id=150 data-nosnippet>150</a>            <span class="macro">json!</span>({<span class="string">"role"</span>: <span class="string">"assistant"</span>, <span class="string">"content"</span>: summary}),
+<a href=#151 id=151 data-nosnippet>151</a>            <span class="macro">json!</span>({<span class="string">"role"</span>: <span class="string">"system"</span>, <span class="string">"content"</span>: summary}),
+<a href=#152 id=152 data-nosnippet>152</a>            <span class="macro">json!</span>({<span class="string">"role"</span>: <span class="string">"developer"</span>, <span class="string">"content"</span>: summary}),
+<a href=#153 id=153 data-nosnippet>153</a>            <span class="macro">json!</span>({<span class="string">"role"</span>: <span class="string">"tool"</span>, <span class="string">"tool_call_id"</span>: <span class="string">"read"</span>, <span class="string">"content"</span>: summary}),
+<a href=#154 id=154 data-nosnippet>154</a>        ] {
+<a href=#155 id=155 data-nosnippet>155</a>            <span class="kw">let </span>body = <span class="macro">json!</span>({<span class="string">"messages"</span>: [message]});
+<a href=#156 id=156 data-nosnippet>156</a>            <span class="kw">let </span><span class="kw-2">mut </span>request = decode_request(WireFormat::OpenAiChat, <span class="kw-2">&amp;</span>body).unwrap();
+<a href=#157 id=157 data-nosnippet>157</a>            <span class="macro">assert!</span>(!request.is_compaction &amp;&amp; !request.has_compaction);
+<a href=#158 id=158 data-nosnippet>158</a>            <span class="kw">let </span><span class="kw-2">mut </span>headers = http::HeaderMap::new();
+<a href=#159 id=159 data-nosnippet>159</a>            headers.insert(
+<a href=#160 id=160 data-nosnippet>160</a>                <span class="string">"x-codex-turn-metadata"</span>,
+<a href=#161 id=161 data-nosnippet>161</a>                <span class="string">r#"{"request_kind":"compaction"}"#</span>.parse().unwrap(),
+<a href=#162 id=162 data-nosnippet>162</a>            );
+<a href=#163 id=163 data-nosnippet>163</a>            <span class="kw">super</span>::normalize_compaction(<span class="kw-2">&amp;mut </span>request, <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span>headers));
+<a href=#164 id=164 data-nosnippet>164</a>            <span class="macro">assert!</span>(request.is_compaction &amp;&amp; !request.has_compaction);
+<a href=#165 id=165 data-nosnippet>165</a>        }
+<a href=#166 id=166 data-nosnippet>166</a>    }
+<a href=#167 id=167 data-nosnippet>167</a>
+<a href=#168 id=168 data-nosnippet>168</a>    <span class="attr">#[test]
+<a href=#169 id=169 data-nosnippet>169</a>    </span><span class="kw">fn </span>summary_continues_but_fresh_user_input_does_not() {
+<a href=#170 id=170 data-nosnippet>170</a>        <span class="kw">let </span><span class="kw-2">mut </span>body = <span class="macro">json!</span>({<span class="string">"messages"</span>: [
+<a href=#171 id=171 data-nosnippet>171</a>            {<span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"content"</span>: [
+<a href=#172 id=172 data-nosnippet>172</a>                {<span class="string">"type"</span>: <span class="string">"text"</span>, <span class="string">"text"</span>: <span class="string">"prior context\n[CONTEXT COMPACTION \u{2014} REFERENCE ONLY] summary"</span>},
+<a href=#173 id=173 data-nosnippet>173</a>                {<span class="string">"type"</span>: <span class="string">"image_url"</span>, <span class="string">"image_url"</span>: {<span class="string">"url"</span>: <span class="string">"https://example.com/image.png"</span>}}
+<a href=#174 id=174 data-nosnippet>174</a>            ]},
+<a href=#175 id=175 data-nosnippet>175</a>            {<span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"content"</span>: <span class="string">"&lt;environment_context&gt;updated&lt;/environment_context&gt;"</span>}
+<a href=#176 id=176 data-nosnippet>176</a>        ]});
+<a href=#177 id=177 data-nosnippet>177</a>        <span class="kw">let </span>request = decode_request(WireFormat::OpenAiChat, <span class="kw-2">&amp;</span>body).unwrap();
+<a href=#178 id=178 data-nosnippet>178</a>        <span class="macro">assert!</span>(request.is_compaction &amp;&amp; request.has_compaction);
+<a href=#179 id=179 data-nosnippet>179</a>        <span class="kw">for </span>role <span class="kw">in </span>[<span class="kw">super</span>::Role::System, <span class="kw">super</span>::Role::Developer] {
+<a href=#180 id=180 data-nosnippet>180</a>            <span class="kw">let </span><span class="kw-2">mut </span>with_instruction = request.clone();
+<a href=#181 id=181 data-nosnippet>181</a>            with_instruction
+<a href=#182 id=182 data-nosnippet>182</a>                .messages
+<a href=#183 id=183 data-nosnippet>183</a>                .push(<span class="kw">super</span>::Message::text(role, <span class="string">"Follow repository instructions"</span>));
+<a href=#184 id=184 data-nosnippet>184</a>            with_instruction.is_compaction = <span class="bool-val">false</span>;
+<a href=#185 id=185 data-nosnippet>185</a>            <span class="kw">super</span>::normalize_compaction(<span class="kw-2">&amp;mut </span>with_instruction, <span class="prelude-val">None</span>);
+<a href=#186 id=186 data-nosnippet>186</a>            <span class="macro">assert!</span>(with_instruction.is_compaction);
+<a href=#187 id=187 data-nosnippet>187</a>        }
+<a href=#188 id=188 data-nosnippet>188</a>        body[<span class="string">"messages"</span>]
+<a href=#189 id=189 data-nosnippet>189</a>            .as_array_mut()
+<a href=#190 id=190 data-nosnippet>190</a>            .unwrap()
+<a href=#191 id=191 data-nosnippet>191</a>            .push(<span class="macro">json!</span>({<span class="string">"role"</span>: <span class="string">"user"</span>, <span class="string">"content"</span>: <span class="string">"Now fix the parser"</span>}));
+<a href=#192 id=192 data-nosnippet>192</a>        <span class="kw">let </span>followup = decode_request(WireFormat::OpenAiChat, <span class="kw-2">&amp;</span>body).unwrap();
+<a href=#193 id=193 data-nosnippet>193</a>        <span class="macro">assert!</span>(!followup.is_compaction &amp;&amp; followup.has_compaction);
+<a href=#194 id=194 data-nosnippet>194</a>    }
+<a href=#195 id=195 data-nosnippet>195</a>}
 </code></pre></div></section></main></body></html>
