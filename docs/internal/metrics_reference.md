@@ -99,13 +99,15 @@ In addition, `switchyard_client_responses_total` records `outcome="client_discon
 | Metric | Type | Meaning |
 |---|---|---|
 | `switchyard_client_responses_total{outcome}` | counter | HTTP responses returned to clients on the LLM-serving routes (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`). The denominator for the **router-served** error rate. |
-| `switchyard_upstream_attempts_total{outcome,code}` | counter | Individual upstream call attempts. One client request can produce N attempts via retry. The denominator for the **direct-to-endpoint** baseline error rate. The `code` label carries the raw upstream HTTP status for plotting the error-code distribution (see below). |
+| `switchyard_upstream_attempts_total{outcome,code}` | counter | Individual upstream call attempts. One client request can produce N attempts via retry. The denominator for the **direct-to-endpoint** baseline error rate. The `code` label carries the upstream status, including a retryable status reported before answer content in an OpenAI Chat stream (see below). |
 | `switchyard_router_retry_recovered_total` | counter | Upstream operations that succeeded after at least one retry. |
 
 ### The `code` label on `switchyard_upstream_attempts_total`
 
-`code` is the raw upstream HTTP status as a string: `"200"`, `"429"`,
-`"500"`, `"504"`, etc. Two special values:
+`code` is normally the upstream HTTP status as a string: `"200"`, `"429"`,
+`"500"`, `"504"`, etc. If an OpenAI Chat stream returns HTTP 200 but reports a
+retryable error before answer content, `code` is the status in that error frame.
+Two special values:
 
 * `code="none"`: a non-HTTP failure (network error, connection reset,
   pre-status timeout). The attempt never received a status line, so there
