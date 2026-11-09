@@ -126,7 +126,9 @@ impl RoutedDecisionClient for OpenAiDecisionClient {
                 ) => {
                     let mut probabilities = probabilities;
                     probabilities.sort_by_key(|p| p.value);
-                    if probabilities.len() != levels.len()
+                    if levels.is_empty()
+                        || !(0.0..=(levels.len() - 1) as f64).contains(&score.0)
+                        || probabilities.len() != levels.len()
                         || probabilities
                             .iter()
                             .enumerate()
