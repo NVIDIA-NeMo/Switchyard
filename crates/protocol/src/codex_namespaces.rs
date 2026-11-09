@@ -4,7 +4,7 @@
 //! Reads the Codex tool namespaces that a Responses request decoder records.
 //!
 //! Codex groups tools into `namespace` containers. The Responses codec in
-//! `switchyard-translation` flattens each child to `<namespace>__<tool>` and
+//! `switchyard-translation` flattens each child to `<namespace>_sy_priv_ns_<tool>` and
 //! stores the mapping in the request's [`ProviderExtensions`]. Code that does not
 //! depend on the translation crate uses these helpers to recover the tool name.
 
@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use crate::ProviderExtensions;
 
 /// Separator between a namespace and a tool name in a qualified wire name.
-pub const NAMESPACE_SEPARATOR: &str = "__";
+pub const NAMESPACE_SEPARATOR: &str = "_sy_priv_ns_";
 
 /// Request extension key holding the qualified-name to namespace mapping.
 ///

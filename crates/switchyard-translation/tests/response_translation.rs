@@ -864,7 +864,7 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
                     "function": {"name": "search", "arguments": "{\"q\":\"rust\"}"}
                 }, {
                     "id": "call_2", "type": "function",
-                    "function": {"name": "mcp__docs__search", "arguments": "{\"query\":\"streaming\"}"}
+                    "function": {"name": "mcp__docs_sy_priv_ns_search", "arguments": "{\"query\":\"streaming\"}"}
                 }, {
                     "id": "call_3", "type": "function",
                     "function": {"name": "exec", "arguments": "{\"input\":\"ls -la\"}"}
@@ -890,7 +890,7 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
         json!([
             {"type": "function_call", "call_id": "call_1", "name": "search",
                 "arguments": "{\"q\": \"rust\"}"},
-            {"type": "function_call", "call_id": "call_2", "name": "mcp__docs__search",
+            {"type": "function_call", "call_id": "call_2", "name": "mcp__docs_sy_priv_ns_search",
                 "arguments": "{\"query\": \"streaming\"}"},
             {"type": "function_call", "call_id": "call_3", "name": "exec",
                 "arguments": "{\"input\": \"ls -la\"}"}

@@ -10,7 +10,7 @@
 //! `{"type": "function_call", "name": "search", "namespace": "mcp__docs"}`.
 //!
 //! OpenAI-compatible upstreams accept only flat `function` tools, so the request
-//! codec flattens the containers and names each child `<namespace>__<tool>`.
+//! codec flattens the containers and names each child `<namespace>_sy_priv_ns_<tool>`.
 //! Two tools differing only by namespace therefore stay distinct upstream, and
 //! the conversation history uses the same spelling so the transcript never
 //! teaches the model a name the upstream was not offered.
@@ -178,22 +178,22 @@ mod tests {
     }
 
     // A tool name may itself contain the separator, so the namespace is matched
-    // as a prefix rather than by splitting on the first `__`.
+    // as a prefix rather than by splitting on the first occurrence of the separator.
     #[test]
     fn splits_a_qualified_name_back_apart() {
         let simple = extensions(&[("mcp__docs", "search")]);
         let simple = tool_namespaces(&simple).expect("mapping present");
         assert_eq!(
-            split_qualified_name(simple, "mcp__docs__search"),
+            split_qualified_name(simple, "mcp__docs_sy_priv_ns_search"),
             Some(("search", "mcp__docs"))
         );
         assert_eq!(split_qualified_name(simple, "unknown_tool"), None);
 
-        let nested = extensions(&[("mcp__docs", "fetch__raw")]);
+        let nested = extensions(&[("mcp__docs", "fetch_sy_priv_ns_raw")]);
         let nested = tool_namespaces(&nested).expect("mapping present");
         assert_eq!(
-            split_qualified_name(nested, "mcp__docs__fetch__raw"),
-            Some(("fetch__raw", "mcp__docs"))
+            split_qualified_name(nested, "mcp__docs_sy_priv_ns_fetch_sy_priv_ns_raw"),
+            Some(("fetch_sy_priv_ns_raw", "mcp__docs"))
         );
     }
 
@@ -216,7 +216,7 @@ mod tests {
     fn resolves_namespaces_that_are_not_mcp_servers() {
         let origins = qualified_tool_origins(&extensions(&[("multi_agent_v1", "spawn_agent")]));
         let mut response = json!({
-            "output": [{"type": "function_call", "name": "multi_agent_v1__spawn_agent"}]
+            "output": [{"type": "function_call", "name": "multi_agent_v1_sy_priv_ns_spawn_agent"}]
         });
 
         restore_qualified_tool_names(&mut response, &origins);
