@@ -31,6 +31,10 @@ use crate::util::{
     reject_responses_native_input_item, stable_id, string_value, validate_request_capabilities,
 };
 
+// OpenAI's limit for tool names:
+// https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create
+const MAX_TOOL_NAME_LENGTH: usize = 64;
+
 /// Format codec for OpenAI Chat Completions payloads.
 pub struct OpenAiChatCodec;
 
@@ -1205,12 +1209,22 @@ pub(crate) fn encode_openai_tools(tools: &[Tool]) -> Result<Value> {
     Ok(Value::Array(
         tools
             .iter()
-            .map(|tool| {
+            .enumerate()
+            .map(|(index, tool)| {
                 let tool = tool.function().ok_or_else(|| {
                     TranslationError::LossyConversion(
                         "MCP and provider tool encoding is not implemented".into(),
                     )
                 })?;
+                if tool.name.len() > MAX_TOOL_NAME_LENGTH {
+                    return Err(TranslationError::InvalidValue {
+                        path: format!("$.tools[{index}].function.name"),
+                        message: format!(
+                            "tool name {:?} exceeds the {MAX_TOOL_NAME_LENGTH}-character limit",
+                            tool.name
+                        ),
+                    });
+                }
                 let mut function = json!({
                     "name": tool.name,
                     "description": tool.description.clone().unwrap_or_default(),

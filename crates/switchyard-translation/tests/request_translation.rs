@@ -1938,60 +1938,81 @@ fn anthropic_openai_compatible_extensions_are_preserved_for_openai_chat() -> Tes
     Ok(())
 }
 
-// Verifies Codex-style Responses tools translate into OpenAI Chat tool definitions.
 #[test]
-fn responses_request_translates_codex_tool_shape_to_openai_chat() -> TestResult {
-    let engine = TranslationEngine::default();
-    let body = json!({
-        "model": "gpt-4",
-        "instructions": "Be brief.",
-        "input": "List files",
-        "max_output_tokens": 1024,
-        "reasoning": {"effort": "high"},
-        "tools": [
-            {
-                "type": "function",
-                "id": "exec_command",
-                "description": "Runs a command in a PTY.",
-                "inputSchema": {
-                    "jsonSchema": {
-                        "type": "object",
-                        "properties": {"cmd": {"type": "string"}},
-                        "required": ["cmd"]
-                    }
-                }
-            },
-            {"id": "", "description": "", "inputSchema": {"jsonSchema": {}}}
-        ],
-        "tool_choice": "required"
-    });
+fn responses_tools_translate_to_chat_or_reject_oversized_names() -> TestResult {
+    use switchyard_protocol::codex_namespaces::NAMESPACE_SEPARATOR;
 
-    let output = engine
-        .translate_request(
+    let test_cases = [
+        json!({"tool_name": "manage_repository_notification_subscription", "expect_failure": false}),
+        json!({"tool_name": "manage_repository_notification_subscriptions", "expect_failure": true}),
+    ];
+    let engine = TranslationEngine::default();
+    let namespace = "mcp__code_host";
+    for case in test_cases {
+        let tool_name = case["tool_name"].as_str().unwrap();
+        let body = json!({
+            "model": "gpt-4",
+            "instructions": "Be brief.",
+            "input": "Manage repository notifications",
+            "max_output_tokens": 1024,
+            "reasoning": {"effort": "high"},
+            "tools": [{
+                "type": "namespace",
+                "name": namespace,
+                "tools": [
+                    {
+                        "type": "function",
+                        "id": tool_name,
+                        "description": "Manage repository notification subscriptions.",
+                        "inputSchema": {
+                            "jsonSchema": {
+                                "type": "object",
+                                "properties": {"repository": {"type": "string"}},
+                                "required": ["repository"]
+                            }
+                        }
+                    },
+                    {"id": "", "description": "", "inputSchema": {"jsonSchema": {}}}
+                ]
+            }],
+            "tool_choice": "required"
+        });
+        let result = engine.translate_request(
             WireFormat::OpenAiResponses,
             WireFormat::OpenAiChat,
             &body,
             &TranslationPolicy::default(),
-        )?
-        .body;
-
-    assert_eq!(
-        output["messages"][0],
-        json!({"role": "system", "content": "Be brief."})
-    );
-    assert_eq!(
-        output["messages"][1],
-        json!({"role": "user", "content": "List files"})
-    );
-    assert_eq!(output["max_completion_tokens"], 1024);
-    assert_eq!(output["reasoning_effort"], "high");
-    assert_eq!(output["tool_choice"], "required");
-    assert_eq!(output["tools"].as_array().unwrap().len(), 1);
-    assert_eq!(output["tools"][0]["function"]["name"], "exec_command");
-    assert_eq!(
-        output["tools"][0]["function"]["parameters"]["required"],
-        json!(["cmd"])
-    );
+        );
+        if case["expect_failure"] == true {
+            assert!(matches!(
+                result,
+                Err(TranslationError::InvalidValue { path, .. })
+                    if path == "$.tools[0].function.name"
+            ));
+        } else {
+            let output = result?.body;
+            assert_eq!(
+                output["messages"][0],
+                json!({"role": "system", "content": "Be brief."})
+            );
+            assert_eq!(
+                output["messages"][1],
+                json!({"role": "user", "content": "Manage repository notifications"})
+            );
+            assert_eq!(output["max_completion_tokens"], 1024);
+            assert_eq!(output["reasoning_effort"], "high");
+            assert_eq!(output["tool_choice"], "required");
+            assert_eq!(output["tools"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                output["tools"][0]["function"]["name"],
+                format!("{namespace}{NAMESPACE_SEPARATOR}{tool_name}")
+            );
+            assert_eq!(
+                output["tools"][0]["function"]["parameters"]["required"],
+                json!(["repository"])
+            );
+        }
+    }
     Ok(())
 }
 
