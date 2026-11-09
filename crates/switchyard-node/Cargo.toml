@@ -16,6 +16,7 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
+switchyard-dllm = { path = "../switchyard-dllm" }
 napi = { version = "3", default-features = false, features = ["napi8", "tokio_rt", "dyn-symbols"] }
 napi-derive = "3"
 futures.workspace = true

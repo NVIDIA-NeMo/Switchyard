@@ -23,6 +23,36 @@ The build uses Cargo's development profile and copies the addon and license file
 into the package. Rebuild after changing Rust code. Tests use local callbacks and
 HTTP fixtures.
 
+## Embedded Deciffusion
+
+`DllmEngine` loads dllm's Zig inference engine into the Node process. Build the
+engine and tokenizer libraries in `../dllm`. To build just the CPU tokenizer
+library from the dllm checkout:
+
+```bash
+zig build tokenizer -Doptimize=ReleaseSafe
+```
+
+```ts
+import { CompositeRouter, DllmEngine } from "@switchyard/libsy";
+
+const engine = await DllmEngine.load({
+  library: "/path/to/dllm/zig-out/lib/libdllm.so",
+  tokenizer_library: "/path/to/dllm/zig-out/lib/libdllm_tokenizer.so",
+  weights: "/path/to/Deciffusion/checkpoint",
+  tokenizer: "/path/to/Deciffusion/tokenizer-directory",
+});
+// Pass decide: (request) => engine.decide(request) to router.route().
+// Release the GPU model when the host shuts down.
+await engine.close();
+```
+
+Use trusted native libraries built for your host. This integration uses Linux
+shared libraries and the Nemotron tokenizer shipped with dllm. Decisions support 2–26 choices
+per question. All native calls execute on one owner thread; only one engine can
+be loaded per process. Input that exceeds the engine context limit fails without
+truncation. See the [Pi example](../../examples/pi/README.md) for startup wiring.
+
 Install the built package in a local Node project:
 
 ```bash

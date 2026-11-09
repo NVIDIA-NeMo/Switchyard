@@ -2511,6 +2511,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchyard-dllm"
+version = "0.3.0"
+dependencies = [
+ "libloading",
+ "serde",
+ "serde_json",
+ "switchyard-protocol",
+ "tokio",
+]
+
+[[package]]
 name = "switchyard-ffi"
 version = "0.3.0"
 dependencies = [
@@ -2613,6 +2624,7 @@ dependencies = [
  "parking_lot",
  "serde",
  "serde_json",
+ "switchyard-dllm",
  "switchyard-libsy",
  "switchyard-protocol",
  "switchyard-runner",

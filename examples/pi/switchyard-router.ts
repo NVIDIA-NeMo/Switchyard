@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
-  CompositeRouter, type CompositeOptions, type CompositeState, type DecisionRequest,
+  CompositeRouter, DllmEngine, type DllmOptions, type CompositeOptions, type CompositeState, type DecisionRequest,
   type DecisionResponse, type RoutingContent, type RoutingMessage,
 } from "@switchyard/libsy";
 import type {
@@ -41,15 +41,17 @@ function modelIdentity(reference: unknown) {
 function loadRouter() {
   const path = join(getAgentDir(), "switchyard-router.json");
   let classifier, capable, efficient;
+  let embedded: DllmOptions | undefined;
   try {
     const config = JSON.parse(readFileSync(path, "utf8"));
-    classifier = modelIdentity(config.decision_model);
+    embedded = config.dllm;
+    classifier = modelIdentity(config.decision_model ?? (embedded ? "dllm/deciffusion" : undefined));
     capable = modelIdentity(config.capable_model);
     efficient = modelIdentity(config.efficient_model);
   } catch (cause) {
-    throw new Error(`Configure ${path} with decision_model, capable_model and efficient_model in provider/model form. See README for full example. ${(cause as Error).message}`, { cause });
+    throw new Error(`Configure ${path} with capable_model and efficient_model in provider/model form, plus dllm paths or decision_model. See README for full example. ${(cause as Error).message}`, { cause });
   }
-  return { classifier, router: CompositeRouter.create({
+  return { classifier, embedded, router: CompositeRouter.create({
     ...POLICY,
     targets: { classifier: classifier.reference, capable: capable.reference, efficient: efficient.reference },
   }) };
@@ -127,6 +129,19 @@ function routingMessages(messages: readonly Message[]): RoutingMessage[] {
 
 export default function (pi: ExtensionAPI) {
   let loaded: ReturnType<typeof loadRouter> | undefined;
+  let engine: Promise<DllmEngine> | undefined;
+  function initialize() {
+    const config = loaded ??= loadRouter();
+    if (config.embedded) engine ??= DllmEngine.load(config.embedded);
+    return config;
+  }
+  pi.on("session_start", async () => {
+    initialize();
+    await engine;
+  });
+  pi.on("session_shutdown", async () => {
+    if (engine) await (await engine).close();
+  });
   let classifierModel: ClassifierModel<ClassifierApi> | undefined;
   // Pi builds the request context after routing, so the routed prompt waits for that event.
   let pendingPrompt: string | undefined;
@@ -143,15 +158,18 @@ export default function (pi: ExtensionAPI) {
     async route(request, ctx) {
       // Direct requests, such as compaction summaries, skip the agent loop's context event.
       if (request.reason !== "direct") pendingPrompt = undefined;
-      const { router, classifier } = loaded ??= loadRouter();
-      const judge = classifierModel ??= ctx.modelRegistry.findOfType("classifier", classifier.provider, classifier.id);
-      if (!judge) throw new Error(`Unknown classifier: ${classifier.reference}`);
+      const { router, classifier } = initialize();
+      const local = engine ? await engine : undefined;
+      const judge = local ? undefined : classifierModel ??= ctx.modelRegistry.findOfType("classifier", classifier.provider, classifier.id);
+      if (!local && !judge) throw new Error(`Unknown classifier: ${classifier.reference}`);
       const selection = await router.route(routingMessages(request.messages), {
         state: request.state,
         signal: request.signal,
-        decide: async (decision) => decisionResponse(decision, await ctx.modelRegistry.classify(
-          judge, classifierContext(decision), { signal: request.signal },
-        )),
+        decide: async (decision) => local
+          ? local.decide(decision, { signal: request.signal })
+          : decisionResponse(decision, await ctx.modelRegistry.classify(
+            judge!, classifierContext(decision), { signal: request.signal },
+          )),
       }).catch((error) => {
         // The binding wraps classifier errors as routing failures; preserve cancellation for Pi.
         if (error.cause?.name === "AbortError") throw error.cause;

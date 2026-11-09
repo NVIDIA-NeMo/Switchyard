@@ -4,6 +4,7 @@
 //! Node bindings for routing algorithms and buffered JSON translation.
 
 mod algorithm;
+mod dllm;
 mod translation;
 
 use std::future::ready;
