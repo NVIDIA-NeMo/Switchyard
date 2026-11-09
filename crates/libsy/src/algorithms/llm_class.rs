@@ -209,11 +209,16 @@ impl TaskInput {
         // Reasoning is provider-private and not required to classify the task. Some
         // upstreams also reject an unsigned reasoning item replayed without the
         // opaque state it was issued with, so it cannot travel through a windowed
-        // classifier request as ordinary history.
+        // classifier request as ordinary history. Empty text goes with it: OpenAI
+        // Chat decoding leaves an empty text placeholder beside the reasoning of a
+        // reasoning-only turn, and an Anthropic judge rejects a message whose text
+        // block is empty.
         for message in &mut messages {
-            message
-                .content
-                .retain(|block| !matches!(block, ContentBlock::Reasoning { .. }));
+            message.content.retain(|block| match block {
+                ContentBlock::Reasoning { .. } => false,
+                ContentBlock::Text { text } => !text.is_empty(),
+                _ => true,
+            });
         }
         messages.retain(|message| !message.content.is_empty());
         messages
@@ -2393,6 +2398,63 @@ mod tests {
         // rather than left behind empty — plus the trailing routing instruction.
         assert_eq!(built.len(), 7);
         assert!(built.iter().all(|message| !message.content.is_empty()));
+    }
+
+    #[test]
+    fn a_window_drops_a_turn_left_empty_once_its_reasoning_is_removed() {
+        // OpenAI Chat decoding places an empty text placeholder beside the reasoning of
+        // an assistant message that carries `reasoning_content` alone. Removing the
+        // reasoning has to take the placeholder with it: an Anthropic judge rejects a
+        // message whose text is empty, and the whole client request then fails.
+        let body = serde_json::json!({
+            "model": "qa/windowed",
+            "messages": [
+                {"role": "user", "content": "Reply with the number four."},
+                {"role": "assistant", "reasoning_content": "private chain of thought"},
+                {"role": "user", "content": "This is still a simple number lookup."}
+            ]
+        });
+        let request = Request {
+            llm_request: switchyard_translation::decode_request(
+                switchyard_translation::WireFormat::OpenAiChat,
+                &body,
+            )
+            .expect("client request decodes"),
+            ..Request::default()
+        };
+
+        let built = TaskInput {
+            recent_turn_window: Some(8),
+        }
+        .build_messages(&State::default(), &request);
+
+        assert_eq!(
+            built,
+            vec![
+                Message::text(Role::User, "Reply with the number four."),
+                Message::text(Role::User, "This is still a simple number lookup."),
+                Message::text(Role::User, TRAILING_ROUTING_INSTRUCTION),
+            ]
+        );
+        let judge_request = LlmRequest {
+            messages: built,
+            ..LlmRequest::default()
+        };
+        let encoded = switchyard_translation::encode_request(
+            &judge_request,
+            switchyard_translation::WireFormat::AnthropicMessages,
+        )
+        .expect("judge request encodes");
+        let has_empty_text = encoded["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .flat_map(|message| match &message["content"] {
+                Value::Array(blocks) => blocks.iter().map(|block| &block["text"]).collect(),
+                content => vec![content],
+            })
+            .any(|text| text.as_str().is_some_and(str::is_empty));
+        assert!(!has_empty_text, "{encoded}");
     }
 
     #[test]

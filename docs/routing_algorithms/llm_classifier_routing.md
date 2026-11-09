@@ -241,7 +241,8 @@ Without affinity, the runtime judges every request. By default, it sends the
 opening task and the latest user follow-up when they differ, excluding tool calls,
 tool results, and reasoning. It keeps ordinary user content from messages that
 also contain tool results. Set `recent_turn_window` when intervening conversation
-context affects the forecast.
+context affects the forecast. The window still excludes reasoning, and a turn that
+held only reasoning is left out.
 If a client sends only a follow-up fragment without the opening task, enable
 affinity or include the task history. Threshold tuning changes routing policy;
 it cannot recover missing task context.
