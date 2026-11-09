@@ -16,7 +16,7 @@ You need a Linux/macOS host with:
 
 | | What | Why |
 |---|---|---|
-| **Docker** | Daemon running. 50 GB+ free on the Docker root, 16 GB+ RAM for the container fleet. ZFS-backed `/scratch/docker` recommended for repeated runs (image caching). | Each task runs in its own container; Harbor builds per-task images. |
+| **Docker** | The daemon must be running, with at least 50 GB free on the Docker root and 16 GB RAM for the container fleet. A dedicated Docker filesystem is recommended for repeated runs (image caching). | Each task runs in its own container; Harbor builds per-task images. |
 | **Harbor + harbor-lab** | Both auto-installed by `uv sync` in step 01. Harbor is pinned (`46bb68c`); harbor-lab provides the post-run triage CLIs (`errors`, `tool-sequence`, etc.). | Harbor walks the dataset and runs the trials; harbor-lab is what you use to dig into failed trials. |
 | **Inference gateway creds** | `ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `OPENAI_API_KEY`, `OPENAI_BASE_URL` in `.env`. Base URLs point at your OpenAI-compatible inference gateway. Optional `VLLM_BASE_URL`/`VLLM_API_KEY` for local serving. | Every LLM call routes through the gateway — there is no OAuth fallback. |
 | **`gh auth status` OK** | One-time `gh auth login` if you've never used the GitHub CLI on this host. | The mining step (only needed when you build tasks from scratch) uses it; preflight checks it regardless. |
@@ -85,9 +85,9 @@ the log; if the trial completes and a `verifier.json` lands under
 
 ## 04 · Full 92-task baseline run
 
-Same launcher, no `--n-tasks` cap. K=1 cell at `--n-concurrent 6` takes
-roughly 6 hours of wall time on a `craftbench02`-class host. K=5 (the
-canonical leaderboard setting) is 5×.
+Use the same launcher without a `--n-tasks` cap. Allow roughly 6 hours for a K=1 run at
+`--n-concurrent 6`. Runtime depends on the host and inference endpoint.
+K=5 (the canonical leaderboard setting) requires five runs.
 
 Pick your agent. The flags below match the canonical `craft-taskgen-v2b`
 configurations in `results.md`.
@@ -219,8 +219,8 @@ and the per-test skip/keep judging path), see
 
 ## Common failure modes
 
-- **`gateway 401 / 403`** — `.env` keys wrong or expired. Re-pull from
-  another working VM or ask in `#craft-dev`.
+- **`gateway 401 / 403`** — The keys in `.env` may be wrong or expired. Obtain new
+  credentials from your gateway administrator.
 - **`harbor-lab not on PATH`** — preflight will say this. Either set
   `HARBOR_LAB=…` or symlink the binary to a directory on `PATH`.
 - **`Docker compose v5 rejects __ in image tags`** — your harbor patch
