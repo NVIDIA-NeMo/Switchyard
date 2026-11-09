@@ -9,7 +9,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
-use switchyard_protocol::{Category, ContentBlock, Message, Role};
+use switchyard_protocol::{Category, ContentBlock, McpContent, Message, Role};
 
 mod decision;
 pub use decision::{DecisionChoice, DecisionJudgeConfig, DirectClassifierConfig};
@@ -197,6 +197,18 @@ struct TaskInput {
     recent_turn_window: Option<usize>,
 }
 
+fn drop_reasoning(content: &mut Vec<ContentBlock>) {
+    content.retain_mut(|block| match block {
+        ContentBlock::Reasoning { .. } => false,
+        ContentBlock::ToolResult(result) | ContentBlock::Mcp(McpContent::Result(result)) => {
+            drop_reasoning(&mut result.content);
+            // Even an empty result must still answer its tool call.
+            true
+        }
+        _ => true,
+    });
+}
+
 impl TaskInput {
     /// Selects conversation content without adding judge instructions.
     fn messages(&self, request: &Request) -> Vec<Message> {
@@ -214,11 +226,10 @@ impl TaskInput {
         // reasoning-only turn, and an Anthropic judge rejects a message whose text
         // block is empty.
         for message in &mut messages {
-            message.content.retain(|block| match block {
-                ContentBlock::Reasoning { .. } => false,
-                ContentBlock::Text { text } => !text.is_empty(),
-                _ => true,
-            });
+            drop_reasoning(&mut message.content);
+            message
+                .content
+                .retain(|block| !matches!(block, ContentBlock::Text { text } if text.is_empty()));
         }
         messages.retain(|message| !message.content.is_empty());
         messages
@@ -2455,6 +2466,78 @@ mod tests {
             })
             .any(|text| text.as_str().is_some_and(str::is_empty));
         assert!(!has_empty_text, "{encoded}");
+    }
+
+    #[test]
+    fn a_window_drops_nested_reasoning_but_preserves_tool_results() {
+        let reasoning = ContentBlock::Reasoning {
+            text: "private tool reasoning".to_string(),
+            signature: Some("private signature".to_string()),
+            details: vec![serde_json::json!({"type": "reasoning.encrypted", "data": "private"})],
+        };
+        let visible = ContentBlock::Text {
+            text: "visible tool output".to_string(),
+        };
+        let result = |content| ToolResult {
+            tool_call_id: "call-1".to_string(),
+            content,
+            is_error: Some(true),
+        };
+        let wrappers: [fn(ToolResult) -> ContentBlock; 2] = [ContentBlock::ToolResult, |result| {
+            ContentBlock::Mcp(McpContent::Result(result))
+        }];
+
+        for wrap in wrappers {
+            for (input, expected) in [
+                (vec![reasoning.clone()], Vec::new()),
+                (
+                    vec![reasoning.clone(), visible.clone()],
+                    vec![visible.clone()],
+                ),
+                (
+                    vec![
+                        reasoning.clone(),
+                        ContentBlock::ToolResult(result(vec![reasoning.clone(), visible.clone()])),
+                        ContentBlock::Mcp(McpContent::Result(result(vec![reasoning.clone()]))),
+                    ],
+                    vec![
+                        ContentBlock::ToolResult(result(vec![visible.clone()])),
+                        ContentBlock::Mcp(McpContent::Result(result(Vec::new()))),
+                    ],
+                ),
+            ] {
+                let request = Request {
+                    llm_request: LlmRequest {
+                        messages: vec![
+                            Message::text(Role::User, "initial task"),
+                            tool_call("call-1"),
+                            Message::new(Role::Tool, vec![wrap(result(input))]),
+                        ],
+                        ..LlmRequest::default()
+                    },
+                    ..Request::default()
+                };
+                let original = request.llm_request.messages.clone();
+                let built = TaskInput {
+                    recent_turn_window: Some(10),
+                }
+                .build_messages(&State::default(), &request);
+
+                assert_eq!(
+                    built,
+                    vec![
+                        Message::text(Role::User, "initial task"),
+                        tool_call("call-1"),
+                        Message::new(Role::Tool, vec![wrap(result(expected))]),
+                        Message::text(Role::User, TRAILING_ROUTING_INSTRUCTION),
+                    ]
+                );
+                assert_eq!(
+                    request.llm_request.messages, original,
+                    "classification must not mutate caller history"
+                );
+            }
+        }
     }
 
     #[test]
