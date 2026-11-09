@@ -14,7 +14,11 @@ FORMATS = ["openai_chat", "anthropic_messages", "openai_responses"]
 
 
 def source_events(source):
-    """Chat usage follows finish_reason; Responses text comes from the final snapshot."""
+    """Chat usage follows finish_reason; Responses text comes from the final snapshot.
+
+    Responses starts with response.created so translation can emit its start event
+    before the final snapshot supplies text.
+    """
     if source == "openai_chat":
         return [
             {
@@ -60,6 +64,15 @@ def source_events(source):
         ]
     return [
         {
+            "type": "response.created",
+            "response": {
+                "id": "resp-1",
+                "model": "backend",
+                "status": "in_progress",
+                "output": [],
+            },
+        },
+        {
             "type": "response.completed",
             "response": {
                 "id": "resp-1",
@@ -76,7 +89,7 @@ def source_events(source):
                 ],
                 "usage": {"input_tokens": 5, "output_tokens": 2, "total_tokens": 7},
             },
-        }
+        },
     ]
 
 
@@ -131,17 +144,14 @@ async def test_translation_ignores_data_after_terminal(source, target, split_tai
         assert usage["prompt_tokens"] == 5
         assert usage["completion_tokens"] == 2
     elif target == "anthropic_messages":
+        assert output[0]["type"] == "message_start"
         assert any(event.get("delta", {}).get("text") == "hello" for event in output)
         assert output[-1]["type"] == "message_stop"
-        assert (
-            next(
-                event["usage"]["output_tokens"]
-                for event in output
-                if event["type"] == "message_delta"
-            )
-            == 2
-        )
+        usage = next(event["usage"] for event in output if event["type"] == "message_delta")
+        assert usage["output_tokens"] == 2
+        assert usage.get("input_tokens", output[0]["message"]["usage"]["input_tokens"]) == 5
     else:
+        assert output[0]["type"] == "response.created"
         assert output[-1]["type"] == "response.completed"
         response = output[-1]["response"]
         assert response["output"][0]["content"][0]["text"] == "hello"
