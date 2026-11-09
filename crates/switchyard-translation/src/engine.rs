@@ -483,8 +483,9 @@ impl TranslationEngine {
     /// buffered across chunks (a partial frame waits for its boundary); the source
     /// stream codec is resolved once and reused for every frame.
     ///
-    /// The decoder tracks the source format's protocol-specific terminal event. If
-    /// EOF arrives without that required event, the stream yields a deferred
+    /// Codecs can opt in to stopping after the decoder yields a terminal JSON event.
+    /// Other codecs keep reading to include trailing events before `[DONE]` or EOF.
+    /// If EOF arrives without a required terminal event, the stream yields a deferred
     /// [`LlmClientError::ResponseTranslation`] error after any valid decoded events.
     pub fn decode_stream<S>(
         &self,
@@ -545,6 +546,9 @@ impl TranslationEngine {
                                 value,
                                 normalized,
                             );
+                            if saw_terminal && codec.stops_at_terminal_event() {
+                                break;
+                            }
                         }
                     }
                 } else {
