@@ -1457,6 +1457,152 @@ impl RoutedLlmClient for StreamingUsageClient {
     }
 }
 
+#[tokio::test]
+async fn buffered_routing_closes_observation_before_replay() -> switchyard_libsy::Result<()> {
+    use tracing::Instrument;
+
+    let _guard = serialize_test().lock().await;
+    let (_, _, _, exporter, _) = telemetry();
+    for drain in [false, true] {
+        let model = if drain {
+            "routing-replay-drained"
+        } else {
+            "routing-replay-dropped"
+        };
+        let mut request = request_with_metadata(model, model);
+        request.llm_request.stream = true;
+        let (_, response) = run(
+            Arc::new(RoutingCallAlgo {
+                name: model.into(),
+                target: model.into(),
+            }),
+            Arc::new(StreamingUsageClient),
+            request,
+        )
+        .instrument(tracing::info_span!(
+            "buffered-workflow",
+            gen_ai.request.model = model
+        ))
+        .await?;
+
+        // Upstream I/O is complete, so usage and parentage must export before replay.
+        let call = find_otel_span(exporter, &format!("chat {model}"), model);
+        let workflow = find_otel_span(exporter, "buffered-workflow", model);
+        assert_eq!(call.parent_span_id, workflow.span_context.span_id());
+        for (field, tokens) in [
+            ("gen_ai.usage.input_tokens", 21),
+            ("gen_ai.usage.output_tokens", 5),
+        ] {
+            assert_eq!(otel_attribute(&call, field), Some(&OtelValue::I64(tokens)));
+        }
+        let count = exporter.get_finished_spans().expect("exported spans").len();
+        if drain {
+            let replay = response
+                .llm_response
+                .into_agg()
+                .await
+                .expect("valid replay");
+            assert_eq!(
+                replay.outputs[0].content,
+                vec![ContentBlock::Text {
+                    text: "hello".into()
+                }]
+            );
+        } else {
+            drop(response);
+        }
+        assert_eq!(
+            exporter.get_finished_spans().expect("exported spans").len(),
+            count,
+            "consuming or dropping replay must not export another observation"
+        );
+    }
+    Ok(())
+}
+
+struct FailingStreamClient(bool);
+
+#[async_trait]
+impl RoutedLlmClient for FailingStreamClient {
+    async fn call(&self, _request: Request) -> Result<Response, LlmClientError> {
+        let failure = if self.0 {
+            Err(LlmClientError::UpstreamHttp {
+                status: http::StatusCode::BAD_GATEWAY,
+                body: LEAKED_CONTENT.into(),
+            })
+        } else {
+            Ok(LlmResponseChunk::StreamError {
+                message: LEAKED_CONTENT.into(),
+            }
+            .into())
+        };
+        Ok(Response {
+            llm_response: LlmResponse::Stream(
+                futures::stream::iter([
+                    Ok(LlmResponseChunk::Usage(Usage {
+                        input_tokens: Some(11),
+                        output_tokens: Some(3),
+                        ..Usage::default()
+                    })
+                    .into()),
+                    failure,
+                ])
+                .boxed(),
+            ),
+            metadata: None,
+            upstream_headers: http::HeaderMap::new(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn routing_stream_error_is_recorded_once_without_upstream_body() {
+    let _guard = serialize_test().lock().await;
+    let (_, _, _, exporter, _) = telemetry();
+    for http_error in [false, true] {
+        let model = if http_error {
+            "routing-http-stream-error"
+        } else {
+            "routing-in-band-error"
+        };
+        let mut request = request_with_metadata(model, model);
+        request.llm_request.stream = true;
+        assert!(
+            run(
+                Arc::new(RoutingCallAlgo {
+                    name: model.into(),
+                    target: model.into()
+                }),
+                Arc::new(FailingStreamClient(http_error)),
+                request,
+            )
+            .await
+            .is_err()
+        );
+        let call = find_otel_span(exporter, &format!("chat {model}"), model);
+        for (key, expected) in [
+            ("outcome", OtelValue::String("error".into())),
+            ("error.type", OtelValue::String("502".into())),
+            ("error", OtelValue::String("upstream HTTP 502".into())),
+            ("gen_ai.usage.input_tokens", OtelValue::I64(11)),
+            ("gen_ai.usage.output_tokens", OtelValue::I64(3)),
+        ] {
+            let values: Vec<_> = call
+                .attributes
+                .iter()
+                .filter(|attr| attr.key.as_str() == key)
+                .map(|attr| attr.value.clone())
+                .collect();
+            assert_eq!(
+                values,
+                vec![expected],
+                "{key} must be exported exactly once"
+            );
+        }
+        assert!(!format!("{:?}", call.attributes).contains(LEAKED_CONTENT));
+    }
+}
+
 struct TimeoutClient;
 
 #[async_trait]
