@@ -56,7 +56,7 @@ test("response encoding and translation restore request tool extensions only whe
   const wireResponse = {
     id: "response-1", model: "example", choices: [{ message: {
       role: "assistant", tool_calls: [
-        { id: "call-1", type: "function", function: { name: "mcp__docs__search", arguments: '{"query":"streaming"}' } },
+        { id: "call-1", type: "function", function: { name: "mcp__docs_sy_ns_search", arguments: '{"query":"streaming"}' } },
       ],
     }, finish_reason: "tool_calls" }],
   };
@@ -66,7 +66,7 @@ test("response encoding and translation restore request tool extensions only whe
     (...extensions) => engine.translateResponse(WireFormat.OPENAI_CHAT, WireFormat.OPENAI_RESPONSES, wireResponse, ...extensions),
   ]) {
     const plain = convert();
-    assert.equal(plain.body.output[0].name, "mcp__docs__search");
+    assert.equal(plain.body.output[0].name, "mcp__docs_sy_ns_search");
     assert.equal(plain.body.output[0].namespace, undefined);
     const restored = convert(JSON.parse(JSON.stringify(request.extensions)));
     assert.deepEqual(restored.diagnostics, []);
