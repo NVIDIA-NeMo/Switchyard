@@ -337,12 +337,14 @@ impl FormatCodec for OpenAiChatCodec {
             }
             if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
                 for (index, tool_call) in tool_calls.iter().enumerate() {
-                    if let Some(call) = decode_openai_tool_call(
-                        tool_call,
-                        index + 1,
-                        &TranslationPolicy::default(),
-                    )? {
+                    if let Some(call) = decode_openai_tool_call(tool_call, index + 1, policy)? {
                         content.push(ContentBlock::ToolCall(call));
+                    } else {
+                        push_lossy(
+                            &mut diagnostics,
+                            policy,
+                            format!("OpenAI tool call at index {index} is not an object"),
+                        )?;
                     }
                 }
             }

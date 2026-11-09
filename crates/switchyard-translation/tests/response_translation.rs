@@ -86,6 +86,59 @@ fn buffered_response_content_reports_or_rejects_loss() -> TestResult {
 }
 
 #[test]
+fn buffered_chat_response_uses_configured_tool_id_prefix() -> TestResult {
+    use switchyard_translation::DeterministicIdPolicy;
+
+    let body = json!({"choices": [{
+        "message": {"role": "assistant", "content": null,
+            "tool_calls": [{"type": "function", "function": {"name": "search", "arguments": "{}"}}]},
+        "finish_reason": "tool_calls"
+    }]});
+    let policy = TranslationPolicy {
+        deterministic_ids: DeterministicIdPolicy::GenerateStable {
+            prefix: "custom".to_string(),
+        },
+        ..TranslationPolicy::default()
+    };
+    let decoded =
+        TranslationEngine::default().decode_response(WireFormat::OpenAiChat, &body, &policy)?;
+    assert!(matches!(
+        decoded.response.outputs[0].content.as_slice(),
+        [ContentBlock::ToolCall(call)] if call.id == "custom_00000001"
+    ));
+    Ok(())
+}
+
+#[test]
+fn buffered_chat_response_reports_or_rejects_invalid_tool_call() -> TestResult {
+    use switchyard_translation::{LossyConversionPolicy, TranslationError};
+
+    let body = json!({"choices": [{
+        "message": {"role": "assistant", "content": "Visible answer", "tool_calls": [31]},
+        "finish_reason": "tool_calls"
+    }]});
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let decoded = engine.decode_response(WireFormat::OpenAiChat, &body, &policy)?;
+    assert_eq!(
+        decoded.response.outputs[0].content,
+        vec![ContentBlock::Text {
+            text: "Visible answer".into()
+        }]
+    );
+    assert_eq!(decoded.diagnostics.len(), 1);
+    let strict = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..policy
+    };
+    assert!(matches!(
+        engine.decode_response(WireFormat::OpenAiChat, &body, &strict),
+        Err(TranslationError::LossyConversion(_))
+    ));
+    Ok(())
+}
+
+#[test]
 fn responses_native_output_is_preserved_or_rejected() -> TestResult {
     use switchyard_translation::{StreamTranslationState, TranslationError};
     let engine = TranslationEngine::default();
