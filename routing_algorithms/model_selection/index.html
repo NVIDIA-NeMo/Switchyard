@@ -2899,7 +2899,7 @@ serving stack.</p>
 <tr>
 <td>Qwen3.6-35B-A3B, also the judge</td>
 <td>Claude Opus 4.7</td>
-<td><code>llm_classifier</code> custom, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ef43bf54b6cb1e4df5ccada70bfdd97586528be4/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">balanced</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ef43bf54b6cb1e4df5ccada70bfdd97586528be4/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml">aggressive</a></td>
+<td><code>llm_classifier</code> custom, <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0203ac603d85e8ad5546dc23ae29000c4bc0cfc7/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-balanced.toml">balanced</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0203ac603d85e8ad5546dc23ae29000c4bc0cfc7/benchmark/routing-profiles/tau2-telecom-custom-opus-qwen-aggressive.toml">aggressive</a></td>
 <td>tau2-bench telecom, 114 tasks</td>
 <td>0.903 ± 0.071 solve rate with 45% of turns on the weak tier. 0.891 ± 0.029 with about 85%.</td>
 <td>Within noise of the strong tier, per the profile headers</td>
@@ -2927,7 +2927,7 @@ serving stack.</p>
 </ul>
 <p>Other checked-in configurations:</p>
 <ul>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ef43bf54b6cb1e4df5ccada70bfdd97586528be4/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml"><code>tb-lite-llm-classifier-opus-kimi-gemini.toml</code></a>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0203ac603d85e8ad5546dc23ae29000c4bc0cfc7/benchmark/server-configs/tb-lite-llm-classifier-opus-kimi-gemini.toml"><code>tb-lite-llm-classifier-opus-kimi-gemini.toml</code></a>
   (Claude Opus 4.7 strong, Kimi K2.7 code weak, Gemini 3.5 Flash judge) is a
   smoke test. It has no published result.</li>
 </ul>
@@ -3022,23 +3022,15 @@ Record it with every result. Three rules apply:</p>
   <code>reasoning_effort</code> key instead. It writes <code>reasoning.effort</code> on
   <code>openai_responses</code> and <code>reasoning_effort</code> on <code>openai_chat</code>, replacing the value
   the client sent. The DeepSWE profiles above use it to run both tiers at <code>max</code>.</li>
-<li>
-<p><code>reasoning_effort</code> is rejected on <code>anthropic_messages</code> clients. The server does
-  not start:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>target weak reasoning_effort is only supported on openai_chat and openai_responses clients
-</span></code></pre></div>
-<p>For those targets the effort the client sends is passed through in
-Anthropic's form.</p>
-</li>
-<li>
-<p>One route cannot hold the same model at two efforts. Two targets with the same
-  model ID on one client but different <code>reasoning_effort</code> or <code>extra_body</code> fail
-  to load:</p>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>targets strong and strong_max both name model openai/gpt-4o on llm client openrouter but with different reasoning_effort, extra_body, or omit_body_fields; one target per model id is kept, so give each its own model id or llm client
-</span></code></pre></div>
-<p>Separate routes can use separate <code>llm_clients</code> entries for the same
-endpoint. See the <a href="../../reference/toml_schema/#targetsname">target keys</a>.</p>
-</li>
+<li>On <code>anthropic_messages</code>, the target's <code>reasoning_effort</code> writes
+  <code>output_config.effort</code>, replacing the value the caller sent. Switchyard accepts
+  <code>low</code>, <code>medium</code>, <code>high</code>, <code>xhigh</code>, and <code>max</code> for this format. Choose an effort
+  supported by the upstream provider and model. When the target leaves
+  <code>reasoning_effort</code> unset, the caller's effort is passed through.</li>
+<li>One route can use multiple target names with the same provider model ID and
+  <code>llm_client</code> at different efforts. Each target keeps its own <code>reasoning_effort</code>,
+  <code>extra_body</code>, and <code>omit_body_fields</code>. See the
+  <a href="../../reference/toml_schema/#targetsname">target keys</a> for an example.</li>
 </ul>
 <h2 id="related">Related<a class="headerlink" href="#related" title="Permanent link">&para;</a></h2>
 <ul>
@@ -3046,7 +3038,7 @@ endpoint. See the <a href="../../reference/toml_schema/#targetsname">target keys
 <li><a href="../../operations/local_evaluation/#verify-routing-is-active">Verify routing is active</a>: see the served model and the decision counts.</li>
 <li><a href="../stage_router_routing/#tuning-confidence_threshold">Stage Router</a>: tune the threshold once the pair is right.</li>
 <li><a href="../escalation_router_routing/#judge-model-compatibility">Escalation-Router Routing</a>: judge requirements for escalation routes.</li>
-<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ef43bf54b6cb1e4df5ccada70bfdd97586528be4/benchmark/README.md">Benchmarks</a>: how the measured runs were made.</li>
+<li><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/0203ac603d85e8ad5546dc23ae29000c4bc0cfc7/benchmark/README.md">Benchmarks</a>: how the measured runs were made.</li>
 </ul>
 
 
