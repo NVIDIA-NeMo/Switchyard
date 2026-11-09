@@ -6149,13 +6149,10 @@ async fn responses_round_trips_codex_tool_namespaces() -> TestResult {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    assert_eq!(
-        offered,
-        vec!["mcp__a_sy_priv_ns_search", "mcp__b_sy_priv_ns_search"]
-    );
+    assert_eq!(offered, vec!["mcp__a_sy_ns_search", "mcp__b_sy_ns_search"]);
     assert_eq!(
         sent["tool_choice"]["function"]["name"],
-        "mcp__b_sy_priv_ns_search"
+        "mcp__b_sy_ns_search"
     );
     let recorded = sent["messages"]
         .as_array()
@@ -6165,7 +6162,7 @@ async fn responses_round_trips_codex_tool_namespaces() -> TestResult {
                 .find_map(|message| message["tool_calls"][0]["function"]["name"].as_str())
         })
         .ok_or("no recorded tool call reached the upstream")?;
-    assert_eq!(recorded, "mcp__b_sy_priv_ns_search");
+    assert_eq!(recorded, "mcp__b_sy_ns_search");
     drop(calls);
 
     // The upstream answers with the qualified name; Codex must receive the tool

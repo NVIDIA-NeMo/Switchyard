@@ -200,7 +200,7 @@ def test_response_ir_restores_request_tool_extensions(method) -> None:
                             "id": "call-1",
                             "type": "function",
                             "function": {
-                                "name": "mcp__docs_sy_priv_ns_search",
+                                "name": "mcp__docs_sy_ns_search",
                                 "arguments": '{"query":"streaming"}',
                             },
                         },

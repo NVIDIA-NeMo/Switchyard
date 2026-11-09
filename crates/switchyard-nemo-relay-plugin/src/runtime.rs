@@ -1267,7 +1267,7 @@ seed = 17
                             "id": "call_search",
                             "type": "function",
                             "function": {
-                                "name": "mcp__docs_sy_priv_ns_search",
+                                "name": "mcp__docs_sy_ns_search",
                                 "arguments": "{\"query\":\"routing\"}",
                             },
                         }],
@@ -1305,7 +1305,7 @@ seed = 17
     async fn streaming_responses_restore_codex_tool_namespaces() {
         let server = MockServer::start().await;
         let sse = concat!(
-            "data: {\"id\":\"chatcmpl_tool\",\"object\":\"chat.completion.chunk\",\"model\":\"target/model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_search\",\"type\":\"function\",\"function\":{\"name\":\"mcp__docs_sy_priv_ns_search\",\"arguments\":\"{\\\"query\\\":\\\"routing\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
+            "data: {\"id\":\"chatcmpl_tool\",\"object\":\"chat.completion.chunk\",\"model\":\"target/model\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"tool_calls\":[{\"index\":0,\"id\":\"call_search\",\"type\":\"function\",\"function\":{\"name\":\"mcp__docs_sy_ns_search\",\"arguments\":\"{\\\"query\\\":\\\"routing\\\"}\"}}]},\"finish_reason\":null}]}\n\n",
             "data: {\"id\":\"chatcmpl_tool\",\"object\":\"chat.completion.chunk\",\"model\":\"target/model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
             "data: [DONE]\n\n",
         );

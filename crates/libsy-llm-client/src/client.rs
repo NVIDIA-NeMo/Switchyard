@@ -3970,7 +3970,7 @@ mod tests {
             .and(wiremock::matchers::body_partial_json(json!({
                 "tools": [{
                     "type": "function",
-                    "function": {"name": "mcp__open_websearch_sy_priv_ns_search"}
+                    "function": {"name": "mcp__open_websearch_sy_ns_search"}
                 }]
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -3985,7 +3985,7 @@ mod tests {
                             "id": "call_1",
                             "type": "function",
                             "function": {
-                                "name": "mcp__open_websearch_sy_priv_ns_search",
+                                "name": "mcp__open_websearch_sy_ns_search",
                                 "arguments": "{\"q\":\"rust\"}"
                             }
                         }]
@@ -4048,7 +4048,7 @@ mod tests {
                 "output": [{
                     "type": "function_call",
                     "call_id": "call_1",
-                    "name": "mcp__open_websearch_sy_priv_ns_search",
+                    "name": "mcp__open_websearch_sy_ns_search",
                     "arguments": "{\"q\":\"rust\"}"
                 }],
                 "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
@@ -4105,18 +4105,18 @@ mod tests {
             request_body["tools"],
             json!([{
                 "type": "function",
-                "name": "mcp__open_websearch_sy_priv_ns_search",
+                "name": "mcp__open_websearch_sy_ns_search",
                 "description": "",
                 "parameters": parameters
             }])
         );
         assert_eq!(
             request_body["tool_choice"],
-            json!({"type": "function", "name": "mcp__open_websearch_sy_priv_ns_search"})
+            json!({"type": "function", "name": "mcp__open_websearch_sy_ns_search"})
         );
         assert_eq!(
             request_body["input"][0]["name"],
-            "mcp__open_websearch_sy_priv_ns_search"
+            "mcp__open_websearch_sy_ns_search"
         );
         assert!(request_body["input"][0].get("namespace").is_none());
 

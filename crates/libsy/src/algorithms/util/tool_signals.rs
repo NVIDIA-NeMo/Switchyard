@@ -1079,7 +1079,7 @@ fn extract_tool_signals_with_window_and_semantics(
             match block {
                 _ if index < start => continue,
                 ContentBlock::ToolCall(call) => {
-                    // Responses namespaced tools arrive as `<namespace>_sy_priv_ns_<tool>`.
+                    // Responses namespaced tools arrive as `<namespace>_sy_ns_<tool>`.
                     let bare_name = namespaces
                         .and_then(|namespaces| split_qualified_name(namespaces, &call.name))
                         .map(|(tool, _)| tool)
@@ -3123,17 +3123,17 @@ mod tests {
     #[test]
     fn configured_tool_semantics_match_namespaced_and_mcp_tools() {
         // The Responses decoder flattens namespaced tools and records the mapping.
-        let mut request = with_messages(vec![tc("mcp__billing_sy_priv_ns_send_payment_request")]);
+        let mut request = with_messages(vec![tc("mcp__billing_sy_ns_send_payment_request")]);
         request.llm_request.extensions.fields.insert(
             TOOL_NAMESPACES_KEY.to_string(),
-            json!({"mcp__billing_sy_priv_ns_send_payment_request": "mcp__billing"}),
+            json!({"mcp__billing_sy_ns_send_payment_request": "mcp__billing"}),
         );
 
         // Claude Code sends MCP tools flat, with no namespace mapping.
         let claude_request = with_messages(vec![tc("mcp__billing__send_payment_request")]);
 
         for (request, full_name) in [
-            (&request, "mcp__billing_sy_priv_ns_send_payment_request"),
+            (&request, "mcp__billing_sy_ns_send_payment_request"),
             (&claude_request, "mcp__billing__send_payment_request"),
         ] {
             for name in ["send_payment_request", full_name] {

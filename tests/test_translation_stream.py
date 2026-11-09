@@ -73,7 +73,7 @@ async def test_stream_translation_preserves_ir_and_restores_extensions():
                                 "id": "call-1",
                                 "type": "function",
                                 "function": {
-                                    "name": "mcp__docs_sy_priv_ns_search",
+                                    "name": "mcp__docs_sy_ns_search",
                                     "arguments": '{"query":"streaming"}',
                                 },
                             }

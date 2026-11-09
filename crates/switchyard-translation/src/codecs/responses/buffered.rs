@@ -1010,7 +1010,7 @@ fn request_role_from_responses(role: Option<&str>, path: &str) -> Result<Role> {
 //
 // Codex groups tools into non-standard ``namespace`` containers that
 // OpenAI-compatible upstreams do not accept. Each child is exposed under a
-// `<namespace>_sy_priv_ns_<tool>` name, and `namespaces` records the mapping so the
+// `<namespace>_sy_ns_<tool>` name, and `namespaces` records the mapping so the
 // response can split it back apart.
 fn decode_responses_tools(
     value: Option<&Value>,
