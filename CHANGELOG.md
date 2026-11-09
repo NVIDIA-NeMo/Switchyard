@@ -66,6 +66,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Windowed classifiers drop empty history turns** - with `recent_turn_window`
+  set, an assistant turn that holds only reasoning, as an OpenAI Chat message
+  with `reasoning_content` and no `content` decodes, is left out of the judge
+  request. Before, it reached the judge as an assistant message with empty text,
+  and an Anthropic Messages judge rejected the request with HTTP 400, which
+  failed the client request.
 - **Responses reasoning history reaches non-OpenAI targets** - the default
   `responses_reasoning` is now `"auto"`. Targets other than OpenAI keep plaintext
   reasoning `summary` and `content` in place, for any `store` value. Before, it
