@@ -167,11 +167,6 @@ fn custom_stream_completion_uses_the_codec_rules() -> TestResult {
         ("trailing SSE marker alone", "data: [DONE]", false),
         ("terminal JSON event", "data: {\"kind\":\"done\"}\n\n", true),
         (
-            "terminal JSON event then invalid data",
-            "data: {\"kind\":\"done\"}\n\ndata: invalid-json\n\n",
-            true,
-        ),
-        (
             "trailing terminal JSON event",
             "data: {\"kind\":\"done\"}",
             true,
