@@ -861,7 +861,7 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
                 "tool_calls": [{
                     "id": "call_1",
                     "type": "function",
-                    "function": {"name": "lookup", "arguments": "{\"q\":\"rust\"}"}
+                    "function": {"name": "search", "arguments": "{\"q\":\"rust\"}"}
                 }, {
                     "id": "call_2", "type": "function",
                     "function": {"name": "mcp__docs__search", "arguments": "{\"query\":\"streaming\"}"}
@@ -888,7 +888,7 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
     assert_eq!(
         output["output"],
         json!([
-            {"type": "function_call", "call_id": "call_1", "name": "lookup",
+            {"type": "function_call", "call_id": "call_1", "name": "search",
                 "arguments": "{\"q\": \"rust\"}"},
             {"type": "function_call", "call_id": "call_2", "name": "mcp__docs__search",
                 "arguments": "{\"query\": \"streaming\"}"},
@@ -913,6 +913,7 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
         &json!({
             "input": "Search and list files",
             "tools": [
+                {"type": "function", "name": "search", "parameters": {}},
                 {"type": "namespace", "name": "mcp__docs", "tools": [
                     {"type": "function", "name": "search", "parameters": {}}
                 ]},
@@ -925,7 +926,7 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
     let empty = ProviderExtensions::default();
     let mut restored = output.clone();
     restored["output"] = json!([
-        {"type": "function_call", "call_id": "call_1", "name": "lookup",
+        {"type": "function_call", "call_id": "call_1", "name": "search",
             "arguments": "{\"q\": \"rust\"}"},
         {"type": "function_call", "call_id": "call_2", "name": "search",
             "namespace": "mcp__docs", "arguments": "{\"query\": \"streaming\"}"},
@@ -983,57 +984,6 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
         assert_eq!(&translated.body, expected, "{name}");
         assert!(translated.diagnostics.is_empty(), "{name}");
     }
-    Ok(())
-}
-
-#[test]
-fn openai_chat_response_preserves_root_tool_name_shared_with_namespace() -> TestResult {
-    let engine = TranslationEngine::default();
-    let policy = TranslationPolicy::default();
-    let request = engine.decode_request(
-        WireFormat::OpenAiResponses,
-        &json!({
-            "input": "Search.",
-            "tools": [
-                {"type": "namespace", "name": "mcp__docs", "tools": [
-                    {"type": "function", "name": "search", "parameters": {}}
-                ]},
-                {"type": "function", "name": "search", "parameters": {}}
-            ]
-        }),
-        &policy,
-    )?;
-    let translated = engine.translate_response_with_extensions(
-        WireFormat::OpenAiChat,
-        WireFormat::OpenAiResponses,
-        &json!({
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "tool_calls": [
-                        {"id": "call_root", "type": "function",
-                            "function": {"name": "search", "arguments": "{}"}},
-                        {"id": "call_namespaced", "type": "function",
-                            "function": {"name": "mcp__docs__search", "arguments": "{}"}}
-                    ]
-                },
-                "finish_reason": "tool_calls"
-            }]
-        }),
-        &request.request.extensions,
-        &policy,
-    )?;
-
-    assert_eq!(
-        translated.body["output"],
-        json!([
-            {"type": "function_call", "call_id": "call_root", "name": "search",
-                "arguments": "{}"},
-            {"type": "function_call", "call_id": "call_namespaced", "name": "search",
-                "namespace": "mcp__docs", "arguments": "{}"}
-        ])
-    );
-    assert!(translated.diagnostics.is_empty());
     Ok(())
 }
 
