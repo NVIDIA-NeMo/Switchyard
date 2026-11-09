@@ -10,19 +10,17 @@ pub fn normalize_compaction(request: &mut LlmRequest, headers: Option<&HeaderMap
         .and_then(|headers| headers.get("x-codex-turn-metadata"))
         .and_then(|value| serde_json::from_slice::<serde_json::Value>(value.as_bytes()).ok())
         .is_some_and(|metadata| metadata["request_kind"] == "compaction");
-    request.has_compaction |= request
-        .messages
-        .iter()
-        .flat_map(|message| &message.content)
-        .any(|block| match block {
+    request.has_compaction |= request.messages.iter().any(|message| {
+        message.content.iter().any(|block| match block {
             ContentBlock::Text { text } => {
                 let text = text.to_lowercase();
                 text.contains("session is being continued")
-                    || text.trim_start().starts_with(CODEX_SUMMARY)
+                    || (message.role == Role::User && text.trim_start().starts_with(CODEX_SUMMARY))
                     || has_hermes_marker(&text)
             }
             _ => false,
-        });
+        })
+    });
     request.is_compaction |= is_compaction
         || request
             .messages
@@ -149,6 +147,9 @@ mod tests {
         for message in [
             json!({"role": "user", "content": "Summarize existing work."}),
             json!({"role": "user", "content": format!("Explain this phrase: {summary}")}),
+            json!({"role": "assistant", "content": summary}),
+            json!({"role": "system", "content": summary}),
+            json!({"role": "developer", "content": summary}),
             json!({"role": "tool", "tool_call_id": "read", "content": summary}),
         ] {
             let body = json!({"messages": [message]});
