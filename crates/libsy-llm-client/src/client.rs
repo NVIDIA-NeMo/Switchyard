@@ -59,11 +59,10 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
-/// How one model is served: the `default_backend` used when the request does not
-/// pin a wire format, plus any `other_backends` reachable over additional formats.
+/// A named target's provider model and backends.
 #[derive(Clone, Debug)]
 pub struct ModelConfig {
-    model_name: ModelId,
+    target_name: ModelId,
     provider_model: Option<ModelId>,
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
@@ -71,15 +70,14 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
-    /// A model named `model_name` served by `default_backend`, optionally reachable
-    /// over additional wire formats via `other_backends`.
+    /// Configures a target. Its name is also the provider model ID unless overridden.
     pub fn new(
-        model_name: impl Into<ModelId>,
+        target_name: impl Into<ModelId>,
         default_backend: Backend,
         other_backends: Option<Vec<Backend>>,
     ) -> Self {
         Self {
-            model_name: model_name.into(),
+            target_name: target_name.into(),
             provider_model: None,
             default_backend,
             other_backends,
@@ -87,15 +85,15 @@ impl ModelConfig {
         }
     }
 
-    /// Sets how Responses reasoning items are replayed to this model.
+    /// Sets how Responses reasoning items are replayed to this target.
     #[must_use]
     pub fn with_responses_reasoning(mut self, policy: crate::ResponsesReasoningPolicy) -> Self {
         self.responses_reasoning = policy;
         self
     }
 
-    /// Sends `provider_model` upstream in place of `model_name`. The client is still
-    /// called with `model_name`, so several entries can serve one provider model with
+    /// Sends `provider_model` upstream in place of `target_name`. The client is still
+    /// called with `target_name`, so several entries can serve one provider model with
     /// different backend settings.
     pub fn with_provider_model(mut self, provider_model: impl Into<ModelId>) -> Self {
         self.provider_model = Some(provider_model.into());
@@ -136,16 +134,15 @@ impl AuxiliaryOperation {
     }
 }
 
-/// A client that dispatches neutral-IR requests to per-model HTTP backends.
+/// A client that dispatches neutral-IR requests to named targets.
 ///
-/// Construct it with a list of [`ModelConfig`]s — one per model, each naming a
-/// default [`Backend`] and any additional per-format backends. Each call resolves
-/// the model and wire format, encodes the request to that backend's wire format,
+/// Each [`ModelConfig`] defines a target's provider model and backends.
+/// Each call resolves the target and wire format, encodes the request,
 /// applies auth and forwarded headers, sends the HTTP request with a shared
 /// [`reqwest::Client`], and decodes the response back to the neutral IR (buffered
 /// or streamed).
 pub struct TranslatingLlmClient {
-    model_to_config: HashMap<ModelId, ModelConfig>,
+    configs_by_target: HashMap<ModelId, ModelConfig>,
     client: reqwest::Client,
     forward_auth_client: reqwest::Client,
     is_rate_limit_cooldown_enabled: bool,
@@ -164,9 +161,9 @@ impl TranslatingLlmClient {
             for backend in std::iter::once(&config.default_backend)
                 .chain(config.other_backends.iter().flatten())
             {
-                backend.validate_configured_headers(&config.model_name)?;
+                backend.validate_configured_headers(&config.target_name)?;
             }
-            unavailable_until.insert(config.model_name.clone(), AtomicU64::new(0));
+            unavailable_until.insert(config.target_name.clone(), AtomicU64::new(0));
         }
         let build_client = |builder: reqwest::ClientBuilder| {
             builder.build().map_err(|error| LlmClientError::Transport {
@@ -178,13 +175,13 @@ impl TranslatingLlmClient {
         // Forwarded credentials are sent only to the configured URL.
         let forward_auth_client =
             build_client(reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()))?;
-        let model_to_config = model_configs
+        let configs_by_target = model_configs
             .iter()
-            .map(|config| (config.model_name.clone(), config.clone()))
+            .map(|config| (config.target_name.clone(), config.clone()))
             .collect();
 
         Ok(Self {
-            model_to_config,
+            configs_by_target,
             client,
             forward_auth_client,
             is_rate_limit_cooldown_enabled: true,
@@ -199,11 +196,9 @@ impl TranslatingLlmClient {
         self
     }
 
-    /// The backend serving `model` over `format` — the default backend when its
-    /// format matches, otherwise a matching entry in `other_backends`; `None` when
-    /// the model is unknown or has no backend for `format`.
-    pub fn backend_for(&self, model: &ModelId, format: WireFormat) -> Option<&Backend> {
-        self.model_to_config.get(model).and_then(|config| {
+    /// The target's backend for `format`, or `None` if no matching backend exists.
+    pub fn backend_for(&self, target_name: &ModelId, format: WireFormat) -> Option<&Backend> {
+        self.configs_by_target.get(target_name).and_then(|config| {
             if config.default_backend.wire_format() == format {
                 Some(&config.default_backend)
             } else {
@@ -215,18 +210,18 @@ impl TranslatingLlmClient {
         })
     }
 
-    /// The model id sent upstream for `model`: its provider model when one is set,
-    /// otherwise `model` itself.
-    pub fn provider_model<'a>(&'a self, model: &'a ModelId) -> &'a ModelId {
-        self.model_to_config
-            .get(model)
+    /// The target's provider model ID, falling back to its name when none is configured.
+    pub fn provider_model<'a>(&'a self, target_name: &'a ModelId) -> &'a ModelId {
+        self.configs_by_target
+            .get(target_name)
             .and_then(|config| config.provider_model.as_ref())
-            .unwrap_or(model)
+            .unwrap_or(target_name)
     }
 
-    /// Whether `model` has a backend for `operation`.
-    pub fn supports_auxiliary(&self, model: &ModelId, operation: AuxiliaryOperation) -> bool {
-        self.backend_for(model, operation.wire_format()).is_some()
+    /// Whether the target has a backend for `operation`.
+    pub fn supports_auxiliary(&self, target_name: &ModelId, operation: AuxiliaryOperation) -> bool {
+        self.backend_for(target_name, operation.wire_format())
+            .is_some()
     }
 
     /// Reads llama.cpp model properties through the backend's configured auth and headers.
@@ -234,18 +229,18 @@ impl TranslatingLlmClient {
     /// Redirects are disabled so credentials cannot move to another origin.
     pub async fn get_model_properties(
         &self,
-        model: &ModelId,
+        target_name: &ModelId,
         format: WireFormat,
         timeout: Duration,
     ) -> Result<Value> {
         let backend =
-            self.backend_for(model, format)
+            self.backend_for(target_name, format)
                 .ok_or_else(|| LlmClientError::Configuration {
-                    message: format!("model {model} has no backend for {format:?}"),
+                    message: format!("model {target_name} has no backend for {format:?}"),
                 })?;
         let mut url = reqwest::Url::parse(backend.base_url()).map_err(|error| {
             LlmClientError::Configuration {
-                message: format!("model {model} has an invalid backend URL: {error}"),
+                message: format!("model {target_name} has an invalid backend URL: {error}"),
             }
         })?;
         let root = url.path().trim_end_matches('/');
@@ -285,29 +280,29 @@ impl TranslatingLlmClient {
     /// request fails or returns invalid JSON.
     pub async fn call_auxiliary(
         &self,
-        model: &ModelId,
+        target_name: &ModelId,
         request: Request,
         operation: AuxiliaryOperation,
     ) -> Result<Value> {
         let wire_format = operation.wire_format();
-        let backend =
-            self.backend_for(model, wire_format)
-                .ok_or_else(|| LlmClientError::Configuration {
-                    message: format!("model {model} has no backend for {operation:?}"),
-                })?;
+        let backend = self.backend_for(target_name, wire_format).ok_or_else(|| {
+            LlmClientError::Configuration {
+                message: format!("model {target_name} has no backend for {operation:?}"),
+            }
+        })?;
         let Request {
             mut llm_request,
             metadata,
             ..
         } = request;
-        llm_request.model = Some(self.provider_model(model).to_string());
+        llm_request.model = Some(self.provider_model(target_name).to_string());
         let http_response = self
             .send_encoded(
                 backend,
                 wire_format,
                 llm_request,
                 metadata.as_ref(),
-                model,
+                target_name,
                 UpstreamEndpoint::Auxiliary(operation),
             )
             .await?;
@@ -338,30 +333,29 @@ impl TranslatingLlmClient {
         wire_format: WireFormat,
         llm_request: LlmRequest,
         metadata: Option<&Metadata>,
-        model: &ModelId,
+        target_name: &ModelId,
         endpoint: UpstreamEndpoint,
     ) -> Result<EncodedResponse> {
         let cooldown = backend.failure_cooldown();
         let unavailable_until =
             if matches!(endpoint, UpstreamEndpoint::Completion) && !cooldown.is_zero() {
-                self.unavailable_until.get(model)
+                self.unavailable_until.get(target_name)
             } else {
                 None
             };
         if let Some(until) = unavailable_until
             && until.load(Ordering::Relaxed) > duration_millis(self.cooldown_epoch.elapsed())
         {
-            tracing::debug!(model = %model, wire_format = %wire_format, "skipping backend during failure cooldown");
+            tracing::debug!(model = %target_name, wire_format = %wire_format, "skipping backend during failure cooldown");
             return Err(LlmClientError::TemporarilyUnavailable);
         }
 
         let mut body = observed_translation::encode_request(&llm_request, wire_format)
             .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
-        // which keeps the caller's original `model`; force the resolved model so
-        // the upstream always sees the provider model.
-        let upstream_model = self.provider_model(model);
-        set_json_model(&mut body, upstream_model);
+        // which keeps the caller's original `model`. Set the provider model explicitly.
+        let provider_model_id = self.provider_model(target_name);
+        set_json_model(&mut body, provider_model_id);
         if matches!(backend, Backend::OpenAiResponses(_)) {
             sanitize_openai_responses_provider_body(&mut body);
         }
@@ -374,11 +368,16 @@ impl TranslatingLlmClient {
         omit_configured_body_fields(&mut body, backend.omit_body_fields());
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::OpenAiResponses(_)) {
-            self.model_to_config
-                .get(model)
+            let outbound_model_id = body
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or(provider_model_id)
+                .to_owned();
+            self.configs_by_target
+                .get(target_name)
                 .map(|config| config.responses_reasoning)
                 .unwrap_or_default()
-                .normalize(&mut body, backend.base_url(), model);
+                .normalize(&mut body, backend.base_url(), &outbound_model_id);
         }
         // After the merge on purpose: the effort override must win over both the caller's
         // value and any `reasoning` default a target set through `extra_body`. Token counting
@@ -402,7 +401,7 @@ impl TranslatingLlmClient {
             enable_openai_guidance_caching(
                 &mut body,
                 wire_format,
-                upstream_model,
+                provider_model_id,
                 llm_request.temporary_note_count,
             );
         }
@@ -412,10 +411,10 @@ impl TranslatingLlmClient {
         let streaming = endpoint.allows_streaming()
             && body.get("stream").and_then(Value::as_bool).unwrap_or(false);
         let url = endpoint.url(backend);
-        record_gen_ai_request(&url, upstream_model, streaming);
+        record_gen_ai_request(&url, provider_model_id, streaming);
 
         let result = self
-            .send_with_retries(&url, backend, &body, metadata, model, streaming)
+            .send_with_retries(&url, backend, &body, metadata, target_name, streaming)
             .await;
         // Keep quota failures request-local when forwarding auth or returning 429 to callers.
         if let Some(until) = unavailable_until
@@ -438,7 +437,7 @@ impl TranslatingLlmClient {
         backend: &Backend,
         body: &Value,
         metadata: Option<&Metadata>,
-        model: &ModelId,
+        target_name: &ModelId,
         streaming: bool,
     ) -> Result<EncodedResponse> {
         let max_retries = u64::from(backend.max_retries());
@@ -473,7 +472,7 @@ impl TranslatingLlmClient {
             let span = tracing::debug_span!(
                 target: "libsy",
                 "libsy.upstream_attempt",
-                model = %model,
+                model = %target_name,
                 wire_format = %backend.wire_format(),
                 attempt = attempt + 1 + u64::from(template_retry),
                 max_attempts,
@@ -497,7 +496,7 @@ impl TranslatingLlmClient {
                 }
                 result = async {
                     attempt_started = true;
-                    self.send_once(url, backend, body.as_ref(), metadata, model, streaming).await
+                    self.send_once(url, backend, body.as_ref(), metadata, target_name, streaming).await
                 }.instrument(span.clone()) => result,
             };
             // The retained handle updates this same attempt span with its outcome.
@@ -568,7 +567,7 @@ impl TranslatingLlmClient {
         backend: &Backend,
         body: &Value,
         metadata: Option<&Metadata>,
-        model: &ModelId,
+        target_name: &ModelId,
         streaming: bool,
     ) -> std::result::Result<EncodedResponse, AttemptFailure> {
         let client = if backend.is_forwarding_auth() {
@@ -605,7 +604,7 @@ impl TranslatingLlmClient {
         if status.is_success() {
             if streaming {
                 let upstream_headers = response.headers().clone();
-                let chunks = match prepare_response_stream(response, backend, model).await {
+                let chunks = match prepare_response_stream(response, backend, target_name).await {
                     Ok(chunks) => chunks,
                     Err(error) => {
                         metrics::record_upstream_attempt(None);
@@ -661,7 +660,7 @@ impl TranslatingLlmClient {
         let error =
             if status == reqwest::StatusCode::BAD_REQUEST && backend.is_context_overflow(&body) {
                 LlmClientError::ContextWindowExceeded {
-                    model: model.clone(),
+                    model: target_name.clone(),
                     message: body,
                 }
             } else {
@@ -674,18 +673,13 @@ impl TranslatingLlmClient {
         })
     }
 
-    /// Calls the backend for `model_name` (or the request's own model), over the
-    /// wire format the request pins in its metadata (else the model's default
-    /// backend), and returns the neutral response.
-    ///
-    /// Resolution: `model_name` wins over `request.llm_request.model`; the
-    /// resolved name is the outer map key, and its provider model is the model id
-    /// written into the request before translation. Missing models are invalid requests; unknown
-    /// models or wire formats are configuration errors.
+    /// Calls the selected target using its configured provider model and backend.
+    /// `target_name` takes precedence over the request's model field.
+    /// Request metadata selects the wire format, falling back to the target's default.
     pub async fn call_rewrite_model(
         &self,
         request: Request,
-        model_name: Option<&ModelId>,
+        target_name: Option<&ModelId>,
     ) -> Result<Response> {
         let Request {
             mut llm_request,
@@ -693,28 +687,30 @@ impl TranslatingLlmClient {
             ..
         } = request;
 
-        let model_id = model_name
+        let selected_target = target_name
             .cloned()
             .or_else(|| llm_request.model.map(ModelId::from))
             .ok_or_else(|| LlmClientError::InvalidRequest {
                 message: "no model given".to_string(),
             })?;
-        llm_request.model = Some(self.provider_model(&model_id).to_string());
+        llm_request.model = Some(self.provider_model(&selected_target).to_string());
 
         let orig_format = metadata.as_ref().and_then(|m| m.wire_format);
         let wire_format = orig_format.unwrap_or(
-            self.model_to_config
-                .get(&model_id)
+            self.configs_by_target
+                .get(&selected_target)
                 .map(|config| config.default_backend.wire_format())
                 .ok_or_else(|| LlmClientError::Configuration {
-                    message: format!("no backend configured for model {model_id:?}"),
+                    message: format!("no backend configured for model {selected_target:?}"),
                 })?,
         );
-        let backend = self.backend_for(&model_id, wire_format).ok_or_else(|| {
-            LlmClientError::Configuration {
-                message: format!("model {model_id:?} has no backend for format {wire_format}"),
-            }
-        })?;
+        let backend = self
+            .backend_for(&selected_target, wire_format)
+            .ok_or_else(|| LlmClientError::Configuration {
+                message: format!(
+                    "model {selected_target:?} has no backend for format {wire_format}"
+                ),
+            })?;
 
         let http_response = self
             .send_encoded(
@@ -722,7 +718,7 @@ impl TranslatingLlmClient {
                 wire_format,
                 llm_request,
                 metadata.as_ref(),
-                &model_id,
+                &selected_target,
                 UpstreamEndpoint::Completion,
             )
             .await?;
@@ -799,19 +795,17 @@ impl TranslatingLlmClient {
         &self,
         raw_http_request: Value,
         http_headers: Option<http::HeaderMap>,
-        model: Option<&ModelId>,
+        target_name: Option<&ModelId>,
         wire_format: WireFormat,
     ) -> Result<RawResponse> {
         let llm_request = observed_translation::decode_request(wire_format, &raw_http_request)
             .map_err(|error| LlmClientError::RequestTranslation(error.to_string()))?;
         let request_extensions = llm_request.extensions.clone();
-        // The model that serves the call — the rewrite target when the caller pinned
-        // one, else the request's own model. Mirrors `call_rewrite_model`'s own
-        // resolution so the response names whoever answered.
-        let served_model = model
+        // Report the provider model for the same target selected by `call_rewrite_model`.
+        let served_model = target_name
             .cloned()
             .or_else(|| llm_request.model.clone().map(ModelId::from))
-            .map(|model| self.provider_model(&model).to_string());
+            .map(|target_name| self.provider_model(&target_name).to_string());
 
         let request = Request {
             llm_request,
@@ -827,7 +821,7 @@ impl TranslatingLlmClient {
                 ..Default::default()
             }),
         };
-        let response = self.call_rewrite_model(request, model).await?;
+        let response = self.call_rewrite_model(request, target_name).await?;
 
         match response.llm_response {
             LlmResponse::Agg(agg) => {
@@ -964,7 +958,7 @@ fn stream_with_deadline(
 async fn prepare_response_stream(
     response: reqwest::Response,
     backend: &Backend,
-    model: &ModelId,
+    target_name: &ModelId,
 ) -> Result<LlmResponseStream> {
     let bytes = response.bytes_stream().map(|chunk| {
         chunk
@@ -982,7 +976,7 @@ async fn prepare_response_stream(
             // An in-band context overflow skips retries and advances to another candidate.
             if let Some(message) = first_event_overflow(&first, backend) {
                 return Err(LlmClientError::ContextWindowExceeded {
-                    model: model.clone(),
+                    model: target_name.clone(),
                     message,
                 });
             }
@@ -2167,7 +2161,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_name_arg_wins_over_request_model()
+    async fn target_name_arg_wins_over_request_model()
     -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
         let client = TranslatingLlmClient::new(&[])?;
         // Arg "b" is looked up (and reported), not the request's "a".
