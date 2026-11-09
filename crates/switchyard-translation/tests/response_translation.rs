@@ -986,6 +986,57 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
     Ok(())
 }
 
+#[test]
+fn openai_chat_response_preserves_root_tool_name_shared_with_namespace() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let request = engine.decode_request(
+        WireFormat::OpenAiResponses,
+        &json!({
+            "input": "Search.",
+            "tools": [
+                {"type": "namespace", "name": "mcp__docs", "tools": [
+                    {"type": "function", "name": "search", "parameters": {}}
+                ]},
+                {"type": "function", "name": "search", "parameters": {}}
+            ]
+        }),
+        &policy,
+    )?;
+    let translated = engine.translate_response_with_extensions(
+        WireFormat::OpenAiChat,
+        WireFormat::OpenAiResponses,
+        &json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {"id": "call_root", "type": "function",
+                            "function": {"name": "search", "arguments": "{}"}},
+                        {"id": "call_namespaced", "type": "function",
+                            "function": {"name": "mcp__docs__search", "arguments": "{}"}}
+                    ]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        }),
+        &request.request.extensions,
+        &policy,
+    )?;
+
+    assert_eq!(
+        translated.body["output"],
+        json!([
+            {"type": "function_call", "call_id": "call_root", "name": "search",
+                "arguments": "{}"},
+            {"type": "function_call", "call_id": "call_namespaced", "name": "search",
+                "namespace": "mcp__docs", "arguments": "{}"}
+        ])
+    );
+    assert!(translated.diagnostics.is_empty());
+    Ok(())
+}
+
 // Verifies mixed assistant text and tool calls both survive into Responses output.
 #[test]
 fn openai_chat_response_with_text_and_tool_call_translates_both_to_responses() -> TestResult {
