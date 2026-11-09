@@ -387,12 +387,17 @@ across categories, and unknown category keys are rejected when the route is
 loaded. Argument-aware wrapper tools, inferred semantics, and learned routing
 rules are outside this exact-name configuration.
 
-MCP tools match by their bare tool name or by their full name. Claude Code sends
-an MCP tool as `mcp__<server>__<tool>`, and Codex sends it with a separate
-`namespace`. For both, `send_payment_request` matches the `send_payment_request`
-tool on the `billing` MCP server, and so does
-`mcp__billing__send_payment_request`. A server name that contains `__` needs the
-full name.
+Stage's custom `tool_semantics` rules can match a tool's full name or its bare
+name. For both Claude Code and Codex, `send_payment_request` matches that tool
+across namespaces. To restrict a rule to the `billing` MCP server, use
+`mcp__billing__send_payment_request` for Claude Code or
+`mcp__billing_sy_ns_send_payment_request` for Codex. Codex supplies a separate
+namespace, which Switchyard joins to the tool name as
+`<namespace>_sy_ns_<tool>`. Claude Code supplies the full name directly as
+`mcp__<server>__<tool>`; a server name containing `__` requires a full-name rule.
+
+Bare-name matching here only classifies tool activity for routing. It does not
+assign a namespace to a tool call when translating a response.
 
 ### Optional: handoff notes
 
