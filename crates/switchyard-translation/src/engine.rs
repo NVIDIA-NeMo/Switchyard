@@ -22,7 +22,7 @@ use crate::codecs::stream::{
 };
 use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
-use crate::format::{FormatId, WireFormat};
+use crate::format::FormatId;
 use crate::llm::{AggLlmResponse, LlmRequest, ProviderExtensions};
 use crate::policy::TranslationPolicy;
 use crate::sse;
@@ -483,8 +483,8 @@ impl TranslationEngine {
     /// buffered across chunks (a partial frame waits for its boundary); the source
     /// stream codec is resolved once and reused for every frame.
     ///
-    /// The decoder yields the terminal JSON event before it stops reading. Chat Completions
-    /// keeps reading after `finish_reason` to include usage before `[DONE]` or EOF.
+    /// Codecs can opt in to stopping after the decoder yields a terminal JSON event.
+    /// Other codecs keep reading to include trailing events before `[DONE]` or EOF.
     /// If EOF arrives without a required terminal event, the stream yields a deferred
     /// [`LlmClientError::ResponseTranslation`] error after any valid decoded events.
     pub fn decode_stream<S>(
@@ -546,8 +546,7 @@ impl TranslationEngine {
                                 value,
                                 normalized,
                             );
-                            // Chat usage can follow finish_reason, so the decoder keeps reading.
-                            if saw_terminal && source_format != WireFormat::OpenAiChat.into() {
+                            if saw_terminal && codec.stops_at_terminal_event() {
                                 break;
                             }
                         }
