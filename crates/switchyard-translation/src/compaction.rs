@@ -10,17 +10,17 @@ pub fn normalize_compaction(request: &mut LlmRequest, headers: Option<&HeaderMap
         .and_then(|headers| headers.get("x-codex-turn-metadata"))
         .and_then(|value| serde_json::from_slice::<serde_json::Value>(value.as_bytes()).ok())
         .is_some_and(|metadata| metadata["request_kind"] == "compaction");
-    request.has_compaction |= request
-        .messages
-        .iter()
-        .flat_map(|message| &message.content)
-        .any(|block| match block {
+    request.has_compaction |= request.messages.iter().any(|message| {
+        message.content.iter().any(|block| match block {
             ContentBlock::Text { text } => {
                 let text = text.to_lowercase();
-                text.contains("session is being continued") || has_hermes_marker(&text)
+                text.contains("session is being continued")
+                    || (message.role == Role::User && text.trim_start().starts_with(CODEX_SUMMARY))
+                    || has_hermes_marker(&text)
             }
             _ => false,
-        });
+        })
+    });
     request.is_compaction |= is_compaction
         || request
             .messages
@@ -64,7 +64,7 @@ fn is_compaction_block(block: &ContentBlock) -> bool {
         ),
         ContentBlock::Text { text } => {
             let text = text.trim().to_ascii_lowercase();
-            text.starts_with("another language model started to solve this problem and produced a summary of its thinking process.")
+            text.starts_with(CODEX_SUMMARY)
                 || text.starts_with("this session is being continued from a previous conversation that ran out of context.")
                 || (text.starts_with("the conversation history before this point was compacted into the following summary:")
                     && text.ends_with("</summary>"))
@@ -77,6 +77,8 @@ fn is_compaction_block(block: &ContentBlock) -> bool {
         _ => false,
     }
 }
+
+const CODEX_SUMMARY: &str = "another language model started to solve this problem and produced a summary of its thinking process.";
 
 const HERMES_REPLAY: &str = "[still in progress \u{2014} this is the active request, restated after the compaction boundary";
 
@@ -106,6 +108,62 @@ fn has_hermes_marker(text: &str) -> bool {
 mod tests {
     use crate::{WireFormat, decode_request};
     use serde_json::json;
+
+    #[test]
+    fn codex_summary_remains_in_history_after_a_new_user_turn() {
+        let summary = "  Another language model started to solve this problem and produced a summary of its thinking process. Continue the task.";
+        for format in [
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+        ] {
+            let field = if format == WireFormat::OpenAiResponses {
+                "input"
+            } else {
+                "messages"
+            };
+            let mut body = json!({"model": "model", "max_tokens": 32});
+            body[field] = json!([{"role": "user", "content": summary}]);
+            let request = decode_request(format, &body).unwrap();
+            assert!(
+                request.is_compaction && request.has_compaction,
+                "{format:?}"
+            );
+            body[field]
+                .as_array_mut()
+                .unwrap()
+                .push(json!({"role": "user", "content": "Now fix the parser"}));
+            let request = decode_request(format, &body).unwrap();
+            assert!(
+                !request.is_compaction && request.has_compaction,
+                "{format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn compaction_request_and_quoted_summary_do_not_mark_history() {
+        let summary = "Another language model started to solve this problem and produced a summary of its thinking process.";
+        for message in [
+            json!({"role": "user", "content": "Summarize existing work."}),
+            json!({"role": "user", "content": format!("Explain this phrase: {summary}")}),
+            json!({"role": "assistant", "content": summary}),
+            json!({"role": "system", "content": summary}),
+            json!({"role": "developer", "content": summary}),
+            json!({"role": "tool", "tool_call_id": "read", "content": summary}),
+        ] {
+            let body = json!({"messages": [message]});
+            let mut request = decode_request(WireFormat::OpenAiChat, &body).unwrap();
+            assert!(!request.is_compaction && !request.has_compaction);
+            let mut headers = http::HeaderMap::new();
+            headers.insert(
+                "x-codex-turn-metadata",
+                r#"{"request_kind":"compaction"}"#.parse().unwrap(),
+            );
+            super::normalize_compaction(&mut request, Some(&headers));
+            assert!(request.is_compaction && !request.has_compaction);
+        }
+    }
 
     #[test]
     fn summary_continues_but_fresh_user_input_does_not() {

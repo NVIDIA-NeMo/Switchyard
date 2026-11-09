@@ -2610,21 +2610,22 @@ mod tests {
 
     #[test]
     fn compaction_marker_sets_compacted() {
-        // The compaction summary is a user message carrying Claude Code's preamble.
-        let request = with_messages(vec![
-            Message::text(
-                Role::User,
-                "This session is being continued from a previous conversation that ran out of context.",
-            ),
-            Message::text(Role::User, "Continue with the next task"),
-            bash("ls"),
-        ]);
-        assert!(ToolSignals::from_request(&request, None).compacted);
-        assert!(
-            ToolSignalProcessor::default()
-                .for_user_turn(&request)
-                .compacted
-        );
+        for summary in [
+            "This session is being continued from a previous conversation that ran out of context.",
+            "Another language model started to solve this problem and produced a summary of its thinking process.",
+        ] {
+            let request = with_messages(vec![
+                Message::text(Role::User, summary),
+                Message::text(Role::User, "Continue with the next task"),
+                bash("ls"),
+            ]);
+            assert!(ToolSignals::from_request(&request, None).compacted);
+            assert!(
+                ToolSignalProcessor::default()
+                    .for_user_turn(&request)
+                    .compacted
+            );
+        }
     }
 
     #[test]
