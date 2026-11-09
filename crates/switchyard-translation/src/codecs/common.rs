@@ -5,8 +5,11 @@
 
 use serde_json::{Map, Value};
 
+use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::llm::{ContentBlock, LlmRequest, Tool, ToolChoice};
+use crate::policy::{TranslationPolicy, UnknownFieldPolicy};
+use crate::util::push_unknown_field;
 
 // Internal provenance survives mutations that invalidate exact request replay.
 pub(crate) const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
@@ -221,14 +224,20 @@ pub(crate) fn first_nonempty_string<'a>(
 pub(crate) fn provider_extensions(
     object: &Map<String, Value>,
     known: &[&str],
-) -> Map<String, Value> {
+    policy: &TranslationPolicy,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+) -> Result<Map<String, Value>> {
     let mut extensions = Map::new();
     for (key, value) in object {
         if key != ANTHROPIC_REQUEST_KEY && !known.contains(&key.as_str()) {
-            extensions.insert(key.clone(), value.clone());
+            if policy.unknown_field_policy == UnknownFieldPolicy::Preserve {
+                extensions.insert(key.clone(), value.clone());
+            } else {
+                push_unknown_field(diagnostics, policy, format!("$.{key}"))?;
+            }
         }
     }
-    extensions
+    Ok(extensions)
 }
 
 /// Invalid charges remain unknown so accounting can use configured token rates.
