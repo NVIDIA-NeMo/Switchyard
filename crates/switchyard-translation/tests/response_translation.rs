@@ -256,6 +256,169 @@ fn openai_chat_response_translates_to_anthropic_message() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn chat_refusal_keeps_its_responses_content_type() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    for finish in [None, Some("stop"), Some("length")] {
+        let body = json!({"id": "reply", "model": "qa/refusal", "choices": [{
+            "message": {"role": "assistant", "content": null, "refusal": "Cannot comply."},
+            "finish_reason": finish
+        }]});
+        let decoded = engine.decode_response(WireFormat::OpenAiChat, &body, &policy)?;
+        assert_eq!(
+            decoded.response.outputs[0].content,
+            vec![ContentBlock::Refusal {
+                text: "Cannot comply.".to_string(),
+            }]
+        );
+        let rebuilt =
+            engine.encode_response(WireFormat::OpenAiResponses, &decoded.response, &policy)?;
+        let direct = engine.translate_response(
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            &body,
+            &policy,
+        )?;
+        assert_eq!(rebuilt.body, direct.body);
+        assert_eq!(
+            rebuilt.body["output"][0]["content"],
+            json!([
+                {"type": "refusal", "refusal": "Cannot comply."}
+            ])
+        );
+        let truncated = finish == Some("length");
+        assert_eq!(
+            rebuilt.body["status"],
+            if truncated { "incomplete" } else { "completed" }
+        );
+        assert_eq!(rebuilt.body["output"][0]["status"], rebuilt.body["status"]);
+        assert_eq!(
+            rebuilt.body["incomplete_details"],
+            if truncated {
+                json!({"reason": "max_output_tokens"})
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        assert!(rebuilt.diagnostics.is_empty());
+        assert!(direct.diagnostics.is_empty());
+    }
+    let plain = engine.translate_response(WireFormat::OpenAiChat, WireFormat::OpenAiResponses,
+        &json!({"choices": [{"message": {"role": "assistant", "content": "ordinary answer"}, "finish_reason": "stop"}]}), &policy)?;
+    assert_eq!(
+        plain.body["output"][0]["content"],
+        json!([
+            {"type": "output_text", "text": "ordinary answer", "annotations": []}
+        ])
+    );
+    Ok(())
+}
+
+#[test]
+fn responses_refusal_rebuild_preserves_order_citations_reasoning_and_tools() -> TestResult {
+    let engine = TranslationEngine::default();
+    let citation = json!({"type": "url_citation", "start_index": 0, "end_index": 2,
+        "url": "https://example.test/source", "title": "Source"});
+    let content = json!([
+        {"type": "output_text", "text": "前缀", "annotations": [citation]},
+        {"type": "refusal", "refusal": "Cannot comply."},
+        {"type": "output_text", "text": "尾巴", "annotations": [citation]}
+    ]);
+    let tool = json!({"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{\"path\": \"x\"}"});
+    let reasoning = json!({"type": "reasoning", "id": "rs_1", "status": "completed",
+        "summary": [{"type": "summary_text", "text": "Plan."}], "encrypted_content": "opaque"});
+    let native = json!({"id": "reply", "model": "qa/refusal", "status": "completed", "output": [
+        reasoning, {"type": "message", "role": "assistant", "content": content}
+    ]});
+    let replay = engine.translate_response(
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiResponses,
+        &native,
+        &TranslationPolicy::default(),
+    )?;
+    assert_eq!(replay.body, native);
+    let policy = normalized_policy();
+    let mut decoded = engine.decode_response(WireFormat::OpenAiResponses, &native, &policy)?;
+    decoded.response.outputs[0]
+        .content
+        .push(ContentBlock::ToolCall(switchyard_translation::ToolCall {
+            id: "call_1".to_string(),
+            name: "lookup".to_string(),
+            arguments: json!({"path": "x"}),
+        }));
+    let encoded =
+        engine.encode_response(WireFormat::OpenAiResponses, &decoded.response, &policy)?;
+    assert_eq!(
+        encoded.body["output"]
+            .as_array()
+            .ok_or("output array")?
+            .len(),
+        3
+    );
+    assert_eq!(encoded.body["output"][0], reasoning);
+    assert_eq!(encoded.body["output"][1]["content"], content);
+    assert_eq!(encoded.body["output"][2], tool);
+    assert!(encoded.diagnostics.is_empty());
+
+    let mut unrepresentable = decoded.response;
+    unrepresentable.outputs[0]
+        .url_citations
+        .push(switchyard_translation::UrlCitation {
+            start_index: 2,
+            end_index: 3,
+            url: "https://example.test/refusal".to_string(),
+            title: "Refusal".to_string(),
+        });
+    unrepresentable.outputs[0]
+        .url_citations
+        .push(switchyard_translation::UrlCitation {
+            start_index: 20,
+            end_index: 0,
+            url: "https://example.test/reversed".to_string(),
+            title: "Reversed range".to_string(),
+        });
+    let lossy = engine.encode_response(WireFormat::OpenAiResponses, &unrepresentable, &policy)?;
+    assert_eq!(lossy.diagnostics.len(), 1);
+    assert_eq!(lossy.diagnostics[0].code, "lossy_conversion");
+    let strict = TranslationPolicy {
+        lossy_conversion_policy: switchyard_translation::LossyConversionPolicy::Reject,
+        ..policy
+    };
+    assert!(matches!(
+        engine.encode_response(WireFormat::OpenAiResponses, &unrepresentable, &strict),
+        Err(switchyard_translation::TranslationError::LossyConversion(_))
+    ));
+    Ok(())
+}
+
+#[test]
+fn empty_refusal_remains_typed_beside_a_tool_call() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    let body = json!({"model": "qa/refusal", "output": [
+        {"type": "message", "role": "assistant", "content": [{"type": "refusal", "refusal": ""}]}
+    ]});
+    let mut decoded = engine.decode_response(WireFormat::OpenAiResponses, &body, &policy)?;
+    decoded.response.outputs[0]
+        .content
+        .push(ContentBlock::ToolCall(switchyard_translation::ToolCall {
+            id: "call_1".to_string(),
+            name: "lookup".to_string(),
+            arguments: json!({}),
+        }));
+    let result = engine.encode_response(WireFormat::OpenAiResponses, &decoded.response, &policy)?;
+    assert_eq!(
+        result.body["output"][0]["content"],
+        json!([{"type": "refusal", "refusal": ""}])
+    );
+    assert_eq!(
+        result.body["output"][1],
+        json!({"type": "function_call", "call_id": "call_1", "name": "lookup", "arguments": "{}"})
+    );
+    Ok(())
+}
+
 // Verifies a Chat Completions refusal survives both neutral decoding and Anthropic encoding.
 #[test]
 fn openai_chat_refusal_decodes_and_translates_to_anthropic() -> TestResult {

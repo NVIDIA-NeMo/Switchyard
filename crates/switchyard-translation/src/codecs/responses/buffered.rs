@@ -410,16 +410,17 @@ impl FormatCodec for OpenAiResponsesCodec {
     fn encode_response(
         &self,
         response: &AggLlmResponse,
-        _policy: &TranslationPolicy,
+        policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
         if let Some(body) =
-            exact_preserved_response(&response.preservation, WireFormat::OpenAiResponses, _policy)
+            exact_preserved_response(&response.preservation, WireFormat::OpenAiResponses, policy)
         {
             return Ok(EncodedResponse {
                 body,
                 diagnostics: Vec::new(),
             });
         }
+        let mut diagnostics = Vec::new();
         let is_truncated = matches!(
             response
                 .first_output()
@@ -441,16 +442,16 @@ impl FormatCodec for OpenAiResponsesCodec {
                     "model": response.model.clone().unwrap_or_else(|| "unknown".to_string()),
                     "status": status,
                     "incomplete_details": incomplete_details,
-                    "output": encode_responses_output(&response.outputs),
+                    "output": encode_responses_output(&response.outputs, &mut diagnostics, policy)?,
                     "usage": encode_responses_usage(&response.usage),
                     "parallel_tool_calls": true,
                     "tool_choice": "auto",
                     "tools": [],
                 }),
                 &response.preservation,
-                _policy,
+                policy,
             ),
-            diagnostics: Vec::new(),
+            diagnostics,
         })
     }
 }
@@ -1881,11 +1882,15 @@ fn decode_responses_url_citations(content: Option<&Value>) -> Vec<crate::UrlCita
 }
 
 // Encodes normalized response outputs into Responses output items.
-fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
-    Value::Array(
+fn encode_responses_output(
+    outputs: &[ResponseOutput],
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Value> {
+    Ok(Value::Array(
         outputs
             .iter()
-            .flat_map(|output| {
+            .map(|output| -> Result<Vec<Value>> {
                 let has_output_items = output.content.iter().any(|block| {
                     matches!(block, ContentBlock::ToolCall(_))
                         || matches!(block, ContentBlock::Unknown { provider, raw }
@@ -1947,23 +1952,19 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     ));
                 }
 
-                if !text.is_empty() || (!has_output_items && reasoning.is_empty()) {
+                if !text.is_empty()
+                    || output
+                        .content
+                        .iter()
+                        .any(|block| matches!(block, ContentBlock::Refusal { .. }))
+                    || (!has_output_items && reasoning.is_empty())
+                {
                     items.push(json!({
                         "type": "message",
                         "id": "msg_switchyard",
                         "status": status,
                         "role": role_to_responses(output.role),
-                        "content": [{
-                            "type": "output_text",
-                            "text": text,
-                            "annotations": output.url_citations.iter().map(|citation| json!({
-                                "type": "url_citation",
-                                "start_index": citation.start_index,
-                                "end_index": citation.end_index,
-                                "url": citation.url,
-                                "title": citation.title,
-                            })).collect::<Vec<_>>(),
-                        }],
+                        "content": encode_responses_message_content(output, diagnostics, policy)?,
                     }));
                 }
 
@@ -1983,10 +1984,83 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     _ => None,
                 }));
 
-                items
+                Ok(items)
             })
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .flatten()
             .collect(),
-    )
+    ))
+}
+
+fn encode_responses_message_content(
+    output: &ResponseOutput,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<Value>> {
+    let has_refusal = output
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Refusal { .. }));
+    let mut placed_citations = vec![false; output.url_citations.len()];
+    let mut text_part = |text: &str, offset: usize| {
+        let end = offset + text.chars().count();
+        let annotations = output
+            .url_citations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, citation)| {
+                if has_refusal
+                    && (placed_citations[index]
+                        || citation.start_index < offset
+                        || citation.end_index < citation.start_index
+                        || citation.end_index > end)
+                {
+                    return None;
+                }
+                placed_citations[index] = true;
+                Some(json!({
+                    "type": "url_citation",
+                    "start_index": citation.start_index - offset,
+                    "end_index": citation.end_index - offset,
+                    "url": citation.url,
+                    "title": citation.title,
+                }))
+            })
+            .collect::<Vec<_>>();
+        json!({"type": "output_text", "text": text, "annotations": annotations})
+    };
+    if !has_refusal {
+        return Ok(vec![text_part(&text_from_blocks(&output.content, ""), 0)]);
+    }
+    let mut offset = 0;
+    let content = output
+        .content
+        .iter()
+        .filter_map(|block| {
+            let (text, part) = match block {
+                ContentBlock::Refusal { text } => {
+                    (text.as_str(), json!({"type": "refusal", "refusal": text}))
+                }
+                ContentBlock::Text { text } => (text.as_str(), text_part(text, offset)),
+                ContentBlock::Unknown { raw, .. } => {
+                    let text = raw.as_str()?;
+                    (text, text_part(text, offset))
+                }
+                _ => return None,
+            };
+            offset += text.chars().count();
+            Some(part)
+        })
+        .collect();
+    if placed_citations.iter().any(|placed| !placed) {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Responses refusal content cannot carry every URL citation",
+        )?;
+    }
+    Ok(content)
 }
 
 // Encodes private reasoning as a separate Responses output item. An encrypted-only item
