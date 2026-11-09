@@ -1520,6 +1520,89 @@ async fn buffered_routing_closes_observation_before_replay() -> switchyard_libsy
     Ok(())
 }
 
+struct FailingStreamClient(bool);
+
+#[async_trait]
+impl RoutedLlmClient for FailingStreamClient {
+    async fn call(&self, _request: Request) -> Result<Response, LlmClientError> {
+        let failure = if self.0 {
+            Err(LlmClientError::UpstreamHttp {
+                status: http::StatusCode::BAD_GATEWAY,
+                body: LEAKED_CONTENT.into(),
+            })
+        } else {
+            Ok(LlmResponseChunk::StreamError {
+                message: LEAKED_CONTENT.into(),
+            }
+            .into())
+        };
+        Ok(Response {
+            llm_response: LlmResponse::Stream(
+                futures::stream::iter([
+                    Ok(LlmResponseChunk::Usage(Usage {
+                        input_tokens: Some(11),
+                        output_tokens: Some(3),
+                        ..Usage::default()
+                    })
+                    .into()),
+                    failure,
+                ])
+                .boxed(),
+            ),
+            metadata: None,
+            upstream_headers: http::HeaderMap::new(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn routing_stream_error_is_recorded_once_without_upstream_body() {
+    let _guard = serialize_test().lock().await;
+    let (_, _, _, exporter, _) = telemetry();
+    for http_error in [false, true] {
+        let model = if http_error {
+            "routing-http-stream-error"
+        } else {
+            "routing-in-band-error"
+        };
+        let mut request = request_with_metadata(model, model);
+        request.llm_request.stream = true;
+        assert!(
+            run(
+                Arc::new(RoutingCallAlgo {
+                    name: model.into(),
+                    target: model.into()
+                }),
+                Arc::new(FailingStreamClient(http_error)),
+                request,
+            )
+            .await
+            .is_err()
+        );
+        let call = find_otel_span(exporter, &format!("chat {model}"), model);
+        for (key, expected) in [
+            ("outcome", OtelValue::String("error".into())),
+            ("error.type", OtelValue::String("502".into())),
+            ("error", OtelValue::String("upstream HTTP 502".into())),
+            ("gen_ai.usage.input_tokens", OtelValue::I64(11)),
+            ("gen_ai.usage.output_tokens", OtelValue::I64(3)),
+        ] {
+            let values: Vec<_> = call
+                .attributes
+                .iter()
+                .filter(|attr| attr.key.as_str() == key)
+                .map(|attr| attr.value.clone())
+                .collect();
+            assert_eq!(
+                values,
+                vec![expected],
+                "{key} must be exported exactly once"
+            );
+        }
+        assert!(!format!("{:?}", call.attributes).contains(LEAKED_CONTENT));
+    }
+}
+
 struct TimeoutClient;
 
 #[async_trait]

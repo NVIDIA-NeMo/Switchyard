@@ -458,9 +458,9 @@ async fn call_one(
     let result = async {
         let response = async { client?.call(request).await }
             .await
-            .map_err(|source| LibsyError::client_call(model_id.clone(), source))?;
-        // Observe the upstream stream; replay must not retain or re-observe the call.
-        let mut response = observability::observe_client_call(Ok(response))?;
+            .map_err(|source| LibsyError::client_call(model_id.clone(), source));
+        // Observe dispatch and live I/O once; buffering must not re-observe replay.
+        let mut response = observability::observe_client_call(response)?;
         if is_routing && let LlmResponse::Stream(chunks) = response.llm_response {
             let (chunks, usage) = buffer_routing_stream(chunks)
                 .await
@@ -477,10 +477,6 @@ async fn call_one(
         response.set_served_model(model_id);
         response
     });
-    let result = match result {
-        Ok(response) => Ok(response),
-        Err(error) => observability::observe_client_call(Err(error)),
-    };
     let result = if is_routing {
         result
     } else {
