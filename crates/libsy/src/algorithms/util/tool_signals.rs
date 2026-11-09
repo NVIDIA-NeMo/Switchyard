@@ -12,7 +12,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -1066,8 +1066,8 @@ fn extract_tool_signals_with_window_and_semantics(
     let namespaces = tool_namespaces(&request.llm_request.extensions);
     let mut tool_texts: Vec<(String, bool)> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-    // IDs whose latest call is a retrieval tool.
-    let mut retrieval_calls: HashSet<&str> = HashSet::new();
+    // Keep shell provenance so file data cannot masquerade as execution status.
+    let mut retrieval_calls: HashMap<&str, bool> = HashMap::new();
     let mut tool_result_count = 0usize;
     let mut assistant_turn_count = 0usize;
 
@@ -1125,7 +1125,10 @@ fn extract_tool_signals_with_window_and_semantics(
                     if !call.id.is_empty() {
                         // A reused ID links to its latest call.
                         if is_retrieval {
-                            retrieval_calls.insert(call.id.as_str());
+                            retrieval_calls.insert(
+                                call.id.as_str(),
+                                BASH_TOOL_NAMES.contains(&name.to_lowercase().as_str()),
+                            );
                         } else {
                             retrieval_calls.remove(call.id.as_str());
                         }
@@ -1148,33 +1151,34 @@ fn extract_tool_signals_with_window_and_semantics(
                         .filter_map(text_of)
                         .collect::<Vec<_>>()
                         .join("\n");
-                    let is_retrieval_result =
-                        retrieval_calls.contains(result.tool_call_id.as_str());
-                    if is_retrieval_result {
-                        // Shell reads can return bare JSON from a file. Hermes wraps
-                        // terminal output with output and exit_code fields.
-                        let shell_result = serde_json::Deserializer::from_str(&text)
-                            .into_iter::<Value>()
-                            .next()
-                            .and_then(|result| result.ok())
-                            .filter(|value| {
-                                value["output"].is_string() && value.get("exit_code").is_some()
-                            });
-                        // Codex reports the exit status in a header before `Output:`.
-                        // An exit line after it is part of what was read.
-                        let status = text
-                            .split_once("\nOutput:\n")
-                            .map_or(text.as_str(), |(header, _)| header);
-                        // Hermes reports it in fields, so its output is not scanned.
-                        let shell_failed = match &shell_result {
-                            Some(value) => {
-                                value["exit_code"].as_i64().is_some_and(|code| code != 0)
-                                    || value["success"].as_bool() == Some(false)
-                                    || value["error"]
-                                        .as_str()
-                                        .is_some_and(|error| !error.trim().is_empty())
+                    if let Some(&is_shell_read) = retrieval_calls.get(result.tool_call_id.as_str())
+                    {
+                        let shell_failed = is_shell_read && {
+                            // Shell reads can return bare JSON from a file. Hermes wraps
+                            // terminal output with output and exit_code fields.
+                            let shell_result = serde_json::Deserializer::from_str(&text)
+                                .into_iter::<Value>()
+                                .next()
+                                .and_then(|result| result.ok())
+                                .filter(|value| {
+                                    value["output"].is_string() && value.get("exit_code").is_some()
+                                });
+                            // Codex reports the exit status in a header before `Output:`.
+                            // An exit line after it is part of what was read.
+                            let status = text
+                                .split_once("\nOutput:\n")
+                                .map_or(text.as_str(), |(header, _)| header);
+                            // Hermes reports it in fields, so its output is not scanned.
+                            match &shell_result {
+                                Some(value) => {
+                                    value["exit_code"].as_i64().is_some_and(|code| code != 0)
+                                        || value["success"].as_bool() == Some(false)
+                                        || value["error"]
+                                            .as_str()
+                                            .is_some_and(|error| !error.trim().is_empty())
+                                }
+                                None => has_nonzero_exit_status(&status.to_lowercase()),
                             }
-                            None => has_nonzero_exit_status(&status.to_lowercase()),
                         };
                         if is_missing_file(&text) || (!is_error && !shell_failed) {
                             // Keep the window slot after dropping retrieved content.
@@ -2279,6 +2283,78 @@ mod tests {
         assert_eq!(read(0), 0.0);
         // The read itself failed, so its output counts.
         assert_eq!(read(1), CRITICAL);
+    }
+
+    #[test]
+    fn builtin_retrieval_contents_are_not_execution_status() {
+        let saved_json = r#"{"output":"MemoryError\nall tests passed","exit_code":1,"error":null}"#;
+        let saved_header = "Process exited with code 1\nOutput:\nMemoryError\nall tests passed";
+        for name in [
+            "Read",
+            "read_file",
+            "search_files",
+            "Grep",
+            "mcp__files__Read",
+            "text_editor",
+        ] {
+            let mut call = tc(name);
+            if name == "text_editor"
+                && let ContentBlock::ToolCall(call) = &mut call.content[0]
+            {
+                call.arguments = json!({"command": "view"});
+            }
+            for text in [saved_json, saved_header] {
+                for is_error in [None, Some(false)] {
+                    let mut result = tr(text);
+                    if let ContentBlock::ToolResult(result) = &mut result.content[0] {
+                        result.is_error = is_error;
+                    }
+                    let mut request = call_with_result(call.clone(), result);
+                    let signal = ToolSignals::from_request(&request, None);
+                    assert_eq!(signal.severity, 0.0, "{name}: {text}");
+                    assert!(!signal.tests_passed, "{name}: {text}");
+                    assert_eq!(signal.read_count, 1);
+                    assert_eq!(signal.tool_result_count, 1);
+                    request.llm_request.messages.insert(0, tr("MemoryError"));
+                    assert_eq!(
+                        ToolSignals::from_request(&request, Some(2)).severity,
+                        CRITICAL
+                    );
+                    assert_eq!(ToolSignals::from_request(&request, Some(1)).severity, 0.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn builtin_retrieval_failures_keep_explicit_error_flags() {
+        for (text, expected) in [("MemoryError", CRITICAL), ("", HARD)] {
+            let mut result = tr(text);
+            if let ContentBlock::ToolResult(result) = &mut result.content[0] {
+                result.is_error = Some(true);
+            }
+            let request = call_with_result(tc("Read"), result);
+            assert_eq!(ToolSignals::from_request(&request, None).severity, expected);
+        }
+    }
+
+    #[test]
+    fn reused_retrieval_ids_follow_the_latest_call_provenance() {
+        let shell = exec_command(json!({"cmd": "cat saved.json"}));
+        let read = tc("Read");
+        let output = r#"{"output":"MemoryError","exit_code":1,"error":null}"#;
+        for (mut previous, latest, expected) in [
+            (shell.clone(), read.clone(), 0.0),
+            (read, shell.clone(), CRITICAL),
+            (shell, bash("python main.py"), CRITICAL),
+        ] {
+            if let ContentBlock::ToolCall(call) = &mut previous.content[0] {
+                call.id = "call-1".to_string();
+            }
+            let mut request = call_with_result(latest, tr(output));
+            request.llm_request.messages.insert(0, previous);
+            assert_eq!(ToolSignals::from_request(&request, None).severity, expected);
+        }
     }
 
     #[test]
