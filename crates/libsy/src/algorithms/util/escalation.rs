@@ -191,7 +191,8 @@ pub(crate) struct EscalationVerdict {
     pub(crate) escalate: bool,
     pub(crate) category: EscalationCategory,
     pub(crate) new_evidence: bool,
-    pub(crate) reason: String,
+    #[serde(rename = "reason")]
+    _reason: String,
 }
 
 /// Builds the condensed trajectory presented to the escalation judge.
@@ -236,7 +237,8 @@ impl JudgePolicy for EscalationPolicy {
         if let Some(verdict) = verdict {
             tracing::debug!(
                 escalate = verdict.escalate,
-                reason = %verdict.reason,
+                category = verdict.category.label(),
+                new_evidence = verdict.new_evidence,
                 "escalation judge verdict"
             );
         }
@@ -516,6 +518,91 @@ mod tests {
             SerdeDecoder::new(),
             JudgeRuntimeConfig::new(max_output_tokens)?,
         ))
+    }
+
+    #[test]
+    fn judge_logs_only_structured_verdict_fields() -> Result<()> {
+        use std::sync::Arc;
+
+        use crate::core::algorithm::RuntimeModels;
+        use switchyard_protocol::text_response;
+
+        #[derive(Clone, Default)]
+        struct LogCapture(Arc<parking_lot::Mutex<Vec<u8>>>);
+
+        impl std::io::Write for LogCapture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let capture = LogCapture::default();
+        let writer = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let driver = Driver::new(
+            "test",
+            Arc::new(RuntimeModels::new(
+                [
+                    (Category::Efficient, vec!["efficient".into()]),
+                    (Category::Capable, vec!["capable".into()]),
+                ]
+                .into(),
+            )),
+        )
+        .0;
+        for (phase, escalate, category, target) in [
+            (EvaluationPhase::Efficient, true, "repetition", "capable"),
+            (EvaluationPhase::Strong, false, "none", "efficient"),
+        ] {
+            let judge = escalation_judge(512, Some(phase), &ClassifierContractConfig::default())?;
+            let response = serde_json::json!({
+                "escalate": escalate,
+                "category": category,
+                "new_evidence": escalate,
+                "reason": "SYNTHETIC_PRIVATE_JUDGE_REASON",
+            });
+            let verdict = judge.parse(&text_response(None, response.to_string()))?;
+            let mut invalid = response;
+            invalid["reason"] = serde_json::Value::Null;
+            assert!(
+                judge
+                    .parse(&text_response(None, invalid.to_string()))
+                    .is_err()
+            );
+            let selected = EscalationPolicy { phase: Some(phase) }
+                .to_classification(Some(&verdict), &driver)?
+                .argmax(false)?
+                .expect("selected tier");
+            assert_eq!(selected.target.as_str(), target);
+        }
+        let logs = String::from_utf8(capture.0.lock().clone()).unwrap();
+        assert!(!logs.contains("SYNTHETIC_PRIVATE_JUDGE_REASON"), "{logs}");
+        assert!(!logs.contains("reason="), "{logs}");
+        assert_eq!(
+            logs.matches("escalation judge verdict").count(),
+            2,
+            "{logs}"
+        );
+        assert!(
+            logs.contains("escalate=true category=\"repetition\" new_evidence=true"),
+            "{logs}"
+        );
+        assert!(
+            logs.contains("escalate=false category=\"none\" new_evidence=false"),
+            "{logs}"
+        );
+        Ok(())
     }
 
     #[test]
