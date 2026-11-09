@@ -861,7 +861,7 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
                 "tool_calls": [{
                     "id": "call_1",
                     "type": "function",
-                    "function": {"name": "lookup", "arguments": "{\"q\":\"rust\"}"}
+                    "function": {"name": "search", "arguments": "{\"q\":\"rust\"}"}
                 }, {
                     "id": "call_2", "type": "function",
                     "function": {"name": "mcp__docs__search", "arguments": "{\"query\":\"streaming\"}"}
@@ -888,7 +888,7 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
     assert_eq!(
         output["output"],
         json!([
-            {"type": "function_call", "call_id": "call_1", "name": "lookup",
+            {"type": "function_call", "call_id": "call_1", "name": "search",
                 "arguments": "{\"q\": \"rust\"}"},
             {"type": "function_call", "call_id": "call_2", "name": "mcp__docs__search",
                 "arguments": "{\"query\": \"streaming\"}"},
@@ -913,6 +913,7 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
         &json!({
             "input": "Search and list files",
             "tools": [
+                {"type": "function", "name": "search", "parameters": {}},
                 {"type": "namespace", "name": "mcp__docs", "tools": [
                     {"type": "function", "name": "search", "parameters": {}}
                 ]},
@@ -925,7 +926,7 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
     let empty = ProviderExtensions::default();
     let mut restored = output.clone();
     restored["output"] = json!([
-        {"type": "function_call", "call_id": "call_1", "name": "lookup",
+        {"type": "function_call", "call_id": "call_1", "name": "search",
             "arguments": "{\"q\": \"rust\"}"},
         {"type": "function_call", "call_id": "call_2", "name": "search",
             "namespace": "mcp__docs", "arguments": "{\"query\": \"streaming\"}"},
