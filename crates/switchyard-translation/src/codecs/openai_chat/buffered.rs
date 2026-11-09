@@ -31,6 +31,8 @@ use crate::util::{
     reject_responses_native_input_item, stable_id, string_value, validate_request_capabilities,
 };
 
+const MAX_COMPLETIONS_TOOL_LENGTH: usize = 64;
+
 /// Format codec for OpenAI Chat Completions payloads.
 pub struct OpenAiChatCodec;
 
@@ -194,6 +196,13 @@ impl FormatCodec for OpenAiChatCodec {
         if let Some(body) =
             exact_preserved_request(&request.preservation, WireFormat::OpenAiChat, policy)
         {
+            if let Some(tools) = body.get("tools").and_then(Value::as_array) {
+                for (index, tool) in tools.iter().enumerate() {
+                    if let Some(name) = tool.pointer("/function/name").and_then(Value::as_str) {
+                        validate_tool_name_length(name, index)?;
+                    }
+                }
+            }
             return Ok(EncodedRequest {
                 body,
                 diagnostics: Vec::new(),
@@ -214,6 +223,11 @@ impl FormatCodec for OpenAiChatCodec {
             (request.tools.as_slice(), request.tool_choice.as_ref()),
             |(tools, choice)| (tools.as_slice(), Some(choice)),
         );
+        for (index, tool) in tools.iter().enumerate() {
+            if let Some(tool) = tool.function() {
+                validate_tool_name_length(&tool.name, index)?;
+            }
+        }
         let mut body = Map::new();
         if let Some(model) = &request.model {
             body.insert("model".to_string(), Value::String(model.clone()));
@@ -1198,6 +1212,19 @@ fn media_source_text(source: &MediaSource) -> String {
         })),
         MediaSource::Raw(raw) => json_string(raw),
     }
+}
+
+fn validate_tool_name_length(name: &str, index: usize) -> Result<()> {
+    if name.len() > MAX_COMPLETIONS_TOOL_LENGTH {
+        return Err(TranslationError::InvalidValue {
+            path: format!("$.tools[{index}].function.name"),
+            message: format!(
+                "tool name length {} exceeds the maximum of {MAX_COMPLETIONS_TOOL_LENGTH}",
+                name.len(),
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Encodes normalized tool definitions into OpenAI tool JSON.

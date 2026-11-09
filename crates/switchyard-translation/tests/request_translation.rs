@@ -18,6 +18,69 @@ use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
+fn chat_request_checks_final_tool_name_length() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    for length in [64, 65] {
+        let name = "t".repeat(length);
+        let child = "t".repeat(
+            length
+                - "docs".len()
+                - switchyard_protocol::codex_namespaces::NAMESPACE_SEPARATOR.len(),
+        );
+        for (source, body, preserve) in [
+            (
+                WireFormat::OpenAiResponses,
+                json!({"input": "Read.", "tools": [{
+                    "type": "namespace", "name": "docs",
+                    "tools": [{"type": "function", "name": child, "parameters": {}}]
+                }]}),
+                false,
+            ),
+            (
+                WireFormat::OpenAiChat,
+                json!({"messages": [], "tools": [{
+                    "type": "function", "function": {"name": name, "parameters": {}}
+                }]}),
+                false,
+            ),
+            (
+                WireFormat::OpenAiChat,
+                json!({"messages": [], "tools": [{
+                    "type": "function", "function": {"name": name, "parameters": {}}
+                }]}),
+                true,
+            ),
+        ] {
+            let mut request = engine.decode_request(source, &body, &policy)?.request;
+            if preserve {
+                // The preserved body takes precedence over edited IR tools.
+                request.tools.clear();
+            } else {
+                request.preservation.requests.clear();
+            }
+            let result = engine.encode_request(WireFormat::OpenAiChat, &request, &policy);
+            if length == 64 {
+                let output = result?;
+                assert_eq!(
+                    output.body["tools"][0]["function"]["name"]
+                        .as_str()
+                        .map(str::len),
+                    Some(64)
+                );
+            } else {
+                assert!(matches!(
+                    result,
+                    Err(TranslationError::InvalidValue { path, .. })
+                        if path == "$.tools[0].function.name"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn responses_assistant_phase_survives_rebuilds() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy::default();

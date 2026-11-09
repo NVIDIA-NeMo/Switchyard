@@ -16,6 +16,7 @@ use http::StatusCode;
 use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use serde_json::{Map, Value, json};
+use switchyard_protocol::codex_namespaces::NAMESPACE_SEPARATOR;
 use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, Metadata,
     ModelId, Request, Response, RoutedLlmClient,
@@ -1174,8 +1175,6 @@ fn rejects_template_options(error: &LlmClientError) -> bool {
             .any(|phrase| message.contains(phrase)))
 }
 
-const CODEX_NAMESPACE_SEPARATOR: &str = "__";
-
 /// Rewrites a Responses body into the shape OpenAI-compatible providers accept.
 ///
 /// Codex extends Responses with namespace containers and namespaced function calls, and
@@ -1279,7 +1278,7 @@ fn qualify_responses_function_name_with_namespace(
     let Some(name) = object.get("name").and_then(Value::as_str) else {
         return;
     };
-    let prefix = format!("{namespace}{CODEX_NAMESPACE_SEPARATOR}");
+    let prefix = format!("{namespace}{NAMESPACE_SEPARATOR}");
     if name.starts_with(&prefix) {
         return;
     }
@@ -3977,7 +3976,7 @@ mod tests {
             .and(wiremock::matchers::body_partial_json(json!({
                 "tools": [{
                     "type": "function",
-                    "function": {"name": "mcp__open_websearch__search"}
+                    "function": {"name": "mcp__open_websearch_sy_priv_ns_search"}
                 }]
             })))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -3992,7 +3991,7 @@ mod tests {
                             "id": "call_1",
                             "type": "function",
                             "function": {
-                                "name": "mcp__open_websearch__search",
+                                "name": "mcp__open_websearch_sy_priv_ns_search",
                                 "arguments": "{\"q\":\"rust\"}"
                             }
                         }]
@@ -4055,7 +4054,7 @@ mod tests {
                 "output": [{
                     "type": "function_call",
                     "call_id": "call_1",
-                    "name": "mcp__open_websearch__search",
+                    "name": "mcp__open_websearch_sy_priv_ns_search",
                     "arguments": "{\"q\":\"rust\"}"
                 }],
                 "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
@@ -4112,18 +4111,18 @@ mod tests {
             request_body["tools"],
             json!([{
                 "type": "function",
-                "name": "mcp__open_websearch__search",
+                "name": "mcp__open_websearch_sy_priv_ns_search",
                 "description": "",
                 "parameters": parameters
             }])
         );
         assert_eq!(
             request_body["tool_choice"],
-            json!({"type": "function", "name": "mcp__open_websearch__search"})
+            json!({"type": "function", "name": "mcp__open_websearch_sy_priv_ns_search"})
         );
         assert_eq!(
             request_body["input"][0]["name"],
-            "mcp__open_websearch__search"
+            "mcp__open_websearch_sy_priv_ns_search"
         );
         assert!(request_body["input"][0].get("namespace").is_none());
 
