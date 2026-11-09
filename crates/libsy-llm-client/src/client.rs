@@ -374,11 +374,16 @@ impl TranslatingLlmClient {
         omit_configured_body_fields(&mut body, backend.omit_body_fields());
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::OpenAiResponses(_)) {
+            let reasoning_model = body
+                .get("model")
+                .and_then(Value::as_str)
+                .unwrap_or(upstream_model)
+                .to_owned();
             self.model_to_config
                 .get(model)
                 .map(|config| config.responses_reasoning)
                 .unwrap_or_default()
-                .normalize(&mut body, backend.base_url(), upstream_model);
+                .normalize(&mut body, backend.base_url(), &reasoning_model);
         }
         // After the merge on purpose: the effort override must win over both the caller's
         // value and any `reasoning` default a target set through `extra_body`. Token counting
@@ -3072,6 +3077,80 @@ mod tests {
             }
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn responses_reasoning_policy_follows_outbound_model_overrides()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        use crate::ResponsesReasoningPolicy::{Auto, Drop, PreserveEncrypted, PreservePlaintext};
+        let gpt = "openai/gpt-5";
+        let local = "provider/local-model";
+        let history = json!([
+            {"type": "message", "role": "user", "content": "continue"},
+            {"type": "reasoning", "id": "rs_opaque", "encrypted_content": "opaque", "summary": []},
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Plan"}]}
+        ]);
+        for (policy, provider_model, override_model, behavior) in [
+            (Auto, gpt, Some(local), PreservePlaintext),
+            (Auto, local, Some(gpt), PreserveEncrypted),
+            (Auto, gpt, None, PreserveEncrypted),
+            (PreserveEncrypted, gpt, Some(local), PreserveEncrypted),
+            (PreservePlaintext, local, Some(gpt), PreservePlaintext),
+            (Drop, local, Some(gpt), Drop),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/responses"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "resp_1", "object": "response", "model": "served",
+                    "status": "completed", "output": [], "usage": {}
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let mut backend = config(&format!("{}/v1", server.uri()));
+            backend.omit_body_fields.insert("model".to_string());
+            if let Some(model) = override_model {
+                backend.extra_body.insert("model".to_string(), json!(model));
+            }
+            let client = TranslatingLlmClient::new(&[ModelConfig::new(
+                "executor",
+                Backend::OpenAiResponses(backend),
+                None,
+            )
+            .with_provider_model(provider_model)
+            .with_responses_reasoning(policy)])?;
+            client
+                .call_rewrite_model_raw(
+                    json!({"model": "route", "input": history, "store": false}),
+                    None,
+                    Some(&ModelId::from("executor")),
+                    WireFormat::OpenAiResponses,
+                )
+                .await?;
+            let calls = server.received_requests().await.ok_or("missing requests")?;
+            let body: Value = serde_json::from_slice(&calls[0].body)?;
+            assert_eq!(
+                body.get("model"),
+                override_model.map(|model| json!(model)).as_ref()
+            );
+            let mut expected = vec![history[0].clone()];
+            match behavior {
+                PreserveEncrypted => {
+                    let mut item = history[1].clone();
+                    item["content"] = json!([]);
+                    expected.push(item);
+                }
+                PreservePlaintext => expected.push(history[2].clone()),
+                _ => {}
+            }
+            assert_eq!(
+                body["input"],
+                json!(expected),
+                "{policy:?}, {provider_model}, {override_model:?}"
+            );
+        }
         Ok(())
     }
 
