@@ -123,14 +123,40 @@ Three things in that file matter on OCI:
 
 The OpenAI `gpt-5.x` and `gpt-6.x` deployments reject `max_tokens` on Chat Completions
 (`Use 'max_completion_tokens' instead`). Switchyard forwards the field a caller sends, so
-they work as `efficient` or `capable` targets for callers that omit `max_tokens`, and
-`openai.gpt-5.5` answered a passthrough route that way. They cannot be the judge on an
-`openai_chat` client in `v0.3.0`, because the judge call always carries an output limit;
-`omit_body_fields` on `main` removes it. The Responses API (`format = "openai_responses"`)
-uses `max_output_tokens` natively and accepts OpenAI models, but on OCI it needs an extra
-permission on the key's policy, `manage generative-ai-response`; without it the endpoint
-returns 404 `Authorization failed or requested resource not found`. Non-OpenAI models on
-the Responses API also require an `OpenAI-Project` or `opc-conversation-store-id` header.
+they work as `efficient` or `capable` targets on an `openai_chat` client for callers that
+omit `max_tokens`, but they cannot be the judge there in `v0.3.0`, because the judge call
+always carries an output limit (`omit_body_fields` on `main` removes it).
+
+Use the Responses API for them instead. It takes `max_output_tokens` natively, and on OCI
+it needs one more statement on the key's policy, `manage generative-ai-response`; without
+it the endpoint returns 404 `Authorization failed or requested resource not found`.
+
+```bash
+oci iam policy create --compartment-id <compartment-ocid> --name genai-api-keys-responses \
+  --description "Generative AI API keys may use the Responses API" \
+  --statements '["allow any-user to manage generative-ai-response in compartment id <compartment-ocid> where request.principal.type='"'"'generativeaiapikey'"'"'"]'
+```
+
+```toml
+[llm_clients.oci_responses]
+format = "openai_responses"
+base_url = "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com/openai/v1"
+api_key_env = "OCI_GENAI_API_KEY"
+timeout_ms = 120000
+
+[targets.judge]
+id = "openai.gpt-5.4-mini"
+llm_client = "oci_responses"
+
+[targets.capable]
+id = "openai.gpt-5.5"
+llm_client = "oci_responses"
+```
+
+With that policy in place, gpt-5.4-mini served the judge call and gpt-5.5 served both a
+passthrough route and the stage router's escalation through the Responses client, while
+Scout stayed on the Chat client. Non-OpenAI models on the Responses API also require an
+`OpenAI-Project` or `opc-conversation-store-id` header.
 
 ## From Python
 
