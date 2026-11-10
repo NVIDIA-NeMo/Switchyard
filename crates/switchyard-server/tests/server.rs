@@ -3086,6 +3086,94 @@ capable_system_prompt = "Inspect the task and plan before modifying files."
     Ok(())
 }
 
+#[tokio::test]
+async fn stage_shell_patch_handoff_waits_for_edit_and_holds_executor() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.local]
+format = "openai_chat"
+base_url = "{}"
+[targets]
+planner = {{ id = "model/shell-planner", llm_client = "local" }}
+executor = {{ id = "model/shell-executor", llm_client = "local" }}
+[routes.stage]
+id = "shell-stage"
+type = "stage_router"
+capable_target = "planner"
+efficient_target = "executor"
+picker = "capable_first"
+confidence_threshold = 0.0
+recent_turn_window = 3
+capable_hold_turns = 0
+efficient_hold_turns = -1
+"#,
+        upstream.base_url,
+    ))?);
+    let mut messages = vec![json!({"role": "user", "content": "implement the task"})];
+    for (index, (command, expected)) in [
+        (
+            "printf 'worker dispatch locations\n'; rg worker src 2>/dev/null",
+            "model/shell-planner",
+        ),
+        ("apply_patch < fix.diff", "model/shell-executor"),
+        // Three reads move the edit outside the recent window, so the final
+        // executor selection must come from the hold rather than the edit signal.
+        ("rg worker src", "model/shell-executor"),
+        ("cat src/main.rs", "model/shell-executor"),
+        ("git diff", "model/shell-executor"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let call_id = format!("shell-{index}");
+        messages.push(json!({
+            "type": "function_call", "call_id": call_id,
+            "name": "exec_command", "arguments": json!({"cmd": command}).to_string()
+        }));
+        messages.push(json!({"type": "function_call_output", "call_id": call_id, "output": "ok"}));
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/responses",
+            Some(json!({"model": "shell-stage", "input": messages, "stream": false})),
+            &[("x-switchyard-session-id", "shell-patch-session")],
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected),
+        );
+    }
+    assert_eq!(
+        upstream.models().await,
+        [
+            "model/shell-planner",
+            "model/shell-executor",
+            "model/shell-executor",
+            "model/shell-executor",
+            "model/shell-executor",
+        ]
+    );
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["classifier"]["total_requests"], 0);
+    assert_eq!(
+        stats["algorithm_stats"]["stage_router"]["routing_decisions"]["dimensions"]["targets"]["model/shell-executor"],
+        1
+    );
+    assert_eq!(
+        stats["algorithm_stats"]["stage_router"]["routing_decisions"]["efficient_hold"]["targets"]
+            ["model/shell-executor"],
+        3
+    );
+    Ok(())
+}
+
 // Composite TOML must pass custom stage semantics through to the nested stage router.
 #[tokio::test]
 async fn composite_router_uses_configured_tool_semantics() -> TestResult {
