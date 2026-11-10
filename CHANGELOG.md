@@ -36,6 +36,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Upstream redirects** - configured upstream requests follow redirects only
+  within the original scheme, host and port. Configure the final URL when a
+  provider redirects to another origin.
 - **TypeScript composite stage profiles** - `CompositeRouter` options take
   `stage.efficient_first` and `stage.capable_first` profiles in place of
   `efficient_first_threshold`, `capable_first_threshold`, and

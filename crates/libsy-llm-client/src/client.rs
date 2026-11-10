@@ -170,7 +170,19 @@ impl TranslatingLlmClient {
                 source: Box::new(error),
             })
         };
-        let client = build_client(reqwest::Client::builder())?;
+        // Keep provider-specific headers on the configured origin.
+        let redirect = reqwest::redirect::Policy::custom(|attempt| {
+            if attempt
+                .previous()
+                .first()
+                .is_some_and(|url| url.origin() == attempt.url().origin())
+            {
+                reqwest::redirect::Policy::default().redirect(attempt)
+            } else {
+                attempt.stop()
+            }
+        });
+        let client = build_client(reqwest::Client::builder().redirect(redirect))?;
         // A redirect could move provider-specific headers to another origin.
         // Forwarded credentials are sent only to the configured URL.
         let forward_auth_client =
@@ -1821,6 +1833,136 @@ mod tests {
             Backend::Anthropic(config(base_url)),
             None,
         )]
+    }
+
+    #[tokio::test]
+    async fn configured_anthropic_key_is_not_sent_on_cross_origin_redirect()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for status in [307, 308] {
+            let upstream = MockServer::start().await;
+            let other_origin = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/messages"))
+                .and(wiremock::matchers::header("x-api-key", "secret"))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .insert_header("location", format!("{}/destination", other_origin.uri())),
+                )
+                .expect(1)
+                .mount(&upstream)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/destination"))
+                .respond_with(ResponseTemplate::new(200))
+                .mount(&other_origin)
+                .await;
+            let client = TranslatingLlmClient::new(&anthropic_map(&upstream.uri()))?;
+            let backend = Backend::Anthropic(config(&upstream.uri()));
+            let result = client
+                .send_once(
+                    &backend.url(),
+                    &backend,
+                    &json!({"model": "claude", "messages": []}),
+                    None,
+                    &ModelId::from("claude"),
+                    false,
+                )
+                .await;
+            let received = other_origin.received_requests().await.unwrap();
+            assert!(
+                received.is_empty(),
+                "cross-origin redirect was followed for {status}"
+            );
+            assert!(result.is_err());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn configured_anthropic_key_is_sent_on_same_origin_redirect()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/destination"))
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/destination"))
+            .and(wiremock::matchers::header("x-api-key", "secret"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        let client = TranslatingLlmClient::new(&anthropic_map(&upstream.uri()))?;
+        let backend = Backend::Anthropic(config(&upstream.uri()));
+        let result = client
+            .send_once(
+                &backend.url(),
+                &backend,
+                &json!({"model": "claude", "messages": []}),
+                None,
+                &ModelId::from("claude"),
+                false,
+            )
+            .await;
+        assert!(result.is_ok());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn same_origin_redirects_remain_limited()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/v1/messages"))
+            .expect(11)
+            .mount(&upstream)
+            .await;
+        let client = TranslatingLlmClient::new(&anthropic_map(&upstream.uri()))?;
+        let backend = Backend::Anthropic(config(&upstream.uri()));
+        let result = client
+            .send_once(
+                &backend.url(),
+                &backend,
+                &json!({"model": "claude", "messages": []}),
+                None,
+                &ModelId::from("claude"),
+                false,
+            )
+            .await;
+        assert!(result.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn forwarded_auth_still_does_not_follow_same_origin_redirects()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let upstream = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/destination"))
+            .expect(1)
+            .mount(&upstream)
+            .await;
+        let backend = Backend::Anthropic(forwarding_config(&upstream.uri()));
+        let client =
+            TranslatingLlmClient::new(&[ModelConfig::new("claude", backend.clone(), None)])?;
+        let result = client
+            .send_once(
+                &backend.url(),
+                &backend,
+                &json!({"model": "claude", "messages": []}),
+                None,
+                &ModelId::from("claude"),
+                false,
+            )
+            .await;
+        assert!(result.is_err());
+        assert_eq!(upstream.received_requests().await.unwrap().len(), 1);
+        Ok(())
     }
 
     #[tokio::test]
