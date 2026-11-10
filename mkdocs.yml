@@ -28,6 +28,8 @@ nav:
       - Embed in Your Gateway or Harness: reference/host_integration.md
       - Gateways:
           - NeMo Relay: integrations/nemo_relay.md
+      - Model Providers:
+          - OCI Generative AI: recipes/oci_generative_ai.md
   - Routing:
       - Algorithms:
           - Overview: routing_algorithms/overview.md
