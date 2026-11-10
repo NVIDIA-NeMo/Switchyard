@@ -69,6 +69,28 @@ func TestOutcomeFallbackRequest(t *testing.T) {
 	}
 }
 
+// Stage's fallback keeps its execution prompt instead of reusing the planning prompt.
+func TestCandidateRequestPreservesFallbackPrompt(t *testing.T) {
+	router := newRouter(t, `{"type":"stage_router","picker":"capable_first",`+stage+`,"capable_system_prompt":"Plan the change","efficient_system_prompt":"Execute the change"}`)
+	outcome, err := router.Route(context.Background(), input(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := EncodeRequest("openai_chat", outcome.CandidateRequests["weak-model"], "weak-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encoded struct {
+		Messages []struct{ Role, Content string }
+	}
+	if err := json.Unmarshal(wire, &encoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded.Messages) == 0 || encoded.Messages[0].Role != "system" || encoded.Messages[0].Content != "Execute the change" {
+		t.Fatalf("fallback request=%s, want execution prompt", wire)
+	}
+}
+
 // Selection retains eligible targets and Stage's prepared request across the codecs.
 func TestSelectionAndTranslation(t *testing.T) {
 	type chatRequest struct {
