@@ -314,8 +314,7 @@ fn decode_responses_stream(
             // use for such output; the stream must too, or stop-reason-driven tool loops
             // (Anthropic `tool_use`, Chat `tool_calls`) stop without running the tool.
             // Carries the Anthropic spelling because every encoder already maps it.
-            let reason = if event.get("type").and_then(Value::as_str) == Some("response.incomplete")
-            {
+            let reason = if event_type == Some("response.incomplete") {
                 Some("max_tokens".to_string())
             } else {
                 state.decoded_tool_call.then(|| "tool_use".to_string())

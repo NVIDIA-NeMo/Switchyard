@@ -2619,6 +2619,62 @@ fn responses_incomplete_snapshots_preserve_text_once() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn responses_terminal_discriminators_preserve_stop_reasons() -> TestResult {
+    let engine = TranslationEngine::default();
+    let source = WireFormat::OpenAiResponses;
+    let items = [
+        json!({"type": "message", "role": "assistant", "content": [
+            {"type": "output_text", "text": "answer"}
+        ]}),
+        json!({"type": "function_call", "call_id": "call_one", "name": "lookup", "arguments": "{}"}),
+    ];
+    for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+        for item in &items {
+            for is_incomplete in [false, true] {
+                for discriminator in ["type", "event"] {
+                    let mut state = StreamTranslationState::new(source, target);
+                    let terminal = if is_incomplete {
+                        "response.incomplete"
+                    } else {
+                        "response.completed"
+                    };
+                    let mut events = Vec::new();
+                    for input in [
+                        json!({"type": "response.created", "response": {"id": "resp_one", "model": "fixture"}}),
+                        json!({"type": "response.output_item.done", "output_index": 0, "item": item}),
+                        json!({discriminator: terminal, "response": {"output": [item]}}),
+                    ] {
+                        events.extend(engine.translate_event(&mut state, source, target, &input)?);
+                    }
+                    events.extend(engine.finish_stream(&mut state, target)?);
+                    let reason = if target == WireFormat::OpenAiChat {
+                        &events.last().ok_or("missing Chat terminal chunk")?["choices"][0]["finish_reason"]
+                    } else {
+                        &events
+                            .iter()
+                            .find(|event| event["type"] == "message_delta")
+                            .ok_or("missing message delta")?["delta"]["stop_reason"]
+                    };
+                    let expected = match (target, is_incomplete, item["type"].as_str()) {
+                        (WireFormat::OpenAiChat, true, _) => "length",
+                        (_, true, _) => "max_tokens",
+                        (WireFormat::OpenAiChat, false, Some("function_call")) => "tool_calls",
+                        (_, false, Some("function_call")) => "tool_use",
+                        (WireFormat::OpenAiChat, false, _) => "stop",
+                        _ => "end_turn",
+                    };
+                    assert_eq!(
+                        reason, expected,
+                        "{target:?}, {terminal}, {discriminator}, {item}"
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 // Interleave text and two tool calls to check that deltas keep the right item IDs.
 // Completion events must include the full text and tool arguments, and the final
 // response must preserve each item's ID.
