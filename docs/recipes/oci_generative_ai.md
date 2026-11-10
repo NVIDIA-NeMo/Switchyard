@@ -25,9 +25,9 @@ oci iam policy create --compartment-id <compartment-ocid> --name genai-api-keys 
   --description "Generative AI API keys may call inference" \
   --statements '["allow any-user to use generative-ai-family in compartment id <compartment-ocid> where request.principal.type='"'"'generativeaiapikey'"'"'"]'
 
-# 2. Key, in the inference region, with an expiry. The sk-... secret is returned once.
+# 2. Key, in the inference region, with an expiry of your choosing. The sk-... secret is returned once.
 oci generative-ai api-key create --compartment-id <compartment-ocid> --region us-chicago-1 \
-  --display-name switchyard --key-details '[{"keyName":"primary","timeExpiry":"2027-01-01T00:00:00Z"}]'
+  --display-name switchyard --key-details '[{"keyName":"primary","timeExpiry":"<future date, e.g. 2027-06-30T00:00:00Z>"}]'
 export OCI_GENAI_API_KEY=sk-...
 ```
 
@@ -127,9 +127,13 @@ they work as `efficient` or `capable` targets on an `openai_chat` client for cal
 omit `max_tokens`, but they cannot be the judge there in `v0.3.0`, because the judge call
 always carries an output limit (`omit_body_fields` on `main` removes it).
 
-Use the Responses API for them instead. It takes `max_output_tokens` natively, and on OCI
-it needs one more statement on the key's policy, `manage generative-ai-response`; without
-it the endpoint returns 404 `Authorization failed or requested resource not found`.
+Use the Responses API for them instead. It takes `max_output_tokens` natively. On OCI it
+needs one more statement on the key's policy, `manage generative-ai-response`; without it
+the endpoint returns 404 `Authorization failed or requested resource not found`. Oracle's
+Responses API documentation also says to create an OCI Generative AI project and pass its
+OCID in the `OpenAI-Project` header; in the runs behind this recipe the OpenAI models answered
+without one, while non-OpenAI models returned 400 asking for `OpenAI-Project` or
+`opc-conversation-store-id`. Set the header on the client when your tenancy or model needs it.
 
 ```bash
 oci iam policy create --compartment-id <compartment-ocid> --name genai-api-keys-responses \
@@ -143,6 +147,7 @@ format = "openai_responses"
 base_url = "https://inference.generativeai.us-chicago-1.oci.oraclecloud.com/openai/v1"
 api_key_env = "OCI_GENAI_API_KEY"
 timeout_ms = 120000
+# extra_headers = { "OpenAI-Project" = "ocid1.generativeaiproject.oc1.us-chicago-1...." }
 
 [targets.judge]
 id = "openai.gpt-5.4-mini"
@@ -155,8 +160,7 @@ llm_client = "oci_responses"
 
 With that policy in place, gpt-5.4-mini served the judge call and gpt-5.5 served both a
 passthrough route and the stage router's escalation through the Responses client, while
-Scout stayed on the Chat client. Non-OpenAI models on the Responses API also require an
-`OpenAI-Project` or `opc-conversation-store-id` header.
+Scout stayed on the Chat client.
 
 ## From Python
 
