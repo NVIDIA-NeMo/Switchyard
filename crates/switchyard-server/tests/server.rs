@@ -6494,7 +6494,10 @@ async fn vgr_image_requests_stay_on_the_efficient_tier_when_configured() -> Test
     let upstream = MockUpstream::start().await?;
     for (configured, served) in [
         ("", "model/vgr-capable"),
-        ("efficient_supports_images = true", "model/vgr-efficient"),
+        (
+            "efficient_supports_attachments = true",
+            "model/vgr-efficient",
+        ),
     ] {
         let app = build_switchyard_router(load_test_config(&format!(
             r#"
