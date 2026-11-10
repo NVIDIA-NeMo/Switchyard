@@ -290,7 +290,7 @@ fn decode_responses_stream(
                 })
                 .unwrap_or_default()
         }
-        Some("response.completed") => {
+        Some("response.completed" | "response.incomplete") => {
             let mut out = Vec::new();
             // Some providers send output only in the final snapshot. Reconcile it with
             // decoded deltas before emitting the stop, without repeating streamed content.
@@ -314,17 +314,12 @@ fn decode_responses_stream(
             // use for such output; the stream must too, or stop-reason-driven tool loops
             // (Anthropic `tool_use`, Chat `tool_calls`) stop without running the tool.
             // Carries the Anthropic spelling because every encoder already maps it.
-            let reason = state.decoded_tool_call.then(|| "tool_use".to_string());
+            let reason = if event_type == Some("response.incomplete") {
+                Some("max_tokens".to_string())
+            } else {
+                state.decoded_tool_call.then(|| "tool_use".to_string())
+            };
             out.push(LlmResponseChunk::MessageStop { reason });
-            out
-        }
-        // Carries the Anthropic spelling because every encoder already maps it.
-        Some("response.incomplete") => {
-            let mut out = Vec::new();
-            decode_terminal_usage(state, event, &mut out);
-            out.push(LlmResponseChunk::MessageStop {
-                reason: Some("max_tokens".to_string()),
-            });
             out
         }
         Some("response.failed") => vec![LlmResponseChunk::StreamError {
