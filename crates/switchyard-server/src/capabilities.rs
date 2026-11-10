@@ -20,10 +20,11 @@ pub(crate) fn unsupported_capability(
                 .reasoning
                 .raw
                 .as_ref()
-                .is_some_and(|value| !value.is_null())
-            || ["reasoning", "reasoning_effort", "thinking"]
+                .is_some_and(is_thinking_enabled)
+            || ["reasoning", "reasoning_effort"]
                 .iter()
                 .any(|key| body.get(key).is_some_and(|value| !value.is_null()))
+            || body.get("thinking").is_some_and(is_thinking_enabled)
             || body
                 .pointer("/output_config/effort")
                 .is_some_and(|value| !value.is_null()))
@@ -59,6 +60,10 @@ pub(crate) fn unsupported_capability(
         )
         .find_map(|content| unsupported_content(capabilities, content))
         .or_else(|| unsupported_preserved_content(capabilities, body))
+}
+
+fn is_thinking_enabled(value: &Value) -> bool {
+    !value.is_null() && value.get("type").and_then(Value::as_str) != Some("disabled")
 }
 
 // Some provider fields survive forwarding without becoming decoded content blocks.
@@ -195,6 +200,39 @@ mod tests {
         let body = json!({"messages": [{"role": "user", "content": "hello"}], "tools": [], "functions": []});
         let request = decode_request(OpenAiChat, &body)?;
         assert_eq!(unsupported_capability(capabilities, &request, &body), None);
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_disabled_thinking() -> TestResult {
+        let body = json!({"messages": [{"role": "user", "content": "hello"}], "thinking": {"type": "disabled"}});
+        let request = decode_request(AnthropicMessages, &body)?;
+        assert_eq!(
+            unsupported_capability(
+                ModelCapabilities {
+                    reasoning: Some(false),
+                    ..Default::default()
+                },
+                &request,
+                &body,
+            ),
+            None,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn disabled_thinking_controls_do_not_allow_capability_use() -> TestResult {
+        let capabilities = ModelCapabilities {
+            reasoning: Some(false),
+            ..Default::default()
+        };
+        assert_requires_capability(
+            AnthropicMessages,
+            &json!({"messages": [{"role": "user", "content": "hello"}], "thinking": {"type": "disabled"}, "output_config": {"effort": "low"}}),
+            capabilities,
+            "reasoning",
+        )?;
         Ok(())
     }
 
