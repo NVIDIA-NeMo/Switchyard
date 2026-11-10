@@ -396,19 +396,10 @@ pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
   --ae OPENAI_API_KEY=unused
 ```
 
-Run the Plan/Execute profile:
-
-```bash
-export OPENROUTER_API_KEY="..."
-switchyard-server \
-  --config benchmark/routing-profiles/deepswe-v11-plan-execute-luna-sol.toml \
-  --host 0.0.0.0 --port 443
-
-pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
-  --model openai/switchyard \
-  --ae OPENAI_BASE_URL=http://host.docker.internal:443/v1 \
-  --ae OPENAI_API_KEY=unused
-```
+The historical Plan/Execute result used the removed standalone implementation.
+See [qualification settings](DEEPSWE_V11_QUALIFICATION.md) for its archived
+configuration. For new runs, use the
+[Plan/Execute configuration for Stage](../docs/routing_algorithms/stage_router_routing.md#plan-and-execute).
 
 Run the Stage profile. Its public route ID is `gpt-5.6-luna`:
 

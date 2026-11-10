@@ -70,11 +70,14 @@ async fn retry_usage_and_reported_charges_survive_failure_without_parent_charge(
         .await;
     assert!(result.result.is_ok());
     let call = rx.try_recv().unwrap();
+    assert_eq!(call.name, CLIENT_CALL);
     assert_eq!(call.children.len(), 2);
     assert_eq!(call.fields["switchyard.accounting.attempts"], 2);
     let (kind, metadata, _, output) = call.projection();
     assert!(matches!(kind, ScopeType::Custom));
     assert!(output.is_none());
+    assert_eq!(metadata["switchyard.accounting.schema_version"], 1);
+    assert_eq!(metadata["switchyard.accounting.unit"], "summary");
     assert_eq!(metadata["switchyard.accounting.attempt_records"], 2);
     for (attempt, outcome, input, cost) in [
         (&call.children[0], "error", 11, 0.02),
@@ -82,6 +85,9 @@ async fn retry_usage_and_reported_charges_survive_failure_without_parent_charge(
     ] {
         let (kind, metadata, input_data, output) = attempt.projection();
         assert!(matches!(kind, ScopeType::Llm));
+        assert_eq!(attempt.name, UPSTREAM_ATTEMPT);
+        assert_eq!(metadata["switchyard.accounting.schema_version"], 1);
+        assert_eq!(metadata["switchyard.accounting.unit"], "completion_attempt");
         assert_eq!(metadata["outcome"], outcome);
         assert_eq!(metadata["switchyard.accounting.usage_status"], "complete");
         assert_eq!(input_data.unwrap()["model"], "test/model");
@@ -89,12 +95,65 @@ async fn retry_usage_and_reported_charges_survive_failure_without_parent_charge(
         assert_eq!(output["model"], "test/model");
         assert_eq!(output["usage"]["input_tokens"], input);
         assert_eq!(output["usage"]["cost"]["total"], cost);
+        assert_eq!(output["usage"]["cost"]["currency"], "USD");
+        assert_eq!(output["usage"]["cost"]["source"], "provider_reported");
     }
     assert_eq!(
         call.children[1].fields["switchyard.accounting.charge_source"],
         "provider"
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn cache_usage_preserves_missing_and_zero_uncached_input() {
+    for input in [None, Some(0), Some(7)] {
+        let server = MockServer::start().await;
+        let mut usage = serde_json::json!({"cache_read_input_tokens":10,"output_tokens":2});
+        if let Some(input) = input {
+            usage["input_tokens"] = Json::from(input);
+        }
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id":"response", "type":"message", "role":"assistant", "model":"test/model",
+                "content":[{"type":"text","text":"ok"}], "stop_reason":"end_turn", "usage":usage
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let runtime = runtime(&server, "anthropic_messages", 0);
+        let (capture, rx) = recorder(false);
+        assert!(
+            capture
+                .capture(runtime.execute_buffered(WireFormat::AnthropicMessages, request(false)))
+                .await
+                .result
+                .is_ok()
+        );
+        let call = rx.try_recv().unwrap();
+        let (_, metadata, _, output) = call.children[0].projection();
+        assert_eq!(
+            metadata["switchyard.usage.input_tokens_reported"],
+            input.is_some()
+        );
+        assert_eq!(
+            metadata
+                .get("switchyard.usage.input_tokens")
+                .and_then(Json::as_u64),
+            input
+        );
+        let usage = &output.as_ref().unwrap()["usage"];
+        assert_eq!(usage.get("input_tokens").and_then(Json::as_u64), input);
+        assert_eq!(usage["cache_read_input_tokens"], 10);
+        assert_eq!(
+            metadata["switchyard.accounting.usage_status"],
+            if input.is_some() {
+                "complete"
+            } else {
+                "partial"
+            }
+        );
+    }
 }
 
 #[tokio::test]
@@ -234,7 +293,7 @@ async fn abandoning_stream_preserves_partial_usage() {
 
 #[test]
 fn debug_payloads_cannot_replace_usage_and_summary_is_not_priceable() {
-    let fields = serde_json::json!({"gen_ai.request.model":"model", "gen_ai.usage.input_tokens":12, "gen_ai.usage.output_tokens":0, "switchyard.accounting.unit":"completion_attempt"}).as_object().unwrap().clone();
+    let fields = serde_json::json!({"gen_ai.request.model":"model", "gen_ai.usage.input_tokens":12, "gen_ai.usage.cache_read.input_tokens":5, "gen_ai.usage.output_tokens":0, "switchyard.accounting.unit":"completion_attempt"}).as_object().unwrap().clone();
     let mut attempt = CapturedSpan {
         name: UPSTREAM_ATTEMPT,
         fields,
@@ -249,6 +308,7 @@ fn debug_payloads_cannot_replace_usage_and_summary_is_not_priceable() {
     let (_, _, input, output) = attempt.projection();
     assert_eq!(input.unwrap()["model"], "model");
     let output = output.unwrap();
+    assert_eq!(output["usage"]["input_tokens"], 7);
     assert_eq!(output["usage"]["output_tokens"], 0);
     assert_eq!(output["truncated"], true);
     attempt.fields.insert(

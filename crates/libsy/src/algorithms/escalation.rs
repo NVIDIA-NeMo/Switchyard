@@ -59,13 +59,13 @@ fn clear_streak(state: &mut State) {
 }
 
 fn assistant_message(response: &AggLlmResponse) -> Message {
-    Message {
-        role: Role::Assistant,
-        content: response
+    Message::new(
+        Role::Assistant,
+        response
             .first_output()
             .map(|output| output.content.clone())
             .unwrap_or_default(),
-    }
+    )
 }
 
 /// Calls the efficient model, judges its response, and latches to capable once the streak

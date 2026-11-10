@@ -21,10 +21,10 @@ It depends on `switchyard-libsy`, `switchyard-protocol`, and
 
 ## Concepts
 
-- **Model configs.** A client is built from [`ModelConfig`] values, each keyed by a
-  [`ModelId`]. Each model has a default [`Backend`] and can have additional backends
-  for other wire formats. [`TranslatingLlmClient::call_rewrite_model`] uses the
-  request's metadata wire format when set, otherwise the model's default backend.
+- **Target configs.** Each [`ModelConfig`] has a target name, a default [`Backend`],
+  and optional backends for other wire formats. The target name selects settings.
+  `with_provider_model` supplies the model ID sent upstream. For example, targets
+  `efficient` and `capable` can use the same model with different reasoning efforts.
 - **Model ids.** A [`ModelId`] is a newtype over `String` that behaves like one — it
   derefs to `str`, compares against string literals, and converts from `&str` or
   `String` with `.into()`. Anywhere below that takes `impl Into<ModelId>` accepts a
@@ -34,8 +34,8 @@ It depends on `switchyard-libsy`, `switchyard-protocol`, and
   static `extra_headers`, default `extra_body` fields, and `max_retries`). The
   variant fixes the URL path and auth scheme (Bearer vs `x-api-key` +
   `anthropic-version`).
-- **Model rewrite.** The resolved [`ModelId`] is both the map key and the model id
-  sent upstream — it overwrites whatever `model` the request arrived with.
+- **Model rewrite.** The selected target's provider model ID replaces the request's
+  `model` field. If no provider model is configured, the target name is used.
 - **Streaming is chosen by the encoded request body.** If the body has
   `stream: true` after `extra_body` is applied, you get `LlmResponse::Stream`; otherwise
   `LlmResponse::Agg`. OpenAI Chat streaming requests default
@@ -101,7 +101,7 @@ async fn ask(client: &TranslatingLlmClient) -> switchyard_llm_client::Result<Str
         metadata: None,
     };
 
-    // model_name wins over request.llm_request.model; it is also sent upstream.
+    // The explicit target takes precedence over the request model field.
     let model = ModelId::from("gpt-4o-mini");
     let response = client.call_rewrite_model(request, Some(&model)).await?;
 
@@ -279,9 +279,10 @@ fn build_multi_format_client(
   fields, array input, non-Codex endpoints, and the translation codec's exact
   preservation remain unchanged.
 - `ModelConfig::with_responses_reasoning` controls Responses reasoning replay.
-  The default, `Auto`, chooses per request from the target. OpenAI targets use
-  `PreserveEncrypted`: plaintext is removed and encrypted provider state is
-  retained. Stored reasoning IDs are retained unless the request sets
+  The default, `Auto`, uses the final outgoing model ID after body overrides,
+  falling back to the configured provider model when the field is omitted.
+  OpenAI targets use `PreserveEncrypted`: plaintext is removed and encrypted
+  provider state is retained. Stored reasoning IDs are retained unless the request sets
   `store: false`. Other targets use `PreservePlaintext`: `summary` and `content`
   are retained and opaque `encrypted_content` is removed. Switchyard's translated
   Anthropic reasoning payload is always removed. Set `Drop` for a backend that

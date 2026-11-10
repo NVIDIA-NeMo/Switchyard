@@ -4674,6 +4674,7 @@ dependencies = [
 name = "switchyard-runner"
 version = "0.3.0"
 dependencies = [
+ "parking_lot",
  "reqwest",
  "serde",
  "serde_json",
@@ -4693,6 +4694,7 @@ dependencies = [
  "async-stream",
  "base64 0.22.1",
  "futures",
+ "http",
  "serde",
  "serde_json",
  "switchyard-protocol",

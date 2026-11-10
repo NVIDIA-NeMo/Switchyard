@@ -958,16 +958,16 @@ async fn min_tool_results_defers_gate() {
     // Once the conversation carries a tool result, the gate fires.
     let with_result = request(vec![
         Message::text(Role::User, "build X"),
-        Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult(ToolResult {
+        Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "t1".to_string(),
                 content: vec![ContentBlock::Text {
                     text: "ok".to_string(),
                 }],
                 is_error: None,
             })],
-        },
+        ),
     ]);
     let serve = script.serve("APPROVE", |_| reply("done"));
     test_drive(gate, with_result, serve).await.expect("routes");
@@ -994,10 +994,7 @@ async fn min_tool_results_counts_batched_result_blocks() {
     };
     let batched = request(vec![
         Message::text(Role::User, "build X"),
-        Message {
-            role: Role::User,
-            content: vec![tool_result("t1"), tool_result("t2")],
-        },
+        Message::new(Role::User, vec![tool_result("t1"), tool_result("t2")]),
     ]);
     let serve = script.serve("APPROVE", |_| reply("done"));
     test_drive(gate, batched, serve).await.expect("routes");

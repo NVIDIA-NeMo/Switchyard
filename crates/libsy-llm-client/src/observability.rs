@@ -113,7 +113,7 @@ fn record_gen_ai_response(span: &Span, response: &AggLlmResponse) {
 }
 
 /// Records semantic token totals and cache-usage breakdowns on a client-call span.
-pub(crate) fn record_gen_ai_usage(span: &Span, usage: &Usage) {
+fn record_gen_ai_usage(span: &Span, usage: &Usage) {
     let cache_read = usage.cached_input_tokens();
     let cache_creation = usage.cache_creation_input_tokens();
     let cache_creation_1h = usage
@@ -150,6 +150,14 @@ pub(crate) fn record_gen_ai_usage(span: &Span, usage: &Usage) {
 /// Records normalized consumption and whether its final report is available.
 pub(crate) fn record_accounting_usage(span: &Span, usage: &Usage, final_report: bool) {
     record_gen_ai_usage(span, usage);
+    // Aggregate semantic counts cannot distinguish missing uncached input from zero.
+    span.record(
+        "switchyard.usage.input_tokens_reported",
+        usage.input_tokens.is_some(),
+    );
+    if let Some(input) = usage.input_tokens {
+        span.record("switchyard.usage.input_tokens", input);
+    }
     if let Some(total) = usage.total_tokens {
         span.record("switchyard.usage.total_tokens", total);
     }
@@ -331,6 +339,11 @@ impl ClientStreamObserver {
                 let error_type = llm_client_error_type(error);
                 match error {
                     LlmClientError::Host { .. } => record_host_error(&self.span),
+                    LlmClientError::UpstreamHttp { status, .. } => record_client_error(
+                        &self.span,
+                        &error_type,
+                        &format_args!("upstream HTTP {}", status.as_u16()),
+                    ),
                     _ => record_client_error(&self.span, &error_type, error),
                 }
                 self.outcome = Outcome::Failed;
@@ -354,8 +367,8 @@ impl ClientStreamObserver {
                 record_client_error(&self.span, "response_translation", message);
                 self.outcome = Outcome::Failed;
             }
-            LlmResponseChunk::StreamError { message } => {
-                record_client_error(&self.span, "502", message);
+            LlmResponseChunk::StreamError { .. } => {
+                record_client_error(&self.span, "502", &"upstream HTTP 502");
                 self.outcome = Outcome::Failed;
             }
             _ => {}

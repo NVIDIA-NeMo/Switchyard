@@ -9,6 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use libsy::{Algorithm, RuntimeModels};
 use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
@@ -137,7 +138,7 @@ pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
 }
 
 pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
-    Arc::new(AlgorithmFactory::from_toml(source)?.config).build()
+    AlgorithmFactory::from_toml(source)?.config.build()
 }
 
 #[derive(Debug, Deserialize)]
@@ -167,11 +168,21 @@ pub(crate) struct RouteConfig {
     eligibility: Option<TargetEligibilityConfig>,
 }
 
+/// A route's algorithm and model groups with their source configuration.
+pub(crate) struct RouteSetup<'a> {
+    pub(crate) route_name: &'a str,
+    pub(crate) config: &'a RouteConfig,
+    pub(crate) algorithm: Arc<dyn Algorithm>,
+    pub(crate) models: RuntimeModels,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetEligibilityConfig {
     #[serde(default)]
     require_explicit_requirements: bool,
+    #[serde(default)]
+    target_alternatives: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     scope: RequirementScope,
 }
@@ -181,6 +192,7 @@ struct TargetEligibilityConfig {
 enum RequirementScope {
     #[default]
     Request,
+    Task,
 }
 
 struct TargetPromptPolicy {
@@ -188,67 +200,119 @@ struct TargetPromptPolicy {
     routing_answer_target: Option<ModelId>,
 }
 
-type LaneTargets<'a> = BTreeMap<&'a str, &'a TargetConfig>;
-type LaneDecisions<'a> = BTreeMap<&'a str, ResolvedDecisionTarget<'a>>;
-
-fn callable_targets(algorithm: &AlgorithmSpec) -> BTreeSet<&str> {
-    let mut targets: BTreeSet<_> = algorithm.callable_target_names().into_iter().collect();
-    for (_, decision) in algorithm.classifier_targets() {
-        if let Some(decision) = decision {
-            targets.extend(decision.candidates.values().map(String::as_str));
-        }
-    }
-    targets
+// Algorithms keep their role names; calls use the selected target's name.
+struct ResolvedLlmTarget<'a> {
+    name: &'a str,
+    config: &'a TargetConfig,
 }
 
-// Equivalent requirements reuse the same configured targets and algorithm state.
+type LaneTargets<'a> = BTreeMap<&'a str, ResolvedLlmTarget<'a>>;
+type TargetOverrides<'a> = BTreeMap<&'a str, &'a str>;
+type LaneDecisions<'a> = BTreeMap<&'a str, ResolvedDecisionTarget<'a>>;
+
+// Replacements bind logical names once; mappings never chain.
+fn bound_target<'a>(name: &'a str, overrides: &TargetOverrides<'a>) -> &'a str {
+    overrides.get(name).copied().unwrap_or(name)
+}
+
+fn callable_targets(algorithm: &AlgorithmSpec) -> BTreeSet<&str> {
+    algorithm.callable_target_names().into_iter().collect()
+}
+
+fn check_random_targets(
+    algorithm: &AlgorithmSpec,
+    targets: &LaneTargets<'_>,
+    has_overrides: bool,
+) -> RunnerResult<()> {
+    if matches!(algorithm, AlgorithmSpec::Random { .. }) && has_overrides {
+        let mut models = BTreeSet::new();
+        for name in algorithm.routing_target_names() {
+            let target = targets[name].name;
+            if !models.insert(target) {
+                return Err(LlmClientError::InvalidRequest {
+                    message: format!(
+                        "random route alternatives map multiple pool entries to target {target}; use distinct targets"
+                    ),
+                }
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+// Routing uses target names; telemetry uses provider IDs.
+fn build_resolved_algorithm<'a>(
+    route_name: &str,
+    algorithm: &AlgorithmSpec,
+    targets: &LaneTargets<'_>,
+    decisions: impl Iterator<Item = (&'a str, &'a ModelId)>,
+) -> RunnerResult<AlgorithmAndModels> {
+    let model_ids = targets
+        .iter()
+        .map(|(name, target)| ((*name).to_owned(), ModelId::from(target.name)))
+        .chain(decisions.map(|(name, model)| (name.to_owned(), model.clone())))
+        .collect();
+    let (algorithm, models) = algorithm
+        .build_with_runtime_models(route_name, &model_ids)
+        .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
+    let provider_models = targets
+        .values()
+        .map(|target| (ModelId::from(target.name), target.config.id.clone()))
+        .collect();
+    Ok((algorithm, models.with_provider_models(provider_models)))
+}
+
+pub(crate) type TargetBindings = Vec<(String, String)>;
+pub(crate) const MAX_ELIGIBLE_LANES: usize = 128;
+
+// Cache by resolved targets, so equivalent requirements reuse algorithm-owned state.
 pub(crate) struct EligibleLanes {
     deployment: Arc<DeploymentConfig>,
     route_name: String,
     clients: Arc<BTreeMap<String, Arc<TranslatingLlmClient>>>,
     decision_clients: Arc<BTreeMap<String, Arc<dyn RoutedDecisionClient>>>,
-    lanes: Mutex<BTreeMap<Vec<String>, Arc<ExecutionLane>>>,
+    lanes: Mutex<BTreeMap<TargetBindings, Arc<ExecutionLane>>>,
 }
 
 impl EligibleLanes {
-    const MAX_LANES: usize = 128;
-
     pub(crate) fn select(
         &self,
         requirements: &BTreeSet<String>,
         standard: &Arc<ExecutionLane>,
     ) -> RunnerResult<Arc<ExecutionLane>> {
-        let route = &self.deployment.routes[&self.route_name];
-        let callable = callable_targets(&route.algorithm);
-        let allowed: BTreeSet<_> = callable
-            .iter()
-            .copied()
-            .filter(|name| {
-                self.deployment
-                    .target_labels(name)
-                    .is_some_and(|labels| requirements.is_subset(labels))
-            })
-            .collect();
-        if allowed.len() == callable.len() {
+        let Some(key) = self
+            .deployment
+            .select_eligible_targets(&self.route_name, requirements)?
+        else {
             return Ok(Arc::clone(standard));
-        }
-        let key = allowed.iter().map(|name| (*name).to_owned()).collect();
+        };
         let mut lanes = self.lanes.lock();
         if let Some(lane) = lanes.get(&key) {
             return Ok(Arc::clone(lane));
         }
-        if lanes.len() >= Self::MAX_LANES {
+        if lanes.len() >= MAX_ELIGIBLE_LANES {
             return Err(LlmClientError::TemporarilyUnavailable.into());
         }
-        let algorithm = route.algorithm.restricted_to(&allowed).map_err(|error| {
-            LlmClientError::InvalidRequest {
-                message: error.to_string(),
-            }
-        })?;
-        let targets = self.deployment.resolve_lane_targets(&algorithm)?;
+        let algorithm = self
+            .deployment
+            .bound_algorithm_spec(&self.route_name, &key)?;
+        let overrides = key
+            .iter()
+            .map(|(name, target)| (name.as_str(), target.as_str()))
+            .collect();
+        let targets = self
+            .deployment
+            .resolve_lane_targets(&algorithm, &overrides)?;
+        check_random_targets(
+            &algorithm,
+            &targets,
+            key.iter().any(|(name, target)| name != target),
+        )?;
         let decisions = self.deployment.resolve_decision_targets(
             &self.route_name,
             &algorithm,
+            &overrides,
             &self.decision_clients,
         )?;
         // Construction is synchronous; no model I/O or await occurs under this lock.
@@ -264,6 +328,11 @@ impl EligibleLanes {
         lanes.insert(key, Arc::clone(&lane));
         Ok(lane)
     }
+}
+
+struct DecisionTargetMapping<'a> {
+    target_name: &'a str,
+    model_id: &'a ModelId,
 }
 
 #[derive(Clone, Copy)]
@@ -340,10 +409,221 @@ impl RouteConfig {
 }
 
 impl DeploymentConfig {
+    /// Judges called through a decision target use the default decision settings
+    /// when the route omits a `decision` table.
+    pub(crate) fn infer_decision_judges(&mut self) {
+        for route in self.routes.values_mut() {
+            route
+                .algorithm
+                .infer_decision_judges(|name| self.decision_targets.contains_key(name));
+        }
+    }
+
     pub(crate) fn requires_target_admission(&self) -> bool {
         self.routes
             .values()
             .any(|route| route.eligibility.is_some())
+    }
+
+    pub(crate) fn eligibility_policy(&self, route_name: &str) -> Option<EligibilityPolicy> {
+        let config = self.routes.get(route_name)?.eligibility.as_ref()?;
+        Some(EligibilityPolicy::new(
+            config.require_explicit_requirements,
+            matches!(config.scope, RequirementScope::Task),
+        ))
+    }
+
+    pub(crate) fn route_target_models(
+        &self,
+        route_name: &str,
+    ) -> RunnerResult<BTreeMap<ModelId, TargetModel>> {
+        let route = self
+            .routes
+            .get(route_name)
+            .ok_or_else(|| RunnerError::configuration(format!("unknown route {route_name}")))?;
+        route
+            .callable_target_names()
+            .into_iter()
+            .chain(
+                route
+                    .eligibility
+                    .iter()
+                    .flat_map(|config| config.target_alternatives.values().flatten())
+                    .map(String::as_str),
+            )
+            .map(|name| {
+                if let Some(target) = self.decision_targets.get(name) {
+                    Ok((
+                        target.id.clone(),
+                        TargetModel {
+                            client: target.decision_client.clone(),
+                            id: target.id.clone(),
+                        },
+                    ))
+                } else {
+                    let target = self.targets.get(name).ok_or_else(|| {
+                        RunnerError::configuration(format!(
+                            "route {route_name} references unknown target {name}"
+                        ))
+                    })?;
+                    Ok((
+                        ModelId::from(name),
+                        TargetModel {
+                            client: target.llm_client.clone(),
+                            id: target.id.clone(),
+                        },
+                    ))
+                }
+            })
+            .collect()
+    }
+
+    /// None keeps the standard setup; Some contains eligible target mappings.
+    /// An empty selection never falls back to standard targets.
+    pub(crate) fn select_eligible_targets(
+        &self,
+        route_name: &str,
+        requirements: &BTreeSet<String>,
+    ) -> RunnerResult<Option<TargetBindings>> {
+        let route = self
+            .routes
+            .get(route_name)
+            .ok_or_else(|| RunnerError::configuration(format!("unknown route {route_name}")))?;
+        let config = route
+            .eligibility
+            .as_ref()
+            .ok_or_else(|| RunnerError::configuration("route has no eligibility configuration"))?;
+        let callable = callable_targets(&route.algorithm);
+        let bindings: Vec<_> = callable
+            .iter()
+            .filter_map(|name| {
+                std::iter::once(*name)
+                    .chain(
+                        config
+                            .target_alternatives
+                            .get(*name)
+                            .into_iter()
+                            .flatten()
+                            .map(String::as_str),
+                    )
+                    .find(|target| {
+                        self.target_labels(target)
+                            .is_some_and(|labels| requirements.is_subset(labels))
+                    })
+                    .map(|target| (*name, target))
+            })
+            .collect();
+        if bindings.len() == callable.len() && bindings.iter().all(|(name, target)| name == target)
+        {
+            return Ok(None);
+        }
+        Ok(Some(
+            bindings
+                .into_iter()
+                .map(|(name, target)| (name.to_owned(), target.to_owned()))
+                .collect(),
+        ))
+    }
+
+    fn bound_algorithm_spec(
+        &self,
+        route_name: &str,
+        bindings: &TargetBindings,
+    ) -> RunnerResult<AlgorithmSpec> {
+        let route = self
+            .routes
+            .get(route_name)
+            .ok_or_else(|| RunnerError::configuration(format!("unknown route {route_name}")))?;
+        let allowed = bindings.iter().map(|(name, _)| name.as_str()).collect();
+        route.algorithm.restricted_to(&allowed).map_err(|error| {
+            LlmClientError::InvalidRequest {
+                message: error.to_string(),
+            }
+            .into()
+        })
+    }
+
+    pub(crate) fn build_bound_algorithm(
+        &self,
+        route_name: &str,
+        bindings: &TargetBindings,
+    ) -> RunnerResult<AlgorithmAndModels> {
+        let algorithm = self.bound_algorithm_spec(route_name, bindings)?;
+        let overrides = bindings
+            .iter()
+            .map(|(name, target)| (name.as_str(), target.as_str()))
+            .collect();
+        let targets = self.resolve_lane_targets(&algorithm, &overrides)?;
+        check_random_targets(
+            &algorithm,
+            &targets,
+            bindings.iter().any(|(name, target)| name != target),
+        )?;
+        let decisions = self
+            .resolve_decision_models(route_name, &algorithm, &overrides)?
+            .into_iter()
+            .map(|mapping| (mapping.target_name, mapping.model_id));
+        let (algorithm, models) =
+            build_resolved_algorithm(route_name, &algorithm, &targets, decisions)?;
+        Ok((algorithm, models.with_target_restriction()))
+    }
+
+    fn resolve_decision_models<'a>(
+        &'a self,
+        route_name: &str,
+        algorithm: &'a AlgorithmSpec,
+        overrides: &TargetOverrides<'_>,
+    ) -> RunnerResult<Vec<DecisionTargetMapping<'a>>> {
+        algorithm
+            .decision_target_names()
+            .into_iter()
+            .map(|name| {
+                let bound = bound_target(name, overrides);
+                let target = self.decision_targets.get(bound).ok_or_else(|| {
+                    RunnerError::configuration(format!(
+                        "route {route_name} requires unknown decision target {bound}"
+                    ))
+                })?;
+                Ok(DecisionTargetMapping {
+                    target_name: name,
+                    model_id: &target.id,
+                })
+            })
+            .collect()
+    }
+
+    // Host-owned Decision calls identify the model, not the selected target or client.
+    pub(crate) fn validate_decision_models(&self, route_name: &str) -> RunnerResult<()> {
+        let route = self
+            .routes
+            .get(route_name)
+            .ok_or_else(|| RunnerError::configuration(format!("unknown route {route_name}")))?;
+        let mut clients = HashMap::new();
+        for name in route.algorithm.decision_target_names() {
+            let alternatives = route
+                .eligibility
+                .as_ref()
+                .and_then(|config| config.target_alternatives.get(name));
+            for candidate in
+                std::iter::once(name).chain(alternatives.into_iter().flatten().map(String::as_str))
+            {
+                let target = self.decision_targets.get(candidate).ok_or_else(|| {
+                    RunnerError::configuration(format!(
+                        "route {route_name} requires unknown decision target {candidate}"
+                    ))
+                })?;
+                if clients
+                    .insert(&target.id, &target.decision_client)
+                    .is_some_and(|client| client != &target.decision_client)
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} maps decision model {} to different clients",
+                        target.id
+                    )));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn target_labels(&self, name: &str) -> Option<&BTreeSet<String>> {
@@ -464,20 +744,17 @@ impl DeploymentConfig {
             }
         }
         for (route_name, config) in &self.routes {
-            if config.eligibility.is_some() {
-                self.validate_eligibility(route_name, &config.algorithm)?;
+            if let Some(eligibility) = &config.eligibility {
+                self.validate_eligibility(route_name, &config.algorithm, eligibility)?;
             }
         }
         Ok(())
     }
 
     /// Resolves each route once; native and host-owned execution share this path.
-    pub(crate) fn build_algorithms(
-        &self,
-    ) -> impl Iterator<Item = RunnerResult<(&str, &RouteConfig, AlgorithmAndModels)>> {
+    pub(crate) fn build_algorithms(&self) -> impl Iterator<Item = RunnerResult<RouteSetup<'_>>> {
         let targets = self.build_targets();
         self.routes.iter().map(move |(route_name, config)| {
-            let classifiers: Vec<_> = config.algorithm.classifier_targets().collect();
             let decision_targets = config.algorithm.decision_target_names();
             for name in config.callable_target_names() {
                 let (exists, kind) = if decision_targets.contains(&name) {
@@ -491,15 +768,10 @@ impl DeploymentConfig {
                     )));
                 }
             }
-            for name in config.routing_target_names().into_iter().chain(
-                classifiers
-                    .into_iter()
-                    .filter_map(|(_, decision)| decision)
-                    .flat_map(|judge| judge.candidates.values().map(String::as_str)),
-            ) {
+            for name in config.routing_target_names() {
                 if !self.targets.contains_key(name) {
                     return Err(RunnerError::configuration(format!(
-                        "route {route_name} completion and candidate target {name} must be an LLM target"
+                        "route {route_name} completion target {name} must be an LLM target"
                     )));
                 }
             }
@@ -536,13 +808,16 @@ impl DeploymentConfig {
                     RunnerError::configuration_source(format!("route {route_name}: {error}"), error)
                 })?;
             }
-            Ok((route_name.as_str(), config, (algorithm, models)))
+            Ok(RouteSetup {
+                route_name: route_name.as_str(),
+                config,
+                algorithm,
+                models,
+            })
         })
     }
 
-    fn build(self: Arc<Self>) -> RunnerResult<Runner> {
-        self.validate()?;
-
+    pub(crate) fn validate_target_approvals(&self) -> RunnerResult<()> {
         let mut approvals = HashMap::new();
         for (target_name, target) in &self.targets {
             if let Some((first_name, labels)) = approvals.insert(
@@ -555,6 +830,12 @@ impl DeploymentConfig {
                 )));
             }
         }
+        Ok(())
+    }
+
+    fn build(self: Arc<Self>) -> RunnerResult<Runner> {
+        self.validate()?;
+        self.validate_target_approvals()?;
 
         let mut provider_api_keys = Vec::new();
         let clients = Arc::new(self.build_clients(&mut provider_api_keys)?);
@@ -563,7 +844,12 @@ impl DeploymentConfig {
         let mut routes = Vec::with_capacity(self.routes.len());
         let mut model_properties_probes = BTreeMap::new();
         for entry in self.build_algorithms() {
-            let (route_name, config, (algorithm, models)) = entry?;
+            let RouteSetup {
+                route_name,
+                config,
+                algorithm,
+                models,
+            } = entry?;
             let capabilities = config.capabilities();
             if let AlgorithmSpec::Vgr { config: vgr } = &config.algorithm
                 && let Some(probe) =
@@ -571,9 +857,14 @@ impl DeploymentConfig {
             {
                 model_properties_probes.insert(config.id.clone(), probe);
             }
-            let standard_targets = self.resolve_lane_targets(&config.algorithm)?;
-            let decisions =
-                self.resolve_decision_targets(route_name, &config.algorithm, &decision_clients)?;
+            let no_overrides = TargetOverrides::new();
+            let standard_targets = self.resolve_lane_targets(&config.algorithm, &no_overrides)?;
+            let decisions = self.resolve_decision_targets(
+                route_name,
+                &config.algorithm,
+                &no_overrides,
+                &decision_clients,
+            )?;
             let (standard, caller_auth) = self.build_lane(
                 route_name,
                 &config.algorithm,
@@ -583,19 +874,27 @@ impl DeploymentConfig {
                 Some((algorithm, models)),
             )?;
             // Judges are included so a judge answer maps to its provider model too.
-            let route_targets = config
-                .callable_target_names()
+            let mut target_names = callable_targets(&config.algorithm);
+            if let Some(eligibility) = &config.eligibility {
+                target_names.extend(
+                    eligibility
+                        .target_alternatives
+                        .values()
+                        .flatten()
+                        .map(String::as_str),
+                );
+            }
+            let route_targets = target_names
                 .into_iter()
                 .filter_map(|name| self.decision_target(name))
                 .collect();
             let mut route = Route::from_lane(standard, caller_auth, capabilities, route_targets)
                 .with_infra(config.infra.clone());
             if let Some(eligibility) = &config.eligibility {
-                let policy = match eligibility.scope {
-                    RequirementScope::Request => {
-                        EligibilityPolicy::new(eligibility.require_explicit_requirements)
-                    }
-                };
+                let policy = EligibilityPolicy::new(
+                    eligibility.require_explicit_requirements,
+                    matches!(eligibility.scope, RequirementScope::Task),
+                );
                 route = route.with_eligibility(
                     policy,
                     EligibleLanes {
@@ -616,18 +915,49 @@ impl DeploymentConfig {
         Ok(runner)
     }
 
-    // Eligibility cannot forward caller credentials or authorize prefill checkpoints.
+    // Alternatives preserve the router's existing roles and never chain.
     fn validate_eligibility(
         &self,
         route_name: &str,
         algorithm: &AlgorithmSpec,
+        config: &TargetEligibilityConfig,
     ) -> RunnerResult<()> {
         if !algorithm.supports_target_restrictions() {
             return Err(RunnerError::configuration(format!(
                 "route {route_name} cannot use eligibility with prefill_router"
             )));
         }
-        for name in callable_targets(algorithm) {
+        let callable = callable_targets(algorithm);
+        for (source, alternatives) in &config.target_alternatives {
+            if !callable.contains(source.as_str()) {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} target_alternatives source {source} is not used by the algorithm"
+                )));
+            }
+            if alternatives.is_empty() {
+                return Err(RunnerError::configuration(
+                    "target alternatives must not be empty",
+                ));
+            }
+            for target in alternatives {
+                let same_kind = (self.targets.contains_key(source)
+                    && self.targets.contains_key(target))
+                    || (self.decision_targets.contains_key(source)
+                        && self.decision_targets.contains_key(target));
+                if !same_kind {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} alternative {target} must exist and match the target kind of {source}"
+                    )));
+                }
+            }
+        }
+        for name in callable.into_iter().chain(
+            config
+                .target_alternatives
+                .values()
+                .flatten()
+                .map(String::as_str),
+        ) {
             if let Some(target) = self.targets.get(name)
                 && self
                     .llm_clients
@@ -645,16 +975,27 @@ impl DeploymentConfig {
     fn resolve_lane_targets<'a>(
         &'a self,
         algorithm: &'a AlgorithmSpec,
+        overrides: &TargetOverrides<'_>,
     ) -> RunnerResult<LaneTargets<'a>> {
         let decisions = algorithm.decision_target_names();
         callable_targets(algorithm)
             .into_iter()
             .filter(|name| !decisions.contains(name))
             .map(|name| {
-                let target = self.targets.get(name).ok_or_else(|| {
-                    RunnerError::configuration(format!("route references unknown target {name}"))
-                })?;
-                Ok((name, target))
+                let bound = bound_target(name, overrides);
+                let (resolved_name, config) =
+                    self.targets.get_key_value(bound).ok_or_else(|| {
+                        RunnerError::configuration(format!(
+                            "route references unknown target {bound}"
+                        ))
+                    })?;
+                Ok((
+                    name,
+                    ResolvedLlmTarget {
+                        name: resolved_name.as_str(),
+                        config,
+                    },
+                ))
             })
             .collect()
     }
@@ -663,20 +1004,22 @@ impl DeploymentConfig {
         &'a self,
         route_name: &str,
         algorithm: &'a AlgorithmSpec,
+        overrides: &TargetOverrides<'_>,
         clients: &'a BTreeMap<String, Arc<dyn RoutedDecisionClient>>,
     ) -> RunnerResult<LaneDecisions<'a>> {
         algorithm
             .decision_target_names()
             .into_iter()
             .map(|name| {
-                let target = self.decision_targets.get(name).ok_or_else(|| {
+                let bound = bound_target(name, overrides);
+                let target = self.decision_targets.get(bound).ok_or_else(|| {
                     RunnerError::configuration(format!(
-                        "route {route_name} requires unknown decision target {name}"
+                        "route {route_name} requires unknown decision target {bound}"
                     ))
                 })?;
                 let client = clients.get(&target.decision_client).ok_or_else(|| {
                     RunnerError::configuration(format!(
-                        "decision target {name} references unknown decision client {}",
+                        "decision target {bound} references unknown decision client {}",
                         target.decision_client
                     ))
                 })?;
@@ -703,25 +1046,12 @@ impl DeploymentConfig {
         let (algorithm, mut models) = if let Some(built) = built {
             built
         } else {
-            let model_ids = targets
-                .keys()
-                .map(|name| ((*name).to_owned(), ModelId::from(*name)))
-                .chain(
-                    decisions
-                        .iter()
-                        .map(|(name, target)| ((*name).to_owned(), target.model.clone())),
-                )
-                .collect();
-            let (algorithm, models) = route
-                .build_with_runtime_models(route_name, &model_ids)
-                .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
-            let models = models.with_provider_models(
-                targets
-                    .iter()
-                    .map(|(name, target)| (ModelId::from(*name), target.id.clone()))
-                    .collect(),
-            );
-            (algorithm, models)
+            build_resolved_algorithm(
+                route_name,
+                route,
+                targets,
+                decisions.iter().map(|(name, target)| (*name, target.model)),
+            )?
         };
         let (route_clients, caller_auth) =
             self.build_route_clients(route_name, route, targets, decisions, clients)?;
@@ -913,21 +1243,32 @@ impl DeploymentConfig {
         let mut decisions_by_model = HashMap::new();
         for name in route.callable_target_names() {
             if let Some(target) = decisions.get(name) {
-                decisions_by_model.insert(target.model.clone(), Arc::clone(target.client));
+                if let Some(previous) =
+                    decisions_by_model.insert(target.model.clone(), Arc::clone(target.client))
+                    && !Arc::ptr_eq(&previous, target.client)
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name} maps decision model {} to different clients",
+                        target.model
+                    )));
+                }
                 continue;
             }
             let target = targets.get(name).ok_or_else(|| {
                 RunnerError::configuration(format!("route references unknown target {name}"))
             })?;
-            let client = clients.get(&target.llm_client).ok_or_else(|| {
+            let client = clients.get(&target.config.llm_client).ok_or_else(|| {
                 RunnerError::configuration(format!("target {name} has no constructed llm client"))
             })?;
-            let client_config = self.llm_clients.get(&target.llm_client).ok_or_else(|| {
-                RunnerError::configuration(format!(
-                    "target {name} references unknown llm client {}",
-                    target.llm_client
-                ))
-            })?;
+            let client_config =
+                self.llm_clients
+                    .get(&target.config.llm_client)
+                    .ok_or_else(|| {
+                        RunnerError::configuration(format!(
+                            "target {name} references unknown llm client {}",
+                            target.config.llm_client
+                        ))
+                    })?;
             if client_config.forward_auth {
                 let target_auth = client_config.format.caller_auth_kind();
                 has_mixed_families |= caller_auth.is_some_and(|kind| kind != target_auth);
@@ -935,7 +1276,7 @@ impl DeploymentConfig {
                 forwarding_origins.insert(client_config.base_url.0.origin().ascii_serialization());
             }
             let client: Arc<dyn RoutedLlmClient> = client.clone();
-            by_model.insert(ModelId::from(name), client);
+            by_model.insert(ModelId::from(target.name), client);
         }
         // Only forwarding clients count: an api_key_env client sends the server's own key.
         // Forwarding clients must share one credential family unless they all use the same
@@ -954,7 +1295,7 @@ impl DeploymentConfig {
         let completion_targets = route
             .routing_target_names()
             .into_iter()
-            .map(ModelId::from)
+            .map(|name| ModelId::from(targets[name].name))
             .collect::<Vec<_>>();
         let router = ClientRouter::new_with_decision_clients(
             by_model,
@@ -969,8 +1310,8 @@ impl DeploymentConfig {
                 .into_iter()
                 .filter_map(|name| {
                     let target = &targets[name];
-                    (!self.llm_clients[&target.llm_client].fallback_on_rate_limit)
-                        .then(|| ModelId::from(name))
+                    (!self.llm_clients[&target.config.llm_client].fallback_on_rate_limit)
+                        .then(|| ModelId::from(target.name))
                 })
                 .collect(),
         );
@@ -989,8 +1330,8 @@ impl DeploymentConfig {
             let target = targets.get(name).ok_or_else(|| {
                 RunnerError::configuration(format!("route references unknown target {name}"))
             })?;
-            if let Some(prompt) = &target.system_prompt {
-                prompts.insert(ModelId::from(name), prompt.clone());
+            if let Some(prompt) = &target.config.system_prompt {
+                prompts.insert(ModelId::from(target.name), prompt.clone());
             }
         }
         let mut policy = TargetPromptPolicy {
@@ -1000,15 +1341,23 @@ impl DeploymentConfig {
         let Some((response_name, dependency_name)) = route.routing_response_and_dependency() else {
             return Ok(policy);
         };
-        if !policy.prompts.contains_key(response_name) {
+        let response = &targets[response_name];
+        if !policy.prompts.contains_key(response.name) {
             return Ok(policy);
         }
-        if response_name == dependency_name {
+        if std::iter::once(dependency_name)
+            .chain(route.judge_target_names())
+            .any(|name| {
+                targets
+                    .get(name)
+                    .is_some_and(|dependency| dependency.name == response.name)
+            })
+        {
             return Err(RunnerError::configuration(format!(
                 "route {route_name} cannot apply system_prompt to target {response_name}: it is also the routing-only target"
             )));
         }
-        policy.routing_answer_target = Some(ModelId::from(response_name));
+        policy.routing_answer_target = Some(ModelId::from(response.name));
         Ok(policy)
     }
 
@@ -1058,12 +1407,16 @@ impl DeploymentConfig {
             .filter_map(|(index, name)| {
                 let config = targets.get(name)?;
                 let target = self.build_auxiliary_target(
-                    name,
-                    config,
+                    config.name,
+                    config.config,
                     clients,
                     AuxiliaryOperation::AnthropicCountTokens,
                 )?;
-                Some((count_tokens_priority(name, &config.id), index, target))
+                Some((
+                    count_tokens_priority(config.name, &config.config.id),
+                    index,
+                    target,
+                ))
             })
             .min_by_key(|(priority, index, _)| (*priority, *index))
             .map(|(_, _, target)| target)
@@ -1076,10 +1429,10 @@ impl DeploymentConfig {
         clients: &BTreeMap<String, Arc<TranslatingLlmClient>>,
     ) -> Option<AuxiliaryTarget> {
         route.routing_target_names().into_iter().find_map(|name| {
-            let target = *targets.get(name)?;
+            let target = targets.get(name)?;
             self.build_auxiliary_target(
-                name,
-                target,
+                target.name,
+                target.config,
                 clients,
                 AuxiliaryOperation::ResponsesInputTokens,
             )
@@ -1459,9 +1812,13 @@ target = "weak"
 
 [routes.plan_execute]
 id = "switchyard/plan-execute"
-type = "plan_execute"
+type = "stage_router"
 capable_target = "strong"
 efficient_target = "weak"
+picker = "capable_first"
+confidence_threshold = 0.0
+efficient_hold_turns = -1
+capable_system_prompt = "Inspect the task and plan before modifying files."
 "#;
 
     fn decision_eligibility_config() -> String {
@@ -1498,8 +1855,6 @@ weak_target = "weak"
 
 [routes.typed.decision]
 cutoff = 0.4
-candidates = {{ a = "strong", b = "weak" }}
-evidence = {{}}
 
 [routes.typed.eligibility]
 "#
@@ -1546,7 +1901,7 @@ evidence = {{}}
                     "id = \"weak/model\"\nlabels = ['private']",
                     "id = \"weak/model\"",
                 ),
-                "decision candidate weak",
+                "required target weak",
             ),
         ] {
             let runner = Runner::from_toml(&config)?;
@@ -1627,6 +1982,325 @@ evidence = {{}}
         Ok(())
     }
 
+    fn alternative_config(algorithm: &str) -> String {
+        let globals = VALID_CONFIG.split("[routes.noop]").next().expect("globals");
+        let mut config = globals.to_string();
+        for name in ["weak", "strong", "classifier"] {
+            config.push_str(&format!(
+                "\n[targets.approved_{name}]\nid = 'approved/{name}'\nllm_client = 'primary'\nlabels = ['private']\n"
+            ));
+        }
+        config.push_str(&format!(
+            "\n[routes.test]\nid = 'route'\n{algorithm}\n[routes.test.eligibility.target_alternatives]\n"
+        ));
+        let spec: AlgorithmSpec = toml::from_str(algorithm).expect("test algorithm");
+        for name in spec
+            .callable_target_names()
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+        {
+            config.push_str(&format!("{name} = ['approved_{name}']\n"));
+        }
+        config
+    }
+
+    // Alternatives preserve fixed roles and selected-target metadata.
+    #[tokio::test]
+    async fn alternatives_preserve_router_roles() -> RunnerResult<()> {
+        for (algorithm, initial) in [
+            ("type = 'passthrough'\ntarget = 'weak'", "weak"),
+            (
+                "type = 'stage_router'\ncapable_target = 'strong'\nefficient_target = 'weak'\npicker = 'capable_first'\nconfidence_threshold = 0.0",
+                "strong",
+            ),
+        ] {
+            let runner = Runner::from_toml(&alternative_config(algorithm))?;
+            let route = runner.route("route").expect("route");
+            let standard = route.decide(Request::default()).await?;
+            assert_eq!(standard.selected_model_id()?.as_str(), initial);
+            let mut request = Request::default();
+            require_target_labels(&mut request, ["private"])?;
+            let outcome = route.decide(request).await?;
+            assert_eq!(outcome.selected_model_id()?, &format!("approved_{initial}"));
+            assert!(
+                outcome
+                    .selected_model_ids
+                    .iter()
+                    .all(|model| model.starts_with("approved_"))
+            );
+            let description = runner
+                .describe_decision(&ModelId::from("route"), &outcome)
+                .expect("mapped metadata");
+            assert_eq!(description.selected.target, format!("approved_{initial}"));
+        }
+        Ok(())
+    }
+
+    // Invalid references fail at load; unavailable approved bindings fail at admission.
+    #[tokio::test]
+    async fn alternatives_reject_invalid_bindings() -> RunnerResult<()> {
+        let config = alternative_config(
+            "type = 'auto'\ncapable_target = 'strong'\nefficient_target = 'weak'",
+        );
+        for (invalid, expected) in [
+            (
+                format!("{config}typo = ['approved_weak']\n"),
+                "not used by the algorithm",
+            ),
+            (
+                config.replace("weak = ['approved_weak']", "weak = ['missing']"),
+                "must exist and match the target kind",
+            ),
+            (
+                config.replace("weak = ['approved_weak']", "weak = []"),
+                "target alternatives must not be empty",
+            ),
+            (
+                config.replace(
+                    "[llm_clients.primary]",
+                    "[llm_clients.primary]\nforward_auth = true",
+                ),
+                "forwarded caller authentication",
+            ),
+        ] {
+            let message = error_message(&invalid);
+            assert!(
+                message.contains(expected),
+                "expected {expected:?}, got {message}"
+            );
+        }
+        let random =
+            alternative_config("type = 'random'\ntargets = ['weak', 'strong']\nweights = [0, 1]")
+                .replace("strong = ['approved_strong']", "strong = ['approved_weak']");
+        for (source, expected) in [
+            (
+                config.replace("weak = ['approved_weak']", "weak = ['strong']"),
+                "required target weak",
+            ),
+            (random, "multiple pool entries to target approved_weak"),
+        ] {
+            let runner = Runner::from_toml(&source)?;
+            let mut request = Request::default();
+            require_target_labels(&mut request, ["private"])?;
+            let error = runner
+                .route("route")
+                .expect("configured route")
+                .decide(request)
+                .await
+                .err()
+                .expect("invalid eligible bindings");
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+        Runner::from_toml(&config.replace("id = 'approved/weak'", "id = 'weak/model'"))?;
+        let shared_model =
+            alternative_config("type = 'random'\ntargets = ['weak', 'strong']\nweights = [0, 1]")
+                .replace("id = 'approved/strong'", "id = 'approved/weak'");
+        let runner = Runner::from_toml(&shared_model)?;
+        let mut request = Request::default();
+        require_target_labels(&mut request, ["private"])?;
+        assert_eq!(
+            runner
+                .route("route")
+                .expect("route")
+                .decide(request)
+                .await?
+                .selected_model_id()?,
+            "approved_strong"
+        );
+        let wrong_kind = format!(
+            "{}\n[routes.typed.eligibility.target_alternatives]\nstandard = ['weak']\n",
+            decision_eligibility_config()
+        );
+        assert!(error_message(&wrong_kind).contains("must exist and match the target kind"));
+        Ok(())
+    }
+
+    // A secondary verifier must not inherit the answer target's prompt after binding.
+    #[tokio::test]
+    async fn alternatives_reject_prompted_vgr_secondary_judge_alias() -> RunnerResult<()> {
+        let source = alternative_config(
+            "type = 'vgr'\nefficient_target = 'weak'\ncapable_target = 'strong'\njudge_target = 'strong'\ncapable_judge_target = 'classifier'",
+        )
+        .replace(
+            "classifier = ['approved_classifier']",
+            "classifier = ['approved_weak']",
+        )
+        .replace(
+            "[targets.approved_weak]",
+            "[targets.approved_weak]\nsystem_prompt = 'Answer the user.'",
+        );
+        let runner = Runner::from_toml(&source)?;
+        let mut request = Request::default();
+        require_target_labels(&mut request, ["private"])?;
+        let error = runner
+            .route("route")
+            .expect("VGR route")
+            .decide(request)
+            .await
+            .err()
+            .expect("secondary judge alias must fail before model I/O");
+        assert!(matches!(error, RunnerError::Configuration { .. }));
+        assert!(error.to_string().contains("routing-only target"), "{error}");
+        Ok(())
+    }
+
+    #[test]
+    fn factory_decision_ids_identify_one_client_across_alternatives() -> RunnerResult<()> {
+        let source = format!(
+            r#"{}
+[decision_clients.other]
+format = "system_one"
+endpoint = "https://private.example.test/v1/decisions"
+api_key_env = "PATH"
+timeout_ms = 5000
+
+[decision_targets.alternative]
+id = "decision/alternative"
+decision_client = "other"
+labels = ["private"]
+
+[routes.typed.eligibility.target_alternatives]
+standard = ["alternative"]
+"#,
+            decision_eligibility_config()
+        );
+        AlgorithmFactory::from_toml(&source)?.build_configured()?;
+
+        let shared_id = source.replace("decision/alternative", "decision/standard");
+        let ambiguous = shared_id.replace(
+            "decision_client = \"privacy\"\nlabels = [\"private\"]",
+            "decision_client = \"privacy\"",
+        );
+        Runner::from_toml(&ambiguous)?;
+        let later_alternative = format!(
+            r#"{}
+[decision_targets.later]
+id = "decision/standard"
+decision_client = "other"
+labels = ["private", "customer_data"]
+"#,
+            source.replace("[\"alternative\"]", "[\"alternative\", \"later\"]")
+        );
+        for source in [&ambiguous, &later_alternative] {
+            let error = AlgorithmFactory::from_toml(source)?
+                .build_configured()
+                .err()
+                .expect("ambiguous endpoint must fail during construction");
+            assert!(
+                error
+                    .to_string()
+                    .contains("maps decision model decision/standard to different clients"),
+                "{error}"
+            );
+        }
+
+        let same_client = shared_id.replace(
+            "decision_client = \"other\"",
+            "decision_client = \"privacy\"",
+        );
+        AlgorithmFactory::from_toml(&same_client)?.build_configured()?;
+        let separate_routes = format!(
+            r#"{}
+[routes.other]
+id = "switchyard/other"
+type = "llm_classifier"
+classifier_target = "alternative"
+strong_target = "strong"
+weak_target = "weak"
+"#,
+            shared_id.replace("standard = [\"alternative\"]", "")
+        );
+        AlgorithmFactory::from_toml(&separate_routes)?.build_configured()?;
+        Ok(())
+    }
+
+    // Decision IDs remain provider keys, so bindings cannot give one ID two clients.
+    #[tokio::test]
+    async fn alternatives_reject_ambiguous_composite_decision_clients() -> RunnerResult<()> {
+        let source = decision_eligibility_config().replace(
+            "decision_client = \"privacy\"\nlabels = [\"private\"]",
+            "decision_client = \"privacy\"",
+        );
+        let source = format!(
+            r#"{source}
+[decision_clients.other]
+format = "system_one"
+endpoint = "http://127.0.0.1:1/decisions"
+api_key_env = "PATH"
+timeout_ms = 1
+
+[decision_targets.secondary]
+id = "decision/secondary"
+decision_client = "privacy"
+
+[decision_targets.approved_primary]
+id = "decision/shared"
+decision_client = "privacy"
+labels = ["private"]
+
+[decision_targets.approved_secondary]
+id = "decision/shared"
+decision_client = "other"
+labels = ["private"]
+
+[routes.ambiguous]
+id = "switchyard/ambiguous"
+type = "composite"
+classifier = {{ target = "standard", classify_trigger = "user_turn", decision = {{ cutoff = 0.4 }} }}
+stage = {{ capable_target = "strong", efficient_target = "weak", confidence_threshold = 0.5 }}
+efficient = {{ classifier = {{ target = "secondary", decision = {{ cutoff = 0.4 }} }} }}
+
+[routes.ambiguous.eligibility.target_alternatives]
+standard = ["approved_primary"]
+secondary = ["approved_secondary"]
+"#
+        );
+        let runner = Runner::from_toml(&source)?;
+        let mut request = Request::default();
+        require_target_labels(&mut request, ["private"])?;
+        let factory_error = AlgorithmFactory::from_toml(&source)?
+            .build_configured()
+            .err()
+            .expect("ambiguous factory decisions must fail during construction");
+        let error = runner
+            .route("switchyard/ambiguous")
+            .expect("composite route")
+            .decide(request)
+            .await
+            .err()
+            .expect("ambiguous decision clients must fail before model I/O");
+        for error in [error, factory_error] {
+            assert!(matches!(error, RunnerError::Configuration { .. }));
+            assert!(
+                error
+                    .to_string()
+                    .contains("maps decision model decision/shared to different clients"),
+                "{error}"
+            );
+        }
+        let standard_alias = source.replace(
+            "id = \"decision/secondary\"\ndecision_client = \"privacy\"",
+            "id = \"decision/standard\"\ndecision_client = \"other\"",
+        );
+        let ungoverned = standard_alias
+            .split_once("[routes.ambiguous.eligibility.target_alternatives]")
+            .expect("alternatives fixture")
+            .0;
+        for source in [standard_alias.as_str(), ungoverned] {
+            let error = AlgorithmFactory::from_toml(source)?
+                .build_configured()
+                .err()
+                .expect("ambiguous standard decisions must fail during construction");
+            assert!(
+                error
+                    .to_string()
+                    .contains("maps decision model decision/standard to different clients"),
+                "{error}"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn eligibility_rejects_unknown_fields_and_invalid_scope() {
         let configured = eligible_pool_config();
@@ -1654,8 +2328,8 @@ evidence = {{}}
                 "unknown field `require_explicit_requirement`",
             ),
             (
-                format!("{configured}\nscope = 'task'\n"),
-                "unknown variant `task`",
+                format!("{configured}\nscope = 'tenant'\n"),
+                "unknown variant `tenant`",
             ),
         ] {
             let message = error_message(&invalid);
@@ -1691,8 +2365,7 @@ evidence = {{}}
                 "cannot use eligibility with forwarded caller authentication",
             ),
             (
-                eligible_pool_config().replace(
-                    "type = \"random\"\ntargets = [\"weak\", \"strong\"]\nweights = [3.0, 1.0]\nseed = 7",
+                alternative_config(
                     "type = 'prefill_router'\ntargets = ['weak']\ncheckpoint = 'unused'",
                 ),
                 "cannot use eligibility with prefill_router",
@@ -1755,6 +2428,55 @@ evidence = {{}}
         Ok(())
     }
 
+    /// Both the TOML and JSON parsers must reject the removed `plan_execute` type.
+    #[test]
+    fn removed_plan_execute_type_is_rejected() {
+        let route = r#"
+type = "plan_execute"
+capable_target = "strong"
+efficient_target = "weak"
+"#;
+        let config = format!("{VALID_CONFIG}\n[routes.obsolete]\nid = \"obsolete\"\n{route}");
+        assert!(error_message(&config).contains("unknown variant `plan_execute`"));
+
+        let error = serde_json::from_str::<AlgorithmSpec>(
+            r#"{"type":"plan_execute","capable_target":"strong","efficient_target":"weak"}"#,
+        )
+        .expect_err("the removed algorithm must be rejected");
+        assert!(error.to_string().contains("unknown variant `plan_execute`"));
+    }
+
+    /// TOML and JSON parsers must reject old `plan_execute` fields on `stage_router` routes.
+    /// Changing only the route type must not load a route that ignores its handoff settings.
+    #[test]
+    fn stage_rejects_obsolete_plan_execute_settings() {
+        let stage = json!({
+            "type": "stage_router", "capable_target": "strong", "efficient_target": "weak",
+            "picker": "capable_first", "confidence_threshold": 0.0,
+            "efficient_hold_turns": -1, "capable_system_prompt": "Plan before editing.",
+        });
+        assert!(serde_json::from_str::<AlgorithmSpec>(&stage.to_string()).is_ok());
+        for (field, value, toml_value) in [
+            ("planning_prompt", json!("plan"), r#""plan""#),
+            ("handoff_prompt", json!("execute"), r#""execute""#),
+            ("planner_reasoning_as_text", json!(true), "true"),
+            ("execution_trigger", json!("edit"), r#""edit""#),
+            (
+                "judge",
+                json!({"target": "classifier"}),
+                r#"{ target = "classifier" }"#,
+            ),
+        ] {
+            let mut invalid = stage.clone();
+            invalid[field] = value;
+            let error = serde_json::from_str::<AlgorithmSpec>(&invalid.to_string())
+                .expect_err("obsolete fields must be rejected");
+            assert!(error.to_string().contains(field), "{error}");
+            let error = error_message(&format!("{VALID_CONFIG}\n{field} = {toml_value}\n"));
+            assert!(error.contains(field), "{error}");
+        }
+    }
+
     #[test]
     fn duplicate_route_ids_are_rejected() {
         let config = format!(
@@ -1775,32 +2497,6 @@ target = "strong"
             ),
             "{error}"
         );
-    }
-
-    #[tokio::test]
-    async fn plan_execute_applies_custom_tool_semantics() -> RunnerResult<()> {
-        use switchyard_protocol::{ContentBlock, Message, Request, Role, ToolCall};
-
-        let configured = format!(
-            "{VALID_CONFIG}\n[routes.plan_execute.tool_semantics]\nmutate = [\"persist_source_file\"]"
-        );
-        let mut request = Request::default();
-        request.llm_request.messages.push(Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
-                id: "write-1".to_string(),
-                name: "mcp__files__Persist_Source_File".to_string(),
-                arguments: json!({"path": "task.py", "content": "print('hello')"}),
-            })],
-        });
-
-        for (config, expected) in [(VALID_CONFIG, "strong"), (configured.as_str(), "weak")] {
-            let runner = Runner::from_toml(config)?;
-            let route = runner.route("switchyard/plan-execute").unwrap();
-            let outcome = route.decide(request.clone()).await?;
-            assert_eq!(outcome.selected_model_ids[0], expected);
-        }
-        Ok(())
     }
 
     fn error_message(toml: &str) -> String {
@@ -2038,8 +2734,7 @@ new = ["send_message"]
         ) + r#"
 [routes.composed.classifier.decision]
 cutoff = 0.4
-candidates = { a = "strong", b = "weak" }
-evidence = { description = "candidate comparison" }
+instructions = "candidate comparison"
 "#;
         for (source, valid) in [
             (source.clone(), true),
@@ -2050,7 +2745,7 @@ evidence = { description = "candidate comparison" }
                 ),
                 false,
             ),
-            (source.replace("b = \"weak\"", "b = \"strong\""), false),
+            (source.replace("cutoff = 0.4", "cutoff = 1.1"), false),
         ] {
             let deployment: DeploymentConfig = toml::from_str(&source).unwrap();
             let spec = &deployment.routes["composed"].algorithm;
@@ -2061,6 +2756,78 @@ evidence = { description = "candidate comparison" }
                 valid
             );
         }
+    }
+
+    #[test]
+    fn decision_target_judges_use_default_decision_settings() -> RunnerResult<()> {
+        let source = format!(
+            r#"{VALID_CONFIG}
+[decision_clients.decisions]
+format = "openai_decisions"
+endpoint = "https://example.test/v1/decisions"
+api_key_env = "PATH"
+timeout_ms = 5000
+
+[decision_targets.judge]
+id = "decision/judge"
+decision_client = "decisions"
+
+[routes.judged]
+id = "switchyard/judged"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "strong"
+weak_target = "weak"
+
+[routes.staged]
+id = "switchyard/staged"
+type = "stage_router"
+capable_target = "strong"
+efficient_target = "weak"
+picker = "efficient_first"
+confidence_threshold = 1.0
+
+[routes.staged.classifier]
+target = "judge"
+
+[routes.composed]
+id = "switchyard/composed"
+type = "composite"
+
+[routes.composed.classifier]
+target = "judge"
+classify_trigger = "user_turn"
+
+[routes.composed.stage]
+capable_target = "strong"
+efficient_target = "weak"
+
+[routes.composed.efficient.classifier]
+target = "judge"
+"#
+        );
+        let factory = AlgorithmFactory::from_toml(&source)?;
+        let routes = &factory.config.routes;
+        for route in ["judged", "staged", "composed"] {
+            let judges: Vec<_> = routes[route].algorithm.classifier_targets().collect();
+            assert!(!judges.is_empty(), "{route}");
+            assert!(
+                judges
+                    .iter()
+                    .all(|(target, decision)| *target == "judge" && decision.is_some()),
+                "{route}"
+            );
+        }
+        // LLM judges keep their capability settings.
+        assert!(
+            routes["classifier"]
+                .algorithm
+                .classifier_targets()
+                .all(|(_, d)| d.is_none())
+        );
+        factory.build()?;
+        runner_from_toml(&source)?;
+        Ok(())
     }
 
     #[test]

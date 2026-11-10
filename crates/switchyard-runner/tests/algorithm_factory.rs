@@ -41,8 +41,6 @@ strong_target = "capable"
 weak_target = "fast"
 [routes.classifier.decision]
 cutoff = 0.7
-candidates = { a = "capable", b = "fast" }
-evidence = { description = "Compare both targets." }
 "#;
 
 #[test]
@@ -83,6 +81,18 @@ fn full_deployment_builds_without_provider_credentials() {
             provider
         );
     }
+
+    let configured = factory.build_configured().expect("configured handles");
+    let parent = configured["public/main"].target_models();
+    assert_eq!(
+        parent.keys().map(ModelId::as_str).collect::<Vec<_>>(),
+        ["capable", "fast"]
+    );
+    assert_eq!(parent[&ModelId::from("capable")].client, "answers");
+    assert_eq!(parent[&ModelId::from("capable")].id, "upstream/capable");
+    let judged = configured["public/classify"].target_models();
+    assert_eq!(judged[&ModelId::from("upstream/judge")].client, "judge");
+    assert!(!judged.contains_key(&ModelId::from("judge")));
 
     let error = Runner::from_toml(DEPLOYMENT)
         .err()

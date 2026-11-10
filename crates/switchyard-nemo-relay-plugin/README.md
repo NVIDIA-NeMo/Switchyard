@@ -285,7 +285,8 @@ meaning requires a new schema version.
 `served_model` and `fallback_used` are `null` when serving metadata is unavailable.
 `outcome_id` is present when the algorithm runner supplies outcome metadata.
 `evidence` is an object containing the supported string fields `source`, `verdict`,
-`trigger`, and `reason_code`, and numeric fields `score`, `confidence`, and `threshold`.
+`trigger`, and `reason_code`, and numeric fields `score`, `confidence`, `threshold`,
+`capable_score`, and `capable_threshold`.
 String values longer than 64 bytes are omitted and should be stable, non-sensitive labels.
 
 ## Failure policy
@@ -339,6 +340,9 @@ cost summaries. Relay also loads system plugin configuration when present.
 The [cost-summary example](examples/attempt_costs.py) selects unique attempt
 records and uses Relay's codec to obtain costs. These summaries cover Switchyard
 completion and typed decision work. They do not change ATIF `final_metrics`.
+
+See the [versioned accounting scope profile](../../docs/integrations/nemo_relay.md#accounting-scope-profile-version-1)
+for stable fields and the limits of `coverage_complete` and `total_cost_usd`.
 
 Add `--include-decisions` to the fixture command to test explicit zero-rate and
 paid decisions, missing usage and prices, reported zero charges, repeated

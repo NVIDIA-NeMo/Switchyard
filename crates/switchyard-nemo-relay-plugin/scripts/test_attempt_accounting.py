@@ -147,10 +147,12 @@ weak_target = "unpriced"
 fail_open = false
 [routes.decision_{name}.decision]
 cutoff = 0.5
-candidates = {{ capable_first = "default", efficient_first = "unpriced" }}
-criteria = {{ capable_first = "Capable", efficient_first = "Efficient" }}
-instructions = {{ task = "Choose" }}
-evidence = {{ description = "Synthetic decision context" }}
+instructions = "Choose"
+apply_cutoff_to = "capable_first"
+choices = [
+    {{ id = "capable_first", description = "Capable" }},
+    {{ id = "efficient_first", description = "Efficient" }},
+]
 ''')
         config = output / "plugins.toml"
         config.write_text(f'''[[plugins.dynamic]]
@@ -205,6 +207,15 @@ attestation = "integrity_only"
             assert Provider.calls == 2
             assert len(report["attempts"]) == 2
             assert report["attempts"][0]["outcome"] == "error"
+            ends = {e["uuid"]: e for e in events if e.get("scope_category") == "end"}
+            for record in report["attempts"]:
+                attempt = ends[record["uuid"]]
+                assert attempt["name"] == "libsy.upstream_attempt"
+                assert attempt["metadata"]["switchyard.accounting.schema_version"] == 1
+                parent = ends[attempt["parent_uuid"]]
+                assert parent["name"] == "libsy.client_call"
+                assert parent["metadata"]["switchyard.accounting.unit"] == "summary"
+                assert parent["metadata"]["switchyard.accounting.schema_version"] == 1
             assert report["coverage_complete"]
             assert math.isclose(report["known_cost_subtotal_usd"], expected_subtotal)
             if expected_total is None:
@@ -282,6 +293,7 @@ async def check_decisions_in_scope(events, output, label, model, count, subtotal
         event = ends[decision["uuid"]]
         assert event["name"] == "libsy.decision_call"
         assert event["category"] == "llm"
+        assert event["metadata"]["switchyard.accounting.schema_version"] == 1
         assert decision["context_status"] == "bound"
         parent = ends[event["parent_uuid"]]
         assert parent["name"] == "openai.chat_completions" and parent["parent_uuid"] == workflow

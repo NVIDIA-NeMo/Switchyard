@@ -51,6 +51,8 @@ impl AttemptGuard {
             gen_ai.usage.cache_creation.input_tokens = tracing::field::Empty,
             gen_ai.usage.cache_creation_1h.input_tokens = tracing::field::Empty,
             gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
+            switchyard.usage.input_tokens = tracing::field::Empty,
+            switchyard.usage.input_tokens_reported = tracing::field::Empty,
             switchyard.usage.total_tokens = tracing::field::Empty,
             switchyard.usage.provider_cost_usd = tracing::field::Empty,
             switchyard.accounting.charge_source = tracing::field::Empty,

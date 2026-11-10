@@ -19,7 +19,7 @@ import (
 
 const stage = `"capable_target":"strong","efficient_target":"weak","confidence_threshold":0.5`
 const composite = `{"type":"composite","classifier":{"target":"judge","base_threshold":0.5,"classify_trigger":"user_turn","fail_open":false},"stage":{` + stage + `}}`
-const decision = `{"type":"composite","classifier":{"target":"judge","classify_trigger":"user_turn","fail_open":false,"decision":{"cutoff":0.5,"candidates":{"a":"strong","b":"weak"},"evidence":{}}},"stage":{` + stage + `}}`
+const decision = `{"type":"composite","classifier":{"target":"judge","classify_trigger":"user_turn","fail_open":false,"decision":{"cutoff":0.5}},"stage":{` + stage + `}}`
 const judgeAnswer = `{"model":"provider-model","outputs":[{"role":"assistant","content":[{"type":"text","text":"{\"crux\":\"bounded task\",\"primary_rule\":\"SUP-1\",\"capability_boundary\":\"supported\",\"p_solve\":0.9}"}],"stop_reason":"end_turn"}]}`
 
 func newRouter(t *testing.T, algorithm string) *Router {
@@ -148,7 +148,7 @@ func TestCompositeHostCalls(t *testing.T) {
 		name, algorithm, kind, selected, response, invalidResponse string
 	}{
 		{"model", composite, "call_model", "weak-model", judgeAnswer, `{"outputs":"wrong"}`},
-		{"decision", decision, "call_decision", "strong-model", `{"answers":{"route":{"value":{"type":"choice","data":{"selected":"advantage","probabilities":{"advantage":0.9,"no_advantage":0.1}}}}}}`, `{"answers":"wrong"}`},
+		{"decision", decision, "call_decision", "strong-model", `{"answers":{"route":{"value":{"type":"choice","data":{"selected":"capable","probabilities":{"capable":0.9,"efficient":0.1}}}}}}`, `{"answers":"wrong"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			router := newRouter(t, tc.algorithm)
@@ -385,26 +385,29 @@ func TestReplyAttributionAndMetadata(t *testing.T) {
 	if _, err := delegated.Route(context.Background(), request, nil); err == nil {
 		t.Fatal("empty child pool selected a parent model")
 	}
-	plan := newRouter(t, `{"type":"plan_execute","capable_target":"strong","efficient_target":"weak"}`)
+	// Both agents need active holds so a final request tests cleanup of the sibling's hold.
+	plan := newRouter(t, `{"type":"stage_router","capable_target":"strong","efficient_target":"weak","picker":"capable_first","confidence_threshold":0,"efficient_hold_turns":-1}`)
 	for _, tc := range []struct {
 		agent                string
 		child, final, edited bool
 		expected             string
 	}{
+		{"a", true, false, false, "strong-model"},
 		{"a", true, false, true, "weak-model"},
 		{"b", true, false, false, "strong-model"},
+		{"b", true, false, true, "weak-model"},
 		{"root", false, false, false, "strong-model"},
 		{"a", true, true, false, "weak-model"},
-		{"a", true, false, false, "strong-model"},
+		{"b", true, false, false, "strong-model"},
 	} {
 		request := input()
 		request.Request = json.RawMessage(`{}`)
 		if tc.edited {
-			request.Request = json.RawMessage(`{"messages":[{"role":"assistant","content":[{"type":"tool_call","id":"edit","name":"apply_patch","arguments":{}}]}]}`)
+			request.Request = json.RawMessage(`{"messages":[{"role":"assistant","content":[{"type":"tool_call","id":"edit","name":"apply_patch","arguments":{}}]},{"role":"tool","content":[{"type":"tool_result","tool_call_id":"edit","content":[{"type":"text","text":"Applied patch"}],"is_error":false}]}]}`)
 		}
 		request.Metadata = &RequestMetadata{SessionID: "session", AgentID: tc.agent, IsSubagent: tc.child, SessionFinal: &tc.final}
 		outcome, err := plan.Route(context.Background(), request, nil)
-		if err != nil || len(outcome.SelectedModelIDs) != 1 || outcome.SelectedModelIDs[0] != tc.expected {
+		if err != nil || len(outcome.SelectedModelIDs) == 0 || outcome.SelectedModelIDs[0] != tc.expected {
 			t.Fatalf("agent=%s final=%v outcome=%+v err=%v", tc.agent, tc.final, outcome, err)
 		}
 	}

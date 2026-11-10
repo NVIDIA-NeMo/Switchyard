@@ -87,6 +87,7 @@ class DecisionCoverageTests(unittest.TestCase):
 
     def test_completion_and_decision_costs_are_counted_once(self):
         events = self.events()
+        events[-2]["metadata"]["switchyard.accounting.schema_version"] = 1
         result = summarize(events, "workflow")
         self.assertEqual(result["total_cost_usd"], 0.04)
         self.assertEqual(len(result["attempts"]), 1)
@@ -121,6 +122,47 @@ class DecisionCoverageTests(unittest.TestCase):
         self.assertEqual(result["decisions"], [])
         self.assertEqual(result["unattributed_decisions"], [{"uuid": "decision", "context_status": "unattributed"}])
         self.assertIsNone(result["total_cost_usd"])
+
+
+class CompatibilityTests(unittest.TestCase):
+    def test_versioned_and_legacy_attempts_keep_accounting_results(self):
+        events = event_fixture({"total": 0.02}, {"total": 0.03})
+        expected = summarize(events, "workflow")
+        for event in [events[1], events[3]]:
+            event["metadata"].update({
+                "switchyard.accounting.schema_version": 1, "future_field": "ignored",
+            })
+        events.append(events[3].copy())
+        events.append({
+            **events[2], "uuid": "outer", "name": "outer", "parent_uuid": "workflow",
+            "metadata": {"switchyard.accounting.unit": "summary"},
+        })
+        result = summarize(events, "workflow")
+        self.assertEqual(result, expected)
+        self.assertEqual(set(result), {
+            "workflow_uuid", "attempts", "decisions", "unattributed_decisions",
+            "coverage_complete", "cost_status",
+            "known_cost_subtotal_usd", "total_cost_usd",
+        })
+        self.assertEqual(result["total_cost_usd"], 0.05)
+        self.assertEqual([r["uuid"] for r in result["attempts"]], ["attempt-1", "attempt-2"])
+
+    def test_missing_consumption_and_reported_zero_remain_distinct(self):
+        events = event_fixture({})
+        attempt = events[-1]
+        attempt["metadata"]["switchyard.accounting.usage_status"] = "missing"
+        attempt["data"].pop("usage")
+        missing = summarize(events, "workflow")
+        self.assertTrue(missing["coverage_complete"])
+        self.assertEqual(missing["known_cost_subtotal_usd"], 0.0)
+        self.assertIsNone(missing["total_cost_usd"])
+        attempt["data"]["usage"] = {"cost": {
+            "total": 0.0, "currency": "USD", "source": "provider_reported",
+        }}
+        zero = summarize(events, "workflow")
+        self.assertEqual(zero["total_cost_usd"], 0.0)
+        self.assertEqual(zero["attempts"][0]["usage_status"], "missing")
+        self.assertEqual(zero["cost_status"], "complete")
 
 
 if __name__ == "__main__":

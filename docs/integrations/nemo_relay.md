@@ -118,6 +118,47 @@ workflow. It reports decisions without a known workflow ancestor in
 `unattributed_decisions` and leaves the complete total absent. Supply the scope
 tree and decision marks needed to verify coverage.
 
+#### Accounting Scope Profile, Version 1
+
+Completion-attempt, decision-call, and summary scopes set the integer metadata field
+`switchyard.accounting.schema_version` to `1`. This versions the scope
+representation independently of Relay's worker protocol and mark `DataSchema`.
+Consumers should tolerate additional fields and unknown values. Removing or
+renaming fields, changing their types, or changing their meaning requires a
+new profile version.
+
+| Record | Scope type and accounting unit | Identity and output |
+| --- | --- | --- |
+| `libsy.client_call` | Custom; `summary` | Parent of its attempts; no priceable response output |
+| `libsy.upstream_attempt` | LLM; `completion_attempt` | Its scope UUID identifies one attempt; `parent_uuid` refers to its client call; content-free Messages-shaped output carries known usage and USD charges |
+| `libsy.decision_call` | LLM; `decision_call` | Its scope UUID identifies one typed invocation; `parent_uuid` follows the native Relay request/workflow ancestry; content-free Messages-shaped output carries known usage and USD charges |
+
+The exported decision scope comes from the host's `libsy.decision_client_call`
+span. One invocation produces one record, including when it contains several
+questions. The algorithm-side decision span remains diagnostic.
+
+The summary declares expected attempts in `switchyard.accounting.attempts`
+and captured attempts in `switchyard.accounting.attempt_records`. Each
+completion-attempt child has a one-based `attempt` ordinal.
+`outcome` (`ok`, `error`, or `cancelled`)
+is separate from `switchyard.accounting.usage_status`. Missing token counts
+remain absent; reported zero remains zero. Charges use `usage.cost` with
+`currency = "USD"` and `source = "provider_reported"`.
+`switchyard.accounting.charge_source` distinguishes body charges (`provider`)
+from the supported header fallback (`header`); body charges take precedence.
+
+`switchyard.usage.input_tokens_reported` preserves whether the original
+non-cached input count was known. When true, `switchyard.usage.input_tokens`
+contains that count, including zero. When false, the projected input count
+stays absent even if cache usage is known. Older captures without this flag
+retain the aggregate-minus-cache fallback.
+
+The example's `coverage_complete` checks received, instrumented completion
+records against their summary counts and typed decision records against their
+unique decision-call marks. It cannot detect a wholly absent call or certify
+full workflow coverage. Its `total_cost_usd` has that same scope; other
+producers require a separate accounting view.
+
 Relay's [model-pricing guide](https://docs.nvidia.com/nemo/relay/configure-plugins/model-pricing)
 explains how to supply model rates. ATIF `final_metrics` still describes Relay's
 outer interaction; it does not automatically include the ATOF workflow total.
@@ -549,7 +590,8 @@ response is available, the error mark describes the terminal failure instead.
 `outcome_id` is present when the algorithm runner supplies outcome metadata.
 When the algorithm supplies evidence, the plugin includes an object containing
 supported string fields (`source`, `verdict`, `trigger`, and `reason_code`) and
-numeric fields (`score`, `confidence`, and `threshold`). Other fields and values
+numeric fields (`score`, `confidence`, `threshold`, `capable_score`, and
+`capable_threshold`). Other fields and values
 of the wrong type are omitted. String values longer than 64 bytes are also omitted
 and should be stable, non-sensitive labels.
 
