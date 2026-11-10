@@ -4609,6 +4609,75 @@ fn responses_request_round_trips_custom_tools_and_custom_tool_calls() -> TestRes
     Ok(())
 }
 
+#[test]
+fn forced_custom_tool_choice_translates_to_named_tool() -> TestResult {
+    let engine = TranslationEngine::default();
+    for stream in [false, true] {
+        let body = json!({
+            "model": "route",
+            "input": "Use optional_lookup.",
+            "tools": [
+                {"type": "custom", "name": "required_lookup", "format": {"type": "text"}},
+                {"type": "function", "name": "optional_lookup", "parameters": {"type": "object"}}
+            ],
+            "tool_choice": {"type": "custom", "name": "required_lookup"},
+            "stream": stream
+        });
+        for (target, expected) in [
+            (
+                WireFormat::OpenAiChat,
+                json!({"type": "function", "function": {"name": "required_lookup"}}),
+            ),
+            (
+                WireFormat::AnthropicMessages,
+                json!({"type": "tool", "name": "required_lookup"}),
+            ),
+        ] {
+            let output = engine.translate_request(
+                WireFormat::OpenAiResponses,
+                target,
+                &body,
+                &TranslationPolicy::default(),
+            )?;
+            assert_eq!(output.body["tool_choice"], expected, "{target:?}");
+            assert_eq!(output.body["stream"].as_bool().unwrap_or(false), stream);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn forced_custom_tool_choice_survives_responses_rebuild() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    let body = json!({
+        "model": "route",
+        "input": "Use optional_lookup.",
+        "tools": [
+            {"type": "custom", "name": "required_lookup", "format": {"type": "text"}},
+            {"type": "function", "name": "optional_lookup", "parameters": {"type": "object"}}
+        ],
+        "tool_choice": {"type": "custom", "name": "required_lookup"}
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+    switchyard_translation::append_note(&mut request, "Check the result.");
+    let output = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+    assert_eq!(output.body["tool_choice"], body["tool_choice"]);
+    assert_eq!(output.body["tools"][0], body["tools"][0]);
+
+    request.tool_choice = Some(switchyard_protocol::ToolChoice::Tool {
+        name: "optional_lookup".into(),
+    });
+    let output = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+    assert_eq!(
+        output.body["tool_choice"],
+        json!({"type": "function", "name": "optional_lookup"})
+    );
+    Ok(())
+}
+
 // Codex sends GPT-5 requests in the Responses-lite shape: no top-level `tools`, empty
 // `instructions`, the tool definitions inside `input[0]` as an `additional_tools` developer
 // item, and the base instructions as a developer message. Those definitions are the request's
