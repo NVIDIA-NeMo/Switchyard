@@ -65,9 +65,10 @@ the live candidate list supplied by LiteLLM. The low-level `SwitchyardRoutingPlu
 5. records the decision, the judge's evidence and the private delta under
    `context.signals["switchyard"]`.
 
-A judge request carries `switchyard_judge: true` in its metadata. LiteLLM hands that metadata to
-the routing context, and every plugin here passes such a request through unchanged, so routing
-never re-enters itself. Keep the judge in its own `model_name`, separate from the candidates.
+While `LiteLLMJudge` serves a call, `is_judge_call()` is true in that task. Every plugin here checks
+it and passes the judge request through unchanged, so routing never re-enters itself. The flag is a
+context variable, so a client cannot set it through request metadata. Keep the judge in its own
+`model_name`, separate from the candidates.
 
 LiteLLM copies those signals into request metadata. After LiteLLM selects a deployment, the same
 object's `async_pre_call_deployment_hook` applies the delta and removes it from the metadata passed
@@ -272,10 +273,10 @@ prompt = "Forecast whether the efficient model, a small text model with no tools
 
 The classifier uses the same candidate contract as Stage: exactly two unique candidates, the capable
 model declared first and the efficient model second. The judge call goes through the Router the
-plugin is installed in (the proxy's router in the proxy), carrying the `switchyard_judge` metadata
-marker. The packaged capability card describes a coding agent with tools and a harness; against a
-plain text model it tends to rate every task as supported, so set `prompt` to describe the
-efficient model you actually deploy.
+plugin is installed in (the proxy's router in the proxy) and is flagged in-process so the plugins
+pass it through. The packaged capability card describes a coding agent with tools and a harness;
+against a plain text model it tends to rate every task as supported, so set `prompt` to describe
+the efficient model you actually deploy.
 
 Static errors—missing files, malformed TOML, unknown keys, wrong types, invalid ranges, and invalid
 weight values—fail while LiteLLM imports the plugin at proxy startup. Constraints that depend on

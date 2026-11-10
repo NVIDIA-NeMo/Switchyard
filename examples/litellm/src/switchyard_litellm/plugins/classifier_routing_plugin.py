@@ -9,7 +9,7 @@ from litellm.types.router import RoutingContext
 
 from switchyard.libsy import Algorithm, LlmClassifierConfig, TaskClassifierConfig, algorithms
 
-from .judge import JUDGE_MARKER, JudgeClient
+from .judge import JudgeClient, is_judge_call
 from .lite_llm_request_rewriter import LiteLLMRequestRewriter
 from .switchyard_routing_plugin import SwitchyardRoutingPlugin
 
@@ -36,6 +36,7 @@ class ClassifierRoutingPlugin(LiteLLMRequestRewriter):
         max_output_tokens: int = 4096,
         response_format_type: str = "json_schema",
     ) -> None:
+        """Validate the judge settings and keep them for each routing call."""
         super().__init__()
         if not judge_model:
             raise ValueError("Classifier routing requires a judge_model")
@@ -50,6 +51,7 @@ class ClassifierRoutingPlugin(LiteLLMRequestRewriter):
         self._response_format_type = response_format_type
 
     def _algorithm(self) -> Algorithm:
+        """Build the capability classifier that judges one request."""
         config = TaskClassifierConfig(
             self._base_threshold,
             threshold_step=self._threshold_step,
@@ -61,7 +63,7 @@ class ClassifierRoutingPlugin(LiteLLMRequestRewriter):
 
     async def run(self, context: RoutingContext) -> RoutingContext:
         """Judge the request once, then keep the candidate Switchyard selected."""
-        if context.metadata.get(JUDGE_MARKER):
+        if is_judge_call():
             return context
         candidates = list(dict.fromkeys(context.candidate_models))
         if len(candidates) != 2:

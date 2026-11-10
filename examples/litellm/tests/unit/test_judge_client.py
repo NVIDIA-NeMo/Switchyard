@@ -6,8 +6,8 @@ from typing import Any
 
 import pytest
 from switchyard_litellm.plugins.judge import (
-    JUDGE_MARKER,
     LiteLLMJudge,
+    is_judge_call,
     judge_completion_kwargs,
     judge_messages,
     judge_response,
@@ -57,11 +57,11 @@ def test_judge_messages_rejects_non_text_content() -> None:
         judge_messages(request)
 
 
-def test_completion_kwargs_carry_marker_limit_schema_and_sampling() -> None:
+def test_completion_kwargs_carry_limit_schema_and_sampling() -> None:
     kwargs = judge_completion_kwargs(JUDGE_REQUEST, "switchyard-judge")
 
     assert kwargs["model"] == "switchyard-judge"
-    assert kwargs["metadata"] == {JUDGE_MARKER: True}
+    assert "metadata" not in kwargs
     assert kwargs["max_completion_tokens"] == 256
     assert "max_tokens" not in kwargs
     assert kwargs["response_format"]["type"] == "json_schema"
@@ -100,15 +100,17 @@ async def test_litellm_judge_calls_through_the_given_router() -> None:
 
     class FakeRouter:
         async def acompletion(self, **kwargs: Any) -> Any:
-            seen.update(kwargs)
+            seen.update(kwargs, judge_call=is_judge_call())
             return completion('{"p_solve": 0.2}')
 
     judge = LiteLLMJudge("switchyard-judge", router=FakeRouter(), timeout=20)
+    assert not is_judge_call()
     response = await judge(JUDGE_REQUEST, "switchyard-judge")
 
     assert isinstance(response, LlmResponse.Agg)
     assert seen["model"] == "switchyard-judge"
-    assert seen["metadata"] == {JUDGE_MARKER: True}
+    assert seen["judge_call"] is True
+    assert not is_judge_call()
     assert seen["timeout"] == 20
     assert seen["max_completion_tokens"] == 256
 
@@ -122,7 +124,7 @@ async def test_litellm_judge_falls_back_to_litellm_acompletion_without_a_router(
     seen: dict[str, Any] = {}
 
     async def fake_acompletion(**kwargs: Any) -> Any:
-        seen.update(kwargs)
+        seen.update(kwargs, judge_call=is_judge_call())
         return completion('{"p_solve": 0.8}')
 
     monkeypatch.setattr(litellm, "acompletion", fake_acompletion)
@@ -132,7 +134,8 @@ async def test_litellm_judge_falls_back_to_litellm_acompletion_without_a_router(
     await judge(JUDGE_REQUEST, "openai/gpt-5.4-mini")
 
     assert seen["api_base"] == "https://example.invalid/v1"
-    assert seen["metadata"] == {JUDGE_MARKER: True}
+    assert seen["judge_call"] is True
+    assert "metadata" not in seen
 
 
 def test_litellm_judge_requires_a_model() -> None:

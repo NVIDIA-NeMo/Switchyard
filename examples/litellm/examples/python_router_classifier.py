@@ -5,8 +5,8 @@
 """Send requests through LiteLLM's Router with the Switchyard capability classifier.
 
 The judge is its own model group. The plugin serves the judge call back through
-the same Router, so it is spend-tracked and uses the gateway's credentials, and
-the request's `switchyard_judge` metadata marker keeps it out of routing.
+the same Router, so it is spend-tracked and uses the gateway's credentials. The
+judge client flags the call in-process, which keeps it out of routing.
 """
 
 import asyncio

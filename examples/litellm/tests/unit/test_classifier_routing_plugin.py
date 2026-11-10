@@ -9,7 +9,7 @@ import pytest
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.types.router import RoutingContext
 from switchyard_litellm import ClassifierRoutingPlugin, SwitchyardRoutingPlugin
-from switchyard_litellm.plugins.judge import JUDGE_MARKER
+from switchyard_litellm.plugins.judge import serving_judge_call
 
 from switchyard.libsy import LlmClassifierConfig, LlmResponse, TaskClassifierConfig, algorithms
 
@@ -136,10 +136,11 @@ async def test_judge_requests_pass_through_untouched() -> None:
     context = routing_context(
         [{"role": "user", "content": "the judge prompt"}],
         candidates=[JUDGE],
-        metadata={JUDGE_MARKER: True, "tenant": "t"},
+        metadata={"tenant": "t"},
     )
 
-    result = await plugin(judge).run(context)
+    with serving_judge_call():
+        result = await plugin(judge).run(context)
 
     assert result is context
     assert result.candidate_models == [JUDGE]
@@ -147,16 +148,28 @@ async def test_judge_requests_pass_through_untouched() -> None:
     assert judge.calls == []
 
 
+async def test_client_supplied_judge_metadata_does_not_skip_routing() -> None:
+    judge = FakeJudge(0.9)
+    context = routing_context(
+        [{"role": "user", "content": "Rewrite this politely."}],
+        metadata={"switchyard_judge": True},
+    )
+
+    result = await plugin(judge).run(context)
+
+    assert result.candidate_models == [EFFICIENT]
+    assert len(judge.calls) == 1
+
+
 async def test_core_plugin_also_passes_judge_requests_through() -> None:
     algorithm = algorithms.llm_classifier(
         LlmClassifierConfig.capability(config=TaskClassifierConfig(0.5, max_output_tokens=64))
     )
     core = SwitchyardRoutingPlugin(algorithm, judge=FakeJudge(0.9))
-    context = routing_context(
-        [{"role": "user", "content": "x"}], candidates=[JUDGE], metadata={JUDGE_MARKER: True}
-    )
+    context = routing_context([{"role": "user", "content": "x"}], candidates=[JUDGE])
 
-    assert await core.run(context) is context
+    with serving_judge_call():
+        assert await core.run(context) is context
     assert context.candidate_models == [JUDGE]
 
 

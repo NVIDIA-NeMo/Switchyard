@@ -11,23 +11,23 @@ client here does that through LiteLLM, against a deployment the deployer names
 for the judge role, so the judge is subject to the same credentials, retries
 and spend tracking as every other call the gateway makes.
 
-The judge request carries :data:`JUDGE_MARKER` in its metadata. LiteLLM hands
-the request's metadata to the routing context, so a plugin that sees the marker
-knows it is looking at a judge call it issued and must pass it through without
-classifying it again.
+While :class:`LiteLLMJudge` serves a call, :func:`is_judge_call` is true in the
+current task. The routing plugins check it and pass the judge request through
+without classifying it again. The flag is a context variable, so a client cannot
+set it through request metadata.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Awaitable, Mapping, Sequence
+from collections.abc import Awaitable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Protocol, cast
 
 from switchyard.libsy import LlmResponse
 
-#: Metadata key set on every judge request issued by :class:`LiteLLMJudge`.
-JUDGE_MARKER = "switchyard_judge"
-
+_SERVING_JUDGE_CALL: ContextVar[bool] = ContextVar("switchyard_serving_judge_call", default=False)
 _MAX_TOKENS_FIELDS = frozenset({"max_completion_tokens", "max_tokens"})
 _STOP_REASONS = {"stop": "end_turn", "length": "max_tokens", "tool_calls": "tool_use"}
 
@@ -36,6 +36,21 @@ class JudgeClient(Protocol):
     """Serve one normalized Switchyard model call and return its normalized response."""
 
     def __call__(self, request: Mapping[str, object], model: str) -> Awaitable[LlmResponse.Agg]: ...
+
+
+def is_judge_call() -> bool:
+    """Whether the current task is serving a judge call this integration issued."""
+    return _SERVING_JUDGE_CALL.get()
+
+
+@contextmanager
+def serving_judge_call() -> Iterator[None]:
+    """Mark the current task as serving a judge call until the block exits."""
+    token = _SERVING_JUDGE_CALL.set(True)
+    try:
+        yield
+    finally:
+        _SERVING_JUDGE_CALL.reset(token)
 
 
 def _text(value: object, path: str) -> str:
@@ -91,7 +106,6 @@ def judge_completion_kwargs(
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": judge_messages(request),
-        "metadata": {JUDGE_MARKER: True},
     }
     output = cast(Mapping[str, object], request.get("output") or {})
     limit = output.get("max_output_tokens")
@@ -170,6 +184,7 @@ class LiteLLMJudge:
         max_tokens_field: str = "max_completion_tokens",
         **completion_params: Any,
     ) -> None:
+        """Validate the judge model name and the output-limit field."""
         if not model:
             raise ValueError("LiteLLMJudge requires a judge model name")
         if max_tokens_field not in _MAX_TOKENS_FIELDS:
@@ -181,23 +196,26 @@ class LiteLLMJudge:
         self._completion_params = dict(completion_params)
 
     async def __call__(self, request: Mapping[str, object], model: str) -> LlmResponse.Agg:
+        """Serve one judge call through LiteLLM, flagged so routing plugins pass it through."""
         kwargs = judge_completion_kwargs(request, model, max_tokens_field=self._max_tokens_field)
         kwargs.update(self._completion_params)
         router = self.router if self.router is not None else _proxy_router()
-        if router is not None:
-            response = await router.acompletion(**kwargs)
-        else:
-            import litellm
+        with serving_judge_call():
+            if router is not None:
+                response = await router.acompletion(**kwargs)
+            else:
+                import litellm
 
-            response = await litellm.acompletion(**kwargs)
+                response = await litellm.acompletion(**kwargs)
         return judge_response(response, model)
 
 
 __all__ = [
-    "JUDGE_MARKER",
     "JudgeClient",
     "LiteLLMJudge",
+    "is_judge_call",
     "judge_completion_kwargs",
     "judge_messages",
     "judge_response",
+    "serving_judge_call",
 ]

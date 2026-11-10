@@ -4,21 +4,21 @@
 """Experimental Switchyard routing plugin for LiteLLM."""
 
 from .plugins import (
-    JUDGE_MARKER,
     ClassifierRoutingPlugin,
     JudgeClient,
     LiteLLMJudge,
     RandomRoutingPlugin,
     StageRoutingPlugin,
     SwitchyardRoutingPlugin,
+    is_judge_call,
 )
 
 __all__ = [
-    "JUDGE_MARKER",
     "ClassifierRoutingPlugin",
     "JudgeClient",
     "LiteLLMJudge",
     "RandomRoutingPlugin",
     "StageRoutingPlugin",
     "SwitchyardRoutingPlugin",
+    "is_judge_call",
 ]

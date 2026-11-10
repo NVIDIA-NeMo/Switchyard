@@ -13,7 +13,7 @@ from litellm.types.router import RoutingContext
 
 from switchyard.libsy import Algorithm, Step
 
-from .judge import JUDGE_MARKER, JudgeClient
+from .judge import JudgeClient, is_judge_call
 from .lite_llm_request_rewriter import LiteLLMRequestRewriter
 from .request_rewrite import build_request_patch
 
@@ -163,9 +163,9 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
     are carried to the selected deployment by the object's LiteLLM callback
     role.
 
-    A request whose metadata carries `JUDGE_MARKER` is a judge call this
-    integration issued through LiteLLM; the plugin passes it through unchanged
-    so routing never re-enters itself.
+    While `is_judge_call()` is true, the request being routed is a judge call
+    this integration issued through LiteLLM; the plugin passes it through
+    unchanged so routing never re-enters itself.
 
     `models` maps a category name (`any`, `capable`, `efficient`, `judge`, or a
     deployment-defined group) to its LiteLLM model names, ordered best-first.
@@ -186,6 +186,7 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
         *,
         judge: JudgeClient | None = None,
     ) -> None:
+        """Copy the category map so later changes by the caller do not affect routing."""
         super().__init__()
         self._algorithm = algorithm
         self._judge = judge
@@ -197,7 +198,7 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
 
     async def run(self, context: RoutingContext) -> RoutingContext:
         """Run Switchyard and retain only its selected LiteLLM candidate."""
-        if context.metadata.get(JUDGE_MARKER):
+        if is_judge_call():
             return context
         candidates = list(context.candidate_models)
         request = _request(context.structured_messages)
