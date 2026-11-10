@@ -2232,11 +2232,13 @@ mod tests {
             call_with_result(tc("Read"), failed("File does not exist.")),
             // A read that fails for another reason still counts.
             call_with_result(bash("cat logfile.txt"), failed("MemoryError")),
+            call_with_result(tc("Read"), failed("MemoryError")),
+            call_with_result(tc("Read"), failed("")),
             // Only reads are exempt.
             call_with_result(bash("python missing.txt"), failed(missing)),
         ]
         .map(|request| ToolSignals::from_request(&request, None).severity);
-        assert_eq!(severities, [0.0, 0.0, CRITICAL, HARD]);
+        assert_eq!(severities, [0.0, 0.0, CRITICAL, CRITICAL, HARD, HARD]);
 
         let request = call_with_result(
             bash("cat missing.json"),
@@ -2323,18 +2325,6 @@ mod tests {
                     assert_eq!(ToolSignals::from_request(&request, Some(1)).severity, 0.0);
                 }
             }
-        }
-    }
-
-    #[test]
-    fn builtin_retrieval_failures_keep_explicit_error_flags() {
-        for (text, expected) in [("MemoryError", CRITICAL), ("", HARD)] {
-            let mut result = tr(text);
-            if let ContentBlock::ToolResult(result) = &mut result.content[0] {
-                result.is_error = Some(true);
-            }
-            let request = call_with_result(tc("Read"), result);
-            assert_eq!(ToolSignals::from_request(&request, None).severity, expected);
         }
     }
 
