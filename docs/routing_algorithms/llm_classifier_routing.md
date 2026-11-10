@@ -82,9 +82,11 @@ An invalid, inconsistent, or unparseable verdict routes to
 To stop waiting for a judge that accepts the request but never finishes its
 response, set `timeout_ms` on the judge's `[llm_clients]` entry
 (see the [TOML schema](../reference/toml_schema.md)); it covers the judge's
-retries and the complete verdict body. When the deadline expires, the Rust server returns
-`504` without calling `strong_target` or `weak_target`. Other HTTP client failures
-also stop routing after retries. The deadline applies to every call
+retries and the complete verdict body. With `fail_open = true` (the default),
+judge timeouts and other HTTP client failures after retries fall back to
+`strong_target`. With `fail_open = false`, these failures stop routing without
+calling `strong_target` or `weak_target`: the Rust server returns `504` for a
+timeout and propagates other HTTP client errors. The deadline applies to every call
 through that client. Give the judge its own entry if the answering models need a
 different deadline, even when they use the same provider. Without a deadline,
 the request can wait indefinitely for the judge.
