@@ -416,6 +416,15 @@ pub enum AlgorithmSpec {
     StageRouter {
         capable_target: String,
         efficient_target: String,
+        /// Optional middle tier for moderate positive tool scores.
+        #[serde(default)]
+        balanced_target: Option<String>,
+        /// Confidence at which positive tool scores require capable. Requires balanced_target.
+        #[serde(default)]
+        capable_score_threshold: Option<f64>,
+        /// Requests kept on balanced after a balanced decision. Requires balanced_target.
+        #[serde(default)]
+        balanced_hold_turns: Option<i64>,
         #[serde(default)]
         capable_first_threshold: f64,
         #[serde(flatten)]
@@ -1060,10 +1069,12 @@ impl AlgorithmSpec {
             Self::StageRouter {
                 capable_target,
                 efficient_target,
+                balanced_target,
                 subagents,
                 ..
             } => {
                 let mut names = vec![capable_target.as_str(), efficient_target.as_str()];
+                names.extend(balanced_target.as_deref());
                 if let Some(subagents) = subagents {
                     names.extend(subagents.routing_target_names());
                 }
@@ -1180,6 +1191,7 @@ impl AlgorithmSpec {
             Self::StageRouter {
                 capable_target,
                 efficient_target,
+                balanced_target,
                 classifier,
                 ..
             } => {
@@ -1191,6 +1203,13 @@ impl AlgorithmSpec {
                         vec![capable_target.clone(), efficient_target.clone()],
                     ),
                 ]);
+                if let Some(balanced) = balanced_target {
+                    models.insert(Category::Named("balanced".into()), vec![balanced.clone()]);
+                    models
+                        .get_mut(&Category::Any)
+                        .expect("stage targets exist")
+                        .push(balanced.clone());
+                }
                 if let Some(classifier) = classifier {
                     models.insert(Category::Judge, vec![classifier.target.clone()]);
                 }
@@ -1914,6 +1933,9 @@ fn build_algorithm(
         AlgorithmSpec::StageRouter {
             capable_target,
             efficient_target,
+            balanced_target,
+            capable_score_threshold,
+            balanced_hold_turns,
             capable_first_threshold,
             settings,
             picker,
@@ -1933,6 +1955,20 @@ fn build_algorithm(
                 ))
             })?;
             let mut config = settings.stage_config(settings, *picker, threshold);
+            if balanced_target.is_none() && capable_score_threshold.is_some() {
+                return Err(AlgorithmConfigError::new(
+                    "capable_score_threshold requires balanced_target",
+                ));
+            }
+            if balanced_target.is_none() && balanced_hold_turns.is_some() {
+                return Err(AlgorithmConfigError::new(
+                    "balanced_hold_turns requires balanced_target",
+                ));
+            }
+            config.capable_score_threshold = balanced_target
+                .as_ref()
+                .map(|_| capable_score_threshold.unwrap_or(0.55));
+            config.balanced_hold_turns = balanced_hold_turns.unwrap_or(0);
             config.capable_first_threshold = *capable_first_threshold;
             // The judge is called through its own target, so it is not a routing
             // destination and stays out of the tier pair.

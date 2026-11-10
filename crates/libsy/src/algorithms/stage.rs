@@ -155,6 +155,13 @@ pub struct StageRouterConfig {
     pub mode: PickerMode,
     /// How much corroboration a decisive pick needs, in `[0.0, 1.0]`.
     pub confidence_threshold: f64,
+    /// Positive tool scores below this confidence use the runtime `balanced`
+    /// group. `None` keeps two-tier routing. Must be above `confidence_threshold`.
+    pub capable_score_threshold: Option<f64>,
+    /// Requests kept on balanced instead of efficient after a balanced decision.
+    /// Signals still run, so a capable decision takes effect at once. `0` disables;
+    /// `-1` keeps balanced until a capable decision.
+    pub balanced_hold_turns: i64,
     /// Threshold after an outer classifier selects capable-first. Defaults to `0.0`.
     pub capable_first_threshold: f64,
     /// Trailing tool results the signals are computed over. `None` uses
@@ -188,6 +195,8 @@ impl StageRouterConfig {
         Self {
             mode,
             confidence_threshold,
+            capable_score_threshold: None,
+            balanced_hold_turns: 0,
             capable_first_threshold: 0.0,
             recent_window: None,
             tool_semantics: ToolSemantics::default(),
@@ -266,9 +275,26 @@ pub(crate) fn build_stage_route(
         }
     }
     config.tool_semantics.validate()?;
+    if let Some(threshold) = config.capable_score_threshold {
+        if !(0.0..=1.0).contains(&threshold) {
+            return Err(LibsyError::AlgorithmError {
+                message: "capable_score_threshold must be between 0 and 1".to_string(),
+            });
+        }
+        if threshold <= config.confidence_threshold {
+            return Err(LibsyError::AlgorithmError {
+                message: "capable_score_threshold must be above confidence_threshold, or the balanced tier is never selected".to_string(),
+            });
+        }
+    } else if config.balanced_hold_turns != 0 {
+        return Err(LibsyError::AlgorithmError {
+            message: "balanced_hold_turns requires the balanced tier".to_string(),
+        });
+    }
     for (name, turns) in [
         ("capable_hold_turns", Some(config.capable_hold_turns)),
         ("efficient_hold_turns", config.efficient_hold_turns),
+        ("balanced_hold_turns", Some(config.balanced_hold_turns)),
     ] {
         let Some(turns) = turns else { continue };
         if !(-1..=i64::from(u32::MAX)).contains(&turns) {
@@ -286,6 +312,8 @@ pub(crate) fn build_stage_route(
     let mut classifier = StageClassifier::new(config.mode, config.confidence_threshold)
         .with_capable_first_threshold(config.capable_first_threshold)
         .with_capable_hold_turns(config.capable_hold_turns);
+    classifier.capable_score_threshold = config.capable_score_threshold;
+    classifier.balanced_hold_turns = config.balanced_hold_turns;
     classifier.reset_on_user_turn = reset_on_user_turn;
     if let Some(turns) = config.efficient_hold_turns {
         classifier = classifier.with_efficient_hold_turns(turns);
@@ -471,6 +499,25 @@ mod tests {
             StageRouter::new(config),
             Err(LibsyError::AlgorithmError { .. })
         ));
+    }
+
+    #[test]
+    fn rejects_invalid_balanced_settings() {
+        for (threshold, turns) in [
+            (Some(-0.1), 0),
+            (Some(1.1), 0),
+            (Some(f64::NAN), 0),
+            (Some(f64::INFINITY), 0),
+            (Some(0.1), 0),
+            (Some(0.2), 0),
+            (Some(0.55), -2),
+            (None, 3),
+        ] {
+            let mut config = StageRouterConfig::new(PickerMode::EfficientFirst, 0.2);
+            config.capable_score_threshold = threshold;
+            config.balanced_hold_turns = turns;
+            assert!(StageRouter::new(config).is_err(), "{threshold:?} {turns}");
+        }
     }
 
     #[test]
@@ -973,6 +1020,142 @@ mod tests {
             judged.contains("fix the build"),
             "the judge should see the opening task: {judged}"
         );
+        Ok(())
+    }
+
+    fn balanced_config(hold_turns: i64) -> StageRouterConfig {
+        let mut config = StageRouterConfig::new(PickerMode::EfficientFirst, 0.20);
+        config.capable_score_threshold = Some(0.55);
+        config.balanced_hold_turns = hold_turns;
+        config
+    }
+
+    /// `C` is a hard override, `B` a moderate score, and `E` a clean result.
+    fn signal_request(signal: char) -> Request {
+        use switchyard_protocol::ContentBlock;
+        let mut request = turn_request(signal == 'C');
+        if signal == 'B' {
+            if let ContentBlock::ToolResult(result) =
+                &mut request.llm_request.messages[2].content[0]
+            {
+                result.content = vec![ContentBlock::Text {
+                    text: "exit code 1".into(),
+                }];
+            }
+            request.raw_request.as_mut().unwrap()["messages"][2]["content"] =
+                serde_json::json!("exit code 1");
+        }
+        request
+    }
+
+    async fn balanced_sequence(
+        config: StageRouterConfig,
+        recorder: Arc<Recorder>,
+        requests: Vec<Request>,
+    ) -> Result<Vec<String>> {
+        let router = Arc::new(StageRouter::new(config)?);
+        let mut models = runtime_models();
+        models.insert(Category::Named("balanced".into()), vec!["middle".into()]);
+        models
+            .get_mut(&Category::Any)
+            .unwrap()
+            .push("middle".into());
+        let mut selected = Vec::new();
+        for request in requests {
+            let (target, _) =
+                test_drive_with_models(router.clone(), request, models.clone(), recorder.serve())
+                    .await?;
+            selected.push(target.to_string());
+        }
+        Ok(selected)
+    }
+
+    #[tokio::test]
+    async fn balanced_hold_renews_expires_and_yields_to_capable() -> Result<()> {
+        for (turns, signals, expected) in [
+            (0, "BE", vec!["middle", "weak"]),
+            (
+                3,
+                "BEEEE",
+                vec!["middle", "middle", "middle", "middle", "weak"],
+            ),
+            (
+                3,
+                "BBEEEE",
+                vec!["middle", "middle", "middle", "middle", "middle", "weak"],
+            ),
+            // Capable clears the balanced hold and uses its own two-request hold.
+            (
+                3,
+                "BCBEEE",
+                vec!["middle", "strong", "strong", "strong", "weak", "weak"],
+            ),
+            (3, "CEEE", vec!["strong", "strong", "strong", "weak"]),
+            (-1, "BEEC", vec!["middle", "middle", "middle", "strong"]),
+        ] {
+            assert_eq!(
+                balanced_sequence(
+                    balanced_config(turns),
+                    Arc::new(Recorder::default()),
+                    signals.chars().map(signal_request).collect(),
+                )
+                .await?,
+                expected,
+                "{turns} {signals}"
+            );
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn balanced_hold_stays_within_one_agent_of_one_session() -> Result<()> {
+        let mut another_session = turn_request(false);
+        another_session.metadata.as_mut().unwrap().session_id = Some("another-session".into());
+        let mut child = turn_request(false);
+        let metadata = child.metadata.as_mut().unwrap();
+        metadata.is_subagent = true;
+        metadata.agent_id = Some("child-1".into());
+        assert_eq!(
+            balanced_sequence(
+                balanced_config(3),
+                Arc::new(Recorder::default()),
+                vec![
+                    signal_request('B'),
+                    another_session,
+                    child,
+                    turn_request(false),
+                ],
+            )
+            .await?,
+            ["middle", "weak", "weak", "middle"]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn balanced_settings_work_with_the_judge_notes_and_other_holds() -> Result<()> {
+        let recorder = Arc::new(Recorder::default());
+        let mut config = config_with_judge(&recorder, 0.9);
+        config.confidence_threshold = 0.20;
+        config.capable_score_threshold = Some(0.55);
+        config.balanced_hold_turns = 1;
+        config.capable_hold_turns = 3;
+        config.efficient_hold_turns = Some(1);
+        // The held request skips the judge, as capable and efficient holds do.
+        let selected = balanced_sequence(
+            config,
+            recorder.clone(),
+            "BEE".chars().map(signal_request).collect(),
+        )
+        .await?;
+        assert_eq!(selected[..2], ["middle", "middle"]);
+        assert_eq!(recorder.judge_calls(), 1);
+
+        let mut with_notes = config_with_notes();
+        with_notes.confidence_threshold = 0.20;
+        with_notes.capable_score_threshold = Some(0.55);
+        with_notes.balanced_hold_turns = 3;
+        assert!(StageRouter::new(with_notes).is_ok());
         Ok(())
     }
 }
