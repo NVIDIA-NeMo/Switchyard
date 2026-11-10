@@ -10,6 +10,8 @@ from pathlib import Path
 
 import httpx
 import pytest
+from litellm.types.router import RoutingContext
+from switchyard_litellm.configuration import load_routing_plugin
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 DEPLOYMENT_ROOT = PACKAGE_ROOT / "deployment"
@@ -172,16 +174,23 @@ async def test_stage_plugin_routes_live_requests_to_both_gpt_5_6_models(
 
 @pytest.mark.e2e
 @pytest.mark.parametrize("litellm_base_url", ["random"], indirect=True)
-async def test_random_plugin_routes_live_requests_to_both_gpt_5_6_models(
+async def test_random_plugin_matches_seeded_profile_for_live_requests(
     litellm_base_url: str,
 ) -> None:
-    """Exercise the seeded Random profile against both live deployments."""
-    selected = []
+    """Check that the proxy follows the configured seeded Random decisions."""
+    plugin = load_routing_plugin(DEPLOYMENT_ROOT / "profiles/random/switchyard.toml")
     for index in range(2):
-        _, selected_model = await _complete(
-            litellm_base_url,
-            [{"role": "user", "content": f"Reply with the number {index}."}],
+        messages = [{"role": "user", "content": f"Reply with the number {index}."}]
+        context = RoutingContext(
+            raw_messages=messages,
+            structured_messages=messages,
+            candidate_models=[SOL_MODEL, TERRA_MODEL],
+            metadata={},
+            signals={},
         )
-        selected.append(selected_model)
-
-    assert selected == [SOL_MODEL, TERRA_MODEL]
+        await plugin.run(context)
+        response, selected_model = await _complete(
+            litellm_base_url,
+            messages,
+        )
+        _assert_selected(response, selected_model, context.candidate_models[0])
