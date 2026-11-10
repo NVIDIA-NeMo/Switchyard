@@ -311,9 +311,17 @@ calls that follow:
 classify_trigger = "user_turn"
 ```
 
-Tool results are the agent continuing work the user already asked for, so they
-do not re-open the decision. A failed or unusable verdict keeps the current
-target. When no target has been selected yet, the next request is judged again.
+Tool results continue the current user turn and reuse its selected target.
+A new user message runs the judge again and applies the route's failure policy.
+If a standalone `llm_classifier` route falls back after an unusable verdict or
+judge failure, the fallback replaces the previous selection and is retained for
+the new turn's continuations. This also applies when no target has been selected
+yet.
+
+For capability routes, the fallback is `strong_target`. With `fail_open = true`
+(the default), a judge client failure can therefore replace a previous
+`weak_target` selection. With `fail_open = false`, judge client failures stop the
+request. Custom and direct routes use `default_target` when falling back.
 
 `new_session` judges once and reuses that target for the rest of the session,
 including `strong_target` when it was selected as the fallback for an unusable
