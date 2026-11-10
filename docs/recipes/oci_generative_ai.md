@@ -175,6 +175,16 @@ efficient and capable tiers respectively.
 
 - Streaming, JSON Schema structured output (Llama 4, Grok, OpenAI), tool calling and vision
   input work on this endpoint. Cohere embeddings do not (`400 Unsupported OpenAI operation`).
+- Tool calling has per-family rules that matter when an agent's turns are the answer requests.
+  Llama models require the first message to be a user message when `tools` are present (a
+  system prompt first returns `400 Tool calling for this Llama model requires the first message
+  to be a user message`); the judge is unaffected because its request is a single user message.
+  Gemini models reject a `tool` message whose `content` is a plain string (`400 Invalid value at
+  'function_response.response' (google.protobuf.Struct)`); send tool results as JSON objects.
+  Cohere command models return `400 Unsupported OpenAI operation` for `tools`. The OpenAI
+  models, `openai.gpt-oss-120b` and `xai.grok-4.7` accept a system message first, `tools`, and
+  string tool results, so an agent that routes its own turns should pick its efficient target
+  from those; `meta.llama-4-scout-17b-16e-instruct` fits text tasks that carry no tools.
 - Grok targets report about 1,250 prompt tokens on a one-line request and include
   `cost_in_usd_ticks` in `usage`; budget accordingly.
 - Set `timeout_ms` on the judge's client so an unresponsive judge returns `504` instead of
