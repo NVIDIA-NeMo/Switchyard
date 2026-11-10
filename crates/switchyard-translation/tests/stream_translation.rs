@@ -589,60 +589,113 @@ fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResu
     Ok(())
 }
 
-// Verifies Chat Completions refusal deltas remain visible and terminate as refusals.
+// Refusal text is emitted once, whether supplied as deltas or a completed snapshot.
 #[test]
-fn openai_chat_refusal_stream_translates_to_anthropic() -> TestResult {
+fn refusal_stream_translates_to_anthropic() -> TestResult {
     let engine = TranslationEngine::default();
-    let mut state =
-        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
-    let refusal = json!({
+    let refusal = "I cannot help with that request.";
+    let chat_delta = json!({
         "id": "chatcmpl-refusal",
         "object": "chat.completion.chunk",
         "model": "gpt-4o",
         "choices": [{
             "index": 0,
-            "delta": {"refusal": "I cannot help with that request."},
+            "delta": {"refusal": refusal},
             "finish_reason": null
         }]
     });
-
-    let mut events = engine.translate_event(
-        &mut state,
-        WireFormat::OpenAiChat,
-        WireFormat::AnthropicMessages,
-        &refusal,
-    )?;
-    let text_delta = events
-        .iter()
-        .find(|event| event["type"] == "content_block_delta")
-        .ok_or("missing refusal text delta")?;
-    assert_eq!(
-        text_delta["delta"]["text"],
-        "I cannot help with that request."
-    );
-
-    let terminal = json!({
+    let chat_terminal = json!({
         "id": "chatcmpl-refusal",
         "object": "chat.completion.chunk",
         "model": "gpt-4o",
         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
     });
-    events.extend(engine.translate_event(
-        &mut state,
-        WireFormat::OpenAiChat,
-        WireFormat::AnthropicMessages,
-        &terminal,
-    )?);
-    events.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
-    let message_delta = events
-        .iter()
-        .find(|event| event["type"] == "message_delta")
-        .ok_or("missing Anthropic terminal delta")?;
-    assert_eq!(message_delta["delta"]["stop_reason"], "refusal");
-    assert_eq!(
-        message_delta["delta"]["stop_details"],
-        json!({"type": "refusal", "category": null, "explanation": null})
-    );
+    let part = json!({"type": "refusal", "refusal": refusal});
+    let message = json!({"id": "msg_refusal", "type": "message", "role": "assistant",
+        "status": "completed", "content": [part]});
+    let response = json!({"id": "resp_refusal", "model": "fixture",
+        "status": "completed", "output": [message]});
+    let completed = json!({"type": "response.completed", "response": response});
+    let refusal_done = json!({"type": "response.refusal.done", "item_id": "msg_refusal",
+        "output_index": 0, "content_index": 0, "refusal": refusal});
+
+    for (case, source, input, expected_fragments) in [
+        (
+            "chat_deltas",
+            WireFormat::OpenAiChat,
+            vec![chat_delta, chat_terminal],
+            vec![refusal],
+        ),
+        (
+            "responses_snapshot_only",
+            WireFormat::OpenAiResponses,
+            vec![completed.clone()],
+            vec![refusal],
+        ),
+        (
+            "responses_refusal_done_only",
+            WireFormat::OpenAiResponses,
+            vec![
+                refusal_done.clone(),
+                json!({"type": "response.completed", "response": {}}),
+            ],
+            vec![refusal],
+        ),
+        (
+            "responses_full_lifecycle",
+            WireFormat::OpenAiResponses,
+            vec![
+                json!({"type": "response.created", "response": {"id": "resp_refusal",
+                    "model": "fixture", "status": "in_progress", "output": []}}),
+                json!({"type": "response.output_item.added", "output_index": 0,
+                    "item": {"id": "msg_refusal", "type": "message", "role": "assistant",
+                        "status": "in_progress", "content": []}}),
+                json!({"type": "response.content_part.added", "item_id": "msg_refusal",
+                    "output_index": 0, "content_index": 0,
+                    "part": {"type": "refusal", "refusal": ""}}),
+                json!({"type": "response.refusal.delta", "item_id": "msg_refusal",
+                    "output_index": 0, "content_index": 0, "delta": "I cannot "}),
+                json!({"type": "response.refusal.delta", "item_id": "msg_refusal",
+                    "output_index": 0, "content_index": 0, "delta": "help with that request."}),
+                refusal_done,
+                json!({"type": "response.content_part.done", "item_id": "msg_refusal",
+                    "output_index": 0, "content_index": 0, "part": part}),
+                json!({"type": "response.output_item.done", "output_index": 0, "item": message}),
+                completed,
+            ],
+            vec!["I cannot ", "help with that request."],
+        ),
+    ] {
+        let target = WireFormat::AnthropicMessages;
+        let mut decoder = StreamTranslationState::new(source, target);
+        let mut encoder = StreamTranslationState::new(source, target);
+        let mut events = Vec::new();
+        for event in input {
+            let decoded = engine.decode_stream_event(&mut decoder, source, event)?;
+            events.extend(engine.encode_stream_event(&mut encoder, target, decoded)?);
+        }
+        events.extend(engine.finish_stream(&mut encoder, target)?);
+        let fragments: Vec<_> = events
+            .iter()
+            .filter(|event| event["type"] == "content_block_delta")
+            .filter_map(|event| event["delta"]["text"].as_str())
+            .collect();
+        assert_eq!(fragments, expected_fragments, "{case}");
+        let terminal_deltas: Vec<_> = events
+            .iter()
+            .filter(|event| event["type"] == "message_delta")
+            .map(|event| event["delta"].clone())
+            .collect();
+        assert_eq!(
+            terminal_deltas,
+            vec![json!({
+                "stop_reason": "refusal",
+                "stop_sequence": null,
+                "stop_details": {"type": "refusal", "category": null, "explanation": null}
+            })],
+            "{case}"
+        );
+    }
     Ok(())
 }
 

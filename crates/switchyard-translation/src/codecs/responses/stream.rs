@@ -156,10 +156,13 @@ fn decode_responses_stream(
                 model: state.model.clone(),
             }]
         }
-        Some("response.output_text.delta") => event
+        Some("response.output_text.delta" | "response.refusal.delta") => event
             .get("delta")
             .and_then(Value::as_str)
             .map(|text| {
+                if event_type == Some("response.refusal.delta") {
+                    state.stop_reason = Some("refusal".to_string());
+                }
                 let index = event
                     .get("output_index")
                     .and_then(Value::as_u64)
@@ -181,6 +184,31 @@ fn decode_responses_stream(
                 }]
             })
             .unwrap_or_default(),
+        Some("response.refusal.done") => {
+            state.stop_reason = Some("refusal".to_string());
+            let Some(text) = event.get("refusal").and_then(Value::as_str) else {
+                return Vec::new();
+            };
+            let index = event
+                .get("output_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            let content_index = event
+                .get("content_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            let decoded = state
+                .decoded_response_text
+                .entry(index)
+                .or_default()
+                .entry(content_index)
+                .or_default();
+            match snapshot_suffix(decoded, text) {
+                Ok(Some(text)) => vec![LlmResponseChunk::TextDelta { index, text }],
+                Ok(None) => Vec::new(),
+                Err(error) => vec![error],
+            }
+        }
         Some("response.reasoning_text.delta") | Some("response.reasoning_summary_text.delta") => {
             event
                 .get("delta")
@@ -314,7 +342,10 @@ fn decode_responses_stream(
             // use for such output; the stream must too, or stop-reason-driven tool loops
             // (Anthropic `tool_use`, Chat `tool_calls`) stop without running the tool.
             // Carries the Anthropic spelling because every encoder already maps it.
-            let reason = state.decoded_tool_call.then(|| "tool_use".to_string());
+            let reason = state
+                .stop_reason
+                .clone()
+                .or_else(|| state.decoded_tool_call.then(|| "tool_use".to_string()));
             out.push(LlmResponseChunk::MessageStop { reason });
             out
         }
@@ -751,10 +782,15 @@ fn decode_responses_completed_item(
         let mut out = Vec::new();
         if let Some(content) = item.get("content").and_then(Value::as_array) {
             for (content_index, part) in content.iter().enumerate() {
-                if part.get("type").and_then(Value::as_str) != Some("output_text") {
-                    continue;
-                }
-                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                let text = match part.get("type").and_then(Value::as_str) {
+                    Some("output_text") => part.get("text"),
+                    Some("refusal") => {
+                        state.stop_reason = Some("refusal".to_string());
+                        part.get("refusal")
+                    }
+                    _ => continue,
+                };
+                if let Some(text) = text.and_then(Value::as_str) {
                     let decoded = state
                         .decoded_response_text
                         .entry(index)
