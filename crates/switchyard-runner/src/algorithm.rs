@@ -657,6 +657,7 @@ pub struct StageSettingsConfig {
     pub confidence_threshold: Option<f64>,
     pub recent_turn_window: Option<usize>,
     pub tool_semantics: Option<ToolSemantics>,
+    pub compaction_override: Option<bool>,
     pub capable_hold_turns: Option<i64>,
     pub efficient_hold_turns: Option<i64>,
     pub handoff_notes: Option<HandoffNoteConfig>,
@@ -678,6 +679,10 @@ impl StageSettingsConfig {
         let mut config =
             StageRouterConfig::new(mode, self.confidence_threshold.unwrap_or(threshold));
         config.recent_window = self.recent_turn_window.or(shared.recent_turn_window);
+        config.compaction_override = self
+            .compaction_override
+            .or(shared.compaction_override)
+            .unwrap_or(true);
         config.tool_semantics = self
             .tool_semantics
             .as_ref()
@@ -2281,6 +2286,7 @@ mod tests {
             assert_eq!(config.mode, picker);
             assert_eq!(config.confidence_threshold, threshold);
             assert_eq!(config.recent_window, Some(3));
+            assert!(config.compaction_override);
             assert_eq!(config.capable_hold_turns, capable_hold);
             assert_eq!(config.efficient_hold_turns, Some(efficient_hold));
             assert_eq!(config.capable_system_prompt.as_deref(), prompt);
@@ -2293,6 +2299,7 @@ mod tests {
             0.5,
         );
         assert_eq!(standalone.capable_hold_turns, 2);
+        assert!(standalone.compaction_override);
         assert!(standalone.capable_system_prompt.is_none());
         Ok(())
     }
@@ -2306,6 +2313,7 @@ efficient_target = "weak"
 efficient_first_threshold = 0.7
 capable_first_threshold = 0.2
 recent_turn_window = 5
+compaction_override = false
 capable_hold_turns = 4
 efficient_hold_turns = 1
 capable_system_prompt = "Shared plan"
@@ -2315,6 +2323,7 @@ capable_system_prompt = "Shared plan"
         let shared = stage.profile_config(&StageProfileConfig::default(), PickerMode::CapableFirst);
         assert_eq!(shared.confidence_threshold, 0.2);
         assert_eq!(shared.recent_window, Some(5));
+        assert!(!shared.compaction_override);
         assert_eq!(shared.capable_hold_turns, 4);
         assert_eq!(shared.efficient_hold_turns, Some(1));
         assert_eq!(shared.capable_system_prompt.as_deref(), Some("Shared plan"));
@@ -2328,6 +2337,7 @@ capable_system_prompt = "Shared plan"
             r#"
 confidence_threshold = 0.0
 recent_turn_window = 2
+compaction_override = true
 capable_hold_turns = 0
 efficient_hold_turns = 0
 capable_system_prompt = ""
@@ -2337,6 +2347,7 @@ capable_system_prompt = ""
         let config = stage.profile_config(&profile, PickerMode::CapableFirst);
         assert_eq!(config.confidence_threshold, 0.0);
         assert_eq!(config.recent_window, Some(2));
+        assert!(config.compaction_override);
         assert_eq!(config.capable_hold_turns, 0);
         assert_eq!(config.efficient_hold_turns, Some(0));
         assert_eq!(config.capable_system_prompt.as_deref(), Some(""));
