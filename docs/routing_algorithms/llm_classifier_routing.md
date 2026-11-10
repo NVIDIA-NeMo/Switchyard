@@ -8,7 +8,7 @@ The same classifier also supports [escalation](escalation_router_routing.md),
 [custom routing](#custom-multi-target-routing) across two or more targets, and
 [direct selection](#direct-selection) by an external decision service.
 
-For a task-level decision-model example with structured instructions, see the
+For a task-level decision-model example with detailed instructions, see the
 [Jev routing profile](../../benchmark/routing-profiles/tb21-jev-opus-glm.toml).
 
 ## Configure a classifier route
@@ -82,9 +82,11 @@ An invalid, inconsistent, or unparseable verdict routes to
 To stop waiting for a judge that accepts the request but never finishes its
 response, set `timeout_ms` on the judge's `[llm_clients]` entry
 (see the [TOML schema](../reference/toml_schema.md)); it covers the judge's
-retries and the complete verdict body. When the deadline expires, the Rust server returns
-`504` without calling `strong_target` or `weak_target`. Other HTTP client failures
-also stop routing after retries. The deadline applies to every call
+retries and the complete verdict body. With `fail_open = true` (the default),
+judge timeouts and other HTTP client failures after retries fall back to
+`strong_target`. With `fail_open = false`, these failures stop routing without
+calling `strong_target` or `weak_target`: the Rust server returns `504` for a
+timeout and propagates other HTTP client errors. The deadline applies to every call
 through that client. Give the judge its own entry if the answering models need a
 different deadline, even when they use the same provider. Without a deadline,
 the request can wait indefinitely for the judge.
@@ -241,7 +243,8 @@ Without affinity, the runtime judges every request. By default, it sends the
 opening task and the latest user follow-up when they differ, excluding tool calls,
 tool results, and reasoning. It keeps ordinary user content from messages that
 also contain tool results. Set `recent_turn_window` when intervening conversation
-context affects the forecast.
+context affects the forecast. The window still excludes reasoning, and a turn that
+held only reasoning is left out.
 If a client sends only a follow-up fragment without the opening task, enable
 affinity or include the task history. Threshold tuning changes routing policy;
 it cannot recover missing task context.
@@ -282,9 +285,8 @@ option ID, so name each group with an ID the decision service returns. Options
 are sent in group-name order. A route needs at least two options. `models.judge`
 must name a decision target.
 
-The request context holds the conversation as `task` and the caller's session ID
-as `session` (or null). `recent_turn_window` sets how many trailing turns `task`
-carries after the opening task. The default is 10.
+The request `input` holds the conversation messages. `recent_turn_window` sets
+how many trailing turns it carries after the opening task. The default is 10.
 
 Switchyard routes on the selected option and ignores the probabilities. When
 the decision call fails, times out, or returns a choice that is not an option,

@@ -29,7 +29,17 @@ def test_translate_request() -> None:
     }
 
 
-def test_translate_response() -> None:
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({}, id="omitted"),
+        pytest.param({"request_extensions": None}, id="none"),
+        pytest.param({"request_extensions": {}}, id="empty"),
+        pytest.param({"request_extensions": {"fields": {}}}, id="empty-fields"),
+        pytest.param({"request_extensions": {"fields": {"unrelated": True}}}, id="unrelated"),
+    ],
+)
+def test_translate_response(kwargs) -> None:
     body = {
         "id": "response-1",
         "model": "example",
@@ -43,7 +53,7 @@ def test_translate_response() -> None:
         ],
     }
     result = TranslationEngine().translate_response(
-        "openai_responses", WireFormat.ANTHROPIC_MESSAGES, body
+        "openai_responses", WireFormat.ANTHROPIC_MESSAGES, body, **kwargs
     )
     assert set(result) == {"body", "diagnostics"}
     assert result["diagnostics"] == []
@@ -52,17 +62,49 @@ def test_translate_response() -> None:
     assert result["body"]["stop_reason"] == "end_turn"
 
 
-def test_lossy_conversion_returns_serialized_diagnostics() -> None:
-    result = TranslationEngine().translate_request(
-        "openai_chat", "anthropic_messages", {"model": "example", "messages": [42]}
-    )
+@pytest.mark.parametrize(
+    "method,args,kwargs,message,source,target",
+    [
+        pytest.param(
+            "translate_request",
+            ("openai_chat", "anthropic_messages", {"model": "example", "messages": [42]}),
+            {},
+            "OpenAI message at index 0 is not an object",
+            "openai_chat",
+            "anthropic_messages",
+            id="request",
+        ),
+        pytest.param(
+            "translate_response",
+            ("openai_responses", "anthropic_messages", {"output": [42]}),
+            {"request_extensions": {"fields": {"unrelated": True}}},
+            "Responses output item is not an object",
+            "openai_responses",
+            "anthropic_messages",
+            id="response",
+        ),
+        pytest.param(
+            "decode_request",
+            ("openai_chat", {"messages": [42]}),
+            {},
+            "OpenAI message at index 0 is not an object",
+            None,
+            None,
+            id="decoded-request",
+        ),
+    ],
+)
+def test_lossy_conversion_returns_serialized_diagnostics(
+    method, args, kwargs, message, source, target
+) -> None:
+    result = getattr(TranslationEngine(), method)(*args, **kwargs)
     assert result["diagnostics"] == [
         {
             "severity": "Warning",
             "code": "lossy_conversion",
-            "message": "OpenAI message at index 0 is not an object",
-            "source": "openai_chat",
-            "target": "anthropic_messages",
+            "message": message,
+            "source": source,
+            "target": target,
             "path": None,
         }
     ]
@@ -87,6 +129,11 @@ def test_invalid_argument_types(source, target, body) -> None:
     [
         pytest.param("translate_request", ("custom", "openai_chat", {}), id="translate-request"),
         pytest.param("decode_response", ("custom", {}), id="decode-response"),
+        pytest.param(
+            "translate_response",
+            ("openai_chat", "custom", {"choices": []}),
+            id="translate-response",
+        ),
     ],
 )
 def test_unknown_format_raises_translation_error(method, args) -> None:
@@ -124,7 +171,8 @@ def test_request_ir_round_trip_and_edit() -> None:
     assert encoded["diagnostics"] == []
 
 
-def test_response_ir_restores_request_tool_extensions() -> None:
+@pytest.mark.parametrize("method", ["encode_response", "translate_response"])
+def test_response_ir_restores_request_tool_extensions(method) -> None:
     engine = TranslationEngine()
     request = engine.decode_request(
         "openai_responses",
@@ -140,74 +188,100 @@ def test_response_ir_restores_request_tool_extensions() -> None:
             ],
         },
     )["request"]
-    decoded = engine.decode_response(
-        WireFormat.OPENAI_CHAT,
-        {
-            "id": "response-1",
-            "model": "example",
-            "choices": [
-                {
-                    "message": {
-                        "role": "assistant",
-                        "tool_calls": [
-                            {
-                                "id": "call-1",
-                                "type": "function",
-                                "function": {
-                                    "name": "mcp__docs__search",
-                                    "arguments": '{"query":"streaming"}',
-                                },
+    body = {
+        "id": "response-1",
+        "model": "example",
+        "choices": [
+            {
+                "message": {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call-1",
+                            "type": "function",
+                            "function": {
+                                "name": "mcp__docs__search",
+                                "arguments": '{"query":"streaming"}',
                             },
-                            {
-                                "id": "call-2",
-                                "type": "function",
-                                "function": {
-                                    "name": "exec",
-                                    "arguments": '{"input":"ls -la"}',
-                                },
+                        },
+                        {
+                            "id": "call-2",
+                            "type": "function",
+                            "function": {
+                                "name": "exec",
+                                "arguments": '{"input":"ls -la"}',
                             },
-                        ],
-                    },
-                    "finish_reason": "tool_calls",
-                }
-            ],
-        },
-    )
-    assert set(decoded) == {"response", "diagnostics"}
-    assert decoded["diagnostics"] == []
-    response = json.loads(json.dumps(decoded["response"]))
-    plain = engine.encode_response("openai_responses", response)
-    for empty in (None, {}, {"fields": {}}):
-        assert (
-            engine.encode_response("openai_responses", response, request_extensions=empty) == plain
+                        },
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+    }
+    extensions = request["extensions"]
+    if method == "encode_response":
+        response = engine.decode_response("openai_chat", body)["response"]
+        restored = engine.encode_response(
+            "openai_responses", response, request_extensions=extensions
         )
-    plain_calls = plain["body"]["output"]
-    assert [call["type"] for call in plain_calls] == ["function_call", "function_call"]
-    assert plain_calls[0]["name"] == "mcp__docs__search"
-    assert "namespace" not in plain_calls[0]
-    restored = engine.encode_response(
-        WireFormat.OPENAI_RESPONSES,
-        response,
-        request_extensions=json.loads(json.dumps(request["extensions"])),
-    )
+    else:
+        restored = engine.translate_response(
+            "openai_chat", "openai_responses", body, request_extensions=extensions
+        )
     assert restored["diagnostics"] == []
     search, custom = restored["body"]["output"]
+    assert search["type"] == "function_call"
+    assert search["call_id"] == "call-1"
     assert search["name"] == "search"
     assert search["namespace"] == "mcp__docs"
+    assert json.loads(search["arguments"]) == {"query": "streaming"}
     assert custom["type"] == "custom_tool_call"
+    assert custom["call_id"] == "call-2"
     assert custom["name"] == "exec"
     assert custom["input"] == "ls -la"
     assert "arguments" not in custom
 
 
-def test_ir_boundary_diagnostics_and_errors() -> None:
-    engine = TranslationEngine()
-    decoded = engine.decode_request("openai_chat", {"messages": [42]})
-    assert decoded["diagnostics"][0]["code"] == "lossy_conversion"
-    assert decoded["diagnostics"][0]["severity"] == "Warning"
-    with pytest.raises(ValueError):
-        engine.encode_request("openai_chat", {"messages": "not a list"})
-    with pytest.raises(ValueError):
-        engine.encode_response("openai_chat", {}, request_extensions={"fields": 42})
-    with pytest.raises(TypeError):
-        engine.encode_response("openai_chat", {}, request_extensions=[])
+@pytest.mark.parametrize(
+    "method,args,kwargs,error",
+    [
+        pytest.param(
+            "encode_request",
+            ("openai_chat", {"messages": "not a list"}),
+            {},
+            ValueError,
+            id="request",
+        ),
+        pytest.param(
+            "encode_response",
+            ("openai_chat", {}),
+            {"request_extensions": {"fields": 42}},
+            ValueError,
+            id="encode-invalid-fields",
+        ),
+        pytest.param(
+            "encode_response",
+            ("openai_chat", {}),
+            {"request_extensions": []},
+            TypeError,
+            id="encode-invalid-type",
+        ),
+        pytest.param(
+            "translate_response",
+            ("openai_chat", "openai_responses", {"choices": []}),
+            {"request_extensions": {"fields": 42}},
+            ValueError,
+            id="translate-invalid-fields",
+        ),
+        pytest.param(
+            "translate_response",
+            ("openai_chat", "openai_responses", {"choices": []}),
+            {"request_extensions": []},
+            TypeError,
+            id="translate-invalid-type",
+        ),
+    ],
+)
+def test_ir_boundary_errors(method, args, kwargs, error) -> None:
+    with pytest.raises(error):
+        getattr(TranslationEngine(), method)(*args, **kwargs)

@@ -26,7 +26,7 @@ def test_getting_started_documents_current_paths() -> None:
     for placeholder in ("call_model(", "call_decision(", "handle_outcome("):
         assert placeholder not in readme_example
     assert "cargo add switchyard-libsy switchyard-protocol --git" in guide
-    assert "--rev 5415db205c1f4db7e079731e7bf33a6609c67c8e" in guide
+    assert "--rev ef958a9a8099bb0493b3d42862273e09eced0f52" in guide
     assert "call.respond(client.call(request)).await?" in guide
     assert "struct OpenRouterClient" in guide
     assert '.post("https://openrouter.ai/api/v1/chat/completions")' in guide

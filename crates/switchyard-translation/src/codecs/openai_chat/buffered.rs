@@ -28,7 +28,7 @@ use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,
     exact_preserved_request, exact_preserved_response, json_string, object, push_lossy,
-    reject_responses_builtin_tool_item, stable_id, string_value, validate_request_capabilities,
+    reject_responses_native_input_item, stable_id, string_value, validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Chat Completions payloads.
@@ -135,14 +135,14 @@ impl FormatCodec for OpenAiChatCodec {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    request.messages.push(Message {
-                        role: Role::User,
-                        content: vec![ContentBlock::ToolResult(ToolResult {
+                    request.messages.push(Message::new(
+                        Role::User,
+                        vec![ContentBlock::ToolResult(ToolResult {
                             tool_call_id,
                             content: vec![ContentBlock::Text { text }],
                             is_error: message.get("is_error").and_then(Value::as_bool),
                         })],
-                    });
+                    ));
                     continue;
                 }
                 match role {
@@ -152,7 +152,7 @@ impl FormatCodec for OpenAiChatCodec {
                             .push(InstructionBlock { role, content });
                     }
                     Role::User | Role::Assistant | Role::Tool => {
-                        request.messages.push(Message { role, content });
+                        request.messages.push(Message::new(role, content));
                     }
                 }
             }
@@ -899,10 +899,7 @@ fn push_pending_openai_message(
         return Ok(());
     }
 
-    let message = Message {
-        role,
-        content: std::mem::take(pending_content),
-    };
+    let message = Message::new(role, std::mem::take(pending_content));
     out.push(encode_message_without_tool_results_to_openai(
         &message,
         diagnostics,
@@ -918,9 +915,11 @@ fn encode_message_without_tool_results_to_openai(
     policy: &TranslationPolicy,
 ) -> Result<Value> {
     let role = match message.role {
+        Role::System => "system",
+        Role::Developer => "developer",
         Role::Assistant => "assistant",
         Role::Tool => "tool",
-        _ => "user",
+        Role::User => "user",
     };
     let tool_calls = message
         .content
@@ -1092,7 +1091,7 @@ pub(crate) fn encode_openai_content(
     if role != Role::User {
         for block in content {
             if let ContentBlock::Unknown { provider, raw } = block {
-                reject_responses_builtin_tool_item(provider, raw, WireFormat::OpenAiChat)?;
+                reject_responses_native_input_item(provider, raw, WireFormat::OpenAiChat)?;
             }
         }
         push_lossy(
@@ -1147,7 +1146,7 @@ pub(crate) fn encode_openai_content(
                 ));
             }
             ContentBlock::Unknown { provider, raw } => {
-                reject_responses_builtin_tool_item(provider, raw, WireFormat::OpenAiChat)?;
+                reject_responses_native_input_item(provider, raw, WireFormat::OpenAiChat)?;
                 push_lossy(
                     diagnostics,
                     policy,

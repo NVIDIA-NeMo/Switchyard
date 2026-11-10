@@ -12,8 +12,8 @@ use serde_json::Value;
 use switchyard_protocol::{Category, ContentBlock, Message, Role};
 
 mod decision;
+pub use decision::{DecisionChoice, DecisionJudgeConfig, DirectClassifierConfig};
 use decision::{DecisionClassifier, DirectClassifier};
-pub use decision::{DecisionJudgeConfig, DirectClassifierConfig};
 
 use super::escalation;
 use super::fall_through::FallThrough;
@@ -95,8 +95,8 @@ impl TaskClassifierVerdict {
 /// Keeps the opening task and the last `recent_turn_window` turns after it. A
 /// window of `0` keeps the task alone.
 ///
-/// Inbound decoders normalize client system and developer content into
-/// `LlmRequest::instructions`, so it never reaches this list.
+/// Inline system and developer messages are kept, in their original order,
+/// ahead of the task.
 ///
 /// Selects by reference and clones only what survives — a coding-agent
 /// conversation carries every tool result, so cloning it whole to keep a window
@@ -178,14 +178,16 @@ fn task_messages(messages: &[Message]) -> Vec<Message> {
     [Some(opening_task), user_messages.next_back()]
         .into_iter()
         .flatten()
-        .map(|message| Message {
-            role: Role::User,
-            content: message
-                .content
-                .iter()
-                .filter(|block| is_task_content(block))
-                .cloned()
-                .collect(),
+        .map(|message| {
+            Message::new(
+                Role::User,
+                message
+                    .content
+                    .iter()
+                    .filter(|block| is_task_content(block))
+                    .cloned()
+                    .collect(),
+            )
         })
         .collect()
 }
@@ -207,11 +209,16 @@ impl TaskInput {
         // Reasoning is provider-private and not required to classify the task. Some
         // upstreams also reject an unsigned reasoning item replayed without the
         // opaque state it was issued with, so it cannot travel through a windowed
-        // classifier request as ordinary history.
+        // classifier request as ordinary history. Empty text goes with it: OpenAI
+        // Chat decoding leaves an empty text placeholder beside the reasoning of a
+        // reasoning-only turn, and an Anthropic judge rejects a message whose text
+        // block is empty.
         for message in &mut messages {
-            message
-                .content
-                .retain(|block| !matches!(block, ContentBlock::Reasoning { .. }));
+            message.content.retain(|block| match block {
+                ContentBlock::Reasoning { .. } => false,
+                ContentBlock::Text { text } => !text.is_empty(),
+                _ => true,
+            });
         }
         messages.retain(|message| !message.content.is_empty());
         messages
@@ -1545,7 +1552,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decision_judge_routes_on_relative_advantage() -> Result<()> {
+    async fn decision_judge_routes_on_capable_probability() -> Result<()> {
         use crate::{Call, RuntimeModels, drive};
         use serde_json::json;
         use std::collections::BTreeMap;
@@ -1556,24 +1563,13 @@ mod tests {
         };
 
         let settings = DecisionJudgeConfig {
-            cutoff: 0.4,
-            instructions: None,
-            criteria: None,
-            candidates: BTreeMap::from([
-                ("a".into(), "capable".into()),
-                ("b".into(), "efficient".into()),
-                ("c".into(), "third".into()),
-            ]),
-            evidence: json!({
-                "candidate_descriptions": {"a": "Profile A", "b": "Profile B", "c": "Profile C"},
-                "reference_cases": [{"task": "Independent example", "observed_solved": {"a": true, "b": null, "c": false}}],
-                "summaries": [],
-            }),
+            cutoff: Some(0.4),
+            ..DecisionJudgeConfig::default()
         };
         let mut request = classify_session_request();
-        request.llm_request.messages.push(Message {
-            role: Role::Assistant,
-            content: vec![
+        request.llm_request.messages.push(Message::new(
+            Role::Assistant,
+            vec![
                 ContentBlock::Reasoning {
                     text: "private reasoning".into(),
                     signature: None,
@@ -1583,7 +1579,7 @@ mod tests {
                     text: "visible progress".into(),
                 },
             ],
-        });
+        ));
         request
             .llm_request
             .messages
@@ -1616,18 +1612,19 @@ mod tests {
             ("provider error", 0.0, true, Some("capable")),
             ("provider error", 0.0, false, None),
             ("dropped reply", 0.0, true, Some("capable")),
-            ("missing candidate", 0.0, true, None),
+            ("custom choices", 0.45, false, Some("capable")),
         ] {
             let mut config = settings.clone();
-            if name == "missing candidate" {
-                config.candidates.remove("a");
-            }
             if name == "below" {
-                config.instructions = Some(
-                    json!({"policy": "Judge capable-only success using the supplied evidence."}),
-                );
+                config.instructions = Some("Choose capable when the task needs it.".into());
+            }
+            if name == "custom choices" {
+                config.choices[0].id = "complex".into();
+                config.choices[1].id = "simple".into();
+                config.apply_cutoff_to = "complex".into();
             }
             let override_instructions = config.instructions.clone();
+            let choice_ids = [config.choices[0].id.clone(), config.choices[1].id.clone()];
             let router: Arc<dyn Algorithm> =
                 Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                     config: TaskClassifierConfig {
@@ -1642,8 +1639,8 @@ mod tests {
             let serve = |call| {
                 let calls = &calls;
                 let expected_task = &expected_task;
-                let settings = &settings;
                 let override_instructions = &override_instructions;
+                let [capable_id, efficient_id] = choice_ids.clone();
                 async move {
                     let Call::Decision(call) = call else {
                         panic!("judge must use the decision step")
@@ -1652,14 +1649,8 @@ mod tests {
                     assert_eq!(call.model, "judge");
                     assert_eq!(call.request.model, Some("judge".into()));
                     assert_eq!(
-                        call.request.context,
-                        json!({
-                            "task": expected_task,
-                            "session": "session-1",
-                            "candidates": ["a", "b", "c"],
-                            "comparison": {"capable": "a", "efficient": "b"},
-                            "evidence": settings.evidence,
-                        })
+                        serde_json::to_value(&call.request.input).unwrap(),
+                        *expected_task
                     );
                     assert_eq!(call.request.questions.len(), 1);
                     let question = &call.request.questions["route"];
@@ -1672,14 +1663,17 @@ mod tests {
                             .iter()
                             .map(|option| option.id.as_str())
                             .collect::<Vec<_>>(),
-                        ["advantage", "no_advantage"]
+                        [capable_id.as_str(), efficient_id.as_str()]
                     );
                     if let Some(instructions) = override_instructions {
                         assert_eq!(&question.instructions, instructions);
                     } else {
-                        for key in ["setting", "evidence", "comparison", "boundary", "policy"] {
-                            assert!(question.instructions[key].as_str().is_some());
-                        }
+                        assert!(
+                            question
+                                .instructions
+                                .as_str()
+                                .is_some_and(|text| !text.is_empty())
+                        );
                     }
                     if name == "provider error" {
                         return call
@@ -1697,19 +1691,18 @@ mod tests {
                         DecisionValue::Boolean(BooleanEstimate::Value(true))
                     } else {
                         DecisionValue::Choice {
-                            selected: "no_advantage".into(),
+                            selected: efficient_id.clone(),
                             probabilities: (name != "no distribution").then(|| {
                                 BTreeMap::from([
                                     (
                                         if name == "missing probability" {
-                                            "other"
+                                            "other".into()
                                         } else {
-                                            "advantage"
-                                        }
-                                        .into(),
+                                            capable_id.clone()
+                                        },
                                         Probability(score),
                                     ),
-                                    ("no_advantage".into(), Probability(1.0 - score)),
+                                    (efficient_id.clone(), Probability(1.0 - score)),
                                 ])
                             }),
                         }
@@ -1736,17 +1729,9 @@ mod tests {
             };
             let models = Arc::new(RuntimeModels::new(runtime_models()));
             let result = drive(router.clone(), request.clone(), models.clone(), &serve).await;
-            assert_eq!(
-                calls.load(Ordering::SeqCst),
-                usize::from(name != "missing candidate"),
-                "{name}"
-            );
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "{name}");
             let Some(expected) = expected else {
-                if name == "missing candidate" {
-                    assert!(
-                        matches!(result, Err(LibsyError::AlgorithmError { message }) if message.contains("candidate is missing"))
-                    );
-                } else if name == "provider error" {
+                if name == "provider error" {
                     assert!(
                         matches!(result, Err(LibsyError::ClientCall { .. })),
                         "{name}"
@@ -1766,12 +1751,12 @@ mod tests {
             let metadata = outcome.metadata.expect("routing metadata");
             assert_eq!(metadata.judgments.len(), 1);
             let evidence = metadata.evidence.expect("routing evidence");
-            if matches!(name, "above" | "equal" | "below") {
+            if matches!(name, "above" | "equal" | "below" | "custom choices") {
                 assert_eq!(metadata.judgments[0].target.as_deref(), Some(expected));
                 assert_eq!(evidence["source"], "decision_classifier");
-                assert_eq!(evidence["verdict"], "relative_advantage");
-                assert_eq!(evidence["threshold"], settings.cutoff);
-                assert_eq!(evidence["score"], score);
+                assert_eq!(evidence["verdict"], expected);
+                assert_eq!(evidence["capable_threshold"], 0.4);
+                assert_eq!(evidence["capable_score"], score);
             } else {
                 let reason = match name {
                     "provider error" => "client_error",
@@ -1800,7 +1785,7 @@ mod tests {
         }
         for cutoff in [-0.1, 1.1, f64::NAN] {
             let mut config = settings.clone();
-            config.cutoff = cutoff;
+            config.cutoff = Some(cutoff);
             assert!(
                 LlmTaskClassifier::new(LlmClassifierConfig::Capability {
                     config: TaskClassifierConfig {
@@ -1811,22 +1796,6 @@ mod tests {
                 .is_err()
             );
         }
-        let mut duplicate = settings.clone();
-        duplicate
-            .candidates
-            .insert("duplicate-a".into(), "capable".into());
-        assert!(duplicate.validate().is_err());
-        let mut custom = settings.clone();
-        custom.candidates.remove("c");
-        custom.criteria = Some(BTreeMap::from([
-            ("a".into(), json!("Start capable")),
-            ("b".into(), json!("Start efficient")),
-        ]));
-        assert!(custom.validate().is_err());
-        custom.instructions = Some(json!("Choose a profile."));
-        assert!(custom.validate().is_ok());
-        custom.candidates.remove("b");
-        assert!(custom.validate().is_err());
         Ok(())
     }
 
@@ -2193,27 +2162,27 @@ mod tests {
     }
 
     fn tool_call(id: &str) -> Message {
-        Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
+        Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolCall(ToolCall {
                 id: id.to_string(),
                 name: "search".to_string(),
                 arguments: Value::Null,
             })],
-        }
+        )
     }
 
     fn tool_result(id: &str) -> Message {
-        Message {
-            role: Role::Tool,
-            content: vec![ContentBlock::ToolResult(ToolResult {
+        Message::new(
+            Role::Tool,
+            vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: id.to_string(),
                 content: vec![ContentBlock::Text {
                     text: "tool output".to_string(),
                 }],
                 is_error: None,
             })],
-        }
+        )
     }
 
     #[test]
@@ -2372,9 +2341,9 @@ mod tests {
         let messages = vec![
             Message::text(Role::System, "client instructions"),
             Message::text(Role::User, "initial task"),
-            Message {
-                role: Role::Assistant,
-                content: vec![
+            Message::new(
+                Role::Assistant,
+                vec![
                     ContentBlock::Reasoning {
                         text: "private chain of thought".to_string(),
                         signature: None,
@@ -2384,17 +2353,17 @@ mod tests {
                         text: "visible answer".to_string(),
                     },
                 ],
-            },
+            ),
             tool_call("call-1"),
             tool_result("call-1"),
-            Message {
-                role: Role::Assistant,
-                content: vec![ContentBlock::Reasoning {
+            Message::new(
+                Role::Assistant,
+                vec![ContentBlock::Reasoning {
                     text: "reasoning-only turn".to_string(),
                     signature: None,
                     details: Vec::new(),
                 }],
-            },
+            ),
             Message::text(Role::User, "follow-up"),
         ];
         let request = Request {
@@ -2429,6 +2398,63 @@ mod tests {
         // rather than left behind empty — plus the trailing routing instruction.
         assert_eq!(built.len(), 7);
         assert!(built.iter().all(|message| !message.content.is_empty()));
+    }
+
+    #[test]
+    fn a_window_drops_a_turn_left_empty_once_its_reasoning_is_removed() {
+        // OpenAI Chat decoding places an empty text placeholder beside the reasoning of
+        // an assistant message that carries `reasoning_content` alone. Removing the
+        // reasoning has to take the placeholder with it: an Anthropic judge rejects a
+        // message whose text is empty, and the whole client request then fails.
+        let body = serde_json::json!({
+            "model": "qa/windowed",
+            "messages": [
+                {"role": "user", "content": "Reply with the number four."},
+                {"role": "assistant", "reasoning_content": "private chain of thought"},
+                {"role": "user", "content": "This is still a simple number lookup."}
+            ]
+        });
+        let request = Request {
+            llm_request: switchyard_translation::decode_request(
+                switchyard_translation::WireFormat::OpenAiChat,
+                &body,
+            )
+            .expect("client request decodes"),
+            ..Request::default()
+        };
+
+        let built = TaskInput {
+            recent_turn_window: Some(8),
+        }
+        .build_messages(&State::default(), &request);
+
+        assert_eq!(
+            built,
+            vec![
+                Message::text(Role::User, "Reply with the number four."),
+                Message::text(Role::User, "This is still a simple number lookup."),
+                Message::text(Role::User, TRAILING_ROUTING_INSTRUCTION),
+            ]
+        );
+        let judge_request = LlmRequest {
+            messages: built,
+            ..LlmRequest::default()
+        };
+        let encoded = switchyard_translation::encode_request(
+            &judge_request,
+            switchyard_translation::WireFormat::AnthropicMessages,
+        )
+        .expect("judge request encodes");
+        let has_empty_text = encoded["messages"]
+            .as_array()
+            .expect("messages")
+            .iter()
+            .flat_map(|message| match &message["content"] {
+                Value::Array(blocks) => blocks.iter().map(|block| &block["text"]).collect(),
+                content => vec![content],
+            })
+            .any(|text| text.as_str().is_some_and(str::is_empty));
+        assert!(!has_empty_text, "{encoded}");
     }
 
     #[test]

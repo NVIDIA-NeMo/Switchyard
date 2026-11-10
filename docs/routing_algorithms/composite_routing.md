@@ -9,7 +9,7 @@ fit the same route type.
 
 One pairing: a classifier selects the stage router's starting policy.
 By default, an efficient classification selects efficient-first with `efficient_first_threshold`
-(default `0.5`).
+(default `0.4`).
 A capable classification defaults to capable-first with `capable_first_threshold`
 (default `0.0`). Both thresholds are configurable from `0.0` to `1.0`.
 Tool signals can still change the tier
@@ -21,6 +21,11 @@ Under capable-first, `stage.efficient_hold_turns` defaults to `-1`: after switch
 to efficient, it stays there until the next user-turn reset or session reset. Efficient-first
 defaults to `0`. Set this field explicitly to override either default. `0`
 disables the hold, and a positive value holds that many subsequent requests.
+
+The capable-first profile adds a planning prompt and defaults to no capable hold.
+The efficient-first profile holds capable for two requests after escalation.
+Both profiles use three recent tool results. Explicit shared and profile settings
+override these defaults. Set `capable_system_prompt = ""` to disable the planning prompt.
 
 The classifier can use an LLM judge or a decision model. A decision
 model is configured through a decision client and target, separately from the
@@ -45,7 +50,7 @@ classify_trigger = "user_turn"
 [routes.switchyard.stage]
 capable_target = "strong"
 efficient_target = "weak"
-efficient_first_threshold = 0.5
+efficient_first_threshold = 0.4
 capable_first_threshold = 0.0
 
 [routes.switchyard.stage.tool_semantics]
@@ -146,35 +151,36 @@ decision_client = "decisions"
 [routes.switchyard.classifier]
 target = "judge"
 classify_trigger = "user_turn"
-
-[routes.switchyard.classifier.decision]
-cutoff = 0.4
-candidates = { a = "strong", b = "weak" }
-evidence = { description = "Add task-relevant evidence comparing a and b." }
 ```
 
-Both candidates must be completion targets. The judge must be a decision target.
+The judge must be a decision target. Switchyard then uses the default decision
+settings. Add a `[routes.switchyard.classifier.decision]` table to change them.
 See the [decision client reference](../reference/toml_schema.md#decision_clientsname)
 for OpenAI Decisions configuration.
 
-By default, the classifier selects capable when `probabilities.advantage` exceeds `cutoff`.
+The judge receives the conversation messages and one choice question. The
+default choices are `capable` (start with the capable model) and `efficient`
+(start with the efficient model). The classifier selects capable when
+`probabilities.capable` is above `cutoff`. The Composite default cutoff is `0.92`.
 Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
 `base_threshold`, `threshold_step` and `prompt` when using a decision model.
 On judge failure, the default is to retain the last classified tier or use
 efficient for a new session. Set `classifier.fail_open = false` to return the error.
 
-To ask a custom two-choice question, set `instructions` and `criteria` in the
-decision block. Criteria keys must exactly match the two candidate labels.
-The probability for the label mapped to the capable target must exceed `cutoff`
-to select that tier. This also works in standalone and Stage decision judges.
+To ask a custom question, set `instructions`, `choices`, and `apply_cutoff_to`
+in the decision block. The probability of the `apply_cutoff_to` choice must be
+above `cutoff` to select the capable tier. Any other result selects the
+efficient tier. This also works in standalone and Stage decision judges.
 
 ```toml
 [routes.switchyard.classifier.decision]
 cutoff = 0.92
-candidates = { capable_first = "strong", efficient_first = "weak" }
 instructions = "Choose the Stage profile best suited to the task."
-criteria = { capable_first = "Start capable", efficient_first = "Start efficient" }
-evidence = {}
+apply_cutoff_to = "capable_first"
+choices = [
+  { id = "capable_first", description = "Start capable" },
+  { id = "efficient_first", description = "Start efficient" },
+]
 ```
 
 ## Sessions

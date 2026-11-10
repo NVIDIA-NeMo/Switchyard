@@ -81,12 +81,8 @@ pub fn namespace_description<'a>(
 
 /// Reverse map from an upstream tool name to its Codex tool name and namespace.
 ///
-/// The exact qualified name is always registered. A model often returns a near
-/// miss instead, so two fallback spellings are registered when neither can be
-/// confused with another tool:
-///
-/// * the qualified name without the `mcp__` prefix
-/// * the bare tool name, only when exactly one namespace claims it
+/// The exact qualified name is always registered. The name without the `mcp__`
+/// prefix is also registered unless it matches another qualified name.
 pub fn qualified_tool_origins(
     extensions: &ProviderExtensions,
 ) -> HashMap<String, (String, String)> {
@@ -101,12 +97,6 @@ pub fn qualified_tool_origins(
         })
         .collect();
 
-    // A bare name claimed by more than one namespace cannot be guessed, and a
-    // fallback must never shadow a name that is itself a real qualified tool.
-    let mut bare_claims: HashMap<&str, usize> = HashMap::new();
-    for (_, tool, _) in &split {
-        *bare_claims.entry(tool.as_str()).or_default() += 1;
-    }
     let qualified_names: HashSet<&str> = split
         .iter()
         .map(|(qualified, _, _)| qualified.as_str())
@@ -120,11 +110,6 @@ pub fn qualified_tool_origins(
             if !qualified_names.contains(spelling.as_str()) {
                 origins.entry(spelling).or_insert_with(|| origin.clone());
             }
-        }
-        if bare_claims.get(tool.as_str()) == Some(&1) && !qualified_names.contains(tool.as_str()) {
-            origins
-                .entry(tool.clone())
-                .or_insert_with(|| origin.clone());
         }
         // The exact spelling always wins over a fallback.
         origins.insert(qualified.clone(), origin);

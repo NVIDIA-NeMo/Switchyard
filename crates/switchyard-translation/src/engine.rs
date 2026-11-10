@@ -230,14 +230,16 @@ impl TranslationEngine {
         policy: &TranslationPolicy,
     ) -> Result<TranslationOutput> {
         let mut output = self.encode_response(target, response, policy)?;
-        crate::codex_namespaces::restore_qualified_tool_names(
-            &mut output.body,
-            &crate::codex_namespaces::qualified_tool_origins(request_extensions),
-        );
-        crate::codex_custom_tools::restore_custom_tool_calls(
-            &mut output.body,
-            &crate::codex_custom_tools::custom_tool_names(request_extensions),
-        );
+        if !request_extensions.fields.is_empty() {
+            crate::codex_namespaces::restore_qualified_tool_names(
+                &mut output.body,
+                &crate::codex_namespaces::qualified_tool_origins(request_extensions),
+            );
+            crate::codex_custom_tools::restore_custom_tool_calls(
+                &mut output.body,
+                &crate::codex_custom_tools::custom_tool_names(request_extensions),
+            );
+        }
         Ok(output)
     }
 
@@ -249,16 +251,38 @@ impl TranslationEngine {
         body: &Value,
         policy: &TranslationPolicy,
     ) -> Result<TranslationOutput> {
+        self.translate_response_with_extensions(
+            source,
+            target,
+            body,
+            &ProviderExtensions::default(),
+            policy,
+        )
+    }
+
+    /// Translates a response while restoring details from the original request's extensions.
+    ///
+    /// Request extensions apply after encoding, including when the target body is preserved.
+    pub fn translate_response_with_extensions(
+        &self,
+        source: impl Into<FormatId>,
+        target: impl Into<FormatId>,
+        body: &Value,
+        request_extensions: &ProviderExtensions,
+        policy: &TranslationPolicy,
+    ) -> Result<TranslationOutput> {
         let source = source.into();
         let target = target.into();
         let decoded = self
             .registry
             .codec(source.clone())?
             .decode_response(body, policy)?;
-        let encoded = self
-            .registry
-            .codec(target.clone())?
-            .encode_response(&decoded.response, policy)?;
+        let encoded = self.encode_response_with_extensions(
+            target.clone(),
+            &decoded.response,
+            request_extensions,
+            policy,
+        )?;
         Ok(TranslationOutput {
             body: encoded.body,
             diagnostics: with_formats(decoded.diagnostics, encoded.diagnostics, source, target),
@@ -459,8 +483,9 @@ impl TranslationEngine {
     /// buffered across chunks (a partial frame waits for its boundary); the source
     /// stream codec is resolved once and reused for every frame.
     ///
-    /// The decoder tracks the source format's protocol-specific terminal event. If
-    /// EOF arrives without that required event, the stream yields a deferred
+    /// Codecs can opt in to stopping after the decoder yields a terminal JSON event.
+    /// Other codecs keep reading to include trailing events before `[DONE]` or EOF.
+    /// If EOF arrives without a required terminal event, the stream yields a deferred
     /// [`LlmClientError::ResponseTranslation`] error after any valid decoded events.
     pub fn decode_stream<S>(
         &self,
@@ -521,6 +546,9 @@ impl TranslationEngine {
                                 value,
                                 normalized,
                             );
+                            if saw_terminal && codec.stops_at_terminal_event() {
+                                break;
+                            }
                         }
                     }
                 } else {

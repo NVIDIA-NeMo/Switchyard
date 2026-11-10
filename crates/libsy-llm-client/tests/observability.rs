@@ -724,14 +724,14 @@ async fn affinity_warns_once_when_request_has_no_usable_identity() -> switchyard
         })?);
     let request = Request {
         llm_request: LlmRequest {
-            messages: vec![Message {
-                role: Role::User,
-                content: vec![ContentBlock::Reasoning {
+            messages: vec![Message::new(
+                Role::User,
+                vec![ContentBlock::Reasoning {
                     text: "provider reasoning".to_string(),
                     signature: None,
                     details: Vec::new(),
                 }],
-            }],
+            )],
             ..LlmRequest::default()
         },
         raw_request: None,
@@ -1016,6 +1016,7 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
         ALGO.to_string(),
         Some(json!({
             "source": "llm-classifier", "score": 0.9, "threshold": 0.5,
+            "capable_score": 0.7, "capable_threshold": 0.6,
             "verdict": "continue", "trigger": "turn", "reason_code": "test",
             "confidence": "wrong type", "unknown": LEAKED_CONTENT,
         })),
@@ -1106,6 +1107,8 @@ async fn successful_run_records_metrics_spans_and_outcome_metadata() -> switchya
         ("evidence.source", "llm-classifier"),
         ("evidence.score", "0.9"),
         ("evidence.threshold", "0.5"),
+        ("evidence.capable_score", "0.7"),
+        ("evidence.capable_threshold", "0.6"),
         ("evidence.verdict", "continue"),
         ("evidence.trigger", "turn"),
         ("evidence.reason_code", "test"),
@@ -1274,24 +1277,24 @@ async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Res
             model: Some("auto".to_string()),
             messages: vec![
                 Message::text(Role::User, "fix the build"),
-                Message {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::ToolCall(ToolCall {
+                Message::new(
+                    Role::Assistant,
+                    vec![ContentBlock::ToolCall(ToolCall {
                         id: "call_1".to_string(),
                         name: "Bash".to_string(),
                         arguments: json!({"command": "cargo test"}),
                     })],
-                },
-                Message {
-                    role: Role::Tool,
-                    content: vec![ContentBlock::ToolResult(ToolResult {
+                ),
+                Message::new(
+                    Role::Tool,
+                    vec![ContentBlock::ToolResult(ToolResult {
                         tool_call_id: "call_1".to_string(),
                         content: vec![ContentBlock::Text {
                             text: "fatal runtime error: out of memory".to_string(),
                         }],
                         is_error: Some(true),
                     })],
-                },
+                ),
             ],
             ..LlmRequest::default()
         },
@@ -1451,6 +1454,152 @@ impl RoutedLlmClient for StreamingUsageClient {
             metadata: None,
             upstream_headers: http::HeaderMap::new(),
         })
+    }
+}
+
+#[tokio::test]
+async fn buffered_routing_closes_observation_before_replay() -> switchyard_libsy::Result<()> {
+    use tracing::Instrument;
+
+    let _guard = serialize_test().lock().await;
+    let (_, _, _, exporter, _) = telemetry();
+    for drain in [false, true] {
+        let model = if drain {
+            "routing-replay-drained"
+        } else {
+            "routing-replay-dropped"
+        };
+        let mut request = request_with_metadata(model, model);
+        request.llm_request.stream = true;
+        let (_, response) = run(
+            Arc::new(RoutingCallAlgo {
+                name: model.into(),
+                target: model.into(),
+            }),
+            Arc::new(StreamingUsageClient),
+            request,
+        )
+        .instrument(tracing::info_span!(
+            "buffered-workflow",
+            gen_ai.request.model = model
+        ))
+        .await?;
+
+        // Upstream I/O is complete, so usage and parentage must export before replay.
+        let call = find_otel_span(exporter, &format!("chat {model}"), model);
+        let workflow = find_otel_span(exporter, "buffered-workflow", model);
+        assert_eq!(call.parent_span_id, workflow.span_context.span_id());
+        for (field, tokens) in [
+            ("gen_ai.usage.input_tokens", 21),
+            ("gen_ai.usage.output_tokens", 5),
+        ] {
+            assert_eq!(otel_attribute(&call, field), Some(&OtelValue::I64(tokens)));
+        }
+        let count = exporter.get_finished_spans().expect("exported spans").len();
+        if drain {
+            let replay = response
+                .llm_response
+                .into_agg()
+                .await
+                .expect("valid replay");
+            assert_eq!(
+                replay.outputs[0].content,
+                vec![ContentBlock::Text {
+                    text: "hello".into()
+                }]
+            );
+        } else {
+            drop(response);
+        }
+        assert_eq!(
+            exporter.get_finished_spans().expect("exported spans").len(),
+            count,
+            "consuming or dropping replay must not export another observation"
+        );
+    }
+    Ok(())
+}
+
+struct FailingStreamClient(bool);
+
+#[async_trait]
+impl RoutedLlmClient for FailingStreamClient {
+    async fn call(&self, _request: Request) -> Result<Response, LlmClientError> {
+        let failure = if self.0 {
+            Err(LlmClientError::UpstreamHttp {
+                status: http::StatusCode::BAD_GATEWAY,
+                body: LEAKED_CONTENT.into(),
+            })
+        } else {
+            Ok(LlmResponseChunk::StreamError {
+                message: LEAKED_CONTENT.into(),
+            }
+            .into())
+        };
+        Ok(Response {
+            llm_response: LlmResponse::Stream(
+                futures::stream::iter([
+                    Ok(LlmResponseChunk::Usage(Usage {
+                        input_tokens: Some(11),
+                        output_tokens: Some(3),
+                        ..Usage::default()
+                    })
+                    .into()),
+                    failure,
+                ])
+                .boxed(),
+            ),
+            metadata: None,
+            upstream_headers: http::HeaderMap::new(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn routing_stream_error_is_recorded_once_without_upstream_body() {
+    let _guard = serialize_test().lock().await;
+    let (_, _, _, exporter, _) = telemetry();
+    for http_error in [false, true] {
+        let model = if http_error {
+            "routing-http-stream-error"
+        } else {
+            "routing-in-band-error"
+        };
+        let mut request = request_with_metadata(model, model);
+        request.llm_request.stream = true;
+        assert!(
+            run(
+                Arc::new(RoutingCallAlgo {
+                    name: model.into(),
+                    target: model.into()
+                }),
+                Arc::new(FailingStreamClient(http_error)),
+                request,
+            )
+            .await
+            .is_err()
+        );
+        let call = find_otel_span(exporter, &format!("chat {model}"), model);
+        for (key, expected) in [
+            ("outcome", OtelValue::String("error".into())),
+            ("error.type", OtelValue::String("502".into())),
+            ("error", OtelValue::String("upstream HTTP 502".into())),
+            ("gen_ai.usage.input_tokens", OtelValue::I64(11)),
+            ("gen_ai.usage.output_tokens", OtelValue::I64(3)),
+        ] {
+            let values: Vec<_> = call
+                .attributes
+                .iter()
+                .filter(|attr| attr.key.as_str() == key)
+                .map(|attr| attr.value.clone())
+                .collect();
+            assert_eq!(
+                values,
+                vec![expected],
+                "{key} must be exported exactly once"
+            );
+        }
+        assert!(!format!("{:?}", call.attributes).contains(LEAKED_CONTENT));
     }
 }
 
@@ -1697,7 +1846,7 @@ async fn decision_calls_record_each_terminal_path_once() -> switchyard_libsy::Re
                 .call_decision(
                     DecisionRequest {
                         model: None,
-                        context: json!(LEAKED_CONTENT),
+                        input: json!(LEAKED_CONTENT),
                         questions: Default::default(),
                     },
                     self.0.clone().into(),
@@ -2297,7 +2446,7 @@ async fn in_flight_gauge_clears_when_a_run_is_abandoned() -> switchyard_libsy::R
 }
 
 #[tokio::test]
-async fn routing_buffer_failure_preserves_real_attempt_and_parent_usage()
+async fn routing_buffer_failure_preserves_real_attempt_usage()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use switchyard_llm_client::{Backend, HttpBackendConfig, ModelConfig, TranslatingLlmClient};
     use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
@@ -2337,28 +2486,23 @@ async fn routing_buffer_failure_preserves_real_attempt_and_parent_usage()
     request.llm_request.stream = true;
     assert!(run(algorithm, client, request).await.is_err());
     let spans = store.spans();
-    for (name, field) in [
-        ("libsy.client_call", "selected_model"),
-        ("libsy.upstream_attempt", "model"),
-    ] {
-        let span = find_span(&spans, name, field, MODEL);
-        assert_eq!(
-            span.fields
-                .get("gen_ai.usage.input_tokens")
-                .map(String::as_str),
-            Some("11")
-        );
-        assert_eq!(
-            span.fields
-                .get("gen_ai.usage.output_tokens")
-                .map(String::as_str),
-            Some("3")
-        );
-        assert_eq!(
-            span.fields.get("outcome").map(String::as_str),
-            Some("error")
-        );
-    }
+    let span = find_span(&spans, "libsy.upstream_attempt", "model", MODEL);
+    assert_eq!(
+        span.fields
+            .get("gen_ai.usage.input_tokens")
+            .map(String::as_str),
+        Some("11")
+    );
+    assert_eq!(
+        span.fields
+            .get("gen_ai.usage.output_tokens")
+            .map(String::as_str),
+        Some("3")
+    );
+    assert_eq!(
+        span.fields.get("outcome").map(String::as_str),
+        Some("error")
+    );
     assert_eq!(
         spans
             .iter()

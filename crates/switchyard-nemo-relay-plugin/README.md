@@ -285,7 +285,8 @@ meaning requires a new schema version.
 `served_model` and `fallback_used` are `null` when serving metadata is unavailable.
 `outcome_id` is present when the algorithm runner supplies outcome metadata.
 `evidence` is an object containing the supported string fields `source`, `verdict`,
-`trigger`, and `reason_code`, and numeric fields `score`, `confidence`, and `threshold`.
+`trigger`, and `reason_code`, and numeric fields `score`, `confidence`, `threshold`,
+`capable_score`, and `capable_threshold`.
 String values longer than 64 bytes are omitted and should be stable, non-sensitive labels.
 
 ## Failure policy

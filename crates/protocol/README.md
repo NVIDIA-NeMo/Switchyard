@@ -8,7 +8,7 @@ defines contracts; it does not route, translate, or perform network calls.
 
 ```toml
 [dependencies]
-switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", tag = "v0.2.0" }
+switchyard-protocol = { git = "https://github.com/NVIDIA-NeMo/Switchyard.git", rev = "ef958a9a8099bb0493b3d42862273e09eced0f52" }
 serde_json = "1"
 ```
 
@@ -31,12 +31,12 @@ use switchyard_protocol::{ContentBlock, LlmRequest, Message, Role};
 
 let request = LlmRequest {
     model: Some("provider/model".into()),
-    messages: vec![Message {
-        role: Role::User,
-        content: vec![ContentBlock::Text {
+    messages: vec![Message::new(
+        Role::User,
+        vec![ContentBlock::Text {
             text: "Explain tail latency".into(),
         }],
-    }],
+    )],
     ..LlmRequest::default()
 };
 

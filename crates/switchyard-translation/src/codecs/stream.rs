@@ -172,6 +172,13 @@ pub trait StreamCodec: Send + Sync {
     /// Returns whether a JSON event establishes stream completion.
     fn is_terminal_event(&self, event: &Value) -> bool;
 
+    /// Returns whether decoding stops after yielding a terminal JSON event.
+    ///
+    /// The default keeps reading so codecs can emit trailing events, such as usage.
+    fn stops_at_terminal_event(&self) -> bool {
+        false
+    }
+
     /// Returns whether the SSE `[DONE]` marker establishes stream completion.
     ///
     /// The marker ends consumption even when this returns `false`; a terminal JSON event

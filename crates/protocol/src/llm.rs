@@ -48,15 +48,24 @@ pub struct Message {
     pub role: Role,
     /// Ordered message content.
     pub content: Vec<ContentBlock>,
+    /// OpenAI Responses assistant message `phase`, such as `commentary` or `final_answer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
 }
 
 impl Message {
-    /// Creates a text-only message for the given role.
-    pub fn text(role: Role, text: impl Into<String>) -> Self {
+    /// Creates a message with no `phase`.
+    pub fn new(role: Role, content: Vec<ContentBlock>) -> Self {
         Self {
             role,
-            content: vec![ContentBlock::Text { text: text.into() }],
+            content,
+            phase: None,
         }
+    }
+
+    /// Creates a text-only message for the given role.
+    pub fn text(role: Role, text: impl Into<String>) -> Self {
+        Self::new(role, vec![ContentBlock::Text { text: text.into() }])
     }
 
     /// Concatenates text-like content blocks when the message has any.
@@ -536,6 +545,14 @@ pub struct LlmRequest {
     pub instructions: Vec<InstructionBlock>,
     /// Ordered conversation messages.
     pub messages: Vec<Message>,
+    /// This request-local count tracks temporary notes appended after the caller's conversation.
+    /// The HTTP client uses it to choose a cache breakpoint before the notes, subject to
+    /// provider support, caller policy, marker limits, and an eligible prefix.
+    /// Rust moves and clones retain the count.
+    /// Serialization omits the count, and deserialization resets it to zero.
+    /// Note text and preserved provider bodies remain serialized.
+    #[serde(skip)]
+    pub temporary_note_count: usize,
     /// Whether this request performs compaction or resumes from a summary.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub is_compaction: bool,

@@ -611,7 +611,7 @@ async fn upstream_buffered_responses(
         "model/invalid-error" => response["error"] = json!("invalid error details"),
         "model/invalid-code" => response["error"]["code"] = json!(42),
         "model/empty-code" => response["error"]["code"] = json!(""),
-        "model/fallback" | "model/efficient" => {
+        "model/fallback" | "model/efficient" | "openai/gpt-5" => {
             response["status"] = json!("completed");
             response["error"] = Value::Null;
             response["output"] = json!([{
@@ -3002,6 +3002,86 @@ mutate = ["send_payment_request"]
             .get("x-model-router-selected-model")
             .and_then(|value| value.to_str().ok()),
         Some("model/weak")
+    );
+    Ok(())
+}
+
+/// The executor receives the plan and write result, but not the planner's prompt.
+#[tokio::test]
+async fn stage_plan_execute_handoff_preserves_history_and_prompts() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    // Stage metrics are process-wide, so unique model IDs keep this test's counts separate.
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.local]
+format = "openai_chat"
+base_url = "{}"
+[targets]
+planner = {{ id = "model/plan-execute-planner", llm_client = "local" }}
+executor = {{ id = "model/plan-execute-executor", llm_client = "local" }}
+[routes.plan_execute]
+id = "plan-execute"
+type = "stage_router"
+capable_target = "planner"
+efficient_target = "executor"
+picker = "capable_first"
+confidence_threshold = 0.0
+capable_hold_turns = 0
+efficient_hold_turns = -1
+capable_system_prompt = "Inspect the task and plan before modifying files."
+"#,
+        upstream.base_url,
+    ))?);
+    let planning_history = json!([{"role": "user", "content": "implement the task"}]);
+    let execution_history = json!([
+        {"role": "user", "content": "implement the task"},
+        {"role": "assistant", "content": "The plan is to update the file.",
+            "tool_calls": [{"id": "call", "type": "function",
+                "function": {"name": "write_file", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "call", "content": "file written"}
+    ]);
+    for (messages, expected) in [
+        (&planning_history, "model/plan-execute-planner"),
+        (&execution_history, "model/plan-execute-executor"),
+    ] {
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({"model": "plan-execute", "messages": messages, "stream": false})),
+            &[("x-switchyard-session-id", "plan-execute-session")],
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected),
+        );
+    }
+    {
+        let calls = upstream.calls.lock().await;
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["model"], "model/plan-execute-planner");
+        assert!(has_system_prompt(
+            &calls[0],
+            "Inspect the task and plan before modifying files.",
+        ));
+        assert_eq!(calls[1]["model"], "model/plan-execute-executor");
+        assert_eq!(calls[1]["messages"], execution_history);
+        assert!(!has_system_prompt(
+            &calls[1],
+            "Inspect the task and plan before modifying files.",
+        ));
+    }
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["classifier"]["total_requests"], 0);
+    assert_eq!(
+        stats["algorithm_stats"]["stage_router"]["routing_decisions"]["dimensions"]["targets"]["model/plan-execute-executor"],
+        1
     );
     Ok(())
 }
@@ -6216,8 +6296,6 @@ async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
     Ok(())
 }
 
-// Mirrors the GLM baseline: passthrough to a Responses target with a reasoning effort
-// default, called by Codex with `store: false`.
 #[tokio::test]
 async fn configured_responses_reasoning_policy_reaches_upstream() -> TestResult {
     let upstream = MockUpstream::start().await?;
@@ -6227,13 +6305,15 @@ async fn configured_responses_reasoning_policy_reaches_upstream() -> TestResult 
         json!({"type": "reasoning", "id": "rs_2", "summary": [], "encrypted_content": "opaque"});
     let mut kept_foreign = foreign.clone();
     kept_foreign["content"] = json!([]);
-    for (setting, expected_reasoning) in [
-        ("", vec![plaintext.clone()]),
+    for (provider_model_id, setting, expected_reasoning) in [
+        ("openai/gpt-5", "", vec![kept_foreign.clone()]),
+        ("model/efficient", "", vec![plaintext.clone()]),
         (
+            "model/efficient",
             "responses_reasoning = \"preserve_encrypted\"",
             vec![kept_foreign],
         ),
-        ("responses_reasoning = \"drop\"", vec![]),
+        ("model/efficient", "responses_reasoning = \"drop\"", vec![]),
     ] {
         let config = format!(
             r#"
@@ -6242,14 +6322,14 @@ schema_version = 1
 format = "openai_responses"
 base_url = "{base_url}"
 {setting}
-[targets.glm]
-id = "model/efficient"
+[targets.primary]
+id = "{provider_model_id}"
 llm_client = "upstream"
 extra_body = {{ reasoning = {{ effort = "high" }} }}
 [routes.switchyard]
 id = "switchyard"
 type = "passthrough"
-target = "glm"
+target = "primary"
 "#
         );
         let app = build_switchyard_router(load_test_config(&config)?);
@@ -6276,7 +6356,11 @@ target = "glm"
             .filter(|item| item["type"] == "reasoning")
             .cloned()
             .collect();
-        assert_eq!(reasoning, expected_reasoning, "{setting}");
+        assert_eq!(body["model"], json!(provider_model_id));
+        assert_eq!(
+            reasoning, expected_reasoning,
+            "{provider_model_id}, {setting}"
+        );
         assert_eq!(body["reasoning"], json!({"effort": "high"}));
     }
     Ok(())

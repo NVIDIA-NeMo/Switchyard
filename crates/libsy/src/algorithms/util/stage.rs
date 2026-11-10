@@ -1497,7 +1497,7 @@ mod tests {
             .score(&mut state, &mut request, &driver)
             .await?;
 
-        assert_eq!(trailing_text(&request), Some(format!("hi|{ESCALATION}")));
+        assert_eq!(trailing_text(&request), Some(ESCALATION.to_string()));
         Ok(())
     }
 
@@ -1509,7 +1509,7 @@ mod tests {
 
         let mut first = request();
         classifier.score(&mut state, &mut first, &driver).await?;
-        assert_eq!(trailing_text(&first), Some(format!("hi|{ESCALATION}")));
+        assert_eq!(trailing_text(&first), Some(ESCALATION.to_string()));
 
         for _ in 0..2 {
             let mut held = request();
@@ -1535,7 +1535,7 @@ mod tests {
             .score(&mut state, &mut request, &driver)
             .await?;
 
-        assert_eq!(trailing_text(&request), Some(format!("hi|{DEESCALATION}")));
+        assert_eq!(trailing_text(&request), Some(DEESCALATION.to_string()));
         Ok(())
     }
 

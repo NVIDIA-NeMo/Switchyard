@@ -252,7 +252,8 @@ decision_client = "decisions"
 ```
 
 Each `decision_targets` entry pairs an upstream model `id` with a `decision_client`.
-OpenAI receives structured context, instructions, and descriptions as JSON text.
+Both formats receive the conversation messages, the question instructions, and
+the choice descriptions.
 
 ## `[routes.<name>]`
 
@@ -327,19 +328,11 @@ Splits traffic across targets. See
 
 ### `plan_execute`
 
-Plans on a capable target, then switches to an efficient target after the first
-recognized edit or write tool call. See [Plan/Execute Routing](../routing_algorithms/plan_execute_routing.md).
-
-| Key | Required | Default | Meaning |
-|---|:---:|---|---|
-| `capable_target` | Yes | - | Target used for read-only inspection and planning. |
-| `efficient_target` | Yes | - | Target used after the first edit or write. |
-| `execution_trigger` | No | `edit` | Use `edit` for mutation detection or `judge` for a judged handoff. |
-| `judge` | For `judge` | unset | Same fields as a Stage classifier. Supports LLM and decision models. Defaults to 10 recent messages. |
-| `tool_semantics.mutate` | No | `[]` | Additional tool names that trigger handoff. See the [example](../routing_algorithms/plan_execute_routing.md#optional-settings). |
-| `planning_prompt` | No | packaged prompt | Replaces the planning instruction. |
-| `handoff_prompt` | No | unset | Adds an instruction to the handoff request. |
-| `planner_reasoning_as_text` | No | `false` | Converts visible planner reasoning summaries to assistant text at handoff. |
+This route type has been removed. Use `stage_router` with
+`picker = "capable_first"`, `confidence_threshold = 0.0`,
+`capable_hold_turns = 0`, `efficient_hold_turns = -1`, and a
+`capable_system_prompt`. See the recipe in
+[Plan/Execute with Stage](../routing_algorithms/stage_router_routing.md#plan-and-execute).
 
 ### `prefill_router`
 
@@ -513,7 +506,7 @@ so it is consulted on every ambiguous turn and never retains a verdict.
 | `classifier.base_threshold` | For LLM judges | — | Lowest `p_solve` that still routes to the efficient tier. In `[0, 1]`. Omit with `classifier.decision`. |
 | `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classifier.fail_open` | No | `true` | When `true`, judge client failures and deadlines let the turn fall open to the picker default and record fail-open evidence. When `false`, they stop the request. |
-| `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. It cannot be combined with `base_threshold`, `threshold_step`, `prompt`, `response_format_type`, or `max_output_tokens`; the load error is `decision cannot use LLM judge settings`. See [Decision model classifier](../routing_algorithms/composite_routing.md#decision-model-classifier). |
+| `classifier.decision` | No | defaults for a decision target | Decision model settings. A classifier target in `decision_targets` uses the defaults when this table is absent. It cannot be combined with `base_threshold`, `threshold_step`, `prompt`, `response_format_type`, or `max_output_tokens`; the load error is `decision cannot use LLM judge settings`. See [Decision model classifier](../routing_algorithms/composite_routing.md#decision-model-classifier). |
 | `classifier.classify_trigger` | No | `every_request` | Only the default is accepted here. The stage fallback judge runs on every ambiguous turn and retains no verdict, so `user_turn` and `new_session` are rejected at load. Use a [composite](#composite) route to judge once per user turn. |
 | `classifier.message_hash_fallback` | No | `false` | Rejected at load on a `stage_router` route. The fallback judge retains nothing to key on. |
 | `classifier.recent_turn_window` | No | unset | LLM judges default to task messages. Decision judges default to 10 recent messages plus the opening task. An explicit value counts trailing messages, while the route window counts tool results. |
@@ -581,20 +574,24 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `classifier.base_threshold` | For LLM judges | unset | `p_solve` floor that still routes to the efficient tier. In `[0, 1]`. Omit with `classifier.decision`. |
 | `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classifier.classify_trigger` | Yes | — | `user_turn` re-picks the tier whenever the user speaks, `new_session` picks once and holds it. `every_request` is rejected here: a judge call per tool step is the cost this route exists to avoid. |
-| `classifier.decision` | No | unset | Use a decision model instead of an LLM judge. The classifier target must be in `decision_targets`. It cannot be combined with the LLM judge keys (`base_threshold`, `threshold_step`, `prompt`, `response_format_type`, `max_output_tokens`). |
+| `classifier.decision` | No | defaults for a decision target | Decision model settings. A classifier target in `decision_targets` uses the defaults when this table is absent. It cannot be combined with the LLM judge keys (`base_threshold`, `threshold_step`, `prompt`, `response_format_type`, `max_output_tokens`). |
+| `classifier.decision.cutoff` | No | `0.92` | Select capable when the `apply_cutoff_to` probability is above this value. In `[0, 1]`. |
+| `classifier.decision.instructions` | No | built in | Replaces the default question text. Keep the meaning of the choices. |
+| `classifier.decision.choices` | No | `capable`, `efficient` | Array of `{ id, description }` tables sent as the choice options. IDs must be unique. |
+| `classifier.decision.apply_cutoff_to` | No | `capable` | Choice ID whose probability is compared with `cutoff`. |
 | `classifier.fail_open` | No | `true` | On judge failure, retain the last classified tier or default to efficient. Set `false` to return the error. |
 | `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier. |
 | `classifier.recent_turn_window` | No | unset | LLM judges default to task messages. Decision judges default to 10 recent messages plus the opening task. An explicit value sets the trailing message window. |
 | `classifier.prompt` | No | packaged prompt | Replaces the classifier judge prompt. The verdict schema is unchanged. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the judge. Use `json_object` when the provider does not support JSON Schema. Switchyard adds the schema to the prompt and validates the verdict locally. |
 | `classifier.max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
-| `classifier.judge_deadline_ms` | No | unset | Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry the judge is treated as unavailable and the route falls back to the capable tier. Must be at least `1`. Unset leaves the consultation unbounded. |
+| `classifier.judge_deadline_ms` | No | unset | Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry, error handling follows `classifier.fail_open`. Must be at least `1`. Unset leaves the consultation unbounded. |
 | `stage.capable_target` | Yes | — | Capable tier. |
 | `stage.efficient_target` | Yes | — | Efficient tier. |
-| `stage.efficient_first_threshold` | No | `0.5` | Signal confidence required after an Efficient classification. In `[0, 1]`. Also accepts `confidence_threshold`. |
+| `stage.efficient_first_threshold` | No | `0.4` | Signal confidence required after an Efficient classification. In `[0, 1]`. Also accepts `confidence_threshold`. |
 | `stage.capable_first_threshold` | No | `0.0` | Signal confidence required after a Capable classification. In `[0, 1]`. |
 | `stage.recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
-| `stage.capable_hold_turns` | No | `2` | Same capable hold as `stage_router`: `0` disables; `-1` pins after a switch. |
+| `stage.capable_hold_turns` | No | CF: `0`, EF: `2` | Same capable hold as `stage_router`: `0` disables; `-1` pins after a switch. |
 | `stage.efficient_hold_turns` | No | CF: `-1`; EF: `0` | Defaults to pinning efficient after a switch when the classifier selected capable-first. Explicit `0` disables; positive values hold that many requests. |
 | `stage.tool_semantics.observe` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as observation. |
 | `stage.tool_semantics.mutate` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as mutation. |
@@ -602,6 +599,9 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `stage.tool_semantics.new` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as neutral forward activity. |
 | `stage.handoff_notes` | No | unset | Optional guidance appended to forwarded requests. Uses the same fields and behavior as [stage-router handoff notes](../routing_algorithms/stage_router_routing.md#optional-handoff-notes). |
 | `subagents` | No | unset | Nested policy used only for delegated sub-agent work. |
+
+The capable-first profile uses a planning prompt by default. Shared or profile
+`capable_system_prompt` overrides it. An empty string disables it.
 
 Optional `efficient` and `capable` tables provide independent stage
 settings and prompts. See [independent stage profiles](../routing_algorithms/composite_routing.md#independent-stage-profiles).

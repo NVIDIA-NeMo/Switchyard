@@ -273,25 +273,25 @@ mod tests {
     use switchyard_protocol::{LlmRequest, ToolCall, ToolResult};
 
     fn call(id: &str, command: &str) -> Message {
-        Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::ToolCall(ToolCall {
+        Message::new(
+            Role::Assistant,
+            vec![ContentBlock::ToolCall(ToolCall {
                 id: id.into(),
                 name: "bash".into(),
                 arguments: serde_json::json!({ "command": command }),
             })],
-        }
+        )
     }
 
     fn result(id: &str, text: &str) -> Message {
-        Message {
-            role: Role::Tool,
-            content: vec![ContentBlock::ToolResult(ToolResult {
+        Message::new(
+            Role::Tool,
+            vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: id.into(),
                 content: vec![ContentBlock::Text { text: text.into() }],
                 is_error: None,
             })],
-        }
+        )
     }
 
     fn session(steps: usize) -> Request {
@@ -440,9 +440,9 @@ mod tests {
 
     #[test]
     fn batched_results_are_paired_by_tool_call_id() {
-        let calls = Message {
-            role: Role::Assistant,
-            content: ["a", "b"]
+        let calls = Message::new(
+            Role::Assistant,
+            ["a", "b"]
                 .into_iter()
                 .map(|id| {
                     ContentBlock::ToolCall(ToolCall {
@@ -452,11 +452,11 @@ mod tests {
                     })
                 })
                 .collect(),
-        };
+        );
         for order in [["a", "b"], ["b", "a"]] {
-            let results = Message {
-                role: Role::Tool,
-                content: order
+            let results = Message::new(
+                Role::Tool,
+                order
                     .into_iter()
                     .map(|id| {
                         ContentBlock::ToolResult(ToolResult {
@@ -468,7 +468,7 @@ mod tests {
                         })
                     })
                     .collect(),
-            };
+            );
             let view = digest(&[calls.clone(), results]);
             assert!(view.contains("tool_a {}\nresult:\noutput_a"), "{view}");
             assert!(

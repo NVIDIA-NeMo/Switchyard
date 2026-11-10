@@ -15,7 +15,7 @@ Each strategy names its models by role. The TOML keys differ by route type:
 | Route `type` | Serves most turns | Takes the hard turns | Decides |
 |---|---|---|---|
 | `auto`, `stage_router`, `composite` | `efficient_target` | `capable_target` | Tool-result signals. `composite` adds a classifier. |
-| `plan_execute` | `efficient_target`, after the first edit | `capable_target`, while planning | The first file edit. |
+| `stage_router`, [plan/execute settings](stage_router_routing.md#plan-and-execute) | `efficient_target` serves after handoff. | `capable_target` serves while planning. | Stage uses tool results to select a tier, then holds efficient after a switch. |
 | `llm_classifier` (capability, escalation) | `weak_target` | `strong_target` | The judge at `classifier_target`. |
 | `llm_classifier` (custom) | Your target names | Your target names | The judge in `models.judge`. |
 | `advisor` | `executor_target` | `advisor_target` reviews. It does not serve turns. | The gate rules. |
@@ -274,26 +274,15 @@ Record it with every result. Three rules apply:
   `reasoning_effort` key instead. It writes `reasoning.effort` on
   `openai_responses` and `reasoning_effort` on `openai_chat`, replacing the value
   the client sent. The DeepSWE profiles above use it to run both tiers at `max`.
-- `reasoning_effort` is rejected on `anthropic_messages` clients. The server does
-  not start:
-
-    ```text
-    target weak reasoning_effort is only supported on openai_chat and openai_responses clients
-    ```
-
-    For those targets the effort the client sends is passed through in
-    Anthropic's form.
-
-- One route cannot hold the same model at two efforts. Two targets with the same
-  model ID on one client but different `reasoning_effort` or `extra_body` fail
-  to load:
-
-    ```text
-    targets strong and strong_max both name model openai/gpt-4o on llm client openrouter but with different reasoning_effort, extra_body, or omit_body_fields; one target per model id is kept, so give each its own model id or llm client
-    ```
-
-    Separate routes can use separate `llm_clients` entries for the same
-    endpoint. See the [target keys](../reference/toml_schema.md#targetsname).
+- On `anthropic_messages`, the target's `reasoning_effort` writes
+  `output_config.effort`, replacing the value the caller sent. Switchyard accepts
+  `low`, `medium`, `high`, `xhigh`, and `max` for this format. Choose an effort
+  supported by the upstream provider and model. When the target leaves
+  `reasoning_effort` unset, the caller's effort is passed through.
+- One route can use multiple target names with the same provider model ID and
+  `llm_client` at different efforts. Each target keeps its own `reasoning_effort`,
+  `extra_body`, and `omit_body_fields`. See the
+  [target keys](../reference/toml_schema.md#targetsname) for an example.
 
 ## Related
 

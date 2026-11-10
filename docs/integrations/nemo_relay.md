@@ -558,7 +558,8 @@ response is available, the error mark describes the terminal failure instead.
 `outcome_id` is present when the algorithm runner supplies outcome metadata.
 When the algorithm supplies evidence, the plugin includes an object containing
 supported string fields (`source`, `verdict`, `trigger`, and `reason_code`) and
-numeric fields (`score`, `confidence`, and `threshold`). Other fields and values
+numeric fields (`score`, `confidence`, `threshold`, `capable_score`, and
+`capable_threshold`). Other fields and values
 of the wrong type are omitted. String values longer than 64 bytes are also omitted
 and should be stable, non-sensitive labels.
 
