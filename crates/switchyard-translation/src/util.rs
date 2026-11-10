@@ -34,6 +34,17 @@ pub fn object<'a>(value: &'a Value, path: &str) -> Result<&'a Map<String, Value>
         })
 }
 
+pub(crate) fn decode_openai_stream(body: &Map<String, Value>) -> Result<bool> {
+    match body.get("stream") {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(stream)) => Ok(*stream),
+        Some(_) => Err(TranslationError::InvalidType {
+            path: "$.stream".to_string(),
+            expected: "boolean",
+        }),
+    }
+}
+
 /// Converts JSON scalars to Python-compatible string values where providers do so.
 pub fn string_value(value: &Value) -> Option<String> {
     match value {
