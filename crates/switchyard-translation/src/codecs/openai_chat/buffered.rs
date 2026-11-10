@@ -1202,6 +1202,7 @@ fn media_source_text(source: &MediaSource) -> String {
 
 /// Encodes normalized tool definitions into OpenAI tool JSON.
 pub(crate) fn encode_openai_tools(tools: &[Tool]) -> Result<Value> {
+    let mut names = std::collections::HashSet::new();
     Ok(Value::Array(
         tools
             .iter()
@@ -1211,6 +1212,12 @@ pub(crate) fn encode_openai_tools(tools: &[Tool]) -> Result<Value> {
                         "MCP and provider tool encoding is not implemented".into(),
                     )
                 })?;
+                if !names.insert(tool.name.as_str()) {
+                    return Err(TranslationError::InvalidValue {
+                        path: "$.tools".to_string(),
+                        message: format!("duplicate tool name: {:?}", tool.name),
+                    });
+                }
                 let mut function = json!({
                     "name": tool.name,
                     "description": tool.description.clone().unwrap_or_default(),
