@@ -277,6 +277,30 @@ def test_response_ir_restores_request_tool_extensions(method) -> None:
             id="namespace-tool-name-collision",
         ),
         pytest.param(
+            "translate_request",
+            (
+                "openai_responses",
+                "anthropic_messages",
+                {
+                    "tools": [
+                        {
+                            "type": "namespace",
+                            "name": "a__b",
+                            "tools": [{"type": "function", "name": "c", "parameters": {}}],
+                        },
+                        {
+                            "type": "namespace",
+                            "name": "a",
+                            "tools": [{"type": "function", "name": "b__c", "parameters": {}}],
+                        },
+                    ],
+                },
+            ),
+            {},
+            TranslationError,
+            id="namespace-tool-name-collision-anthropic",
+        ),
+        pytest.param(
             "encode_response",
             ("openai_chat", {}),
             {"request_extensions": {"fields": 42}},

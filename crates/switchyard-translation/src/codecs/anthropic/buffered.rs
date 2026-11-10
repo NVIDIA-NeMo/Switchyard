@@ -1263,6 +1263,7 @@ fn ensure_anthropic_tool_input_object(arguments: Value) -> Value {
 
 // Encodes normalized tool definitions into Anthropic tool JSON.
 fn encode_anthropic_tools(tools: &[Tool]) -> Result<Value> {
+    let mut names = std::collections::HashSet::new();
     Ok(Value::Array(
         tools
             .iter()
@@ -1277,6 +1278,12 @@ fn encode_anthropic_tools(tools: &[Tool]) -> Result<Value> {
                         "MCP and provider tool encoding is not implemented".into(),
                     )
                 })?;
+                if !names.insert(tool.name.as_str()) {
+                    return Err(TranslationError::InvalidValue {
+                        path: "$.tools".to_string(),
+                        message: format!("duplicate tool name: {:?}", tool.name),
+                    });
+                }
                 let mut item = json!({
                     "name": tool.name,
                     "description": tool.description.clone().unwrap_or_default(),
