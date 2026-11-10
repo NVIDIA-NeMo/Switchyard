@@ -257,7 +257,8 @@ fn build_multi_format_client(
   Headers owned by other providers are preserved as application headers.
 - Per-backend custom headers go in `HttpBackendConfig::extra_headers`. Set credentials with
   `api_key`. OpenAI backends reject `Authorization`; Anthropic backends reject `x-api-key`
-  and `anthropic-version`. Header names are case-insensitive.
+  and `anthropic-version`. Header names are case-insensitive. Configured values
+  replace caller values with the same name, including with `forward_auth` enabled.
 - Per-target top-level request defaults go in `HttpBackendConfig::extra_body`.
   The merge is shallow and fields already present in the request take precedence.
 - Anthropic reconstruction preserves the caller's native `thinking` settings, including

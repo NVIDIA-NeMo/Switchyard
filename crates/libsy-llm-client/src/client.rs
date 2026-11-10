@@ -1091,7 +1091,12 @@ fn forward_metadata_headers(
         } else {
             is_allowed_metadata_header(name.as_str())
         };
-        if !is_allowed {
+        if !is_allowed
+            || backend
+                .extra_headers()
+                .keys()
+                .any(|configured| configured.eq_ignore_ascii_case(name.as_str()))
+        {
             continue;
         }
         forwarded.append(name, value.clone());
@@ -3735,6 +3740,95 @@ mod tests {
         let received = received.first().ok_or("expected one upstream request")?;
         assert!(!received.headers.contains_key("x-goog-api-key"));
         assert!(!received.headers.contains_key("x-custom-internal-secret"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn configured_headers_replace_caller_values()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for forward_auth in [true, false] {
+            for make_backend in [
+                Backend::OpenAiChat,
+                Backend::OpenAiResponses,
+                Backend::Anthropic,
+            ] {
+                let server = MockServer::start().await;
+                Mock::given(method("POST"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+                let mut backend_config = if forward_auth {
+                    forwarding_config(&format!("{}/v1", server.uri()))
+                } else {
+                    config(&format!("{}/v1", server.uri()))
+                };
+                backend_config.extra_headers = BTreeMap::from([
+                    ("X-QA-Static".into(), "configured".into()),
+                    ("X-Request-Id".into(), "configured-id".into()),
+                    ("X-Config-Only".into(), "config-only".into()),
+                ]);
+                let backend = make_backend(backend_config);
+                let client =
+                    TranslatingLlmClient::new(&[ModelConfig::new("gpt", backend.clone(), None)])?;
+                let mut headers = HeaderMap::new();
+                for (name, value) in [
+                    ("x-qa-static", "caller-one"),
+                    ("X-QA-STATIC", "caller-two"),
+                    ("x-request-id", "caller-id"),
+                    ("authorization", "Bearer caller-key"),
+                    ("x-application", "app-one"),
+                    ("x-application", "app-two"),
+                ] {
+                    headers.append(
+                        reqwest::header::HeaderName::from_bytes(name.as_bytes())?,
+                        reqwest::header::HeaderValue::from_static(value),
+                    );
+                }
+                let metadata = Metadata {
+                    http_headers: Some(headers),
+                    ..Default::default()
+                };
+                client
+                    .send_encoded(
+                        &backend,
+                        backend.wire_format(),
+                        text_request(Some("gpt".into()), "hi"),
+                        Some(&metadata),
+                        &ModelId::from("gpt"),
+                        UpstreamEndpoint::Completion,
+                    )
+                    .await?;
+                let received = server.received_requests().await.ok_or("missing requests")?;
+                assert_eq!(received.len(), 1);
+                let headers = &received[0].headers;
+                for (name, value) in [
+                    ("x-qa-static", "configured"),
+                    ("x-request-id", "configured-id"),
+                    ("x-config-only", "config-only"),
+                ] {
+                    assert_eq!(headers.get_all(name).iter().collect::<Vec<_>>(), [value]);
+                }
+                assert_eq!(
+                    headers.get_all("x-application").iter().collect::<Vec<_>>(),
+                    if forward_auth {
+                        vec!["app-one", "app-two"]
+                    } else {
+                        vec![]
+                    }
+                );
+                let (auth_name, auth_value) = match (&backend, forward_auth) {
+                    (_, true) => ("authorization", "Bearer caller-key"),
+                    (Backend::Anthropic(_), false) => ("x-api-key", "secret"),
+                    _ => ("authorization", "Bearer secret"),
+                };
+                assert_eq!(
+                    headers.get_all(auth_name).iter().collect::<Vec<_>>(),
+                    [auth_value]
+                );
+                server.verify().await;
+            }
+        }
         Ok(())
     }
 
