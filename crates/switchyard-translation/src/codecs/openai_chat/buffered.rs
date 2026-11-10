@@ -753,7 +753,7 @@ pub(crate) fn decode_openai_tool_call(
 /// Parses stringified tool-call arguments when possible.
 pub(crate) fn parse_arguments(value: &Value) -> Value {
     match value {
-        Value::String(text) => serde_json::from_str(text).unwrap_or_else(|_| json!({"raw": text})),
+        Value::String(text) => serde_json::from_str(text).unwrap_or_else(|_| value.clone()),
         other => other.clone(),
     }
 }

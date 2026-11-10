@@ -126,6 +126,11 @@ async fn malformed_tool_calls_escalate_and_complete_ones_are_judged() -> Result<
         drive(&route, task(), calls.clone(), truncated, 0.0).await?,
         "capable"
     );
+    let malformed = || tool_call(json!("not JSON"), StopReason::ToolUse);
+    assert_eq!(
+        drive(&route, task(), calls.clone(), malformed, 0.0).await?,
+        "capable"
+    );
     assert_eq!(
         drive(&route, task(), calls, complete_call, 0.1).await?,
         "efficient"
