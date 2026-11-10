@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"constant":["NAMESPACE_SEPARATOR","TOOL_NAMESPACES_KEY"],"fn":["split_qualified_name","tool_namespaces"]};
