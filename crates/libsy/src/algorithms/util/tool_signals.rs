@@ -677,6 +677,7 @@ fn has_short_flag(word: &str, flags: &[char]) -> bool {
 // Bounds recursion through nested wrappers and `sh -c` scripts.
 const MAX_COMMAND_DEPTH: usize = 20;
 
+/// This helper skips leading assignments whose names are valid shell identifiers.
 fn skip_shell_assignments<'a>(mut words: &'a [&'a str]) -> &'a [&'a str] {
     while words.first().is_some_and(|word| {
         word.split_once('=').is_some_and(|(name, _)| {
@@ -691,6 +692,8 @@ fn skip_shell_assignments<'a>(mut words: &'a [&'a str]) -> &'a [&'a str] {
     words
 }
 
+/// This helper returns the command words after a supported launcher's options and values.
+/// It leaves `env -S` unrecognized because that option splits command text into arguments.
 fn shell_wrapper_arguments<'a>(program: &str, args: &'a [&'a str]) -> Option<&'a [&'a str]> {
     let options: &[&str] = match program {
         "sudo" => &[
@@ -948,8 +951,8 @@ fn shell_invokes_program(command: &str, expected: &str) -> bool {
     })
 }
 
-// An argv element can contain shell syntax as data, so patch recognition must
-// preserve argument boundaries until an explicit shell wrapper interprets it.
+/// This recognizer preserves argv boundaries.
+/// Shell syntax within an argument stays data until a shell wrapper interprets it.
 fn command_invokes_patch(command: &Value) -> bool {
     match command {
         Value::String(command) => shell_invokes_patch(command, 0),
@@ -962,6 +965,8 @@ fn command_invokes_patch(command: &Value) -> bool {
     }
 }
 
+/// This recognizer finds patch programs in a limited set of shell syntax.
+/// It skips comments and stops at heredoc input.
 fn shell_invokes_patch(mut command: &str, depth: usize) -> bool {
     if depth > MAX_COMMAND_DEPTH {
         return false;
@@ -995,6 +1000,8 @@ fn shell_invokes_patch(mut command: &str, depth: usize) -> bool {
     false
 }
 
+/// This recognizer follows supported launchers and shell `-c` scripts to find patch programs.
+/// It limits nesting and excludes known shell modes that do not execute commands.
 fn patch_command(words: &[&str], depth: usize) -> bool {
     if depth > MAX_COMMAND_DEPTH {
         return false;
@@ -1025,20 +1032,35 @@ fn patch_command(words: &[&str], depth: usize) -> bool {
     if matches!(program, "bash" | "sh" | "dash" | "zsh" | "ksh") {
         // Only leading shell options can select a script with `-c`; later words
         // belong to that script. Syntax-check mode (`-n`) does not execute it.
-        for (index, option) in args.iter().enumerate() {
-            if !option.starts_with('-') || option.starts_with("--") || *option == "-" {
+        let mut options = args.iter();
+        while let Some(option) = options.next() {
+            if !option.starts_with('-') || matches!(*option, "-" | "--") {
                 break;
             }
             if has_short_flag(option, &['n']) {
                 return false;
             }
-            if has_short_flag(option, &['c']) {
-                return args
-                    .get(index + 1)
-                    .is_some_and(|command| shell_invokes_patch(command, depth + 1));
+            if option.starts_with("--")
+                && !matches!(
+                    *option,
+                    "--login" | "--noprofile" | "--norc" | "--rcfile" | "--init-file"
+                )
+            {
+                return false;
             }
-            if has_short_flag(option, &['o', 'O']) {
-                break;
+            if has_short_flag(option, &['o', 'O']) || matches!(*option, "--rcfile" | "--init-file")
+            {
+                let Some(value) = options.next() else {
+                    return false;
+                };
+                if has_short_flag(option, &['o']) && *value == "noexec" {
+                    return false;
+                }
+            }
+            if has_short_flag(option, &['c']) {
+                return options
+                    .next()
+                    .is_some_and(|command| shell_invokes_patch(command, depth + 1));
             }
         }
     }
@@ -2663,6 +2685,18 @@ mod tests {
             json!({"cmd": ["bash", "script.sh", "-c", "patch -p1"]}),
             json!({"cmd": "env --help patch"}),
             json!({"cmd": "bash -nc 'patch -p1'"}),
+            json!({"cmd": "bash -o noexec -c 'patch -p1'"}),
+            json!({"cmd": "bash --norc -n -c 'patch -p1'"}),
+            json!({"cmd": "bash --help -c 'patch -p1'"}),
+            json!({"cmd": "bash --version -c 'patch -p1'"}),
+            json!({"cmd": "bash --dump-strings -c 'patch -p1'"}),
+            json!({"cmd": "bash --dump-po-strings -c 'patch -p1'"}),
+            json!({"cmd": "zsh --noexec -c 'patch -p1'"}),
+            json!({"cmd": "ksh --no-exec -c 'patch -p1'"}),
+            json!({"cmd": "zsh --NO_EXEC -c 'patch -p1'"}),
+            json!({"command": ["bash", "--rcfile", "-c", "script.sh", "patch -p1"]}),
+            json!({"cmd": "bash -- -c 'patch -p1'"}),
+            json!({"cmd": "bash -o pipefail -c \"printf 'patch -p1' 2>/dev/null\""}),
         ] {
             let request = call_with_result(exec_command(arguments.clone()), tr("MemoryError"));
             let signal = ToolSignals::from_request(&request, None);
@@ -2683,6 +2717,14 @@ mod tests {
             json!({"cmd": "sudo timeout 5 /usr/local/bin/apply_patch fix.diff"}),
             json!({"cmd": "bash -lc 'patch -p1 < fix.diff'"}),
             json!({"cmd": "bash -l -c 'patch -p1 < fix.diff'"}),
+            json!({"cmd": "bash -o pipefail -c 'patch -p1 < fix.diff'"}),
+            json!({"cmd": "bash -oc pipefail 'patch -p1 < fix.diff'"}),
+            json!({"cmd": "bash -O extglob -c 'patch -p1 < fix.diff'"}),
+            json!({"cmd": "bash --login -c 'patch -p1 < fix.diff'"}),
+            json!({"cmd": "bash --noprofile --norc -c 'apply_patch fix.diff'"}),
+            json!({"command": ["bash", "--rcfile", "/dev/null", "-c", "apply_patch fix.diff"]}),
+            json!({"cmd": ["bash", "--init-file", "/dev/null", "-c", "apply_patch fix.diff"]}),
+            json!(r#"{"cmd":["bash","-o","pipefail","-c","apply_patch fix.diff"]}"#),
             json!({"cmd": "printf x # note\npatch -p1 < fix.diff"}),
             json!({"cmd": "printf '%s' name#suffix; patch -p1 < fix.diff"}),
             json!({"command": ["bash", "-lc", "apply_patch fix.diff"]}),
