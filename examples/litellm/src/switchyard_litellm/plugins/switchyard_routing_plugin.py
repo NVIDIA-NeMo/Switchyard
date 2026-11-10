@@ -244,15 +244,15 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
                     context.candidate_models = [
                         candidate for candidate in candidates if candidate == selected
                     ]
+                    # Every algorithm reports how it decided: the classifier's score and
+                    # threshold, the stage router's fall-open or override. Recorded as given,
+                    # so a gateway can show the reason beside the selection.
                     context.signals["switchyard"] = {
                         "selected_model_id": selected,
                         "fallback_models": outcome.selected_model_ids[1:],
+                        "algorithm": outcome.metadata.algorithm,
+                        "evidence": dict(outcome.metadata.evidence or {}),
                     }
-                    if self._judge is not None:
-                        context.signals["switchyard"]["algorithm"] = outcome.metadata.algorithm
-                        context.signals["switchyard"]["evidence"] = dict(
-                            outcome.metadata.evidence or {}
-                        )
                     if request_patch["set"] or request_patch.get("remove"):
                         context.signals["switchyard"]["request_patch"] = request_patch
                     return context
