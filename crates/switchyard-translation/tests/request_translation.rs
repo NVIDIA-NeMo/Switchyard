@@ -3679,6 +3679,72 @@ fn openai_data_uri_images_translate_to_anthropic_sources() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn anthropic_output_schema_preserves_keyword_names_and_literal_values() -> TestResult {
+    let engine = TranslationEngine::default();
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "minimum": {"type": "integer"},
+            "maximum": {"type": "integer"},
+            "minLength": {"type": "string"},
+            "maxLength": {"type": "string"},
+            "nested": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"minimum": {"type": "integer"}},
+                    "required": ["minimum"],
+                    "additionalProperties": false
+                }
+            },
+            "literal": {
+                "enum": [{"minimum": 1, "maximum": 2}],
+                "const": {"minimum": 1, "maximum": 2},
+                "default": {"maxLength": 4}
+            }
+        },
+        "$defs": {"minimum": {"type": "integer"}},
+        "required": ["minimum", "maximum", "minLength", "maxLength"],
+        "additionalProperties": false
+    });
+    for source in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+        let body = if source == WireFormat::OpenAiChat {
+            json!({
+                "model": "route", "messages": [{"role": "user", "content": "Return JSON."}],
+                "response_format": {"type": "json_schema", "json_schema": {
+                    "name": "result", "strict": true, "schema": schema
+                }}
+            })
+        } else {
+            json!({
+                "model": "route", "input": "Return JSON.",
+                "text": {"format": {
+                    "type": "json_schema", "name": "result", "strict": true, "schema": schema
+                }}
+            })
+        };
+        for lossy_conversion_policy in [
+            LossyConversionPolicy::AllowWithDiagnostics,
+            LossyConversionPolicy::Reject,
+        ] {
+            let policy = TranslationPolicy {
+                lossy_conversion_policy,
+                ..TranslationPolicy::default()
+            };
+            let translated =
+                engine.translate_request(source, WireFormat::AnthropicMessages, &body, &policy)?;
+            assert_eq!(translated.body["output_config"]["format"]["schema"], schema);
+            assert!(
+                translated.diagnostics.is_empty(),
+                "{:?}",
+                translated.diagnostics
+            );
+        }
+    }
+    Ok(())
+}
+
 // Verifies Anthropic receives its supported schema subset without mutating the neutral contract.
 #[test]
 fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestResult {
@@ -3695,8 +3761,17 @@ fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestR
                     "type": "object",
                     "properties": {
                         "crux": {"type": "string", "minLength": 1, "maxLength": 80},
-                        "p_solve": {"type": "number", "minimum": 0, "maximum": 1}
+                        "p_solve": {"type": "number", "minimum": 0, "maximum": 1},
+                        "nested": {
+                            "type": "array",
+                            "items": {"anyOf": [
+                                {"type": "number", "minimum": 0},
+                                {"type": "string", "maxLength": 80}
+                            ]}
+                        }
                     },
+                    "$defs": {"maximum": {"type": "number", "maximum": 1}},
+                    "allOf": [{"properties": {"crux": {"minLength": 1}}}],
                     "required": ["crux", "p_solve"],
                     "additionalProperties": false
                 }
@@ -3717,8 +3792,14 @@ fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestR
             "type": "object",
             "properties": {
                 "crux": {"type": "string"},
-                "p_solve": {"type": "number"}
+                "p_solve": {"type": "number"},
+                "nested": {
+                    "type": "array",
+                    "items": {"anyOf": [{"type": "number"}, {"type": "string"}]}
+                }
             },
+            "$defs": {"maximum": {"type": "number"}},
+            "allOf": [{"properties": {"crux": {}}}],
             "required": ["crux", "p_solve"],
             "additionalProperties": false
         })
@@ -3733,6 +3814,20 @@ fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestR
         body["response_format"]["json_schema"]["schema"]["properties"]["p_solve"]["minimum"],
         0
     );
+    let strict = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..TranslationPolicy::default()
+    };
+    let error = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::AnthropicMessages,
+            &body,
+            &strict,
+        )
+        .err()
+        .ok_or("unsupported schema constraints should be rejected")?;
+    assert_eq!(error.kind(), "LossyConversion");
     Ok(())
 }
 

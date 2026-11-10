@@ -605,8 +605,37 @@ fn strip_anthropic_unsupported_constraints(value: &mut Value) -> bool {
             for key in ["minimum", "maximum", "minLength", "maxLength"] {
                 removed |= object.remove(key).is_some();
             }
-            for value in object.values_mut() {
-                removed |= strip_anthropic_unsupported_constraints(value);
+            // Property/definition names and literal values are not schema keywords.
+            for (key, value) in object.iter_mut() {
+                match key.as_str() {
+                    "properties" | "patternProperties" | "$defs" | "definitions"
+                    | "dependentSchemas" | "dependencies" => {
+                        if let Value::Object(schemas) = value {
+                            for schema in schemas.values_mut() {
+                                removed |= strip_anthropic_unsupported_constraints(schema);
+                            }
+                        }
+                    }
+                    "items"
+                    | "additionalItems"
+                    | "prefixItems"
+                    | "contains"
+                    | "additionalProperties"
+                    | "unevaluatedItems"
+                    | "unevaluatedProperties"
+                    | "propertyNames"
+                    | "allOf"
+                    | "anyOf"
+                    | "oneOf"
+                    | "not"
+                    | "if"
+                    | "then"
+                    | "else"
+                    | "contentSchema" => {
+                        removed |= strip_anthropic_unsupported_constraints(value);
+                    }
+                    _ => {}
+                }
             }
             removed
         }
