@@ -2561,6 +2561,64 @@ fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn responses_incomplete_snapshots_preserve_text_once() -> TestResult {
+    let engine = TranslationEngine::default();
+    let source = WireFormat::OpenAiResponses;
+    for target in [WireFormat::OpenAiChat, WireFormat::AnthropicMessages] {
+        for prefix in ["", "partial ", "partial answer"] {
+            let mut state = StreamTranslationState::new(source, target);
+            let mut events = Vec::new();
+            let mut input = vec![json!({"type": "response.created", "response": {
+                "id": "resp_partial", "model": "fixture"
+            }})];
+            if !prefix.is_empty() {
+                input.push(json!({"type": "response.output_text.delta",
+                    "output_index": 0, "content_index": 0, "delta": prefix}));
+            }
+            input.push(json!({"type": "response.incomplete", "response": {
+                "status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"},
+                "output": [{"type": "message", "role": "assistant", "status": "incomplete",
+                    "content": [{"type": "output_text", "text": "partial answer"}]}],
+                "usage": {"input_tokens": 7, "output_tokens": 2, "total_tokens": 9}
+            }}));
+            for event in input {
+                events.extend(engine.translate_event(&mut state, source, target, &event)?);
+            }
+            events.extend(engine.finish_stream(&mut state, target)?);
+            let text: String = events
+                .iter()
+                .filter_map(|event| {
+                    if target == WireFormat::OpenAiChat {
+                        event["choices"][0]["delta"]["content"].as_str()
+                    } else {
+                        event["delta"]["text"].as_str()
+                    }
+                })
+                .collect();
+            assert_eq!(text, "partial answer", "{target:?}, prefix={prefix:?}");
+            if target == WireFormat::OpenAiChat {
+                let terminal = events.last().ok_or("missing Chat terminal chunk")?;
+                assert_eq!(terminal["choices"][0]["finish_reason"], "length");
+                assert_eq!(terminal["usage"]["prompt_tokens"], 7);
+                assert_eq!(terminal["usage"]["completion_tokens"], 2);
+            } else {
+                assert_eq!(
+                    events.last().ok_or("missing message stop")?["type"],
+                    "message_stop"
+                );
+                let terminal = events
+                    .iter()
+                    .find(|event| event["type"] == "message_delta")
+                    .ok_or("missing message delta")?;
+                assert_eq!(terminal["delta"]["stop_reason"], "max_tokens");
+                assert_eq!(terminal["usage"]["output_tokens"], 2);
+            }
+        }
+    }
+    Ok(())
+}
+
 // Interleave text and two tool calls to check that deltas keep the right item IDs.
 // Completion events must include the full text and tool arguments, and the final
 // response must preserve each item's ID.
