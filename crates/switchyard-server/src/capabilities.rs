@@ -41,9 +41,10 @@ pub(crate) fn unsupported_capability(
                     .and_then(Value::as_array)
                     .is_some_and(|tools| !tools.is_empty())
             })
-            || ["tool_choice", "function_call"]
-                .iter()
-                .any(|key| body.get(key).is_some_and(is_tool_choice_enabled))
+            || body.get("tool_choice").is_some_and(is_tool_choice_enabled)
+            || body
+                .get("function_call")
+                .is_some_and(|value| !value.is_null() && value.as_str() != Some("none"))
             || body
                 .get("parallel_tool_calls")
                 .is_some_and(|value| !value.is_null() && value.as_bool() != Some(false)))
@@ -252,6 +253,12 @@ mod tests {
         assert_requires_capability(
             OpenAiChat,
             &json!({"messages": [{"role": "user", "content": "hello"}], "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}], "tool_choice": "none", "parallel_tool_calls": false}),
+            capabilities,
+            "tool_calling",
+        )?;
+        assert_requires_capability(
+            OpenAiChat,
+            &json!({"messages": [{"role": "user", "content": "hello"}], "function_call": {"name": "lookup", "type": "none"}}),
             capabilities,
             "tool_calling",
         )?;
