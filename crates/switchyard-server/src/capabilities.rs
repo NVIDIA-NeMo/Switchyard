@@ -4,7 +4,7 @@
 //! Reject inputs that the selected route explicitly disables.
 
 use serde_json::Value;
-use switchyard_protocol::{ContentBlock, LlmRequest};
+use switchyard_protocol::{ContentBlock, LlmRequest, ToolChoice};
 use switchyard_runner::ModelCapabilities;
 
 /// Return the first explicitly disabled capability used by decoded or preserved input.
@@ -20,10 +20,11 @@ pub(crate) fn unsupported_capability(
                 .reasoning
                 .raw
                 .as_ref()
-                .is_some_and(|value| !value.is_null())
-            || ["reasoning", "reasoning_effort", "thinking"]
+                .is_some_and(is_thinking_enabled)
+            || ["reasoning", "reasoning_effort"]
                 .iter()
                 .any(|key| body.get(key).is_some_and(|value| !value.is_null()))
+            || body.get("thinking").is_some_and(is_thinking_enabled)
             || body
                 .pointer("/output_config/effort")
                 .is_some_and(|value| !value.is_null()))
@@ -32,15 +33,21 @@ pub(crate) fn unsupported_capability(
     }
     if capabilities.tool_calling == Some(false)
         && (!request.tools.is_empty()
-            || request.tool_choice.is_some()
+            || request
+                .tool_choice
+                .as_ref()
+                .is_some_and(|choice| !matches!(choice, ToolChoice::None))
             || ["tools", "functions"].iter().any(|key| {
                 body.get(key)
                     .and_then(Value::as_array)
                     .is_some_and(|tools| !tools.is_empty())
             })
-            || ["tool_choice", "parallel_tool_calls", "function_call"]
+            || ["tool_choice", "function_call"]
                 .iter()
-                .any(|key| body.get(key).is_some_and(|value| !value.is_null())))
+                .any(|key| body.get(key).is_some_and(is_tool_choice_enabled))
+            || body
+                .get("parallel_tool_calls")
+                .is_some_and(|value| !value.is_null() && value.as_bool() != Some(false)))
     {
         return Some("tool_calling");
     }
@@ -59,6 +66,16 @@ pub(crate) fn unsupported_capability(
         )
         .find_map(|content| unsupported_content(capabilities, content))
         .or_else(|| unsupported_preserved_content(capabilities, body))
+}
+
+fn is_thinking_enabled(value: &Value) -> bool {
+    !value.is_null() && value.get("type").and_then(Value::as_str) != Some("disabled")
+}
+
+fn is_tool_choice_enabled(value: &Value) -> bool {
+    !value.is_null()
+        && value.as_str() != Some("none")
+        && value.get("type").and_then(Value::as_str) != Some("none")
 }
 
 // Some provider fields survive forwarding without becoming decoded content blocks.
@@ -179,9 +196,9 @@ mod tests {
         for body in [
             json!({"input": "hello", "tools": [{"type": "web_search"}]}),
             json!({"input": "hello", "functions": [{"name": "lookup", "parameters": {"type": "object"}}]}),
-            json!({"input": "hello", "tool_choice": "none"}),
+            json!({"input": "hello", "tool_choice": "auto"}),
             json!({"input": "hello", "tool_choice": {"type": "web_search"}}),
-            json!({"input": "hello", "parallel_tool_calls": false}),
+            json!({"input": "hello", "parallel_tool_calls": true}),
             json!({"input": [{"type": "additional_tools", "tools": []}]}),
             json!({"input": [{"type": "shell_call", "id": "shell_1", "call_id": "call_1", "action": {"commands": ["pwd"]}}]}),
             json!({"input": [{"type": "function_call_output", "call_id": "call_1", "output": "done"}]}),
@@ -195,6 +212,79 @@ mod tests {
         let body = json!({"messages": [{"role": "user", "content": "hello"}], "tools": [], "functions": []});
         let request = decode_request(OpenAiChat, &body)?;
         assert_eq!(unsupported_capability(capabilities, &request, &body), None);
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_disabled_tool_controls() -> TestResult {
+        for (format, body) in [
+            (
+                OpenAiChat,
+                json!({"messages": [{"role": "user", "content": "hello"}], "tool_choice": "none", "parallel_tool_calls": false, "function_call": "none"}),
+            ),
+            (
+                OpenAiResponses,
+                json!({"input": "hello", "tool_choice": "none", "parallel_tool_calls": false}),
+            ),
+            (
+                AnthropicMessages,
+                json!({"messages": [{"role": "user", "content": "hello"}], "tool_choice": {"type": "none"}}),
+            ),
+        ] {
+            let request = decode_request(format, &body)?;
+            assert_eq!(
+                unsupported_capability(
+                    ModelCapabilities {
+                        tool_calling: Some(false),
+                        ..Default::default()
+                    },
+                    &request,
+                    &body,
+                ),
+                None,
+                "{body}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_disabled_thinking() -> TestResult {
+        let body = json!({"messages": [{"role": "user", "content": "hello"}], "thinking": {"type": "disabled"}});
+        let request = decode_request(AnthropicMessages, &body)?;
+        assert_eq!(
+            unsupported_capability(
+                ModelCapabilities {
+                    reasoning: Some(false),
+                    ..Default::default()
+                },
+                &request,
+                &body,
+            ),
+            None,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn disabled_controls_do_not_allow_capability_use() -> TestResult {
+        let capabilities = ModelCapabilities {
+            tool_calling: Some(false),
+            reasoning: Some(false),
+            ..Default::default()
+        };
+        assert_requires_capability(
+            OpenAiChat,
+            &json!({"messages": [{"role": "user", "content": "hello"}], "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}], "tool_choice": "none", "parallel_tool_calls": false}),
+            capabilities,
+            "tool_calling",
+        )?;
+        assert_requires_capability(
+            AnthropicMessages,
+            &json!({"messages": [{"role": "user", "content": "hello"}], "thinking": {"type": "disabled"}, "output_config": {"effort": "low"}}),
+            capabilities,
+            "reasoning",
+        )?;
         Ok(())
     }
 
