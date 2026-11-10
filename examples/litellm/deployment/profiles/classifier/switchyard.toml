@@ -1,0 +1,8 @@
+algorithm = "llm_classifier"
+judge_model = "switchyard-judge"
+base_threshold = 0.5
+threshold_step = 0.1
+max_output_tokens = 512
+judge_timeout_seconds = 60
+# The packaged capability card describes a coding agent with tools. Set `prompt`
+# to describe the efficient model you actually deploy; see the README.
