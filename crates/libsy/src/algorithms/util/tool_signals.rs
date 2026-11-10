@@ -681,10 +681,8 @@ const MAX_COMMAND_DEPTH: usize = 20;
 fn skip_shell_assignments<'a>(mut words: &'a [&'a str]) -> &'a [&'a str] {
     while words.first().is_some_and(|word| {
         word.split_once('=').is_some_and(|(name, _)| {
-            !name.is_empty()
-                && name.bytes().enumerate().all(|(i, c)| {
-                    c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())
-                })
+            name.starts_with(|c: char| c == '_' || c.is_ascii_alphabetic())
+                && name.bytes().all(|c| c == b'_' || c.is_ascii_alphanumeric())
         })
     }) {
         words = &words[1..];
@@ -974,7 +972,7 @@ fn shell_invokes_patch(mut command: &str, depth: usize) -> bool {
     while !command.is_empty() {
         let marker = quoted_chars(command).find(|&(index, c, quote)| {
             quote.is_none()
-                && ((c == '<' && command[index..].starts_with("<<"))
+                && (command[index..].starts_with("<<")
                     || (c == '#'
                         && command[..index].chars().next_back().is_none_or(|previous| {
                             previous.is_whitespace() || ";|&()".contains(previous)
