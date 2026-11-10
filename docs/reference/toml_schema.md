@@ -53,7 +53,7 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `context_discovery` | No | unset | Set to `"llama_cpp"` to enable `/props` context discovery for VGR efficient targets. Disabled when unset. An explicit route `context_window` takes precedence. |
 | `api_key_env` | No | unset | Name of the environment variable holding the key. Omit to send no authentication. |
 | `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. A route's forwarding clients must use one credential family unless they all use the same scheme, host, and port, such as one LLM gateway. |
-| `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
+| `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. Configured values replace caller values for the same name. |
 | `responses_reasoning` | No | `"auto"` | Responses reasoning replay: `"auto"`, `"preserve_encrypted"`, `"preserve_plaintext"`, or `"drop"`. Only valid for `openai_responses`. |
 | `fallback_on_rate_limit` | No | `true` | Try another completion candidate after an upstream HTTP 429 exhausts retries. Set to `false` to return the 429 instead. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |

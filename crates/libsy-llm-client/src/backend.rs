@@ -68,6 +68,7 @@ pub struct HttpBackendConfig {
     /// Provider-owned headers are rejected so a static value cannot replace
     /// configured or forwarded auth. Names and values must be valid HTTP header bytes;
     /// header names are case-insensitive.
+    /// Configured values replace caller values for the same header name.
     pub extra_headers: BTreeMap<String, String>,
     /// Default top-level request fields, applied only when the request omits the key.
     pub extra_body: BTreeMap<String, Value>,

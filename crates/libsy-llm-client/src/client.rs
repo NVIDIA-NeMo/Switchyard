@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use futures_util::{StreamExt, stream};
 use http::StatusCode;
 use reqwest::RequestBuilder;
-use reqwest::header::{HeaderMap, RETRY_AFTER};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
 use serde_json::{Map, Value, json};
 use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, Metadata,
@@ -1099,12 +1099,16 @@ fn forward_metadata_headers(
     builder.headers(forwarded)
 }
 
-// Adds the backend's custom per-call headers.
-fn apply_extra_headers(mut builder: RequestBuilder, backend: &Backend) -> RequestBuilder {
+// Configured headers replace existing values for the same case-insensitive name.
+fn apply_extra_headers(builder: RequestBuilder, backend: &Backend) -> RequestBuilder {
+    let mut headers = HeaderMap::with_capacity(backend.extra_headers().len());
+    // Names and values are validated by TranslatingLlmClient::new.
     for (name, value) in backend.extra_headers() {
-        builder = builder.header(name, value);
+        let name = HeaderName::from_bytes(name.as_bytes()).expect("validated header name");
+        let value = HeaderValue::from_bytes(value.as_bytes()).expect("validated header value");
+        headers.insert(name, value);
     }
-    builder
+    builder.headers(headers)
 }
 
 // Overwrites the outbound body's `model` field with the resolved model id.
@@ -3768,6 +3772,8 @@ mod tests {
             "x-goog-api-key",
             http::HeaderValue::from_static("client-google-key"),
         );
+        headers.append("x-custom", http::HeaderValue::from_static("caller-first"));
+        headers.append("x-custom", http::HeaderValue::from_static("caller-second"));
         headers.insert("host", http::HeaderValue::from_static("client.example"));
         headers.insert("content-type", http::HeaderValue::from_static("text/plain"));
         headers.insert("connection", http::HeaderValue::from_static("x-hop-by-hop"));
@@ -3776,7 +3782,11 @@ mod tests {
             http::HeaderValue::from_static("client-only"),
         );
         let request = request_with_headers("gpt", headers);
-        let backend_config = forwarding_config(&format!("{}/v1", server.uri()));
+        let mut backend_config = forwarding_config(&format!("{}/v1", server.uri()));
+        backend_config.extra_headers = BTreeMap::from([
+            ("X-Custom".into(), "configured".into()),
+            ("X-Configured-Only".into(), "static".into()),
+        ]);
         let client = TranslatingLlmClient::new(&[ModelConfig::new(
             "gpt",
             Backend::OpenAiChat(backend_config),
@@ -3793,6 +3803,9 @@ mod tests {
         assert_eq!(received.headers["content-type"], "application/json");
         assert!(!received.headers.contains_key("connection"));
         assert!(!received.headers.contains_key("x-hop-by-hop"));
+        assert_eq!(received.headers.get_all("x-custom").iter().count(), 1);
+        assert_eq!(received.headers["x-custom"], "configured");
+        assert_eq!(received.headers["x-configured-only"], "static");
         Ok(())
     }
 
