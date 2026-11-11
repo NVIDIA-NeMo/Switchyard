@@ -30,6 +30,9 @@ async def test_factory_builds_a_usable_python_handle() -> None:
         route.target_models()
     with pytest.raises(LibsyError, match="build_configured"):
         route.run_stream(request_body(), required_labels=[])
+    for task_id in ["trusted-task", ""]:
+        with pytest.raises(LibsyError, match="build_configured"):
+            route.run_stream(request_body(), task_id=task_id)
     outcome = await finish(route.run_stream(request_body()))
     assert outcome.selected_model_ids == ["fast", "capable"]
 
