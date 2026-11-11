@@ -203,42 +203,9 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn accepts_disabled_thinking() -> TestResult {
-        let body = json!({"messages": [{"role": "user", "content": "hello"}], "thinking": {"type": "disabled"}});
-        let request = decode_request(AnthropicMessages, &body)?;
-        assert_eq!(
-            unsupported_capability(
-                ModelCapabilities {
-                    reasoning: Some(false),
-                    ..Default::default()
-                },
-                &request,
-                &body,
-            ),
-            None,
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn disabled_thinking_controls_do_not_allow_capability_use() -> TestResult {
-        let capabilities = ModelCapabilities {
-            reasoning: Some(false),
-            ..Default::default()
-        };
-        assert_requires_capability(
-            AnthropicMessages,
-            &json!({"messages": [{"role": "user", "content": "hello"}], "thinking": {"type": "disabled"}, "output_config": {"effort": "low"}}),
-            capabilities,
-            "reasoning",
-        )?;
-        Ok(())
-    }
-
     // Preserved reasoning controls still reach the provider when decoding omits them.
     #[test]
-    fn rejects_preserved_reasoning_controls() -> TestResult {
+    fn reasoning_controls_follow_route_capabilities() -> TestResult {
         let capabilities = ModelCapabilities {
             reasoning: Some(false),
             ..Default::default()
@@ -266,6 +233,15 @@ mod tests {
                 body.pointer(pointer)
             );
         }
+        let body = json!({"messages": [{"role": "user", "content": "hello"}], "thinking": {"type": "disabled"}});
+        let request = decode_request(AnthropicMessages, &body)?;
+        assert_eq!(unsupported_capability(capabilities, &request, &body), None);
+        assert_requires_capability(
+            AnthropicMessages,
+            &json!({"messages": [{"role": "user", "content": "hello"}], "thinking": {"type": "disabled"}, "output_config": {"effort": "low"}}),
+            capabilities,
+            "reasoning",
+        )?;
         Ok(())
     }
 

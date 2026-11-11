@@ -4451,6 +4451,19 @@ async fn disabled_route_capabilities_reject_requests_before_calling_upstream() -
     }
     assert!(upstream.calls.lock().await.is_empty());
 
+    let response = send(
+        &app,
+        "POST",
+        "/v1/messages",
+        Some(json!({
+            "model": "restricted", "system": "Keep the caller's instructions.",
+            "messages": [{"role": "user", "content": "hello"}],
+            "thinking": {"type": "disabled"}
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK);
+
     let body = json!({
         "model": "restricted", "instructions": "Keep the caller's instructions.", "input": "hello"
     });
@@ -4467,13 +4480,13 @@ async fn disabled_route_capabilities_reject_requests_before_calling_upstream() -
         assert_eq!(response.status, StatusCode::OK);
     }
     let calls = upstream.calls.lock().await;
-    assert_eq!(calls.len(), 3);
+    assert_eq!(calls.len(), 4);
     assert!(
         calls
             .iter()
             .all(|call| has_system_prompt(call, "Keep the caller's instructions."))
     );
-    for call in &calls[1..] {
+    for call in &calls[2..] {
         assert_eq!(call["reasoning_effort"], "high");
         assert_eq!(call["tools"][0]["function"]["name"], "exec_command");
         assert!(call["messages"].as_array().is_some_and(|messages| {
