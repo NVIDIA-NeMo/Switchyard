@@ -3270,7 +3270,7 @@ the choice descriptions.</p>
 <td><code>tool_calling</code></td>
 <td style="text-align: center;">No</td>
 <td>unset</td>
-<td>Tool-calling support advertised by <code>GET /v1/models</code>. When <code>false</code>, the server rejects tool definitions, tool controls, and tool history with HTTP 400 before dispatch. Unset values appear as <code>null</code>. Explicit <code>true</code> and unset values do not restrict requests.</td>
+<td>Tool-calling support advertised by <code>GET /v1/models</code>. When <code>false</code>, the server rejects tool definitions, enabled tool controls, and tool history with HTTP 400 before dispatch. Text requests can explicitly disable tools with <code>tool_choice: "none"</code> or parallel calls with <code>parallel_tool_calls: false</code>. Unset values appear as <code>null</code>. Explicit <code>true</code> and unset values do not restrict requests.</td>
 </tr>
 <tr>
 <td><code>reasoning</code></td>
@@ -3298,7 +3298,7 @@ counts. Plain <code>decide</code> and <code>execute</code> retain task routing. 
 </span></code></pre></div>
 <p>All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/be76fa421b1f64840e1577d308abf33487d507ba/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/559d02d968c850dafaacf80792b14bca283098b9/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
 for collection and capacity safeguards.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
