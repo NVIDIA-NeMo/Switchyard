@@ -63,6 +63,7 @@ pub async fn run(
     let algorithm_name = algorithm.name().to_string();
     let run_started = Instant::now();
     let routing_clients = clients.clone();
+    let decision_context = DecisionContext::from_request(&request);
     // This says if we have an observer, put Some(..) in routing_observations.
     // No observer means we don't want any routing_observations.
     let routing_observations = observer.as_ref().map(|_| Arc::new(Mutex::new(Vec::new())));
@@ -71,7 +72,14 @@ pub async fn run(
         None => {
             drive(Arc::clone(&algorithm), request, models, {
                 let routing_observations = routing_observations.clone();
-                move |call| serve(routing_clients.clone(), call, routing_observations.clone())
+                move |call| {
+                    serve(
+                        routing_clients.clone(),
+                        call,
+                        routing_observations.clone(),
+                        decision_context.clone(),
+                    )
+                }
             })
             .await
         }
@@ -202,11 +210,17 @@ pub async fn decide(
     models: Arc<RuntimeModels>,
 ) -> Result<RoutingOutcome> {
     let routing_clients = clients.clone();
+    let decision_context = DecisionContext::from_request(&request);
     let mut outcome = match clients.stored_state_owner(&request) {
         Some(owner) => continue_on(owner, algorithm.name(), request),
         None => {
             drive(algorithm, request, models, move |call| {
-                serve(routing_clients.clone(), call, None)
+                serve(
+                    routing_clients.clone(),
+                    call,
+                    None,
+                    decision_context.clone(),
+                )
             })
             .await?
         }
@@ -220,23 +234,112 @@ pub async fn decide(
     Ok(outcome)
 }
 
+#[derive(Clone, Default)]
+struct DecisionContext {
+    session_id: Option<String>,
+    task_id: Option<String>,
+    turn_id: Option<String>,
+    correlation_id: Option<String>,
+}
+
+impl DecisionContext {
+    fn from_request(request: &Request) -> Self {
+        request
+            .metadata
+            .as_ref()
+            .map_or_else(Self::default, |metadata| Self {
+                session_id: metadata.session_id.clone(),
+                task_id: metadata.task_id.clone(),
+                turn_id: metadata.turn_id.clone(),
+                correlation_id: metadata.correlation_id.clone(),
+            })
+    }
+
+    fn record(&self, span: &tracing::Span) {
+        for (field, value) in [
+            ("gen_ai.conversation.id", &self.session_id),
+            ("task_id", &self.task_id),
+            ("turn_id", &self.turn_id),
+            ("correlation_id", &self.correlation_id),
+        ] {
+            if let Some(value) = value {
+                span.record(field, value.as_str());
+            }
+        }
+    }
+}
+
 #[tracing::instrument(
+    target = "libsy",
     name = "libsy.decision_client_call",
     skip_all,
-    fields(algorithm = %call.algorithm, selected_model = %call.model, outcome = tracing::field::Empty),
+    fields(
+        algorithm = %call.algorithm, selected_model = %call.model, gen_ai.request.model = %call.model,
+        switchyard.accounting.unit = "decision_call", switchyard.accounting.usage_status = "missing",
+        gen_ai.conversation.id = tracing::field::Empty, task_id = tracing::field::Empty,
+        turn_id = tracing::field::Empty, correlation_id = tracing::field::Empty,
+        gen_ai.response.id = tracing::field::Empty, gen_ai.response.model = tracing::field::Empty,
+        gen_ai.usage.input_tokens = tracing::field::Empty, gen_ai.usage.output_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_read.input_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_creation.input_tokens = tracing::field::Empty,
+        gen_ai.usage.cache_creation_1h.input_tokens = tracing::field::Empty,
+        gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
+        switchyard.usage.input_tokens = tracing::field::Empty,
+        switchyard.usage.input_tokens_reported = tracing::field::Empty,
+        switchyard.usage.total_tokens = tracing::field::Empty,
+        switchyard.usage.provider_cost_usd = tracing::field::Empty,
+        switchyard.accounting.charge_source = tracing::field::Empty,
+        outcome = tracing::field::Empty, error.type = tracing::field::Empty, otel.status_code = tracing::field::Empty,
+    ),
 )]
 async fn serve_decision(
     clients: &ClientRouter,
     call: CallDecision,
     observations: &Option<Arc<Mutex<Vec<RunObservation>>>>,
+    context: &DecisionContext,
 ) -> Result<()> {
+    let span = tracing::Span::current();
+    context.record(&span);
     let client = clients.route_decision(&call.model);
     let model = call.model.clone();
     let request = call.request.clone();
     call.respond(async {
         let started = Instant::now();
         let result = async { client?.call(request).await }.await;
-        tracing::Span::current().record("outcome", if result.is_ok() { "ok" } else { "error" });
+        span.record("outcome", if result.is_ok() { "ok" } else { "error" });
+        span.record(
+            "otel.status_code",
+            if result.is_ok() { "OK" } else { "ERROR" },
+        );
+        match &result {
+            Ok(response) => {
+                for (field, value) in [
+                    ("gen_ai.response.id", response.id.as_deref()),
+                    (
+                        "gen_ai.response.model",
+                        response.model.as_ref().map(ModelId::as_str),
+                    ),
+                ] {
+                    if let Some(value) = value {
+                        span.record(field, value);
+                    }
+                }
+                observability::record_accounting_usage(&span, &response.usage, true);
+                if response
+                    .usage
+                    .provider_cost
+                    .is_some_and(|cost| cost.is_finite() && cost >= 0.0)
+                {
+                    span.record("switchyard.accounting.charge_source", "provider");
+                }
+            }
+            Err(error) => {
+                span.record(
+                    "error.type",
+                    observability::llm_client_error_type(error).as_ref(),
+                );
+            }
+        }
         if let Some(observations) = observations {
             observations
                 .lock()
@@ -283,10 +386,13 @@ async fn serve(
     clients: ClientRouter,
     call: Call,
     observations: Option<Arc<Mutex<Vec<RunObservation>>>>,
+    decision_context: DecisionContext,
 ) -> Result<()> {
     let call = match call {
         Call::Model(call) => *call,
-        Call::Decision(call) => return serve_decision(&clients, *call, &observations).await,
+        Call::Decision(call) => {
+            return serve_decision(&clients, *call, &observations, &decision_context).await;
+        }
     };
     let observe = |observation| {
         if let Some(observations) = &observations {
@@ -422,6 +528,8 @@ impl CallPhase {
         gen_ai.usage.cache_creation.input_tokens = tracing::field::Empty,
         gen_ai.usage.cache_creation_1h.input_tokens = tracing::field::Empty,
         gen_ai.usage.reasoning.output_tokens = tracing::field::Empty,
+        switchyard.accounting.unit = tracing::field::Empty,
+        switchyard.accounting.attempts = tracing::field::Empty,
         outcome = tracing::field::Empty,
         otel.status_code = tracing::field::Empty,
         error.type = tracing::field::Empty,
