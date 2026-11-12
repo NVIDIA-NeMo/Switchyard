@@ -6,7 +6,7 @@
 use serde_json::{Map, Value, json};
 use switchyard_protocol::MAX_IR_TEMPERATURE;
 
-use super::MAX_TEMPERATURE;
+use super::{DEFAULT_TEMPERATURE, MAX_TEMPERATURE};
 use crate::codecs::common::{
     ANTHROPIC_REQUEST_KEY, is_anthropic_request, is_known_role_name, provider_extensions,
     scale_temperature, text_from_blocks,
@@ -332,9 +332,16 @@ impl FormatCodec for AnthropicMessagesCodec {
         } else {
             body.insert("max_tokens".to_string(), json!(64_000));
         }
-        if let Some(value) = request.sampling.temperature {
-            let value = scale_temperature(value, MAX_IR_TEMPERATURE, MAX_TEMPERATURE);
-            body.insert("temperature".to_string(), json!(value));
+        if let Some(value) = request.sampling.temperature
+            && value != DEFAULT_TEMPERATURE
+        {
+            push_lossy(
+                &mut diagnostics,
+                policy,
+                format!(
+                    "deprecated temperature parameter with non-default value {value} is omitted from Anthropic Messages requests"
+                ),
+            )?;
         }
         if let Some(value) = request.sampling.top_p {
             body.insert("top_p".to_string(), json!(value));

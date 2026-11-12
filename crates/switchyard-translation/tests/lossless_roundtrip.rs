@@ -74,13 +74,14 @@ fn embedded_preservation_roundtrips_requests_for_every_source_target_pair_exactl
                 .body;
 
             let expected_temperature = match (source, target) {
-                (WireFormat::AnthropicMessages, WireFormat::AnthropicMessages) => 0.2,
-                (WireFormat::AnthropicMessages, _) => 0.4,
-                (_, WireFormat::AnthropicMessages) => 0.1,
-                _ => 0.2,
+                (WireFormat::AnthropicMessages, WireFormat::AnthropicMessages) => Some(0.2),
+                (WireFormat::AnthropicMessages, _) => Some(0.4),
+                (_, WireFormat::AnthropicMessages) => None,
+                _ => Some(0.2),
             };
             assert_eq!(
-                translated["temperature"], expected_temperature,
+                translated.get("temperature"),
+                expected_temperature.map(Value::from).as_ref(),
                 "request {source:?} -> {target:?} temperature"
             );
 
