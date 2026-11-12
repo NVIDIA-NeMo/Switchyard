@@ -868,6 +868,9 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
                 }, {
                     "id": "call_3", "type": "function",
                     "function": {"name": "exec", "arguments": "{\"input\":\"ls -la\"}"}
+                }, {
+                    "id": "call_4", "type": "function",
+                    "function": {"name": "docs__search", "arguments": "{}"}
                 }]
             },
             "finish_reason": "tool_calls"
@@ -893,7 +896,9 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
             {"type": "function_call", "call_id": "call_2", "name": "mcp__docs__search",
                 "arguments": "{\"query\": \"streaming\"}"},
             {"type": "function_call", "call_id": "call_3", "name": "exec",
-                "arguments": "{\"input\": \"ls -la\"}"}
+                "arguments": "{\"input\": \"ls -la\"}"},
+            {"type": "function_call", "call_id": "call_4", "name": "docs__search",
+                "arguments": "{}"}
         ])
     );
     assert_eq!(
@@ -914,6 +919,7 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
             "input": "Search and list files",
             "tools": [
                 {"type": "function", "name": "search", "parameters": {}},
+                {"type": "function", "name": "docs__search", "parameters": {}},
                 {"type": "namespace", "name": "mcp__docs", "tools": [
                     {"type": "function", "name": "search", "parameters": {}}
                 ]},
@@ -930,7 +936,8 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
             "arguments": "{\"q\": \"rust\"}"},
         {"type": "function_call", "call_id": "call_2", "name": "search",
             "namespace": "mcp__docs", "arguments": "{\"query\": \"streaming\"}"},
-        {"type": "custom_tool_call", "call_id": "call_3", "name": "exec", "input": "ls -la"}
+        {"type": "custom_tool_call", "call_id": "call_3", "name": "exec", "input": "ls -la"},
+        {"type": "function_call", "call_id": "call_4", "name": "docs__search", "arguments": "{}"}
     ]);
     let anthropic = engine
         .translate_response(
