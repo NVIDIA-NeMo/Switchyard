@@ -482,14 +482,6 @@ To summarize a finished run see `scripts/summarize_baseline.py` (tools track) or
 
 For the reasoning-effort matrix and the version-pin rationale (Claude Code 2.1.118), see [`docs/runbooks/baseline-reproducibility.md`](docs/runbooks/baseline-reproducibility.md).
 
-### Published results
-
-Live results are surfaced on the internal GitLab Pages site:
-
-- **Leaderboard** — K=5 End-to-End numbers with CIs (claude-code, codex, opencode + a few model picks).
-- **Planner × Implementer matrix** — K=1, n=92, lift in pp vs no-plan baseline.
-- **Agent × Open-Model matrix** — K=1, n=92. Same 92 tasks across {opencode, openhands-sdk, qwen-coder, pi} × {Qwen-3.6-35B-A3B, GLM-5.1, Nemotron-3 Ultra (EA), Claude Haiku 4.5}. Rows are open models; columns are agents with pinned versions. Cells are Resolved%. Data: [`site/data/harness_x_model.json`](site/data/harness_x_model.json).
-
 ## Search Pipeline
 
 Derives codebase-navigation tasks from implementation problems via 3-model LLM synthesis. Requires a sibling craft-bench checkout — pass via `--craft-bench-dir`.

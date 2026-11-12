@@ -65,7 +65,7 @@ Caveats:
   against "Phase 2 is just a more permissive assessor". The pass-rate
   improvement on cohort 1 is real signal, not threshold drift.
 
-## Real-world validation: 42-task overlap on craftbench04
+## Real-world validation: 42-task overlap
 
 Side-by-side production run with `BUILD_N_CANDIDATES=3` on a hard-cases
 batch (main baseline `2026-04-24-073623` vs new branch
