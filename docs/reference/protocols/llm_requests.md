@@ -69,7 +69,7 @@ providers apply their own defaults and accepted ranges.
 
 | Protocol field and type | Meaning | Anthropic Messages | OpenAI Responses | Chat Completions |
 |---|---|---|---|---|
-| <a href="../../../rust/switchyard_protocol/llm/struct.SamplingParams.html#structfield.temperature"><code>SamplingParams.temperature: Option&lt;f64&gt;</code></a> | Sampling temperature. | `temperature` | `temperature` | `temperature` |
+| <a href="../../../rust/switchyard_protocol/llm/struct.SamplingParams.html#structfield.temperature"><code>SamplingParams.temperature: Option&lt;f64&gt;</code></a> | Sampling temperature. | (omitted; refer to the note below) | `temperature` | `temperature` |
 | <a href="../../../rust/switchyard_protocol/llm/struct.SamplingParams.html#structfield.top_p"><code>SamplingParams.top_p: Option&lt;f64&gt;</code></a> | Nucleus-sampling probability mass. | `top_p` | `top_p` | `top_p` |
 | <a href="../../../rust/switchyard_protocol/llm/struct.SamplingParams.html#structfield.top_k"><code>SamplingParams.top_k: Option&lt;i64&gt;</code></a> | Maximum candidate-token count. | `top_k` | No standard field | No standard field |
 | <a href="../../../rust/switchyard_protocol/llm/struct.OutputParams.html#structfield.max_output_tokens"><code>OutputParams.max_output_tokens: Option&lt;u64&gt;</code></a> | Output token budget. | `max_tokens` | `max_output_tokens` | `max_completion_tokens`, or legacy `max_tokens` |
@@ -77,6 +77,32 @@ providers apply their own defaults and accepted ranges.
 | <a href="../../../rust/switchyard_protocol/llm/struct.OutputParams.html#structfield.is_schema_enforced"><code>OutputParams.is_schema_enforced: Option&lt;bool&gt;</code></a> | Override whether the provider must enforce the schema; absence retains native behavior. | Schema-backed output configuration | Schema strictness in `text.format` | Schema strictness in `response_format` |
 | <a href="../../../rust/switchyard_protocol/llm/struct.ReasoningParams.html#structfield.effort"><code>ReasoningParams.effort: Option&lt;String&gt;</code></a> | Requested reasoning effort. | `output_config.effort` | `reasoning.effort` | `reasoning_effort` |
 | <a href="../../../rust/switchyard_protocol/llm/struct.ReasoningParams.html#structfield.raw"><code>ReasoningParams.raw: Option&lt;Value&gt;</code></a> | Provider-specific reasoning configuration. | `thinking` controls | `reasoning` object | No standard equivalent for the whole object |
+
+**Anthropic temperature:** Switchyard omits `temperature` when rebuilding Anthropic
+requests. Older models still support this parameter under API version `2023-06-01`,
+but models released after Claude Opus 4.6 reject values other than the default
+`1.0`. For model restrictions, refer to the [Anthropic parameter documentation](https://platform.claude.com/docs/en/api/messages/create?version=2023-06-01).
+API version `2026-10-21` removes the parameter entirely and rejects it even at its
+default value. For removal details, refer to [Anthropic's migration guide](https://platform.claude.com/docs/en/api/migration-2026-10-21#sampling-parameters-are-removed).
+Switchyard scales OpenAI temperatures from the `0.0–2.0` range to Anthropic's
+`0.0–1.0` range before comparing with the default. An OpenAI temperature of `2.0`
+scales to Anthropic's default of `1.0` and is omitted without diagnostics or rejection.
+Omitting a non-default value after scaling to Anthropic's range follows the
+[lossy-conversion policy](translation.md#policies). Exact preserved Anthropic
+requests can still retain `temperature`.
+
+For older Anthropic models that support non-default temperatures under API version
+`2023-06-01`, add these settings to the target's TOML configuration:
+
+```toml
+omit_body_fields = ["temperature"]
+extra_body = { temperature = 0.5 }
+```
+
+After translation, Switchyard removes any existing `temperature` and sets it to
+`0.5` in Anthropic's units, without further scaling. This also overrides temperature
+in preserved requests. Refer to the [target configuration reference](../toml_schema.md#targetsname)
+for these settings.
 
 Preserved same-format bodies take precedence over edits to these settings,
 including schema enforcement. See **[encoding an edited request](translation.md#preservation-and-edits)**.

@@ -4,10 +4,12 @@
 //! Buffered codec for Anthropic Messages request and response JSON.
 
 use serde_json::{Map, Value, json};
+use switchyard_protocol::MAX_IR_TEMPERATURE;
 
+use super::{DEFAULT_TEMPERATURE, MAX_TEMPERATURE};
 use crate::codecs::common::{
     ANTHROPIC_REQUEST_KEY, is_anthropic_request, is_known_role_name, provider_extensions,
-    text_from_blocks,
+    scale_temperature, text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::structured_output::decode_openai_schema_enforcement;
@@ -79,7 +81,10 @@ impl FormatCodec for AnthropicMessagesCodec {
                 response_format,
             },
             sampling: SamplingParams {
-                temperature: body.get("temperature").and_then(Value::as_f64),
+                temperature: body
+                    .get("temperature")
+                    .and_then(Value::as_f64)
+                    .map(|value| scale_temperature(value, MAX_TEMPERATURE, MAX_IR_TEMPERATURE)),
                 top_p: body.get("top_p").and_then(Value::as_f64),
                 top_k: body.get("top_k").and_then(Value::as_i64),
             },
@@ -327,8 +332,19 @@ impl FormatCodec for AnthropicMessagesCodec {
         } else {
             body.insert("max_tokens".to_string(), json!(64_000));
         }
-        if let Some(value) = request.sampling.temperature {
-            body.insert("temperature".to_string(), json!(value));
+        if let Some(value) = request
+            .sampling
+            .temperature
+            .map(|value| scale_temperature(value, MAX_IR_TEMPERATURE, MAX_TEMPERATURE))
+            && value != DEFAULT_TEMPERATURE
+        {
+            push_lossy(
+                &mut diagnostics,
+                policy,
+                format!(
+                    "deprecated temperature parameter with non-default value {value} is omitted from Anthropic Messages requests"
+                ),
+            )?;
         }
         if let Some(value) = request.sampling.top_p {
             body.insert("top_p".to_string(), json!(value));

@@ -9,6 +9,10 @@ mod stream;
 pub use buffered::OpenAiResponsesCodec;
 pub use stream::OpenAiResponsesStreamCodec;
 
+// Temperature range: 0.0..=2.0.
+// https://developers.openai.com/api/reference/resources/responses/methods/create
+pub(crate) const MAX_TEMPERATURE: f64 = 2.0;
+
 pub(crate) fn is_native_output(kind: &str) -> bool {
     matches!(
         kind,

@@ -11,6 +11,14 @@ use crate::llm::{ContentBlock, LlmRequest, Tool, ToolChoice};
 // Internal provenance survives mutations that invalidate exact request replay.
 pub(crate) const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
 
+/// Scales temperature between ranges with a minimum of zero.
+pub(crate) fn scale_temperature(temperature: f64, source_max: f64, target_max: f64) -> f64 {
+    if source_max == target_max {
+        return temperature;
+    }
+    (temperature / source_max) * target_max
+}
+
 /// Returns true when the request was decoded from an Anthropic Messages body.
 pub(crate) fn is_anthropic_request(request: &LlmRequest) -> bool {
     request.extensions.fields.get(ANTHROPIC_REQUEST_KEY) == Some(&Value::Bool(true))
