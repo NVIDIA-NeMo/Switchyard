@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version = 1
+
+[llm_clients.provider]
+format = "openai_chat"
+base_url = "http://127.0.0.1:1/v1"
+api_key_env = "SWITCHYARD_GO_TEST_KEY_THAT_IS_NOT_SET"
+
+[decision_clients.scoring]
+format = "openai_decisions"
+endpoint = "http://127.0.0.1:1/v1/decisions"
+api_key_env = "SWITCHYARD_GO_TEST_KEY_THAT_IS_NOT_SET"
+timeout_ms = 1000
+
+[targets]
+fast = { id = "provider/fast", llm_client = "provider" }
+capable = { id = "provider/capable", llm_client = "provider" }
+private_fast = { id = "provider/private-fast", llm_client = "provider", labels = ["private", "customer_data"] }
+private_capable = { id = "provider/private-capable", llm_client = "provider", labels = ["private", "customer_data"] }
+judge_llm = { id = "provider/judge", llm_client = "provider" }
+private_judge_llm = { id = "provider/private-judge", llm_client = "provider", labels = ["private", "customer_data"] }
+
+[decision_targets]
+judge = { id = "decision/standard", decision_client = "scoring" }
+private_judge = { id = "decision/private", decision_client = "scoring", labels = ["private", "customer_data"] }
+
+[routes.coding]
+id = "switchyard/coding"
+type = "stage_router"
+efficient_target = "fast"
+capable_target = "capable"
+picker = "efficient_first"
+confidence_threshold = 0.6
+
+[routes.coding.eligibility]
+require_explicit_requirements = true
+scope = "task"
+
+[routes.coding.eligibility.target_alternatives]
+fast = ["private_fast"]
+capable = ["private_capable"]
+
+[routes.judged]
+id = "switchyard/judged"
+type = "llm_classifier"
+classifier_target = "judge"
+weak_target = "fast"
+strong_target = "capable"
+fail_open = false
+
+[routes.judged.decision]
+cutoff = 0.7
+
+[routes.judged.eligibility]
+require_explicit_requirements = true
+
+[routes.judged.eligibility.target_alternatives]
+fast = ["private_fast"]
+capable = ["private_capable"]
+judge = ["private_judge"]
+
+[routes.judged_llm]
+id = "switchyard/judged-llm"
+type = "llm_classifier"
+classifier_target = "judge_llm"
+weak_target = "fast"
+strong_target = "capable"
+fail_open = false
+base_threshold = 0.5
+
+[routes.judged_llm.eligibility]
+require_explicit_requirements = true
+
+[routes.judged_llm.eligibility.target_alternatives]
+fast = ["private_fast"]
+capable = ["private_capable"]
+judge_llm = ["private_judge_llm"]

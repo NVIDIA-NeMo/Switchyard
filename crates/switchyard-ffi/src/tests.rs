@@ -101,6 +101,88 @@ fn run(router: &SyRouter, input: Value) -> Box<SyRun> {
     unsafe { Box::from_raw(run) }
 }
 
+fn configured_config(route_id: &str) -> Value {
+    json!({"configured": {
+        "toml": include_str!("../../../bindings/go/testdata/eligibility.toml"),
+        "route_id": route_id,
+    }})
+}
+
+fn configured_router(route_id: &str) -> Box<SyRouter> {
+    let config = CString::new(configured_config(route_id).to_string()).unwrap();
+    let mut router = std::ptr::null_mut();
+    check(unsafe { sy_router_new(config.as_ptr(), &mut router) });
+    unsafe { Box::from_raw(router) }
+}
+
+#[test]
+fn configured_construction_rejects_mixed_modes_and_unknown_routes() {
+    let mut mixed = configured_config("switchyard/coding");
+    mixed["algorithm"] = json!({"type": "noop"});
+    for (config, expected) in [
+        (mixed, "raw algorithm settings"),
+        (configured_config("missing"), "unknown configured route ID"),
+    ] {
+        let config = CString::new(config.to_string()).unwrap();
+        let mut router = std::ptr::dangling_mut::<SyRouter>();
+        let error = unsafe { sy_router_new(config.as_ptr(), &mut router) };
+        assert!(error_message(error).contains(expected));
+        assert!(router.is_null());
+    }
+}
+
+#[test]
+fn requirements_reject_raw_routes_and_configured_model_overrides() {
+    let raw = router(json!({"type": "passthrough", "target": "capable"}));
+    for labels in [json!([]), json!(["private"])] {
+        let input = CString::new(
+            json!({"request": {}, "models": {"any": ["capable"]}, "required_labels": labels})
+                .to_string(),
+        )
+        .unwrap();
+        let mut run = std::ptr::dangling_mut::<SyRun>();
+        let error = unsafe { sy_run_new(&*raw, input.as_ptr(), &mut run) };
+        assert!(error_message(error).contains("configured router"));
+        assert!(run.is_null());
+    }
+    let router = configured_router("switchyard/coding");
+    for field in ["models", "subagent_models"] {
+        let mut input = json!({
+            "request": {}, "required_labels": [], "metadata": {"task_id": "task"},
+        });
+        input[field] = json!({});
+        let input = CString::new(input.to_string()).unwrap();
+        let mut run = std::ptr::dangling_mut::<SyRun>();
+        let error = unsafe { sy_run_new(&*router, input.as_ptr(), &mut run) };
+        assert!(error_message(error).contains("host model groups"));
+        assert!(run.is_null());
+    }
+}
+
+#[test]
+fn configured_target_models_are_owned_and_raw_routers_reject_discovery() {
+    let raw = router(json!({"type": "noop"}));
+    let mut output = std::ptr::dangling_mut::<c_char>();
+    let error = unsafe { sy_router_target_models(&*raw, &mut output) };
+    assert!(error_message(error).contains("configured router"));
+    assert!(output.is_null());
+
+    let configured = configured_router("switchyard/judged");
+    check(unsafe { sy_router_target_models(&*configured, &mut output) });
+    drop(configured);
+    let models: Value =
+        serde_json::from_slice(unsafe { CStr::from_ptr(output) }.to_bytes()).unwrap();
+    unsafe { sy_string_free(output) };
+    assert_eq!(
+        models["private_fast"],
+        json!({"client": "provider", "id": "provider/private-fast"})
+    );
+    assert_eq!(
+        models["decision/private"],
+        json!({"client": "scoring", "id": "decision/private"})
+    );
+}
+
 fn next(run: &SyRun) -> Value {
     let (sender, receiver) = mpsc::channel();
     next_async(run, &sender).unwrap();
@@ -501,7 +583,7 @@ unsafe extern "C" fn complete_after_release(
 #[test]
 fn free_waits_for_cancelled_callback_to_return() {
     let engine = Arc::new(Engine {
-        algorithm: Arc::new(switchyard_libsy::Noop {}),
+        algorithm: EngineAlgorithm::Bare(Arc::new(switchyard_libsy::Noop {})),
         runtime: tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -695,7 +777,7 @@ fn panics_return_owned_errors() {
     let run = SyRun::new(
         Box::pin(futures::stream::poll_fn(|_| panic!("test panic"))),
         Arc::new(Engine {
-            algorithm: Arc::new(switchyard_libsy::Noop {}),
+            algorithm: EngineAlgorithm::Bare(Arc::new(switchyard_libsy::Noop {})),
             runtime: Runtime::new().unwrap(),
         }),
     );
