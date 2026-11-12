@@ -3880,9 +3880,9 @@ fn openai_request_to_anthropic_parameters() -> TestResult {
 
     for (temperature, is_lossy) in [
         (None, false),
-        (Some(1.0), false),
+        (Some(1.0), true),
         (Some(0.5), true),
-        (Some(2.0), true),
+        (Some(2.0), false),
     ] {
         let mut body = body.clone();
         if let Some(temperature) = temperature {

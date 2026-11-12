@@ -332,7 +332,10 @@ impl FormatCodec for AnthropicMessagesCodec {
         } else {
             body.insert("max_tokens".to_string(), json!(64_000));
         }
-        if let Some(value) = request.sampling.temperature
+        if let Some(value) = request
+            .sampling
+            .temperature
+            .map(|value| scale_temperature(value, MAX_IR_TEMPERATURE, MAX_TEMPERATURE))
             && value != DEFAULT_TEMPERATURE
         {
             push_lossy(
