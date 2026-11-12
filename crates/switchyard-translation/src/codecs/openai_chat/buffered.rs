@@ -26,9 +26,10 @@ use crate::llm::{
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
-    capture_request_preservation, capture_response_preservation, embed_preservation,
-    exact_preserved_request, exact_preserved_response, json_string, object, push_lossy,
-    reject_responses_native_input_item, stable_id, string_value, validate_request_capabilities,
+    capture_request_preservation, capture_response_preservation, decode_openai_stream,
+    embed_preservation, exact_preserved_request, exact_preserved_response, json_string, object,
+    push_lossy, reject_responses_native_input_item, stable_id, string_value,
+    validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Chat Completions payloads.
@@ -48,7 +49,7 @@ impl FormatCodec for OpenAiChatCodec {
                 .and_then(Value::as_str)
                 .filter(|model| !model.is_empty())
                 .map(ToOwned::to_owned),
-            stream: body.get("stream").and_then(Value::as_bool).unwrap_or(false),
+            stream: decode_openai_stream(body)?,
             sampling: SamplingParams {
                 temperature: body.get("temperature").and_then(Value::as_f64),
                 top_p: body.get("top_p").and_then(Value::as_f64),

@@ -4106,6 +4106,52 @@ fn malformed_request_fields_are_rejected() {
     }
 }
 
+#[test]
+fn openai_stream_rejects_invalid_types() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    for (format, body) in [
+        (
+            WireFormat::OpenAiChat,
+            json!({"model": "gpt", "messages": []}),
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({"model": "gpt", "input": "hi"}),
+        ),
+    ] {
+        for value in [json!("true"), json!(1), json!([]), json!({})] {
+            let mut invalid = body.clone();
+            invalid["stream"] = value;
+            let result = engine.decode_request(format, &invalid, &policy);
+            assert!(
+                matches!(result, Err(TranslationError::InvalidType { ref path, expected: "boolean" }) if path == "$.stream"),
+                "{format:?} accepted invalid stream value: {invalid}"
+            );
+        }
+
+        for (value, expected) in [
+            (None, false),
+            (Some(Value::Null), false),
+            (Some(json!(false)), false),
+            (Some(json!(true)), true),
+        ] {
+            let mut valid = body.clone();
+            if let Some(value) = value {
+                valid["stream"] = value;
+            }
+            assert_eq!(
+                engine
+                    .decode_request(format, &valid, &policy)?
+                    .request
+                    .stream,
+                expected
+            );
+        }
+    }
+    Ok(())
+}
+
 // --- Invalid-role rejection ----------------------------------
 // A transparent router must reject the same payloads the upstream provider
 // would, rather than silently coercing an unknown role (e.g. "api") to `user`

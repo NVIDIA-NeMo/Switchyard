@@ -864,6 +864,26 @@ async fn test_app(routes: &[(&str, &[&str])]) -> TestResult<(MockUpstream, Route
     Ok((upstream, app))
 }
 
+#[tokio::test]
+async fn invalid_stream_type_is_rejected_before_routing() -> TestResult {
+    let (upstream, app) = test_app(&[(ROUTE_MODEL, &["model/a"])]).await?;
+    for (path, body) in [
+        (
+            "/v1/chat/completions",
+            json!({"model": ROUTE_MODEL, "messages": [{"role": "user", "content": "hello"}], "stream": "true"}),
+        ),
+        (
+            "/v1/responses",
+            json!({"model": ROUTE_MODEL, "input": "hello", "stream": "true"}),
+        ),
+    ] {
+        let response = send(&app, "POST", path, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::BAD_REQUEST, "{path}");
+        assert!(upstream.calls.lock().await.is_empty(), "{path}");
+    }
+    Ok(())
+}
+
 // Embedders expose only the three primary inference endpoints and own every other route.
 #[tokio::test]
 async fn llm_router_exposes_only_primary_llm_endpoints() -> TestResult {

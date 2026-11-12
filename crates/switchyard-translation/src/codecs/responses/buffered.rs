@@ -30,9 +30,10 @@ use crate::llm::{
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
-    capture_request_preservation, capture_response_preservation, embed_preservation,
-    exact_preserved_request, exact_preserved_response, is_responses_native_input_item, json_string,
-    push_lossy, stable_id, string_value, validate_request_capabilities,
+    capture_request_preservation, capture_response_preservation, decode_openai_stream,
+    embed_preservation, exact_preserved_request, exact_preserved_response,
+    is_responses_native_input_item, json_string, push_lossy, stable_id, string_value,
+    validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Responses payloads.
@@ -72,7 +73,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                 top_p: body.get("top_p").and_then(Value::as_f64),
                 top_k: None,
             },
-            stream: body.get("stream").and_then(Value::as_bool).unwrap_or(false),
+            stream: decode_openai_stream(body)?,
             preservation: capture_request_preservation(
                 WireFormat::OpenAiResponses,
                 &Value::Object(body.clone()),
