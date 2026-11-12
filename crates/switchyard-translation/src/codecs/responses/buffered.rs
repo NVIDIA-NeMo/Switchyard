@@ -411,16 +411,17 @@ impl FormatCodec for OpenAiResponsesCodec {
     fn encode_response(
         &self,
         response: &AggLlmResponse,
-        _policy: &TranslationPolicy,
+        policy: &TranslationPolicy,
     ) -> Result<EncodedResponse> {
         if let Some(body) =
-            exact_preserved_response(&response.preservation, WireFormat::OpenAiResponses, _policy)
+            exact_preserved_response(&response.preservation, WireFormat::OpenAiResponses, policy)
         {
             return Ok(EncodedResponse {
                 body,
                 diagnostics: Vec::new(),
             });
         }
+        let mut diagnostics = Vec::new();
         let is_truncated = matches!(
             response
                 .first_output()
@@ -442,16 +443,16 @@ impl FormatCodec for OpenAiResponsesCodec {
                     "model": response.model.clone().unwrap_or_else(|| "unknown".to_string()),
                     "status": status,
                     "incomplete_details": incomplete_details,
-                    "output": encode_responses_output(&response.outputs),
+                    "output": encode_responses_output(&response.outputs, &mut diagnostics, policy)?,
                     "usage": encode_responses_usage(&response.usage),
                     "parallel_tool_calls": true,
                     "tool_choice": "auto",
                     "tools": [],
                 }),
                 &response.preservation,
-                _policy,
+                policy,
             ),
-            diagnostics: Vec::new(),
+            diagnostics,
         })
     }
 }
@@ -1894,112 +1895,176 @@ fn decode_responses_url_citations(content: Option<&Value>) -> Vec<crate::UrlCita
 }
 
 // Encodes normalized response outputs into Responses output items.
-fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
-    Value::Array(
-        outputs
-            .iter()
-            .flat_map(|output| {
-                let has_output_items = output.content.iter().any(|block| {
-                    matches!(block, ContentBlock::ToolCall(_))
-                        || matches!(block, ContentBlock::Unknown { provider, raw }
-                            if provider.as_str() == WireFormat::OpenAiResponses.as_str()
-                                && raw["type"].as_str().is_some_and(super::is_native_output))
-                });
-                let text = text_from_blocks(&output.content, "");
-                let reasoning = reasoning_text_from_blocks(&output.content, "\n");
-                let status = if matches!(output.stop_reason, Some(StopReason::MaxTokens)) {
-                    "incomplete"
-                } else {
-                    "completed"
-                };
-                let mut items = Vec::new();
+fn encode_responses_output(
+    outputs: &[ResponseOutput],
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Value> {
+    let mut items = Vec::new();
+    for output in outputs {
+        let has_output_items = output.content.iter().any(|block| {
+            matches!(block, ContentBlock::ToolCall(_))
+                || matches!(block, ContentBlock::Unknown { provider, raw }
+                    if provider.as_str() == WireFormat::OpenAiResponses.as_str()
+                        && raw["type"].as_str().is_some_and(super::is_native_output))
+        });
+        let text = text_from_blocks(&output.content, "");
+        let reasoning = reasoning_text_from_blocks(&output.content, "\n");
+        let status = if matches!(output.stop_reason, Some(StopReason::MaxTokens)) {
+            "incomplete"
+        } else {
+            "completed"
+        };
 
-                let encrypted_reasoning = output.content.iter().find_map(|block| match block {
-                    ContentBlock::Reasoning { details, .. } => encrypted_reasoning_data(details),
-                    _ => None,
-                });
-                let encrypted_reasoning_id = output.content.iter().find_map(|block| match block {
-                    ContentBlock::Reasoning { details, .. } => encrypted_reasoning_item_id(details),
-                    _ => None,
-                });
-                let has_signed_reasoning = output.content.iter().any(|block| {
-                    matches!(
-                        block,
-                        ContentBlock::Reasoning {
-                            signature: Some(_),
-                            ..
-                        }
-                    )
-                });
-                if has_signed_reasoning {
-                    for (index, block) in output.content.iter().enumerate() {
-                        if let ContentBlock::Reasoning {
-                            text,
-                            signature,
-                            details,
-                        } = block
-                        {
-                            let encrypted = signature
-                                .as_deref()
-                                .map(|signature| super::encode_anthropic_thinking(text, signature))
-                                .or_else(|| encrypted_reasoning_data(details));
-                            let id = encrypted_reasoning_item_id(details)
-                                .unwrap_or_else(|| format!("rs_switchyard_{index}"));
-                            items.push(encode_responses_reasoning_output(
-                                text,
-                                encrypted.as_deref(),
-                                Some(&id),
-                            ));
-                        }
-                    }
-                } else if !reasoning.is_empty() || encrypted_reasoning.is_some() {
+        let encrypted_reasoning = output.content.iter().find_map(|block| match block {
+            ContentBlock::Reasoning { details, .. } => encrypted_reasoning_data(details),
+            _ => None,
+        });
+        let encrypted_reasoning_id = output.content.iter().find_map(|block| match block {
+            ContentBlock::Reasoning { details, .. } => encrypted_reasoning_item_id(details),
+            _ => None,
+        });
+        let has_signed_reasoning = output.content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::Reasoning {
+                    signature: Some(_),
+                    ..
+                }
+            )
+        });
+        if has_signed_reasoning {
+            for (index, block) in output.content.iter().enumerate() {
+                if let ContentBlock::Reasoning {
+                    text,
+                    signature,
+                    details,
+                } = block
+                {
+                    let encrypted = signature
+                        .as_deref()
+                        .map(|signature| super::encode_anthropic_thinking(text, signature))
+                        .or_else(|| encrypted_reasoning_data(details));
+                    let id = encrypted_reasoning_item_id(details)
+                        .unwrap_or_else(|| format!("rs_switchyard_{index}"));
                     items.push(encode_responses_reasoning_output(
-                        &reasoning,
-                        encrypted_reasoning.as_deref(),
-                        encrypted_reasoning_id.as_deref(),
+                        text,
+                        encrypted.as_deref(),
+                        Some(&id),
                     ));
                 }
+            }
+        } else if !reasoning.is_empty() || encrypted_reasoning.is_some() {
+            items.push(encode_responses_reasoning_output(
+                &reasoning,
+                encrypted_reasoning.as_deref(),
+                encrypted_reasoning_id.as_deref(),
+            ));
+        }
 
-                if !text.is_empty() || (!has_output_items && reasoning.is_empty()) {
-                    items.push(json!({
-                        "type": "message",
-                        "id": "msg_switchyard",
-                        "status": status,
-                        "role": role_to_responses(output.role),
-                        "content": [{
-                            "type": "output_text",
-                            "text": text,
-                            "annotations": output.url_citations.iter().map(|citation| json!({
-                                "type": "url_citation",
-                                "start_index": citation.start_index,
-                                "end_index": citation.end_index,
-                                "url": citation.url,
-                                "title": citation.title,
-                            })).collect::<Vec<_>>(),
-                        }],
-                    }));
+        if !text.is_empty()
+            || output
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Refusal { .. }))
+            || (!has_output_items && reasoning.is_empty())
+        {
+            items.push(json!({
+                "type": "message",
+                "id": "msg_switchyard",
+                "status": status,
+                "role": role_to_responses(output.role),
+                "content": encode_responses_message_content(output, diagnostics, policy)?,
+            }));
+        }
+
+        items.extend(output.content.iter().filter_map(|block| match block {
+            ContentBlock::ToolCall(call) => Some(json!({
+                "type": "function_call",
+                "call_id": call.id,
+                "name": call.name,
+                "arguments": json_string_python_style(&call.arguments),
+            })),
+            ContentBlock::Unknown { provider, raw }
+                if provider.as_str() == WireFormat::OpenAiResponses.as_str()
+                    && raw["type"].as_str().is_some_and(super::is_native_output) =>
+            {
+                Some(raw.clone())
+            }
+            _ => None,
+        }));
+    }
+    Ok(Value::Array(items))
+}
+
+fn encode_responses_message_content(
+    output: &ResponseOutput,
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+) -> Result<Vec<Value>> {
+    let has_refusal = output
+        .content
+        .iter()
+        .any(|block| matches!(block, ContentBlock::Refusal { .. }));
+    let mut placed_citations = vec![false; output.url_citations.len()];
+    let mut text_part = |text: &str, offset: usize| {
+        let end = offset + text.chars().count();
+        let annotations = output
+            .url_citations
+            .iter()
+            .enumerate()
+            .filter_map(|(index, citation)| {
+                if has_refusal
+                    && (placed_citations[index]
+                        || citation.start_index < offset
+                        || citation.end_index < citation.start_index
+                        || citation.end_index > end)
+                {
+                    return None;
                 }
-
-                items.extend(output.content.iter().filter_map(|block| match block {
-                    ContentBlock::ToolCall(call) => Some(json!({
-                        "type": "function_call",
-                        "call_id": call.id,
-                        "name": call.name,
-                        "arguments": json_string_python_style(&call.arguments),
-                    })),
-                    ContentBlock::Unknown { provider, raw }
-                        if provider.as_str() == WireFormat::OpenAiResponses.as_str()
-                            && raw["type"].as_str().is_some_and(super::is_native_output) =>
-                    {
-                        Some(raw.clone())
-                    }
-                    _ => None,
-                }));
-
-                items
+                placed_citations[index] = true;
+                Some(json!({
+                    "type": "url_citation",
+                    "start_index": citation.start_index - offset,
+                    "end_index": citation.end_index - offset,
+                    "url": citation.url,
+                    "title": citation.title,
+                }))
             })
-            .collect(),
-    )
+            .collect::<Vec<_>>();
+        json!({"type": "output_text", "text": text, "annotations": annotations})
+    };
+    if !has_refusal {
+        return Ok(vec![text_part(&text_from_blocks(&output.content, ""), 0)]);
+    }
+    let mut offset = 0;
+    let content = output
+        .content
+        .iter()
+        .filter_map(|block| {
+            let (text, part) = match block {
+                ContentBlock::Refusal { text } => {
+                    (text.as_str(), json!({"type": "refusal", "refusal": text}))
+                }
+                ContentBlock::Text { text } => (text.as_str(), text_part(text, offset)),
+                ContentBlock::Unknown { raw, .. } => {
+                    let text = raw.as_str()?;
+                    (text, text_part(text, offset))
+                }
+                _ => return None,
+            };
+            offset += text.chars().count();
+            Some(part)
+        })
+        .collect();
+    if placed_citations.iter().any(|placed| !placed) {
+        push_lossy(
+            diagnostics,
+            policy,
+            "Responses refusal content cannot carry every URL citation",
+        )?;
+    }
+    Ok(content)
 }
 
 // Encodes private reasoning as a separate Responses output item. An encrypted-only item
