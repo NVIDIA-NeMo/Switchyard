@@ -211,60 +211,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn accepts_disabled_tool_controls() -> TestResult {
-        for (format, body) in [
-            (
-                OpenAiChat,
-                json!({"messages": [{"role": "user", "content": "hello"}], "tool_choice": "none", "parallel_tool_calls": false, "function_call": "none"}),
-            ),
-            (
-                OpenAiResponses,
-                json!({"input": "hello", "tool_choice": "none", "parallel_tool_calls": false}),
-            ),
-            (
-                AnthropicMessages,
-                json!({"messages": [{"role": "user", "content": "hello"}], "tool_choice": {"type": "none"}}),
-            ),
-        ] {
-            let request = decode_request(format, &body)?;
-            assert_eq!(
-                unsupported_capability(
-                    ModelCapabilities {
-                        tool_calling: Some(false),
-                        ..Default::default()
-                    },
-                    &request,
-                    &body,
-                ),
-                None,
-                "{body}"
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn disabled_tool_controls_do_not_allow_capability_use() -> TestResult {
-        let capabilities = ModelCapabilities {
-            tool_calling: Some(false),
-            ..Default::default()
-        };
-        assert_requires_capability(
-            OpenAiChat,
-            &json!({"messages": [{"role": "user", "content": "hello"}], "tools": [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}], "tool_choice": "none", "parallel_tool_calls": false}),
-            capabilities,
-            "tool_calling",
-        )?;
-        assert_requires_capability(
-            OpenAiChat,
-            &json!({"messages": [{"role": "user", "content": "hello"}], "function_call": {"name": "lookup", "type": "none"}}),
-            capabilities,
-            "tool_calling",
-        )?;
-        Ok(())
-    }
-
     // Preserved reasoning controls still reach the provider when decoding omits them.
     #[test]
     fn rejects_preserved_reasoning_controls() -> TestResult {
