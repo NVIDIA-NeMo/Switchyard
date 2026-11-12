@@ -113,7 +113,7 @@ fn record_gen_ai_response(span: &Span, response: &AggLlmResponse) {
 }
 
 /// Records semantic token totals and cache-usage breakdowns on a client-call span.
-fn record_gen_ai_usage(span: &Span, usage: &Usage) {
+pub(crate) fn record_gen_ai_usage(span: &Span, usage: &Usage) {
     let cache_read = usage.cached_input_tokens();
     let cache_creation = usage.cache_creation_input_tokens();
     let cache_creation_1h = usage
@@ -207,7 +207,7 @@ fn client_call_error_type(error: &LibsyError) -> Cow<'static, str> {
     }
 }
 
-fn llm_client_error_type(error: &LlmClientError) -> Cow<'static, str> {
+pub(crate) fn llm_client_error_type(error: &LlmClientError) -> Cow<'static, str> {
     match error {
         LlmClientError::InvalidRequest { .. } => Cow::Borrowed("invalid_request"),
         LlmClientError::RequestTranslation(_) => Cow::Borrowed("request_translation"),

@@ -318,3 +318,29 @@ that guarantee.
 behavior. The plugin does not maintain a separate trusted-default target or
 rerun routing after an execution failure. Failures outside the shared runner,
 including response translation failures, are returned to Relay.
+
+## Validate attempt accounting
+
+After building and packaging the native library as described above, run the
+local acceptance fixture with Relay 0.10:
+
+```sh
+uv run --with nemo-relay==0.10.0 python \
+  crates/switchyard-nemo-relay-plugin/scripts/test_attempt_accounting.py \
+  --manifest /absolute/path/to/bundle/relay-plugin.toml \
+  --output /tmp/switchyard-attempt-accounting
+```
+
+The fixture uses a loopback HTTP provider and fixed synthetic prices. It checks
+failed and successful attempts, reported-charge precedence, token-price
+estimates, missing usage, unknown prices, zero charges, duplicate delivery,
+missing records, and workflow isolation. It writes ATOF events and separate
+cost summaries. Relay also loads system plugin configuration when present.
+
+The [cost-summary example](examples/attempt_costs.py) selects unique attempt
+records and uses Relay's codec to obtain costs. These summaries cover Switchyard
+completion work. They do not change ATIF `final_metrics` or include separate
+decision-model usage.
+
+See the [versioned accounting scope profile](../../docs/integrations/nemo_relay.md#accounting-scope-profile-version-1)
+for stable fields and the limits of `coverage_complete` and `total_cost_usd`.

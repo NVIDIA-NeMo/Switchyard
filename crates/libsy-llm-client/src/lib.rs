@@ -20,6 +20,7 @@
 //! answer call from the routing outcome when needed. A host that just wants the answer does not
 //! have to drive the step stream itself.
 
+mod attempt;
 pub mod backend;
 pub mod client;
 pub mod error;
