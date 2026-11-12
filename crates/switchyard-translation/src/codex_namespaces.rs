@@ -24,7 +24,7 @@
 //! namespace against its default group: dropping a builtin group's namespace
 //! would look the call up in the wrong place.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde_json::{Map, Value};
 use switchyard_protocol::ProviderExtensions;
@@ -79,42 +79,20 @@ pub fn namespace_description<'a>(
     })
 }
 
-/// Reverse map from an upstream tool name to its Codex tool name and namespace.
-///
-/// The exact qualified name is always registered. The name without the `mcp__`
-/// prefix is also registered unless it matches another qualified name.
+/// Maps exact qualified tool names to their Codex tool names and namespaces.
 pub fn qualified_tool_origins(
     extensions: &ProviderExtensions,
 ) -> HashMap<String, (String, String)> {
     let Some(namespaces) = tool_namespaces(extensions) else {
         return HashMap::new();
     };
-    let split: Vec<(String, String, String)> = namespaces
+    namespaces
         .keys()
         .filter_map(|qualified| {
             let (tool, namespace) = split_qualified_name(namespaces, qualified)?;
-            Some((qualified.clone(), tool.to_string(), namespace.to_string()))
+            Some((qualified.clone(), (tool.to_string(), namespace.to_string())))
         })
-        .collect();
-
-    let qualified_names: HashSet<&str> = split
-        .iter()
-        .map(|(qualified, _, _)| qualified.as_str())
-        .collect();
-
-    let mut origins = HashMap::new();
-    for (qualified, tool, namespace) in &split {
-        let origin = (tool.clone(), namespace.clone());
-        if let Some(stripped) = namespace.strip_prefix("mcp__") {
-            let spelling = qualified_tool_name(stripped, tool);
-            if !qualified_names.contains(spelling.as_str()) {
-                origins.entry(spelling).or_insert_with(|| origin.clone());
-            }
-        }
-        // The exact spelling always wins over a fallback.
-        origins.insert(qualified.clone(), origin);
-    }
-    origins
+        .collect()
 }
 
 /// Restore the Codex tool name and namespace on function calls and argument completions.
@@ -197,13 +175,16 @@ mod tests {
         );
     }
 
-    // A bare name claimed by two namespaces must not be guessed: a wrong guess
-    // dispatches the call to the wrong server.
     #[test]
-    fn leaves_an_ambiguous_bare_name_alone() {
-        let origins =
-            qualified_tool_origins(&extensions(&[("mcp__a", "search"), ("mcp__b", "search")]));
-        let mut response = json!({"output": [{"type": "function_call", "name": "search"}]});
+    fn leaves_unqualified_names_alone() {
+        let origins = qualified_tool_origins(&extensions(&[("mcp__docs", "search")]));
+        let mut response = json!([
+            {"output": [{"type": "function_call", "name": "search"}]},
+            {"type": "response.output_item.done", "item": {
+                "type": "function_call", "name": "docs__search"
+            }},
+            {"type": "response.function_call_arguments.done", "name": "docs__search"}
+        ]);
         let before = response.clone();
 
         restore_qualified_tool_names(&mut response, &origins);
