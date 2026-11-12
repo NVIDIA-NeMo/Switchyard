@@ -383,31 +383,17 @@ impl FormatCodec for AnthropicMessagesCodec {
         Ok(EncodedRequest { body, diagnostics })
     }
 
-    fn decode_response(
-        &self,
-        body: &Value,
-        _policy: &TranslationPolicy,
-    ) -> Result<DecodedResponse> {
+    fn decode_response(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedResponse> {
         let body = crate::util::object(body, "$")?;
-        let mut content = Vec::new();
-        if let Some(blocks) = body.get("content").and_then(Value::as_array) {
-            for (index, block) in blocks.iter().enumerate() {
-                if let Some(block) = block.as_object() {
-                    content.extend(decode_anthropic_content_block(
-                        block,
-                        Role::Assistant,
-                        index + 1,
-                        &mut Vec::new(),
-                        &TranslationPolicy::default(),
-                    )?);
-                }
+        let mut diagnostics = Vec::new();
+        let content = match body.get("content") {
+            Some(value @ Value::Array(_)) => {
+                decode_anthropic_content(value, Role::Assistant, 1, &mut diagnostics, policy)?
             }
-        }
-        if content.is_empty() {
-            content.push(ContentBlock::Text {
+            _ => vec![ContentBlock::Text {
                 text: String::new(),
-            });
-        }
+            }],
+        };
         let response = AggLlmResponse {
             id: body
                 .get("id")
@@ -443,12 +429,12 @@ impl FormatCodec for AnthropicMessagesCodec {
             preservation: capture_response_preservation(
                 WireFormat::AnthropicMessages,
                 &Value::Object(body.clone()),
-                _policy,
+                policy,
             ),
         };
         Ok(DecodedResponse {
             response,
-            diagnostics: Vec::new(),
+            diagnostics,
         })
     }
 

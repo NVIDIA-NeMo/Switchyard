@@ -268,12 +268,9 @@ impl FormatCodec for OpenAiChatCodec {
         Ok(EncodedRequest { body, diagnostics })
     }
 
-    fn decode_response(
-        &self,
-        body: &Value,
-        _policy: &TranslationPolicy,
-    ) -> Result<DecodedResponse> {
+    fn decode_response(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedResponse> {
         let object = object(body, "$")?;
+        let mut diagnostics = Vec::new();
         // `abort`, `error` and `repetition` mean the generation did not complete.
         if let Some(reason @ ("abort" | "error" | "repetition")) = object
             .get("choices")
@@ -303,7 +300,7 @@ impl FormatCodec for OpenAiChatCodec {
             preservation: capture_response_preservation(
                 WireFormat::OpenAiChat,
                 &Value::Object(object.clone()),
-                _policy,
+                policy,
             ),
         };
         if let Some(choice) = object
@@ -327,8 +324,8 @@ impl FormatCodec for OpenAiChatCodec {
                 Some(content) => decode_openai_content(
                     content,
                     WireFormat::OpenAiChat,
-                    &mut Vec::new(),
-                    &TranslationPolicy::default(),
+                    &mut diagnostics,
+                    policy,
                     "$.choices[0].message.content",
                 )?,
             };
@@ -340,12 +337,14 @@ impl FormatCodec for OpenAiChatCodec {
             }
             if let Some(tool_calls) = message.get("tool_calls").and_then(Value::as_array) {
                 for (index, tool_call) in tool_calls.iter().enumerate() {
-                    if let Some(call) = decode_openai_tool_call(
-                        tool_call,
-                        index + 1,
-                        &TranslationPolicy::default(),
-                    )? {
+                    if let Some(call) = decode_openai_tool_call(tool_call, index + 1, policy)? {
                         content.push(ContentBlock::ToolCall(call));
+                    } else {
+                        push_lossy(
+                            &mut diagnostics,
+                            policy,
+                            format!("OpenAI tool call at index {index} is not an object"),
+                        )?;
                     }
                 }
             }
@@ -374,7 +373,7 @@ impl FormatCodec for OpenAiChatCodec {
 
         Ok(DecodedResponse {
             response,
-            diagnostics: Vec::new(),
+            diagnostics,
         })
     }
 
