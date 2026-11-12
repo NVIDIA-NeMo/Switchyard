@@ -73,6 +73,17 @@ fn embedded_preservation_roundtrips_requests_for_every_source_target_pair_exactl
                 })
                 .body;
 
+            let expected_temperature = match (source, target) {
+                (WireFormat::AnthropicMessages, WireFormat::AnthropicMessages) => 0.2,
+                (WireFormat::AnthropicMessages, _) => 0.4,
+                (_, WireFormat::AnthropicMessages) => 0.1,
+                _ => 0.2,
+            };
+            assert_eq!(
+                translated["temperature"], expected_temperature,
+                "request {source:?} -> {target:?} temperature"
+            );
+
             if source == target {
                 assert_eq!(translated, original, "request {source:?} self-translation");
             } else {
