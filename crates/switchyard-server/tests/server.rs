@@ -6536,3 +6536,59 @@ task_typing = false
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn vgr_image_requests_stay_on_the_efficient_tier_when_configured() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    for (configured, served) in [
+        ("", "model/vgr-capable"),
+        (
+            "efficient_supports_attachments = true",
+            "model/vgr-efficient",
+        ),
+    ] {
+        let app = build_switchyard_router(load_test_config(&format!(
+            r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{}"
+[targets]
+efficient = {{ id = "model/vgr-efficient", llm_client = "primary" }}
+capable = {{ id = "model/vgr-capable", llm_client = "primary" }}
+judge = {{ id = "model/vgr-judge", llm_client = "primary" }}
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+efficient_target = "efficient"
+capable_target = "capable"
+judge_target = "judge"
+mode = "evaluate"
+task_typing = false
+bounded_efficient = false
+{configured}
+"#,
+            upstream.base_url
+        ))?);
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/vgr",
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "answer the question"},
+                    {"type": "image_url", "image_url": {"url": "https://example.test/image.png"}}
+                ]}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+        assert_eq!(
+            response.headers.get("x-model-router-selected-model"),
+            Some(&HeaderValue::from_str(served)?),
+            "{configured}"
+        );
+    }
+    Ok(())
+}
