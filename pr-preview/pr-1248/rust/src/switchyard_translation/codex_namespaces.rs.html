@@ -81,163 +81,148 @@
 <a href=#81 id=81 data-nosnippet>81</a>
 <a href=#82 id=82 data-nosnippet>82</a><span class="doccomment">/// Reverse map from an upstream tool name to its Codex tool name and namespace.
 <a href=#83 id=83 data-nosnippet>83</a>///
-<a href=#84 id=84 data-nosnippet>84</a>/// The exact qualified name is always registered. A model often returns a near
-<a href=#85 id=85 data-nosnippet>85</a>/// miss instead, so two fallback spellings are registered when neither can be
-<a href=#86 id=86 data-nosnippet>86</a>/// confused with another tool:
-<a href=#87 id=87 data-nosnippet>87</a>///
-<a href=#88 id=88 data-nosnippet>88</a>/// * the qualified name without the `mcp__` prefix
-<a href=#89 id=89 data-nosnippet>89</a>/// * the bare tool name, only when exactly one namespace claims it
-<a href=#90 id=90 data-nosnippet>90</a></span><span class="kw">pub fn </span>qualified_tool_origins(
-<a href=#91 id=91 data-nosnippet>91</a>    extensions: <span class="kw-2">&amp;</span>ProviderExtensions,
-<a href=#92 id=92 data-nosnippet>92</a>) -&gt; HashMap&lt;String, (String, String)&gt; {
-<a href=#93 id=93 data-nosnippet>93</a>    <span class="kw">let </span><span class="prelude-val">Some</span>(namespaces) = tool_namespaces(extensions) <span class="kw">else </span>{
-<a href=#94 id=94 data-nosnippet>94</a>        <span class="kw">return </span>HashMap::new();
-<a href=#95 id=95 data-nosnippet>95</a>    };
-<a href=#96 id=96 data-nosnippet>96</a>    <span class="kw">let </span>split: Vec&lt;(String, String, String)&gt; = namespaces
-<a href=#97 id=97 data-nosnippet>97</a>        .keys()
-<a href=#98 id=98 data-nosnippet>98</a>        .filter_map(|qualified| {
-<a href=#99 id=99 data-nosnippet>99</a>            <span class="kw">let </span>(tool, namespace) = split_qualified_name(namespaces, qualified)<span class="question-mark">?</span>;
-<a href=#100 id=100 data-nosnippet>100</a>            <span class="prelude-val">Some</span>((qualified.clone(), tool.to_string(), namespace.to_string()))
-<a href=#101 id=101 data-nosnippet>101</a>        })
-<a href=#102 id=102 data-nosnippet>102</a>        .collect();
-<a href=#103 id=103 data-nosnippet>103</a>
-<a href=#104 id=104 data-nosnippet>104</a>    <span class="comment">// A bare name claimed by more than one namespace cannot be guessed, and a
-<a href=#105 id=105 data-nosnippet>105</a>    // fallback must never shadow a name that is itself a real qualified tool.
-<a href=#106 id=106 data-nosnippet>106</a>    </span><span class="kw">let </span><span class="kw-2">mut </span>bare_claims: HashMap&lt;<span class="kw-2">&amp;</span>str, usize&gt; = HashMap::new();
-<a href=#107 id=107 data-nosnippet>107</a>    <span class="kw">for </span>(<span class="kw">_</span>, tool, <span class="kw">_</span>) <span class="kw">in </span><span class="kw-2">&amp;</span>split {
-<a href=#108 id=108 data-nosnippet>108</a>        <span class="kw-2">*</span>bare_claims.entry(tool.as_str()).or_default() += <span class="number">1</span>;
-<a href=#109 id=109 data-nosnippet>109</a>    }
-<a href=#110 id=110 data-nosnippet>110</a>    <span class="kw">let </span>qualified_names: HashSet&lt;<span class="kw-2">&amp;</span>str&gt; = split
-<a href=#111 id=111 data-nosnippet>111</a>        .iter()
-<a href=#112 id=112 data-nosnippet>112</a>        .map(|(qualified, <span class="kw">_</span>, <span class="kw">_</span>)| qualified.as_str())
-<a href=#113 id=113 data-nosnippet>113</a>        .collect();
-<a href=#114 id=114 data-nosnippet>114</a>
-<a href=#115 id=115 data-nosnippet>115</a>    <span class="kw">let </span><span class="kw-2">mut </span>origins = HashMap::new();
-<a href=#116 id=116 data-nosnippet>116</a>    <span class="kw">for </span>(qualified, tool, namespace) <span class="kw">in </span><span class="kw-2">&amp;</span>split {
-<a href=#117 id=117 data-nosnippet>117</a>        <span class="kw">let </span>origin = (tool.clone(), namespace.clone());
-<a href=#118 id=118 data-nosnippet>118</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(stripped) = namespace.strip_prefix(<span class="string">"mcp__"</span>) {
-<a href=#119 id=119 data-nosnippet>119</a>            <span class="kw">let </span>spelling = qualified_tool_name(stripped, tool);
-<a href=#120 id=120 data-nosnippet>120</a>            <span class="kw">if </span>!qualified_names.contains(spelling.as_str()) {
-<a href=#121 id=121 data-nosnippet>121</a>                origins.entry(spelling).or_insert_with(|| origin.clone());
-<a href=#122 id=122 data-nosnippet>122</a>            }
-<a href=#123 id=123 data-nosnippet>123</a>        }
-<a href=#124 id=124 data-nosnippet>124</a>        <span class="kw">if </span>bare_claims.get(tool.as_str()) == <span class="prelude-val">Some</span>(<span class="kw-2">&amp;</span><span class="number">1</span>) &amp;&amp; !qualified_names.contains(tool.as_str()) {
-<a href=#125 id=125 data-nosnippet>125</a>            origins
-<a href=#126 id=126 data-nosnippet>126</a>                .entry(tool.clone())
-<a href=#127 id=127 data-nosnippet>127</a>                .or_insert_with(|| origin.clone());
-<a href=#128 id=128 data-nosnippet>128</a>        }
-<a href=#129 id=129 data-nosnippet>129</a>        <span class="comment">// The exact spelling always wins over a fallback.
-<a href=#130 id=130 data-nosnippet>130</a>        </span>origins.insert(qualified.clone(), origin);
-<a href=#131 id=131 data-nosnippet>131</a>    }
-<a href=#132 id=132 data-nosnippet>132</a>    origins
-<a href=#133 id=133 data-nosnippet>133</a>}
-<a href=#134 id=134 data-nosnippet>134</a>
-<a href=#135 id=135 data-nosnippet>135</a><span class="doccomment">/// Restore the Codex tool name and namespace on function calls and argument completions.
-<a href=#136 id=136 data-nosnippet>136</a>///
-<a href=#137 id=137 data-nosnippet>137</a>/// Walks the whole value, covering `function_call` items in buffered responses
-<a href=#138 id=138 data-nosnippet>138</a>/// and streaming events, plus the top-level name in
-<a href=#139 id=139 data-nosnippet>139</a>/// `response.function_call_arguments.done`. Preserves an existing `namespace`.
-<a href=#140 id=140 data-nosnippet>140</a></span><span class="kw">pub fn </span>restore_qualified_tool_names(body: <span class="kw-2">&amp;mut </span>Value, origins: <span class="kw-2">&amp;</span>HashMap&lt;String, (String, String)&gt;) {
-<a href=#141 id=141 data-nosnippet>141</a>    <span class="kw">if </span>origins.is_empty() {
-<a href=#142 id=142 data-nosnippet>142</a>        <span class="kw">return</span>;
-<a href=#143 id=143 data-nosnippet>143</a>    }
-<a href=#144 id=144 data-nosnippet>144</a>    <span class="kw">match </span>body {
-<a href=#145 id=145 data-nosnippet>145</a>        Value::Array(values) =&gt; {
-<a href=#146 id=146 data-nosnippet>146</a>            <span class="kw">for </span>value <span class="kw">in </span>values {
-<a href=#147 id=147 data-nosnippet>147</a>                restore_qualified_tool_names(value, origins);
-<a href=#148 id=148 data-nosnippet>148</a>            }
-<a href=#149 id=149 data-nosnippet>149</a>        }
-<a href=#150 id=150 data-nosnippet>150</a>        Value::Object(object) =&gt; {
-<a href=#151 id=151 data-nosnippet>151</a>            <span class="kw">if </span><span class="macro">matches!</span>(
-<a href=#152 id=152 data-nosnippet>152</a>                object.get(<span class="string">"type"</span>).and_then(Value::as_str),
-<a href=#153 id=153 data-nosnippet>153</a>                <span class="prelude-val">Some</span>(<span class="string">"function_call" </span>| <span class="string">"response.function_call_arguments.done"</span>)
-<a href=#154 id=154 data-nosnippet>154</a>            ) &amp;&amp; <span class="kw">let </span><span class="prelude-val">Some</span>(name) = object.get(<span class="string">"name"</span>).and_then(Value::as_str)
-<a href=#155 id=155 data-nosnippet>155</a>                &amp;&amp; <span class="kw">let </span><span class="prelude-val">Some</span>((tool, namespace)) = origins.get(name)
-<a href=#156 id=156 data-nosnippet>156</a>            {
-<a href=#157 id=157 data-nosnippet>157</a>                object.insert(<span class="string">"name"</span>.to_string(), Value::String(tool.clone()));
-<a href=#158 id=158 data-nosnippet>158</a>                object
-<a href=#159 id=159 data-nosnippet>159</a>                    .entry(<span class="string">"namespace"</span>.to_string())
-<a href=#160 id=160 data-nosnippet>160</a>                    .or_insert_with(|| Value::String(namespace.clone()));
-<a href=#161 id=161 data-nosnippet>161</a>            }
-<a href=#162 id=162 data-nosnippet>162</a>            <span class="kw">for </span>value <span class="kw">in </span>object.values_mut() {
-<a href=#163 id=163 data-nosnippet>163</a>                restore_qualified_tool_names(value, origins);
-<a href=#164 id=164 data-nosnippet>164</a>            }
-<a href=#165 id=165 data-nosnippet>165</a>        }
-<a href=#166 id=166 data-nosnippet>166</a>        <span class="kw">_ </span>=&gt; {}
-<a href=#167 id=167 data-nosnippet>167</a>    }
-<a href=#168 id=168 data-nosnippet>168</a>}
-<a href=#169 id=169 data-nosnippet>169</a>
-<a href=#170 id=170 data-nosnippet>170</a><span class="attr">#[cfg(test)]
-<a href=#171 id=171 data-nosnippet>171</a></span><span class="kw">mod </span>tests {
-<a href=#172 id=172 data-nosnippet>172</a>    <span class="kw">use </span>serde_json::{Map, json};
-<a href=#173 id=173 data-nosnippet>173</a>    <span class="kw">use </span>switchyard_protocol::ProviderExtensions;
-<a href=#174 id=174 data-nosnippet>174</a>
-<a href=#175 id=175 data-nosnippet>175</a>    <span class="kw">use super</span>::{
-<a href=#176 id=176 data-nosnippet>176</a>        attach_tool_namespaces, qualified_tool_name, qualified_tool_origins, record_tool_namespace,
-<a href=#177 id=177 data-nosnippet>177</a>        restore_qualified_tool_names, split_qualified_name, tool_namespaces,
-<a href=#178 id=178 data-nosnippet>178</a>    };
+<a href=#84 id=84 data-nosnippet>84</a>/// The exact qualified name is always registered. The name without the `mcp__`
+<a href=#85 id=85 data-nosnippet>85</a>/// prefix is also registered unless it matches another qualified name.
+<a href=#86 id=86 data-nosnippet>86</a></span><span class="kw">pub fn </span>qualified_tool_origins(
+<a href=#87 id=87 data-nosnippet>87</a>    extensions: <span class="kw-2">&amp;</span>ProviderExtensions,
+<a href=#88 id=88 data-nosnippet>88</a>) -&gt; HashMap&lt;String, (String, String)&gt; {
+<a href=#89 id=89 data-nosnippet>89</a>    <span class="kw">let </span><span class="prelude-val">Some</span>(namespaces) = tool_namespaces(extensions) <span class="kw">else </span>{
+<a href=#90 id=90 data-nosnippet>90</a>        <span class="kw">return </span>HashMap::new();
+<a href=#91 id=91 data-nosnippet>91</a>    };
+<a href=#92 id=92 data-nosnippet>92</a>    <span class="kw">let </span>split: Vec&lt;(String, String, String)&gt; = namespaces
+<a href=#93 id=93 data-nosnippet>93</a>        .keys()
+<a href=#94 id=94 data-nosnippet>94</a>        .filter_map(|qualified| {
+<a href=#95 id=95 data-nosnippet>95</a>            <span class="kw">let </span>(tool, namespace) = split_qualified_name(namespaces, qualified)<span class="question-mark">?</span>;
+<a href=#96 id=96 data-nosnippet>96</a>            <span class="prelude-val">Some</span>((qualified.clone(), tool.to_string(), namespace.to_string()))
+<a href=#97 id=97 data-nosnippet>97</a>        })
+<a href=#98 id=98 data-nosnippet>98</a>        .collect();
+<a href=#99 id=99 data-nosnippet>99</a>
+<a href=#100 id=100 data-nosnippet>100</a>    <span class="kw">let </span>qualified_names: HashSet&lt;<span class="kw-2">&amp;</span>str&gt; = split
+<a href=#101 id=101 data-nosnippet>101</a>        .iter()
+<a href=#102 id=102 data-nosnippet>102</a>        .map(|(qualified, <span class="kw">_</span>, <span class="kw">_</span>)| qualified.as_str())
+<a href=#103 id=103 data-nosnippet>103</a>        .collect();
+<a href=#104 id=104 data-nosnippet>104</a>
+<a href=#105 id=105 data-nosnippet>105</a>    <span class="kw">let </span><span class="kw-2">mut </span>origins = HashMap::new();
+<a href=#106 id=106 data-nosnippet>106</a>    <span class="kw">for </span>(qualified, tool, namespace) <span class="kw">in </span><span class="kw-2">&amp;</span>split {
+<a href=#107 id=107 data-nosnippet>107</a>        <span class="kw">let </span>origin = (tool.clone(), namespace.clone());
+<a href=#108 id=108 data-nosnippet>108</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(stripped) = namespace.strip_prefix(<span class="string">"mcp__"</span>) {
+<a href=#109 id=109 data-nosnippet>109</a>            <span class="kw">let </span>spelling = qualified_tool_name(stripped, tool);
+<a href=#110 id=110 data-nosnippet>110</a>            <span class="kw">if </span>!qualified_names.contains(spelling.as_str()) {
+<a href=#111 id=111 data-nosnippet>111</a>                origins.entry(spelling).or_insert_with(|| origin.clone());
+<a href=#112 id=112 data-nosnippet>112</a>            }
+<a href=#113 id=113 data-nosnippet>113</a>        }
+<a href=#114 id=114 data-nosnippet>114</a>        <span class="comment">// The exact spelling always wins over a fallback.
+<a href=#115 id=115 data-nosnippet>115</a>        </span>origins.insert(qualified.clone(), origin);
+<a href=#116 id=116 data-nosnippet>116</a>    }
+<a href=#117 id=117 data-nosnippet>117</a>    origins
+<a href=#118 id=118 data-nosnippet>118</a>}
+<a href=#119 id=119 data-nosnippet>119</a>
+<a href=#120 id=120 data-nosnippet>120</a><span class="doccomment">/// Restore the Codex tool name and namespace on function calls and argument completions.
+<a href=#121 id=121 data-nosnippet>121</a>///
+<a href=#122 id=122 data-nosnippet>122</a>/// Walks the whole value, covering `function_call` items in buffered responses
+<a href=#123 id=123 data-nosnippet>123</a>/// and streaming events, plus the top-level name in
+<a href=#124 id=124 data-nosnippet>124</a>/// `response.function_call_arguments.done`. Preserves an existing `namespace`.
+<a href=#125 id=125 data-nosnippet>125</a></span><span class="kw">pub fn </span>restore_qualified_tool_names(body: <span class="kw-2">&amp;mut </span>Value, origins: <span class="kw-2">&amp;</span>HashMap&lt;String, (String, String)&gt;) {
+<a href=#126 id=126 data-nosnippet>126</a>    <span class="kw">if </span>origins.is_empty() {
+<a href=#127 id=127 data-nosnippet>127</a>        <span class="kw">return</span>;
+<a href=#128 id=128 data-nosnippet>128</a>    }
+<a href=#129 id=129 data-nosnippet>129</a>    <span class="kw">match </span>body {
+<a href=#130 id=130 data-nosnippet>130</a>        Value::Array(values) =&gt; {
+<a href=#131 id=131 data-nosnippet>131</a>            <span class="kw">for </span>value <span class="kw">in </span>values {
+<a href=#132 id=132 data-nosnippet>132</a>                restore_qualified_tool_names(value, origins);
+<a href=#133 id=133 data-nosnippet>133</a>            }
+<a href=#134 id=134 data-nosnippet>134</a>        }
+<a href=#135 id=135 data-nosnippet>135</a>        Value::Object(object) =&gt; {
+<a href=#136 id=136 data-nosnippet>136</a>            <span class="kw">if </span><span class="macro">matches!</span>(
+<a href=#137 id=137 data-nosnippet>137</a>                object.get(<span class="string">"type"</span>).and_then(Value::as_str),
+<a href=#138 id=138 data-nosnippet>138</a>                <span class="prelude-val">Some</span>(<span class="string">"function_call" </span>| <span class="string">"response.function_call_arguments.done"</span>)
+<a href=#139 id=139 data-nosnippet>139</a>            ) &amp;&amp; <span class="kw">let </span><span class="prelude-val">Some</span>(name) = object.get(<span class="string">"name"</span>).and_then(Value::as_str)
+<a href=#140 id=140 data-nosnippet>140</a>                &amp;&amp; <span class="kw">let </span><span class="prelude-val">Some</span>((tool, namespace)) = origins.get(name)
+<a href=#141 id=141 data-nosnippet>141</a>            {
+<a href=#142 id=142 data-nosnippet>142</a>                object.insert(<span class="string">"name"</span>.to_string(), Value::String(tool.clone()));
+<a href=#143 id=143 data-nosnippet>143</a>                object
+<a href=#144 id=144 data-nosnippet>144</a>                    .entry(<span class="string">"namespace"</span>.to_string())
+<a href=#145 id=145 data-nosnippet>145</a>                    .or_insert_with(|| Value::String(namespace.clone()));
+<a href=#146 id=146 data-nosnippet>146</a>            }
+<a href=#147 id=147 data-nosnippet>147</a>            <span class="kw">for </span>value <span class="kw">in </span>object.values_mut() {
+<a href=#148 id=148 data-nosnippet>148</a>                restore_qualified_tool_names(value, origins);
+<a href=#149 id=149 data-nosnippet>149</a>            }
+<a href=#150 id=150 data-nosnippet>150</a>        }
+<a href=#151 id=151 data-nosnippet>151</a>        <span class="kw">_ </span>=&gt; {}
+<a href=#152 id=152 data-nosnippet>152</a>    }
+<a href=#153 id=153 data-nosnippet>153</a>}
+<a href=#154 id=154 data-nosnippet>154</a>
+<a href=#155 id=155 data-nosnippet>155</a><span class="attr">#[cfg(test)]
+<a href=#156 id=156 data-nosnippet>156</a></span><span class="kw">mod </span>tests {
+<a href=#157 id=157 data-nosnippet>157</a>    <span class="kw">use </span>serde_json::{Map, json};
+<a href=#158 id=158 data-nosnippet>158</a>    <span class="kw">use </span>switchyard_protocol::ProviderExtensions;
+<a href=#159 id=159 data-nosnippet>159</a>
+<a href=#160 id=160 data-nosnippet>160</a>    <span class="kw">use super</span>::{
+<a href=#161 id=161 data-nosnippet>161</a>        attach_tool_namespaces, qualified_tool_name, qualified_tool_origins, record_tool_namespace,
+<a href=#162 id=162 data-nosnippet>162</a>        restore_qualified_tool_names, split_qualified_name, tool_namespaces,
+<a href=#163 id=163 data-nosnippet>163</a>    };
+<a href=#164 id=164 data-nosnippet>164</a>
+<a href=#165 id=165 data-nosnippet>165</a>    <span class="kw">fn </span>extensions(pairs: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str)]) -&gt; ProviderExtensions {
+<a href=#166 id=166 data-nosnippet>166</a>        <span class="kw">let </span><span class="kw-2">mut </span>namespaces = Map::new();
+<a href=#167 id=167 data-nosnippet>167</a>        <span class="kw">for </span>(namespace, tool) <span class="kw">in </span>pairs {
+<a href=#168 id=168 data-nosnippet>168</a>            record_tool_namespace(
+<a href=#169 id=169 data-nosnippet>169</a>                <span class="kw-2">&amp;mut </span>namespaces,
+<a href=#170 id=170 data-nosnippet>170</a>                <span class="kw-2">&amp;</span>qualified_tool_name(namespace, tool),
+<a href=#171 id=171 data-nosnippet>171</a>                namespace,
+<a href=#172 id=172 data-nosnippet>172</a>                <span class="prelude-val">None</span>,
+<a href=#173 id=173 data-nosnippet>173</a>            );
+<a href=#174 id=174 data-nosnippet>174</a>        }
+<a href=#175 id=175 data-nosnippet>175</a>        <span class="kw">let </span><span class="kw-2">mut </span>extensions = ProviderExtensions::default();
+<a href=#176 id=176 data-nosnippet>176</a>        attach_tool_namespaces(<span class="kw-2">&amp;mut </span>extensions, namespaces);
+<a href=#177 id=177 data-nosnippet>177</a>        extensions
+<a href=#178 id=178 data-nosnippet>178</a>    }
 <a href=#179 id=179 data-nosnippet>179</a>
-<a href=#180 id=180 data-nosnippet>180</a>    <span class="kw">fn </span>extensions(pairs: <span class="kw-2">&amp;</span>[(<span class="kw-2">&amp;</span>str, <span class="kw-2">&amp;</span>str)]) -&gt; ProviderExtensions {
-<a href=#181 id=181 data-nosnippet>181</a>        <span class="kw">let </span><span class="kw-2">mut </span>namespaces = Map::new();
-<a href=#182 id=182 data-nosnippet>182</a>        <span class="kw">for </span>(namespace, tool) <span class="kw">in </span>pairs {
-<a href=#183 id=183 data-nosnippet>183</a>            record_tool_namespace(
-<a href=#184 id=184 data-nosnippet>184</a>                <span class="kw-2">&amp;mut </span>namespaces,
-<a href=#185 id=185 data-nosnippet>185</a>                <span class="kw-2">&amp;</span>qualified_tool_name(namespace, tool),
-<a href=#186 id=186 data-nosnippet>186</a>                namespace,
-<a href=#187 id=187 data-nosnippet>187</a>                <span class="prelude-val">None</span>,
-<a href=#188 id=188 data-nosnippet>188</a>            );
-<a href=#189 id=189 data-nosnippet>189</a>        }
-<a href=#190 id=190 data-nosnippet>190</a>        <span class="kw">let </span><span class="kw-2">mut </span>extensions = ProviderExtensions::default();
-<a href=#191 id=191 data-nosnippet>191</a>        attach_tool_namespaces(<span class="kw-2">&amp;mut </span>extensions, namespaces);
-<a href=#192 id=192 data-nosnippet>192</a>        extensions
-<a href=#193 id=193 data-nosnippet>193</a>    }
-<a href=#194 id=194 data-nosnippet>194</a>
-<a href=#195 id=195 data-nosnippet>195</a>    <span class="comment">// A tool name may itself contain the separator, so the namespace is matched
-<a href=#196 id=196 data-nosnippet>196</a>    // as a prefix rather than by splitting on the first `__`.
-<a href=#197 id=197 data-nosnippet>197</a>    </span><span class="attr">#[test]
-<a href=#198 id=198 data-nosnippet>198</a>    </span><span class="kw">fn </span>splits_a_qualified_name_back_apart() {
-<a href=#199 id=199 data-nosnippet>199</a>        <span class="kw">let </span>simple = extensions(<span class="kw-2">&amp;</span>[(<span class="string">"mcp__docs"</span>, <span class="string">"search"</span>)]);
-<a href=#200 id=200 data-nosnippet>200</a>        <span class="kw">let </span>simple = tool_namespaces(<span class="kw-2">&amp;</span>simple).expect(<span class="string">"mapping present"</span>);
-<a href=#201 id=201 data-nosnippet>201</a>        <span class="macro">assert_eq!</span>(
-<a href=#202 id=202 data-nosnippet>202</a>            split_qualified_name(simple, <span class="string">"mcp__docs__search"</span>),
-<a href=#203 id=203 data-nosnippet>203</a>            <span class="prelude-val">Some</span>((<span class="string">"search"</span>, <span class="string">"mcp__docs"</span>))
-<a href=#204 id=204 data-nosnippet>204</a>        );
-<a href=#205 id=205 data-nosnippet>205</a>        <span class="macro">assert_eq!</span>(split_qualified_name(simple, <span class="string">"unknown_tool"</span>), <span class="prelude-val">None</span>);
-<a href=#206 id=206 data-nosnippet>206</a>
-<a href=#207 id=207 data-nosnippet>207</a>        <span class="kw">let </span>nested = extensions(<span class="kw-2">&amp;</span>[(<span class="string">"mcp__docs"</span>, <span class="string">"fetch__raw"</span>)]);
-<a href=#208 id=208 data-nosnippet>208</a>        <span class="kw">let </span>nested = tool_namespaces(<span class="kw-2">&amp;</span>nested).expect(<span class="string">"mapping present"</span>);
-<a href=#209 id=209 data-nosnippet>209</a>        <span class="macro">assert_eq!</span>(
-<a href=#210 id=210 data-nosnippet>210</a>            split_qualified_name(nested, <span class="string">"mcp__docs__fetch__raw"</span>),
-<a href=#211 id=211 data-nosnippet>211</a>            <span class="prelude-val">Some</span>((<span class="string">"fetch__raw"</span>, <span class="string">"mcp__docs"</span>))
-<a href=#212 id=212 data-nosnippet>212</a>        );
-<a href=#213 id=213 data-nosnippet>213</a>    }
-<a href=#214 id=214 data-nosnippet>214</a>
-<a href=#215 id=215 data-nosnippet>215</a>    <span class="comment">// A bare name claimed by two namespaces must not be guessed: a wrong guess
-<a href=#216 id=216 data-nosnippet>216</a>    // dispatches the call to the wrong server.
-<a href=#217 id=217 data-nosnippet>217</a>    </span><span class="attr">#[test]
-<a href=#218 id=218 data-nosnippet>218</a>    </span><span class="kw">fn </span>leaves_an_ambiguous_bare_name_alone() {
-<a href=#219 id=219 data-nosnippet>219</a>        <span class="kw">let </span>origins =
-<a href=#220 id=220 data-nosnippet>220</a>            qualified_tool_origins(<span class="kw-2">&amp;</span>extensions(<span class="kw-2">&amp;</span>[(<span class="string">"mcp__a"</span>, <span class="string">"search"</span>), (<span class="string">"mcp__b"</span>, <span class="string">"search"</span>)]));
-<a href=#221 id=221 data-nosnippet>221</a>        <span class="kw">let </span><span class="kw-2">mut </span>response = <span class="macro">json!</span>({<span class="string">"output"</span>: [{<span class="string">"type"</span>: <span class="string">"function_call"</span>, <span class="string">"name"</span>: <span class="string">"search"</span>}]});
-<a href=#222 id=222 data-nosnippet>222</a>        <span class="kw">let </span>before = response.clone();
+<a href=#180 id=180 data-nosnippet>180</a>    <span class="comment">// A tool name may itself contain the separator, so the namespace is matched
+<a href=#181 id=181 data-nosnippet>181</a>    // as a prefix rather than by splitting on the first `__`.
+<a href=#182 id=182 data-nosnippet>182</a>    </span><span class="attr">#[test]
+<a href=#183 id=183 data-nosnippet>183</a>    </span><span class="kw">fn </span>splits_a_qualified_name_back_apart() {
+<a href=#184 id=184 data-nosnippet>184</a>        <span class="kw">let </span>simple = extensions(<span class="kw-2">&amp;</span>[(<span class="string">"mcp__docs"</span>, <span class="string">"search"</span>)]);
+<a href=#185 id=185 data-nosnippet>185</a>        <span class="kw">let </span>simple = tool_namespaces(<span class="kw-2">&amp;</span>simple).expect(<span class="string">"mapping present"</span>);
+<a href=#186 id=186 data-nosnippet>186</a>        <span class="macro">assert_eq!</span>(
+<a href=#187 id=187 data-nosnippet>187</a>            split_qualified_name(simple, <span class="string">"mcp__docs__search"</span>),
+<a href=#188 id=188 data-nosnippet>188</a>            <span class="prelude-val">Some</span>((<span class="string">"search"</span>, <span class="string">"mcp__docs"</span>))
+<a href=#189 id=189 data-nosnippet>189</a>        );
+<a href=#190 id=190 data-nosnippet>190</a>        <span class="macro">assert_eq!</span>(split_qualified_name(simple, <span class="string">"unknown_tool"</span>), <span class="prelude-val">None</span>);
+<a href=#191 id=191 data-nosnippet>191</a>
+<a href=#192 id=192 data-nosnippet>192</a>        <span class="kw">let </span>nested = extensions(<span class="kw-2">&amp;</span>[(<span class="string">"mcp__docs"</span>, <span class="string">"fetch__raw"</span>)]);
+<a href=#193 id=193 data-nosnippet>193</a>        <span class="kw">let </span>nested = tool_namespaces(<span class="kw-2">&amp;</span>nested).expect(<span class="string">"mapping present"</span>);
+<a href=#194 id=194 data-nosnippet>194</a>        <span class="macro">assert_eq!</span>(
+<a href=#195 id=195 data-nosnippet>195</a>            split_qualified_name(nested, <span class="string">"mcp__docs__fetch__raw"</span>),
+<a href=#196 id=196 data-nosnippet>196</a>            <span class="prelude-val">Some</span>((<span class="string">"fetch__raw"</span>, <span class="string">"mcp__docs"</span>))
+<a href=#197 id=197 data-nosnippet>197</a>        );
+<a href=#198 id=198 data-nosnippet>198</a>    }
+<a href=#199 id=199 data-nosnippet>199</a>
+<a href=#200 id=200 data-nosnippet>200</a>    <span class="comment">// A bare name claimed by two namespaces must not be guessed: a wrong guess
+<a href=#201 id=201 data-nosnippet>201</a>    // dispatches the call to the wrong server.
+<a href=#202 id=202 data-nosnippet>202</a>    </span><span class="attr">#[test]
+<a href=#203 id=203 data-nosnippet>203</a>    </span><span class="kw">fn </span>leaves_an_ambiguous_bare_name_alone() {
+<a href=#204 id=204 data-nosnippet>204</a>        <span class="kw">let </span>origins =
+<a href=#205 id=205 data-nosnippet>205</a>            qualified_tool_origins(<span class="kw-2">&amp;</span>extensions(<span class="kw-2">&amp;</span>[(<span class="string">"mcp__a"</span>, <span class="string">"search"</span>), (<span class="string">"mcp__b"</span>, <span class="string">"search"</span>)]));
+<a href=#206 id=206 data-nosnippet>206</a>        <span class="kw">let </span><span class="kw-2">mut </span>response = <span class="macro">json!</span>({<span class="string">"output"</span>: [{<span class="string">"type"</span>: <span class="string">"function_call"</span>, <span class="string">"name"</span>: <span class="string">"search"</span>}]});
+<a href=#207 id=207 data-nosnippet>207</a>        <span class="kw">let </span>before = response.clone();
+<a href=#208 id=208 data-nosnippet>208</a>
+<a href=#209 id=209 data-nosnippet>209</a>        restore_qualified_tool_names(<span class="kw-2">&amp;mut </span>response, <span class="kw-2">&amp;</span>origins);
+<a href=#210 id=210 data-nosnippet>210</a>
+<a href=#211 id=211 data-nosnippet>211</a>        <span class="macro">assert_eq!</span>(response, before);
+<a href=#212 id=212 data-nosnippet>212</a>    }
+<a href=#213 id=213 data-nosnippet>213</a>
+<a href=#214 id=214 data-nosnippet>214</a>    <span class="comment">// Codex namespaces builtin groups too, so nothing may key on `mcp__`.
+<a href=#215 id=215 data-nosnippet>215</a>    </span><span class="attr">#[test]
+<a href=#216 id=216 data-nosnippet>216</a>    </span><span class="kw">fn </span>resolves_namespaces_that_are_not_mcp_servers() {
+<a href=#217 id=217 data-nosnippet>217</a>        <span class="kw">let </span>origins = qualified_tool_origins(<span class="kw-2">&amp;</span>extensions(<span class="kw-2">&amp;</span>[(<span class="string">"multi_agent_v1"</span>, <span class="string">"spawn_agent"</span>)]));
+<a href=#218 id=218 data-nosnippet>218</a>        <span class="kw">let </span><span class="kw-2">mut </span>response = <span class="macro">json!</span>({
+<a href=#219 id=219 data-nosnippet>219</a>            <span class="string">"output"</span>: [{<span class="string">"type"</span>: <span class="string">"function_call"</span>, <span class="string">"name"</span>: <span class="string">"multi_agent_v1__spawn_agent"</span>}]
+<a href=#220 id=220 data-nosnippet>220</a>        });
+<a href=#221 id=221 data-nosnippet>221</a>
+<a href=#222 id=222 data-nosnippet>222</a>        restore_qualified_tool_names(<span class="kw-2">&amp;mut </span>response, <span class="kw-2">&amp;</span>origins);
 <a href=#223 id=223 data-nosnippet>223</a>
-<a href=#224 id=224 data-nosnippet>224</a>        restore_qualified_tool_names(<span class="kw-2">&amp;mut </span>response, <span class="kw-2">&amp;</span>origins);
-<a href=#225 id=225 data-nosnippet>225</a>
-<a href=#226 id=226 data-nosnippet>226</a>        <span class="macro">assert_eq!</span>(response, before);
-<a href=#227 id=227 data-nosnippet>227</a>    }
-<a href=#228 id=228 data-nosnippet>228</a>
-<a href=#229 id=229 data-nosnippet>229</a>    <span class="comment">// Codex namespaces builtin groups too, so nothing may key on `mcp__`.
-<a href=#230 id=230 data-nosnippet>230</a>    </span><span class="attr">#[test]
-<a href=#231 id=231 data-nosnippet>231</a>    </span><span class="kw">fn </span>resolves_namespaces_that_are_not_mcp_servers() {
-<a href=#232 id=232 data-nosnippet>232</a>        <span class="kw">let </span>origins = qualified_tool_origins(<span class="kw-2">&amp;</span>extensions(<span class="kw-2">&amp;</span>[(<span class="string">"multi_agent_v1"</span>, <span class="string">"spawn_agent"</span>)]));
-<a href=#233 id=233 data-nosnippet>233</a>        <span class="kw">let </span><span class="kw-2">mut </span>response = <span class="macro">json!</span>({
-<a href=#234 id=234 data-nosnippet>234</a>            <span class="string">"output"</span>: [{<span class="string">"type"</span>: <span class="string">"function_call"</span>, <span class="string">"name"</span>: <span class="string">"multi_agent_v1__spawn_agent"</span>}]
-<a href=#235 id=235 data-nosnippet>235</a>        });
-<a href=#236 id=236 data-nosnippet>236</a>
-<a href=#237 id=237 data-nosnippet>237</a>        restore_qualified_tool_names(<span class="kw-2">&amp;mut </span>response, <span class="kw-2">&amp;</span>origins);
-<a href=#238 id=238 data-nosnippet>238</a>
-<a href=#239 id=239 data-nosnippet>239</a>        <span class="macro">assert_eq!</span>(response[<span class="string">"output"</span>][<span class="number">0</span>][<span class="string">"name"</span>], <span class="string">"spawn_agent"</span>);
-<a href=#240 id=240 data-nosnippet>240</a>        <span class="macro">assert_eq!</span>(response[<span class="string">"output"</span>][<span class="number">0</span>][<span class="string">"namespace"</span>], <span class="string">"multi_agent_v1"</span>);
-<a href=#241 id=241 data-nosnippet>241</a>    }
-<a href=#242 id=242 data-nosnippet>242</a>}
+<a href=#224 id=224 data-nosnippet>224</a>        <span class="macro">assert_eq!</span>(response[<span class="string">"output"</span>][<span class="number">0</span>][<span class="string">"name"</span>], <span class="string">"spawn_agent"</span>);
+<a href=#225 id=225 data-nosnippet>225</a>        <span class="macro">assert_eq!</span>(response[<span class="string">"output"</span>][<span class="number">0</span>][<span class="string">"namespace"</span>], <span class="string">"multi_agent_v1"</span>);
+<a href=#226 id=226 data-nosnippet>226</a>    }
+<a href=#227 id=227 data-nosnippet>227</a>}
 </code></pre></div></section></main></body></html>

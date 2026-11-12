@@ -483,137 +483,141 @@
 <a href=#483 id=483 data-nosnippet>483</a>    /// buffered across chunks (a partial frame waits for its boundary); the source
 <a href=#484 id=484 data-nosnippet>484</a>    /// stream codec is resolved once and reused for every frame.
 <a href=#485 id=485 data-nosnippet>485</a>    ///
-<a href=#486 id=486 data-nosnippet>486</a>    /// The decoder tracks the source format's protocol-specific terminal event. If
-<a href=#487 id=487 data-nosnippet>487</a>    /// EOF arrives without that required event, the stream yields a deferred
-<a href=#488 id=488 data-nosnippet>488</a>    /// [`LlmClientError::ResponseTranslation`] error after any valid decoded events.
-<a href=#489 id=489 data-nosnippet>489</a>    </span><span class="kw">pub fn </span>decode_stream&lt;S&gt;(
-<a href=#490 id=490 data-nosnippet>490</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
-<a href=#491 id=491 data-nosnippet>491</a>        source: <span class="kw">impl </span>Into&lt;FormatId&gt;,
-<a href=#492 id=492 data-nosnippet>492</a>        bytes: S,
-<a href=#493 id=493 data-nosnippet>493</a>    ) -&gt; std::result::Result&lt;LlmResponseStream, LlmClientError&gt;
-<a href=#494 id=494 data-nosnippet>494</a>    <span class="kw">where
-<a href=#495 id=495 data-nosnippet>495</a>        </span>S: Stream&lt;Item = std::result::Result&lt;Vec&lt;u8&gt;, LlmClientError&gt;&gt; + Send + <span class="lifetime">'static</span>,
-<a href=#496 id=496 data-nosnippet>496</a>    {
-<a href=#497 id=497 data-nosnippet>497</a>        <span class="kw">let </span>marker = sse::done_marker();
-<a href=#498 id=498 data-nosnippet>498</a>        <span class="kw">let </span>source_format: FormatId = source.into();
-<a href=#499 id=499 data-nosnippet>499</a>        <span class="kw">let </span>codec = <span class="self">self
-<a href=#500 id=500 data-nosnippet>500</a>            </span>.stream_registry
-<a href=#501 id=501 data-nosnippet>501</a>            .codec(source_format.clone())
-<a href=#502 id=502 data-nosnippet>502</a>            .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))<span class="question-mark">?</span>;
-<a href=#503 id=503 data-nosnippet>503</a>        <span class="comment">// Adapt the byte-chunk stream into an async line reader. The BufReader
-<a href=#504 id=504 data-nosnippet>504</a>        // reassembles data split across network chunks (including multi-byte UTF-8),
-<a href=#505 id=505 data-nosnippet>505</a>        // and `lines()` yields one SSE field line at a time. The stream is boxed to
-<a href=#506 id=506 data-nosnippet>506</a>        // an `io::Error` item so `into_async_read`'s error bound resolves cleanly. The
-<a href=#507 id=507 data-nosnippet>507</a>        // source error is boxed intact rather than stringified, so
-<a href=#508 id=508 data-nosnippet>508</a>        // `llm_client_error_from_io` can recover its original variant on the way out.
-<a href=#509 id=509 data-nosnippet>509</a>        </span><span class="kw">let </span>io_bytes: Pin&lt;Box&lt;<span class="kw">dyn </span>Stream&lt;Item = std::io::Result&lt;Vec&lt;u8&gt;&gt;&gt; + Send&gt;&gt; =
-<a href=#510 id=510 data-nosnippet>510</a>            Box::pin(bytes.map(|item| item.map_err(std::io::Error::other)));
-<a href=#511 id=511 data-nosnippet>511</a>        <span class="kw">let </span>lines = futures::io::BufReader::new(io_bytes.into_async_read()).lines();
-<a href=#512 id=512 data-nosnippet>512</a>
-<a href=#513 id=513 data-nosnippet>513</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = StreamTranslationState {
-<a href=#514 id=514 data-nosnippet>514</a>            source: <span class="prelude-val">Some</span>(source_format.clone()),
-<a href=#515 id=515 data-nosnippet>515</a>            ..StreamTranslationState::default()
-<a href=#516 id=516 data-nosnippet>516</a>        };
-<a href=#517 id=517 data-nosnippet>517</a>        <span class="kw">let </span><span class="kw-2">mut </span>frame = String::new();
-<a href=#518 id=518 data-nosnippet>518</a>        <span class="kw">let </span><span class="kw-2">mut </span>saw_terminal = <span class="bool-val">false</span>;
-<a href=#519 id=519 data-nosnippet>519</a>        <span class="kw">let </span><span class="kw-2">mut </span>saw_error = <span class="bool-val">false</span>;
-<a href=#520 id=520 data-nosnippet>520</a>        <span class="kw">let </span>stream = Box::pin(<span class="macro">try_stream!</span> {
-<a href=#521 id=521 data-nosnippet>521</a>            <span class="macro">futures::pin_mut!</span>(lines);
-<a href=#522 id=522 data-nosnippet>522</a>            <span class="kw">while let </span><span class="prelude-val">Some</span>(line) = lines.next().<span class="kw">await </span>{
-<a href=#523 id=523 data-nosnippet>523</a>                <span class="kw">let </span>line = line.map_err(llm_client_error_from_io)<span class="question-mark">?</span>;
-<a href=#524 id=524 data-nosnippet>524</a>                <span class="comment">// A blank line (allowing a bare CR for CRLF streams) ends the frame.
-<a href=#525 id=525 data-nosnippet>525</a>                </span><span class="kw">if </span>line.trim_end().is_empty() {
-<a href=#526 id=526 data-nosnippet>526</a>                    <span class="kw">let </span>parsed = sse::parse_json_sse_frame(<span class="kw-2">&amp;</span>frame, marker)
-<a href=#527 id=527 data-nosnippet>527</a>                        .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))<span class="question-mark">?</span>;
-<a href=#528 id=528 data-nosnippet>528</a>                    frame.clear();
-<a href=#529 id=529 data-nosnippet>529</a>                    <span class="kw">match </span>parsed {
-<a href=#530 id=530 data-nosnippet>530</a>                        sse::SseFrame::Empty =&gt; {}
-<a href=#531 id=531 data-nosnippet>531</a>                        sse::SseFrame::Done =&gt; {
-<a href=#532 id=532 data-nosnippet>532</a>                            saw_terminal |= codec.sse_done_is_terminal();
-<a href=#533 id=533 data-nosnippet>533</a>                            <span class="kw">break</span>;
-<a href=#534 id=534 data-nosnippet>534</a>                        }
-<a href=#535 id=535 data-nosnippet>535</a>                        sse::SseFrame::Data(value) =&gt; {
-<a href=#536 id=536 data-nosnippet>536</a>                            saw_terminal |= codec.is_terminal_event(<span class="kw-2">&amp;</span>value);
-<a href=#537 id=537 data-nosnippet>537</a>                            <span class="kw">let </span>normalized = codec.decode_event(<span class="kw-2">&amp;mut </span>state, <span class="kw-2">&amp;</span>value);
-<a href=#538 id=538 data-nosnippet>538</a>                            saw_error |= normalized.iter().any(|chunk| <span class="macro">matches!</span>(
-<a href=#539 id=539 data-nosnippet>539</a>                                chunk,
-<a href=#540 id=540 data-nosnippet>540</a>                                LlmResponseChunk::DecodeError { .. }
-<a href=#541 id=541 data-nosnippet>541</a>                                    | LlmResponseChunk::StreamError { .. }
-<a href=#542 id=542 data-nosnippet>542</a>                            ));
-<a href=#543 id=543 data-nosnippet>543</a>                            <span class="kw">yield </span>LlmResponseStreamEvent::preserved(
-<a href=#544 id=544 data-nosnippet>544</a>                                source_format.clone(),
-<a href=#545 id=545 data-nosnippet>545</a>                                value,
-<a href=#546 id=546 data-nosnippet>546</a>                                normalized,
-<a href=#547 id=547 data-nosnippet>547</a>                            );
-<a href=#548 id=548 data-nosnippet>548</a>                        }
-<a href=#549 id=549 data-nosnippet>549</a>                    }
-<a href=#550 id=550 data-nosnippet>550</a>                } <span class="kw">else </span>{
-<a href=#551 id=551 data-nosnippet>551</a>                    frame.push_str(<span class="kw-2">&amp;</span>line);
-<a href=#552 id=552 data-nosnippet>552</a>                    frame.push(<span class="string">'\n'</span>);
-<a href=#553 id=553 data-nosnippet>553</a>                }
-<a href=#554 id=554 data-nosnippet>554</a>            }
-<a href=#555 id=555 data-nosnippet>555</a>
-<a href=#556 id=556 data-nosnippet>556</a>            <span class="comment">// A non-standard upstream might omit the final blank line; parse a trailing
-<a href=#557 id=557 data-nosnippet>557</a>            // complete frame instead of losing its last chunk.
-<a href=#558 id=558 data-nosnippet>558</a>            </span><span class="attr">#[allow(clippy::collapsible_if)]
-<a href=#559 id=559 data-nosnippet>559</a>            </span><span class="kw">if </span>!frame.trim_end().is_empty() {
-<a href=#560 id=560 data-nosnippet>560</a>                <span class="kw">let </span>parsed = sse::parse_json_sse_frame(<span class="kw-2">&amp;</span>frame, marker)
-<a href=#561 id=561 data-nosnippet>561</a>                    .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))<span class="question-mark">?</span>;
-<a href=#562 id=562 data-nosnippet>562</a>                <span class="kw">match </span>parsed {
-<a href=#563 id=563 data-nosnippet>563</a>                    sse::SseFrame::Done =&gt; {
-<a href=#564 id=564 data-nosnippet>564</a>                        saw_terminal |= codec.sse_done_is_terminal();
-<a href=#565 id=565 data-nosnippet>565</a>                    }
-<a href=#566 id=566 data-nosnippet>566</a>                    sse::SseFrame::Data(value) =&gt; {
-<a href=#567 id=567 data-nosnippet>567</a>                        saw_terminal |= codec.is_terminal_event(<span class="kw-2">&amp;</span>value);
-<a href=#568 id=568 data-nosnippet>568</a>                        <span class="kw">let </span>normalized = codec.decode_event(<span class="kw-2">&amp;mut </span>state, <span class="kw-2">&amp;</span>value);
-<a href=#569 id=569 data-nosnippet>569</a>                        saw_error |= normalized.iter().any(|chunk| <span class="macro">matches!</span>(
-<a href=#570 id=570 data-nosnippet>570</a>                            chunk,
-<a href=#571 id=571 data-nosnippet>571</a>                            LlmResponseChunk::DecodeError { .. }
-<a href=#572 id=572 data-nosnippet>572</a>                                | LlmResponseChunk::StreamError { .. }
-<a href=#573 id=573 data-nosnippet>573</a>                        ));
-<a href=#574 id=574 data-nosnippet>574</a>                        <span class="kw">yield </span>LlmResponseStreamEvent::preserved(source_format.clone(), value, normalized);
-<a href=#575 id=575 data-nosnippet>575</a>                    }
-<a href=#576 id=576 data-nosnippet>576</a>                    sse::SseFrame::Empty =&gt; {}
-<a href=#577 id=577 data-nosnippet>577</a>                }
-<a href=#578 id=578 data-nosnippet>578</a>            }
-<a href=#579 id=579 data-nosnippet>579</a>
-<a href=#580 id=580 data-nosnippet>580</a>            <span class="kw">if </span>!saw_terminal &amp;&amp; !saw_error {
-<a href=#581 id=581 data-nosnippet>581</a>                <span class="prelude-val">Err</span>(LlmClientError::ResponseTranslation(<span class="macro">format!</span>(
-<a href=#582 id=582 data-nosnippet>582</a>                    <span class="string">"{source_format} stream ended before a terminal event"
-<a href=#583 id=583 data-nosnippet>583</a>                </span>)))<span class="question-mark">?</span>;
-<a href=#584 id=584 data-nosnippet>584</a>            }
-<a href=#585 id=585 data-nosnippet>585</a>        });
-<a href=#586 id=586 data-nosnippet>586</a>        <span class="prelude-val">Ok</span>(stream)
-<a href=#587 id=587 data-nosnippet>587</a>    }
-<a href=#588 id=588 data-nosnippet>588</a>}
-<a href=#589 id=589 data-nosnippet>589</a>
-<a href=#590 id=590 data-nosnippet>590</a><span class="comment">// Recover transport errors wrapped for `AsyncRead`; other reader failures are
-<a href=#591 id=591 data-nosnippet>591</a>// invalid upstream responses.
-<a href=#592 id=592 data-nosnippet>592</a></span><span class="kw">fn </span>llm_client_error_from_io(error: std::io::Error) -&gt; LlmClientError {
-<a href=#593 id=593 data-nosnippet>593</a>    <span class="kw">let </span>kind = error.kind();
-<a href=#594 id=594 data-nosnippet>594</a>    <span class="kw">let </span>message = error.to_string();
-<a href=#595 id=595 data-nosnippet>595</a>    <span class="kw">match </span>error.into_inner() {
-<a href=#596 id=596 data-nosnippet>596</a>        <span class="prelude-val">Some</span>(source) =&gt; <span class="kw">match </span>source.downcast::&lt;LlmClientError&gt;() {
-<a href=#597 id=597 data-nosnippet>597</a>            <span class="prelude-val">Ok</span>(error) =&gt; <span class="kw-2">*</span>error,
-<a href=#598 id=598 data-nosnippet>598</a>            <span class="prelude-val">Err</span>(source) =&gt; LlmClientError::InvalidResponse { source },
-<a href=#599 id=599 data-nosnippet>599</a>        },
-<a href=#600 id=600 data-nosnippet>600</a>        <span class="prelude-val">None </span>=&gt; LlmClientError::InvalidResponse {
-<a href=#601 id=601 data-nosnippet>601</a>            source: Box::new(std::io::Error::new(kind, message)),
-<a href=#602 id=602 data-nosnippet>602</a>        },
-<a href=#603 id=603 data-nosnippet>603</a>    }
-<a href=#604 id=604 data-nosnippet>604</a>}
-<a href=#605 id=605 data-nosnippet>605</a>
-<a href=#606 id=606 data-nosnippet>606</a><span class="comment">// Attaches source and target formats to every diagnostic emitted across both passes.
-<a href=#607 id=607 data-nosnippet>607</a></span><span class="kw">fn </span>with_formats(
-<a href=#608 id=608 data-nosnippet>608</a>    decoded: Vec&lt;TranslationDiagnostic&gt;,
-<a href=#609 id=609 data-nosnippet>609</a>    encoded: Vec&lt;TranslationDiagnostic&gt;,
-<a href=#610 id=610 data-nosnippet>610</a>    source: FormatId,
-<a href=#611 id=611 data-nosnippet>611</a>    target: FormatId,
-<a href=#612 id=612 data-nosnippet>612</a>) -&gt; Vec&lt;TranslationDiagnostic&gt; {
-<a href=#613 id=613 data-nosnippet>613</a>    decoded
-<a href=#614 id=614 data-nosnippet>614</a>        .into_iter()
-<a href=#615 id=615 data-nosnippet>615</a>        .chain(encoded)
-<a href=#616 id=616 data-nosnippet>616</a>        .map(|diagnostic| diagnostic.with_formats(source.clone(), target.clone()))
-<a href=#617 id=617 data-nosnippet>617</a>        .collect()
-<a href=#618 id=618 data-nosnippet>618</a>}
+<a href=#486 id=486 data-nosnippet>486</a>    /// Codecs can opt in to stopping after the decoder yields a terminal JSON event.
+<a href=#487 id=487 data-nosnippet>487</a>    /// Other codecs keep reading to include trailing events before `[DONE]` or EOF.
+<a href=#488 id=488 data-nosnippet>488</a>    /// If EOF arrives without a required terminal event, the stream yields a deferred
+<a href=#489 id=489 data-nosnippet>489</a>    /// [`LlmClientError::ResponseTranslation`] error after any valid decoded events.
+<a href=#490 id=490 data-nosnippet>490</a>    </span><span class="kw">pub fn </span>decode_stream&lt;S&gt;(
+<a href=#491 id=491 data-nosnippet>491</a>        <span class="kw-2">&amp;</span><span class="self">self</span>,
+<a href=#492 id=492 data-nosnippet>492</a>        source: <span class="kw">impl </span>Into&lt;FormatId&gt;,
+<a href=#493 id=493 data-nosnippet>493</a>        bytes: S,
+<a href=#494 id=494 data-nosnippet>494</a>    ) -&gt; std::result::Result&lt;LlmResponseStream, LlmClientError&gt;
+<a href=#495 id=495 data-nosnippet>495</a>    <span class="kw">where
+<a href=#496 id=496 data-nosnippet>496</a>        </span>S: Stream&lt;Item = std::result::Result&lt;Vec&lt;u8&gt;, LlmClientError&gt;&gt; + Send + <span class="lifetime">'static</span>,
+<a href=#497 id=497 data-nosnippet>497</a>    {
+<a href=#498 id=498 data-nosnippet>498</a>        <span class="kw">let </span>marker = sse::done_marker();
+<a href=#499 id=499 data-nosnippet>499</a>        <span class="kw">let </span>source_format: FormatId = source.into();
+<a href=#500 id=500 data-nosnippet>500</a>        <span class="kw">let </span>codec = <span class="self">self
+<a href=#501 id=501 data-nosnippet>501</a>            </span>.stream_registry
+<a href=#502 id=502 data-nosnippet>502</a>            .codec(source_format.clone())
+<a href=#503 id=503 data-nosnippet>503</a>            .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))<span class="question-mark">?</span>;
+<a href=#504 id=504 data-nosnippet>504</a>        <span class="comment">// Adapt the byte-chunk stream into an async line reader. The BufReader
+<a href=#505 id=505 data-nosnippet>505</a>        // reassembles data split across network chunks (including multi-byte UTF-8),
+<a href=#506 id=506 data-nosnippet>506</a>        // and `lines()` yields one SSE field line at a time. The stream is boxed to
+<a href=#507 id=507 data-nosnippet>507</a>        // an `io::Error` item so `into_async_read`'s error bound resolves cleanly. The
+<a href=#508 id=508 data-nosnippet>508</a>        // source error is boxed intact rather than stringified, so
+<a href=#509 id=509 data-nosnippet>509</a>        // `llm_client_error_from_io` can recover its original variant on the way out.
+<a href=#510 id=510 data-nosnippet>510</a>        </span><span class="kw">let </span>io_bytes: Pin&lt;Box&lt;<span class="kw">dyn </span>Stream&lt;Item = std::io::Result&lt;Vec&lt;u8&gt;&gt;&gt; + Send&gt;&gt; =
+<a href=#511 id=511 data-nosnippet>511</a>            Box::pin(bytes.map(|item| item.map_err(std::io::Error::other)));
+<a href=#512 id=512 data-nosnippet>512</a>        <span class="kw">let </span>lines = futures::io::BufReader::new(io_bytes.into_async_read()).lines();
+<a href=#513 id=513 data-nosnippet>513</a>
+<a href=#514 id=514 data-nosnippet>514</a>        <span class="kw">let </span><span class="kw-2">mut </span>state = StreamTranslationState {
+<a href=#515 id=515 data-nosnippet>515</a>            source: <span class="prelude-val">Some</span>(source_format.clone()),
+<a href=#516 id=516 data-nosnippet>516</a>            ..StreamTranslationState::default()
+<a href=#517 id=517 data-nosnippet>517</a>        };
+<a href=#518 id=518 data-nosnippet>518</a>        <span class="kw">let </span><span class="kw-2">mut </span>frame = String::new();
+<a href=#519 id=519 data-nosnippet>519</a>        <span class="kw">let </span><span class="kw-2">mut </span>saw_terminal = <span class="bool-val">false</span>;
+<a href=#520 id=520 data-nosnippet>520</a>        <span class="kw">let </span><span class="kw-2">mut </span>saw_error = <span class="bool-val">false</span>;
+<a href=#521 id=521 data-nosnippet>521</a>        <span class="kw">let </span>stream = Box::pin(<span class="macro">try_stream!</span> {
+<a href=#522 id=522 data-nosnippet>522</a>            <span class="macro">futures::pin_mut!</span>(lines);
+<a href=#523 id=523 data-nosnippet>523</a>            <span class="kw">while let </span><span class="prelude-val">Some</span>(line) = lines.next().<span class="kw">await </span>{
+<a href=#524 id=524 data-nosnippet>524</a>                <span class="kw">let </span>line = line.map_err(llm_client_error_from_io)<span class="question-mark">?</span>;
+<a href=#525 id=525 data-nosnippet>525</a>                <span class="comment">// A blank line (allowing a bare CR for CRLF streams) ends the frame.
+<a href=#526 id=526 data-nosnippet>526</a>                </span><span class="kw">if </span>line.trim_end().is_empty() {
+<a href=#527 id=527 data-nosnippet>527</a>                    <span class="kw">let </span>parsed = sse::parse_json_sse_frame(<span class="kw-2">&amp;</span>frame, marker)
+<a href=#528 id=528 data-nosnippet>528</a>                        .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))<span class="question-mark">?</span>;
+<a href=#529 id=529 data-nosnippet>529</a>                    frame.clear();
+<a href=#530 id=530 data-nosnippet>530</a>                    <span class="kw">match </span>parsed {
+<a href=#531 id=531 data-nosnippet>531</a>                        sse::SseFrame::Empty =&gt; {}
+<a href=#532 id=532 data-nosnippet>532</a>                        sse::SseFrame::Done =&gt; {
+<a href=#533 id=533 data-nosnippet>533</a>                            saw_terminal |= codec.sse_done_is_terminal();
+<a href=#534 id=534 data-nosnippet>534</a>                            <span class="kw">break</span>;
+<a href=#535 id=535 data-nosnippet>535</a>                        }
+<a href=#536 id=536 data-nosnippet>536</a>                        sse::SseFrame::Data(value) =&gt; {
+<a href=#537 id=537 data-nosnippet>537</a>                            saw_terminal |= codec.is_terminal_event(<span class="kw-2">&amp;</span>value);
+<a href=#538 id=538 data-nosnippet>538</a>                            <span class="kw">let </span>normalized = codec.decode_event(<span class="kw-2">&amp;mut </span>state, <span class="kw-2">&amp;</span>value);
+<a href=#539 id=539 data-nosnippet>539</a>                            saw_error |= normalized.iter().any(|chunk| <span class="macro">matches!</span>(
+<a href=#540 id=540 data-nosnippet>540</a>                                chunk,
+<a href=#541 id=541 data-nosnippet>541</a>                                LlmResponseChunk::DecodeError { .. }
+<a href=#542 id=542 data-nosnippet>542</a>                                    | LlmResponseChunk::StreamError { .. }
+<a href=#543 id=543 data-nosnippet>543</a>                            ));
+<a href=#544 id=544 data-nosnippet>544</a>                            <span class="kw">yield </span>LlmResponseStreamEvent::preserved(
+<a href=#545 id=545 data-nosnippet>545</a>                                source_format.clone(),
+<a href=#546 id=546 data-nosnippet>546</a>                                value,
+<a href=#547 id=547 data-nosnippet>547</a>                                normalized,
+<a href=#548 id=548 data-nosnippet>548</a>                            );
+<a href=#549 id=549 data-nosnippet>549</a>                            <span class="kw">if </span>saw_terminal &amp;&amp; codec.stops_at_terminal_event() {
+<a href=#550 id=550 data-nosnippet>550</a>                                <span class="kw">break</span>;
+<a href=#551 id=551 data-nosnippet>551</a>                            }
+<a href=#552 id=552 data-nosnippet>552</a>                        }
+<a href=#553 id=553 data-nosnippet>553</a>                    }
+<a href=#554 id=554 data-nosnippet>554</a>                } <span class="kw">else </span>{
+<a href=#555 id=555 data-nosnippet>555</a>                    frame.push_str(<span class="kw-2">&amp;</span>line);
+<a href=#556 id=556 data-nosnippet>556</a>                    frame.push(<span class="string">'\n'</span>);
+<a href=#557 id=557 data-nosnippet>557</a>                }
+<a href=#558 id=558 data-nosnippet>558</a>            }
+<a href=#559 id=559 data-nosnippet>559</a>
+<a href=#560 id=560 data-nosnippet>560</a>            <span class="comment">// A non-standard upstream might omit the final blank line; parse a trailing
+<a href=#561 id=561 data-nosnippet>561</a>            // complete frame instead of losing its last chunk.
+<a href=#562 id=562 data-nosnippet>562</a>            </span><span class="attr">#[allow(clippy::collapsible_if)]
+<a href=#563 id=563 data-nosnippet>563</a>            </span><span class="kw">if </span>!frame.trim_end().is_empty() {
+<a href=#564 id=564 data-nosnippet>564</a>                <span class="kw">let </span>parsed = sse::parse_json_sse_frame(<span class="kw-2">&amp;</span>frame, marker)
+<a href=#565 id=565 data-nosnippet>565</a>                    .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))<span class="question-mark">?</span>;
+<a href=#566 id=566 data-nosnippet>566</a>                <span class="kw">match </span>parsed {
+<a href=#567 id=567 data-nosnippet>567</a>                    sse::SseFrame::Done =&gt; {
+<a href=#568 id=568 data-nosnippet>568</a>                        saw_terminal |= codec.sse_done_is_terminal();
+<a href=#569 id=569 data-nosnippet>569</a>                    }
+<a href=#570 id=570 data-nosnippet>570</a>                    sse::SseFrame::Data(value) =&gt; {
+<a href=#571 id=571 data-nosnippet>571</a>                        saw_terminal |= codec.is_terminal_event(<span class="kw-2">&amp;</span>value);
+<a href=#572 id=572 data-nosnippet>572</a>                        <span class="kw">let </span>normalized = codec.decode_event(<span class="kw-2">&amp;mut </span>state, <span class="kw-2">&amp;</span>value);
+<a href=#573 id=573 data-nosnippet>573</a>                        saw_error |= normalized.iter().any(|chunk| <span class="macro">matches!</span>(
+<a href=#574 id=574 data-nosnippet>574</a>                            chunk,
+<a href=#575 id=575 data-nosnippet>575</a>                            LlmResponseChunk::DecodeError { .. }
+<a href=#576 id=576 data-nosnippet>576</a>                                | LlmResponseChunk::StreamError { .. }
+<a href=#577 id=577 data-nosnippet>577</a>                        ));
+<a href=#578 id=578 data-nosnippet>578</a>                        <span class="kw">yield </span>LlmResponseStreamEvent::preserved(source_format.clone(), value, normalized);
+<a href=#579 id=579 data-nosnippet>579</a>                    }
+<a href=#580 id=580 data-nosnippet>580</a>                    sse::SseFrame::Empty =&gt; {}
+<a href=#581 id=581 data-nosnippet>581</a>                }
+<a href=#582 id=582 data-nosnippet>582</a>            }
+<a href=#583 id=583 data-nosnippet>583</a>
+<a href=#584 id=584 data-nosnippet>584</a>            <span class="kw">if </span>!saw_terminal &amp;&amp; !saw_error {
+<a href=#585 id=585 data-nosnippet>585</a>                <span class="prelude-val">Err</span>(LlmClientError::ResponseTranslation(<span class="macro">format!</span>(
+<a href=#586 id=586 data-nosnippet>586</a>                    <span class="string">"{source_format} stream ended before a terminal event"
+<a href=#587 id=587 data-nosnippet>587</a>                </span>)))<span class="question-mark">?</span>;
+<a href=#588 id=588 data-nosnippet>588</a>            }
+<a href=#589 id=589 data-nosnippet>589</a>        });
+<a href=#590 id=590 data-nosnippet>590</a>        <span class="prelude-val">Ok</span>(stream)
+<a href=#591 id=591 data-nosnippet>591</a>    }
+<a href=#592 id=592 data-nosnippet>592</a>}
+<a href=#593 id=593 data-nosnippet>593</a>
+<a href=#594 id=594 data-nosnippet>594</a><span class="comment">// Recover transport errors wrapped for `AsyncRead`; other reader failures are
+<a href=#595 id=595 data-nosnippet>595</a>// invalid upstream responses.
+<a href=#596 id=596 data-nosnippet>596</a></span><span class="kw">fn </span>llm_client_error_from_io(error: std::io::Error) -&gt; LlmClientError {
+<a href=#597 id=597 data-nosnippet>597</a>    <span class="kw">let </span>kind = error.kind();
+<a href=#598 id=598 data-nosnippet>598</a>    <span class="kw">let </span>message = error.to_string();
+<a href=#599 id=599 data-nosnippet>599</a>    <span class="kw">match </span>error.into_inner() {
+<a href=#600 id=600 data-nosnippet>600</a>        <span class="prelude-val">Some</span>(source) =&gt; <span class="kw">match </span>source.downcast::&lt;LlmClientError&gt;() {
+<a href=#601 id=601 data-nosnippet>601</a>            <span class="prelude-val">Ok</span>(error) =&gt; <span class="kw-2">*</span>error,
+<a href=#602 id=602 data-nosnippet>602</a>            <span class="prelude-val">Err</span>(source) =&gt; LlmClientError::InvalidResponse { source },
+<a href=#603 id=603 data-nosnippet>603</a>        },
+<a href=#604 id=604 data-nosnippet>604</a>        <span class="prelude-val">None </span>=&gt; LlmClientError::InvalidResponse {
+<a href=#605 id=605 data-nosnippet>605</a>            source: Box::new(std::io::Error::new(kind, message)),
+<a href=#606 id=606 data-nosnippet>606</a>        },
+<a href=#607 id=607 data-nosnippet>607</a>    }
+<a href=#608 id=608 data-nosnippet>608</a>}
+<a href=#609 id=609 data-nosnippet>609</a>
+<a href=#610 id=610 data-nosnippet>610</a><span class="comment">// Attaches source and target formats to every diagnostic emitted across both passes.
+<a href=#611 id=611 data-nosnippet>611</a></span><span class="kw">fn </span>with_formats(
+<a href=#612 id=612 data-nosnippet>612</a>    decoded: Vec&lt;TranslationDiagnostic&gt;,
+<a href=#613 id=613 data-nosnippet>613</a>    encoded: Vec&lt;TranslationDiagnostic&gt;,
+<a href=#614 id=614 data-nosnippet>614</a>    source: FormatId,
+<a href=#615 id=615 data-nosnippet>615</a>    target: FormatId,
+<a href=#616 id=616 data-nosnippet>616</a>) -&gt; Vec&lt;TranslationDiagnostic&gt; {
+<a href=#617 id=617 data-nosnippet>617</a>    decoded
+<a href=#618 id=618 data-nosnippet>618</a>        .into_iter()
+<a href=#619 id=619 data-nosnippet>619</a>        .chain(encoded)
+<a href=#620 id=620 data-nosnippet>620</a>        .map(|diagnostic| diagnostic.with_formats(source.clone(), target.clone()))
+<a href=#621 id=621 data-nosnippet>621</a>        .collect()
+<a href=#622 id=622 data-nosnippet>622</a>}
 </code></pre></div></section></main></body></html>

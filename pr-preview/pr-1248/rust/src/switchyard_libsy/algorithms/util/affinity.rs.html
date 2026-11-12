@@ -677,9 +677,9 @@
 <a href=#677 id=677 data-nosnippet>677</a>            metadata: <span class="prelude-val">None</span>,
 <a href=#678 id=678 data-nosnippet>678</a>        };
 <a href=#679 id=679 data-nosnippet>679</a>        <span class="kw">let </span>text_only = request(Message::text(Role::User, <span class="string">"Implement the parser."</span>));
-<a href=#680 id=680 data-nosnippet>680</a>        <span class="kw">let </span>text_with_reasoning = request(Message {
-<a href=#681 id=681 data-nosnippet>681</a>            role: Role::User,
-<a href=#682 id=682 data-nosnippet>682</a>            content: <span class="macro">vec!</span>[
+<a href=#680 id=680 data-nosnippet>680</a>        <span class="kw">let </span>text_with_reasoning = request(Message::new(
+<a href=#681 id=681 data-nosnippet>681</a>            Role::User,
+<a href=#682 id=682 data-nosnippet>682</a>            <span class="macro">vec!</span>[
 <a href=#683 id=683 data-nosnippet>683</a>                ContentBlock::Text {
 <a href=#684 id=684 data-nosnippet>684</a>                    text: <span class="string">"Implement the parser."</span>.to_string(),
 <a href=#685 id=685 data-nosnippet>685</a>                },
@@ -689,7 +689,7 @@
 <a href=#689 id=689 data-nosnippet>689</a>                    details: Vec::new(),
 <a href=#690 id=690 data-nosnippet>690</a>                },
 <a href=#691 id=691 data-nosnippet>691</a>            ],
-<a href=#692 id=692 data-nosnippet>692</a>        });
+<a href=#692 id=692 data-nosnippet>692</a>        ));
 <a href=#693 id=693 data-nosnippet>693</a>
 <a href=#694 id=694 data-nosnippet>694</a>        <span class="macro">assert_eq!</span>(
 <a href=#695 id=695 data-nosnippet>695</a>            first_user_message_hash(<span class="kw-2">&amp;</span>text_only),
@@ -944,14 +944,14 @@
 <a href=#944 id=944 data-nosnippet>944</a>
 <a href=#945 id=945 data-nosnippet>945</a>        <span class="comment">// A tool continuation holds the assignment, so no judge call.
 <a href=#946 id=946 data-nosnippet>946</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>continued = opening.clone();
-<a href=#947 id=947 data-nosnippet>947</a>        continued.llm_request.messages.push(Message {
-<a href=#948 id=948 data-nosnippet>948</a>            role: Role::User,
-<a href=#949 id=949 data-nosnippet>949</a>            content: <span class="macro">vec!</span>[ContentBlock::ToolResult(ToolResult {
+<a href=#947 id=947 data-nosnippet>947</a>        continued.llm_request.messages.push(Message::new(
+<a href=#948 id=948 data-nosnippet>948</a>            Role::User,
+<a href=#949 id=949 data-nosnippet>949</a>            <span class="macro">vec!</span>[ContentBlock::ToolResult(ToolResult {
 <a href=#950 id=950 data-nosnippet>950</a>                tool_call_id: <span class="string">"call-1"</span>.to_string(),
 <a href=#951 id=951 data-nosnippet>951</a>                content: Vec::new(),
 <a href=#952 id=952 data-nosnippet>952</a>                is_error: <span class="prelude-val">None</span>,
 <a href=#953 id=953 data-nosnippet>953</a>            })],
-<a href=#954 id=954 data-nosnippet>954</a>        });
+<a href=#954 id=954 data-nosnippet>954</a>        ));
 <a href=#955 id=955 data-nosnippet>955</a>        <span class="macro">assert_eq!</span>(
 <a href=#956 id=956 data-nosnippet>956</a>            scores(<span class="kw-2">&amp;</span>router, <span class="kw-2">&amp;mut </span>state, <span class="kw-2">&amp;mut </span>continued)
 <a href=#957 id=957 data-nosnippet>957</a>                .<span class="kw">await</span><span class="question-mark">?
@@ -990,14 +990,14 @@
 <a href=#990 id=990 data-nosnippet>990</a>
 <a href=#991 id=991 data-nosnippet>991</a>        <span class="comment">// The new turn's tool continuation is not held on the earlier turn's model.
 <a href=#992 id=992 data-nosnippet>992</a>        </span><span class="kw">let </span><span class="kw-2">mut </span>continued = spoke.clone();
-<a href=#993 id=993 data-nosnippet>993</a>        continued.llm_request.messages.push(Message {
-<a href=#994 id=994 data-nosnippet>994</a>            role: Role::User,
-<a href=#995 id=995 data-nosnippet>995</a>            content: <span class="macro">vec!</span>[ContentBlock::ToolResult(ToolResult {
+<a href=#993 id=993 data-nosnippet>993</a>        continued.llm_request.messages.push(Message::new(
+<a href=#994 id=994 data-nosnippet>994</a>            Role::User,
+<a href=#995 id=995 data-nosnippet>995</a>            <span class="macro">vec!</span>[ContentBlock::ToolResult(ToolResult {
 <a href=#996 id=996 data-nosnippet>996</a>                tool_call_id: <span class="string">"call-1"</span>.to_string(),
 <a href=#997 id=997 data-nosnippet>997</a>                content: Vec::new(),
 <a href=#998 id=998 data-nosnippet>998</a>                is_error: <span class="prelude-val">None</span>,
 <a href=#999 id=999 data-nosnippet>999</a>            })],
-<a href=#1000 id=1000 data-nosnippet>1000</a>        });
+<a href=#1000 id=1000 data-nosnippet>1000</a>        ));
 <a href=#1001 id=1001 data-nosnippet>1001</a>        <span class="macro">assert!</span>(
 <a href=#1002 id=1002 data-nosnippet>1002</a>            scores(<span class="kw-2">&amp;</span>router, <span class="kw-2">&amp;mut </span>state, <span class="kw-2">&amp;mut </span>continued)
 <a href=#1003 id=1003 data-nosnippet>1003</a>                .<span class="kw">await</span><span class="question-mark">?

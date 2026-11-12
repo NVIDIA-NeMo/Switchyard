@@ -728,6 +728,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#target-requirements-development" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Target requirements (development)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#concurrent-calls-and-cancellation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2564,6 +2575,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#target-requirements-development" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Target requirements (development)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#concurrent-calls-and-cancellation" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2656,7 +2678,7 @@ host's observations. Configure telemetry collection in your application and
 instrument model I/O performed by your own clients. See the
 <a href="../opentelemetry/#host-setup">OpenTelemetry reference</a>.</p>
 <p>For existing integrations, check <a href="../../integrations/nemo_relay/">NeMo Relay</a>
-or the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/715eeb67de72428295b6aed440d68c4a87f4a41f/examples/litellm/README.md#supported-algorithm-semantics">LiteLLM compatibility notes</a>.
+or the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a3a4d0bd32a6b02b9fd22e02ce26f4644c17af8e/examples/litellm/README.md#supported-algorithm-semantics">LiteLLM compatibility notes</a>.
 The experimental LiteLLM plugin supports decision-only routing and cannot serve
 intermediate model calls.</p>
 <h2 id="serve-routing-time-calls">Serve routing-time calls<a class="headerlink" href="#serve-routing-time-calls" title="Permanent link">&para;</a></h2>
@@ -2695,8 +2717,8 @@ adapt errors to <a href="../../rust/switchyard_libsy/enum.LibsyError.html"><code
 <h2 id="python-bindings">Python bindings<a class="headerlink" href="#python-bindings" title="Permanent link">&para;</a></h2>
 <p>The bindings run the same Rust algorithms. The local routing example below works
 with the released package. For the asynchronous callbacks and cleanup described
-after it, build matching <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/715eeb67de72428295b6aed440d68c4a87f4a41f/INSTALLATION.md#development">development bindings</a>
-and follow the complete <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/715eeb67de72428295b6aed440d68c4a87f4a41f/examples/libsy.py">Python host example</a>.</p>
+after it, build matching <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a3a4d0bd32a6b02b9fd22e02ce26f4644c17af8e/INSTALLATION.md#development">development bindings</a>
+and follow the complete <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a3a4d0bd32a6b02b9fd22e02ce26f4644c17af8e/examples/libsy.py">Python host example</a>.</p>
 <details>
 <summary>Python setup, callbacks, and metadata</summary>
 <p>With Python 3.10+ and <a href="https://docs.astral.sh/uv/getting-started/installation/">uv</a>,
@@ -2723,14 +2745,53 @@ create a project and install the released package:</p>
 </span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a><span class="n">asyncio</span><span class="o">.</span><span class="n">run</span><span class="p">(</span><span class="n">main</span><span class="p">())</span>
 </span></code></pre></div>
 <p><code>uv run route.py</code> prints <code>Selected: Efficient</code> without making a network call.</p>
+<h3 id="target-requirements-development">Target requirements (development)<a class="headerlink" href="#target-requirements-development" title="Permanent link">&para;</a></h3>
+<p>With matching development bindings, load deployment TOML that declares target
+labels and route eligibility. Build once and reuse the returned handles:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">switchyard.libsy</span><span class="w"> </span><span class="kn">import</span> <span class="n">AlgorithmFactory</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="n">routes</span> <span class="o">=</span> <span class="n">AlgorithmFactory</span><span class="o">.</span><span class="n">from_toml</span><span class="p">(</span><span class="n">toml</span><span class="p">)</span><span class="o">.</span><span class="n">build_configured</span><span class="p">()</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">coding</span> <span class="o">=</span> <span class="n">routes</span><span class="p">[</span><span class="s2">&quot;switchyard/coding&quot;</span><span class="p">]</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">targets</span> <span class="o">=</span> <span class="n">coding</span><span class="o">.</span><span class="n">target_models</span><span class="p">()</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">steps</span> <span class="o">=</span> <span class="n">coding</span><span class="o">.</span><span class="n">run_stream</span><span class="p">(</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="n">request</span><span class="p">,</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>    <span class="n">required_labels</span><span class="o">=</span><span class="p">[</span><span class="s2">&quot;private&quot;</span><span class="p">,</span> <span class="s2">&quot;customer_data&quot;</span><span class="p">],</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>    <span class="n">task_id</span><span class="o">=</span><span class="n">trusted_task_id</span><span class="p">,</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="p">)</span>
+</span></code></pre></div>
+<p>For each <code>Step.CallModel</code>, resolve the returned target before calling your client.
+Here <code>clients</code> is supplied by the gateway and keyed by the TOML client aliases,
+not a new Switchyard interface. Its clients follow the
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a3a4d0bd32a6b02b9fd22e02ce26f4644c17af8e/examples/libsy.py">Python host example</a>: they accept a normalized request
+and provider model ID, and return <code>LlmResponse.Agg</code> or <code>LlmResponse.Stream</code>.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">serve_model</span><span class="p">(</span><span class="n">call</span><span class="p">):</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">target</span> <span class="o">=</span> <span class="n">targets</span><span class="p">[</span><span class="n">call</span><span class="o">.</span><span class="n">models</span><span class="p">[</span><span class="mi">0</span><span class="p">]]</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">client</span> <span class="o">=</span> <span class="n">clients</span><span class="p">[</span><span class="n">target</span><span class="p">[</span><span class="s2">&quot;client&quot;</span><span class="p">]]</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="k">await</span> <span class="n">call</span><span class="o">.</span><span class="n">respond</span><span class="p">(</span><span class="n">client</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">call</span><span class="o">.</span><span class="n">request</span><span class="p">,</span> <span class="n">target</span><span class="p">[</span><span class="s2">&quot;id&quot;</span><span class="p">]))</span>
+</span></code></pre></div>
+<p>Use the first routing-time candidate and pass client failures back to Switchyard.
+Typed Decision calls use <code>targets[call.model]</code> and their own Decision handler.
+For a final answer candidate, use <code>targets[outcome.selected_model_ids[0]]</code>.
+The lookup contains all possible targets, not the eligible pool for this request;
+use only keys returned by calls and outcomes. <code>build()</code> handles reject this lookup.</p>
+<p>The host supplies the assessment and an authorized task ID. An explicit task ID
+overrides a task ID from headers. Omitted labels mean no assessment; <code>[]</code> supplies
+no new requirements. In task scope, earlier requirements remain in effect.
+Invalid requirements or missing approved targets fail before any routing call.</p>
+<p>Consume <code>steps</code> through the same model and Decision call handlers. Switchyard
+does not create provider clients or read their credentials. The host owns target
+prompts, provider settings and transport, and must keep answer attempts and
+fallbacks within the returned candidates. Existing <code>build()</code> handles do not
+accept target requirements. Per-run libsy state is not carried between Python calls.</p>
 <h3 id="concurrent-calls-and-cancellation">Concurrent calls and cancellation<a class="headerlink" href="#concurrent-calls-and-cancellation" title="Permanent link">&para;</a></h3>
 <p>The client coroutine returns <code>LlmResponse.Agg</code> or <code>LlmResponse.Stream</code>.
 Pass the coroutine itself to <code>respond</code>:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="k">await</span> <span class="n">call</span><span class="o">.</span><span class="n">respond</span><span class="p">(</span><span class="n">client</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">call</span><span class="o">.</span><span class="n">request</span><span class="p">,</span> <span class="n">call</span><span class="o">.</span><span class="n">models</span><span class="p">[</span><span class="mi">0</span><span class="p">]))</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">await</span> <span class="n">call</span><span class="o">.</span><span class="n">respond</span><span class="p">(</span><span class="n">client</span><span class="o">.</span><span class="n">call</span><span class="p">(</span><span class="n">call</span><span class="o">.</span><span class="n">request</span><span class="p">,</span> <span class="n">call</span><span class="o">.</span><span class="n">models</span><span class="p">[</span><span class="mi">0</span><span class="p">]))</span>
 </span></code></pre></div>
 <p><code>respond</code> cancels and awaits the supplied provider work before returning.
 For concurrent algorithms, create handler tasks and cancel and await the remaining
-handlers when the run ends, as in the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/715eeb67de72428295b6aed440d68c4a87f4a41f/examples/libsy.py">Python host example</a>.
+handlers when the run ends, as in the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a3a4d0bd32a6b02b9fd22e02ce26f4644c17af8e/examples/libsy.py">Python host example</a>.
 Awaiting one handler at a time serializes execution. <code>call.fail(error)</code> is also
 awaitable; decision calls use the same reply pattern.</p>
 <p>For the shared cancellation behavior and upstream limits, see

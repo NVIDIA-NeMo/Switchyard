@@ -273,25 +273,25 @@
 <a href=#273 id=273 data-nosnippet>273</a>    <span class="kw">use </span>switchyard_protocol::{LlmRequest, ToolCall, ToolResult};
 <a href=#274 id=274 data-nosnippet>274</a>
 <a href=#275 id=275 data-nosnippet>275</a>    <span class="kw">fn </span>call(id: <span class="kw-2">&amp;</span>str, command: <span class="kw-2">&amp;</span>str) -&gt; Message {
-<a href=#276 id=276 data-nosnippet>276</a>        Message {
-<a href=#277 id=277 data-nosnippet>277</a>            role: Role::Assistant,
-<a href=#278 id=278 data-nosnippet>278</a>            content: <span class="macro">vec!</span>[ContentBlock::ToolCall(ToolCall {
+<a href=#276 id=276 data-nosnippet>276</a>        Message::new(
+<a href=#277 id=277 data-nosnippet>277</a>            Role::Assistant,
+<a href=#278 id=278 data-nosnippet>278</a>            <span class="macro">vec!</span>[ContentBlock::ToolCall(ToolCall {
 <a href=#279 id=279 data-nosnippet>279</a>                id: id.into(),
 <a href=#280 id=280 data-nosnippet>280</a>                name: <span class="string">"bash"</span>.into(),
 <a href=#281 id=281 data-nosnippet>281</a>                arguments: <span class="macro">serde_json::json!</span>({ <span class="string">"command"</span>: command }),
 <a href=#282 id=282 data-nosnippet>282</a>            })],
-<a href=#283 id=283 data-nosnippet>283</a>        }
+<a href=#283 id=283 data-nosnippet>283</a>        )
 <a href=#284 id=284 data-nosnippet>284</a>    }
 <a href=#285 id=285 data-nosnippet>285</a>
 <a href=#286 id=286 data-nosnippet>286</a>    <span class="kw">fn </span>result(id: <span class="kw-2">&amp;</span>str, text: <span class="kw-2">&amp;</span>str) -&gt; Message {
-<a href=#287 id=287 data-nosnippet>287</a>        Message {
-<a href=#288 id=288 data-nosnippet>288</a>            role: Role::Tool,
-<a href=#289 id=289 data-nosnippet>289</a>            content: <span class="macro">vec!</span>[ContentBlock::ToolResult(ToolResult {
+<a href=#287 id=287 data-nosnippet>287</a>        Message::new(
+<a href=#288 id=288 data-nosnippet>288</a>            Role::Tool,
+<a href=#289 id=289 data-nosnippet>289</a>            <span class="macro">vec!</span>[ContentBlock::ToolResult(ToolResult {
 <a href=#290 id=290 data-nosnippet>290</a>                tool_call_id: id.into(),
 <a href=#291 id=291 data-nosnippet>291</a>                content: <span class="macro">vec!</span>[ContentBlock::Text { text: text.into() }],
 <a href=#292 id=292 data-nosnippet>292</a>                is_error: <span class="prelude-val">None</span>,
 <a href=#293 id=293 data-nosnippet>293</a>            })],
-<a href=#294 id=294 data-nosnippet>294</a>        }
+<a href=#294 id=294 data-nosnippet>294</a>        )
 <a href=#295 id=295 data-nosnippet>295</a>    }
 <a href=#296 id=296 data-nosnippet>296</a>
 <a href=#297 id=297 data-nosnippet>297</a>    <span class="kw">fn </span>session(steps: usize) -&gt; Request {
@@ -440,9 +440,9 @@
 <a href=#440 id=440 data-nosnippet>440</a>
 <a href=#441 id=441 data-nosnippet>441</a>    <span class="attr">#[test]
 <a href=#442 id=442 data-nosnippet>442</a>    </span><span class="kw">fn </span>batched_results_are_paired_by_tool_call_id() {
-<a href=#443 id=443 data-nosnippet>443</a>        <span class="kw">let </span>calls = Message {
-<a href=#444 id=444 data-nosnippet>444</a>            role: Role::Assistant,
-<a href=#445 id=445 data-nosnippet>445</a>            content: [<span class="string">"a"</span>, <span class="string">"b"</span>]
+<a href=#443 id=443 data-nosnippet>443</a>        <span class="kw">let </span>calls = Message::new(
+<a href=#444 id=444 data-nosnippet>444</a>            Role::Assistant,
+<a href=#445 id=445 data-nosnippet>445</a>            [<span class="string">"a"</span>, <span class="string">"b"</span>]
 <a href=#446 id=446 data-nosnippet>446</a>                .into_iter()
 <a href=#447 id=447 data-nosnippet>447</a>                .map(|id| {
 <a href=#448 id=448 data-nosnippet>448</a>                    ContentBlock::ToolCall(ToolCall {
@@ -452,11 +452,11 @@
 <a href=#452 id=452 data-nosnippet>452</a>                    })
 <a href=#453 id=453 data-nosnippet>453</a>                })
 <a href=#454 id=454 data-nosnippet>454</a>                .collect(),
-<a href=#455 id=455 data-nosnippet>455</a>        };
+<a href=#455 id=455 data-nosnippet>455</a>        );
 <a href=#456 id=456 data-nosnippet>456</a>        <span class="kw">for </span>order <span class="kw">in </span>[[<span class="string">"a"</span>, <span class="string">"b"</span>], [<span class="string">"b"</span>, <span class="string">"a"</span>]] {
-<a href=#457 id=457 data-nosnippet>457</a>            <span class="kw">let </span>results = Message {
-<a href=#458 id=458 data-nosnippet>458</a>                role: Role::Tool,
-<a href=#459 id=459 data-nosnippet>459</a>                content: order
+<a href=#457 id=457 data-nosnippet>457</a>            <span class="kw">let </span>results = Message::new(
+<a href=#458 id=458 data-nosnippet>458</a>                Role::Tool,
+<a href=#459 id=459 data-nosnippet>459</a>                order
 <a href=#460 id=460 data-nosnippet>460</a>                    .into_iter()
 <a href=#461 id=461 data-nosnippet>461</a>                    .map(|id| {
 <a href=#462 id=462 data-nosnippet>462</a>                        ContentBlock::ToolResult(ToolResult {
@@ -468,7 +468,7 @@
 <a href=#468 id=468 data-nosnippet>468</a>                        })
 <a href=#469 id=469 data-nosnippet>469</a>                    })
 <a href=#470 id=470 data-nosnippet>470</a>                    .collect(),
-<a href=#471 id=471 data-nosnippet>471</a>            };
+<a href=#471 id=471 data-nosnippet>471</a>            );
 <a href=#472 id=472 data-nosnippet>472</a>            <span class="kw">let </span>view = digest(<span class="kw-2">&amp;</span>[calls.clone(), results]);
 <a href=#473 id=473 data-nosnippet>473</a>            <span class="macro">assert!</span>(view.contains(<span class="string">"tool_a {}\nresult:\noutput_a"</span>), <span class="string">"{view}"</span>);
 <a href=#474 id=474 data-nosnippet>474</a>            <span class="macro">assert!</span>(

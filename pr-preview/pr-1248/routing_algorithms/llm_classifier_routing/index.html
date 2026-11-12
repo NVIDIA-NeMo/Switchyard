@@ -2720,7 +2720,7 @@ it with <code>type = "llm_classifier"</code> and <code>mode = "capability"</code
 <a href="#custom-multi-target-routing">custom routing</a> across two or more targets, and
 <a href="#direct-selection">direct selection</a> by an external decision service.</p>
 <p>For a task-level decision-model example with detailed instructions, see the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/715eeb67de72428295b6aed440d68c4a87f4a41f/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev routing profile</a>.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a3a4d0bd32a6b02b9fd22e02ce26f4644c17af8e/benchmark/routing-profiles/tb21-jev-opus-glm.toml">Jev routing profile</a>.</p>
 <h2 id="configure-a-classifier-route">Configure a classifier route<a class="headerlink" href="#configure-a-classifier-route" title="Permanent link">&para;</a></h2>
 <p>This example uses the packaged classifier prompt as intended: it estimates
 whether the weak target can complete the task, and keeps the first routing
@@ -2784,9 +2784,11 @@ greater than or equal to the applicable threshold. Otherwise it routes to
 <p>To stop waiting for a judge that accepts the request but never finishes its
 response, set <code>timeout_ms</code> on the judge's <code>[llm_clients]</code> entry
 (see the <a href="../../reference/toml_schema/">TOML schema</a>); it covers the judge's
-retries and the complete verdict body. When the deadline expires, the Rust server returns
-<code>504</code> without calling <code>strong_target</code> or <code>weak_target</code>. Other HTTP client failures
-also stop routing after retries. The deadline applies to every call
+retries and the complete verdict body. With <code>fail_open = true</code> (the default),
+judge timeouts and other HTTP client failures after retries fall back to
+<code>strong_target</code>. With <code>fail_open = false</code>, these failures stop routing without
+calling <code>strong_target</code> or <code>weak_target</code>: the Rust server returns <code>504</code> for a
+timeout and propagates other HTTP client errors. The deadline applies to every call
 through that client. Give the judge its own entry if the answering models need a
 different deadline, even when they use the same provider. Without a deadline,
 the request can wait indefinitely for the judge.</p>
@@ -2810,7 +2812,7 @@ for reasoning models. Other model/provider pairs may work with reasoning enabled
 or use a different control. Verify the judge response shape before deployment.
 If reasoning remains enabled, set <code>max_output_tokens</code> high enough for both the
 reasoning and final JSON. A truncated verdict has the same fail-open result. See
-the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/715eeb67de72428295b6aed440d68c4a87f4a41f/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
+the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a3a4d0bd32a6b02b9fd22e02ce26f4644c17af8e/crates/switchyard-server/CONFIGURATION.md#add-an-llm-client-and-target">target-level <code>extra_body</code> reference</a>
 for the server merge behavior.</p>
 <h2 id="tuning-options">Tuning options<a class="headerlink" href="#tuning-options" title="Permanent link">&para;</a></h2>
 <table>
@@ -2966,7 +2968,8 @@ generation.</p>
 opening task and the latest user follow-up when they differ, excluding tool calls,
 tool results, and reasoning. It keeps ordinary user content from messages that
 also contain tool results. Set <code>recent_turn_window</code> when intervening conversation
-context affects the forecast.
+context affects the forecast. The window still excludes reasoning, and a turn that
+held only reasoning is left out.
 If a client sends only a follow-up fragment without the opening task, enable
 affinity or include the task history. Threshold tuning changes routing policy;
 it cannot recover missing task context.</p>
@@ -3018,9 +3021,20 @@ calls that follow:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">[routes.smart]</span>
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="n">classify_trigger</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;user_turn&quot;</span>
 </span></code></pre></div>
-<p>Tool results are the agent continuing work the user already asked for, so they
-do not re-open the decision. A failed or unusable verdict keeps the current
-target. When no target has been selected yet, the next request is judged again.</p>
+<p>Tool results continue the current user turn and reuse its selected target.
+A new user message runs the judge again and applies the route's failure policy.
+<code>x-initiator</code> overrides message-based detection: <code>user</code> starts a new turn even
+for tool results; <code>agent</code> can reuse the prior target even for a user-role message.</p>
+<p>If a standalone <code>llm_classifier</code> route falls back after an unusable verdict or
+judge failure, the fallback replaces the previous selection and is retained for
+the new turn's continuations. This also applies when no target has been selected
+yet.</p>
+<p>For capability routes, the fallback is <code>strong_target</code>. With <code>fail_open = true</code>
+(the default), a judge client failure can therefore replace a previous
+<code>weak_target</code> selection. With <code>fail_open = false</code>, errors returned by the judge
+call stop the request. If a host delivers a judge stream that later fails while
+libsy reads it, the failure becomes an unusable verdict and can still select
+<code>strong_target</code>. Custom and direct routes use <code>default_target</code> when falling back.</p>
 <p><code>new_session</code> judges once and reuses that target for the rest of the session,
 including <code>strong_target</code> when it was selected as the fallback for an unusable
 verdict. There is no warmup period, and later requests skip the judge entirely.</p>
