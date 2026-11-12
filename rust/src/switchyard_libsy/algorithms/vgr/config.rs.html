@@ -58,8 +58,8 @@
 <a href=#58 id=58 data-nosnippet>58</a>    </span><span class="kw">pub </span>breaker: BreakerConfig,
 <a href=#59 id=59 data-nosnippet>59</a>    <span class="doccomment">/// Whether a cheap typing call selects a verification regime.
 <a href=#60 id=60 data-nosnippet>60</a>    </span><span class="kw">pub </span>task_typing: bool,
-<a href=#61 id=61 data-nosnippet>61</a>    <span class="doccomment">/// Whether the efficient tier accepts image content.
-<a href=#62 id=62 data-nosnippet>62</a>    </span><span class="kw">pub </span>efficient_supports_images: bool,
+<a href=#61 id=61 data-nosnippet>61</a>    <span class="doccomment">/// Whether the efficient tier accepts attachments.
+<a href=#62 id=62 data-nosnippet>62</a>    </span><span class="kw">pub </span>efficient_supports_attachments: bool,
 <a href=#63 id=63 data-nosnippet>63</a>    <span class="doccomment">/// Lets a long agentic run with earlier tool errors commit on a capable-tier
 <a href=#64 id=64 data-nosnippet>64</a>    /// confirmation once it ends in this many consecutive clean tool results.
 <a href=#65 id=65 data-nosnippet>65</a>    </span><span class="kw">pub </span>confirmed_recovery_min_clean_tail: <span class="prelude-ty">Option</span>&lt;u32&gt;,
@@ -92,7 +92,7 @@
 <a href=#92 id=92 data-nosnippet>92</a>            kill_switch: <span class="prelude-val">None</span>,
 <a href=#93 id=93 data-nosnippet>93</a>            breaker: BreakerConfig::default(),
 <a href=#94 id=94 data-nosnippet>94</a>            task_typing: <span class="bool-val">true</span>,
-<a href=#95 id=95 data-nosnippet>95</a>            efficient_supports_images: <span class="bool-val">false</span>,
+<a href=#95 id=95 data-nosnippet>95</a>            efficient_supports_attachments: <span class="bool-val">false</span>,
 <a href=#96 id=96 data-nosnippet>96</a>            confirmed_recovery_min_clean_tail: <span class="prelude-val">None</span>,
 <a href=#97 id=97 data-nosnippet>97</a>            agentic_handoff: <span class="bool-val">false</span>,
 <a href=#98 id=98 data-nosnippet>98</a>            compact_handoff: <span class="bool-val">false</span>,
