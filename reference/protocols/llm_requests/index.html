@@ -2754,7 +2754,7 @@ providers apply their own defaults and accepted ranges.</p>
 <tr>
 <td><a href="../../../rust/switchyard_protocol/llm/struct.SamplingParams.html#structfield.temperature"><code>SamplingParams.temperature: Option&lt;f64&gt;</code></a></td>
 <td>Sampling temperature.</td>
-<td><code>temperature</code></td>
+<td>(omitted; refer to the note below)</td>
 <td><code>temperature</code></td>
 <td><code>temperature</code></td>
 </tr>
@@ -2809,6 +2809,27 @@ providers apply their own defaults and accepted ranges.</p>
 </tr>
 </tbody>
 </table>
+<p><strong>Anthropic temperature:</strong> Switchyard omits <code>temperature</code> when rebuilding Anthropic
+requests. Older models still support this parameter under API version <code>2023-06-01</code>,
+but models released after Claude Opus 4.6 reject values other than the default
+<code>1.0</code>. For model restrictions, refer to the <a href="https://platform.claude.com/docs/en/api/messages/create?version=2023-06-01">Anthropic parameter documentation</a>.
+API version <code>2026-10-21</code> removes the parameter entirely and rejects it even at its
+default value. For removal details, refer to <a href="https://platform.claude.com/docs/en/api/migration-2026-10-21#sampling-parameters-are-removed">Anthropic's migration guide</a>.
+Switchyard scales OpenAI temperatures from the <code>0.0–2.0</code> range to Anthropic's
+<code>0.0–1.0</code> range before comparing with the default. An OpenAI temperature of <code>2.0</code>
+scales to Anthropic's default of <code>1.0</code> and is omitted without diagnostics or rejection.
+Omitting a non-default value after scaling to Anthropic's range follows the
+<a href="../translation/#policies">lossy-conversion policy</a>. Exact preserved Anthropic
+requests can still retain <code>temperature</code>.</p>
+<p>For older Anthropic models that support non-default temperatures under API version
+<code>2023-06-01</code>, add these settings to the target's TOML configuration:</p>
+<div class="language-toml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">omit_body_fields</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;temperature&quot;</span><span class="p">]</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="n">extra_body</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="n">temperature</span><span class="w"> </span><span class="p">=</span><span class="w"> </span><span class="mf">0.5</span><span class="w"> </span><span class="p">}</span>
+</span></code></pre></div>
+<p>After translation, Switchyard removes any existing <code>temperature</code> and sets it to
+<code>0.5</code> in Anthropic's units, without further scaling. This also overrides temperature
+in preserved requests. Refer to the <a href="../../toml_schema/#targetsname">target configuration reference</a>
+for these settings.</p>
 <p>Preserved same-format bodies take precedence over edits to these settings,
 including schema enforcement. See <strong><a href="../translation/#preservation-and-edits">encoding an edited request</a></strong>.</p>
 <h2 id="provider-contracts">Provider contracts<a class="headerlink" href="#provider-contracts" title="Permanent link">&para;</a></h2>
