@@ -92,7 +92,7 @@
           "type": "boolean",
           "scope": "application",
           "default": false,
-          "description": "Unsupported. Show Switchyard models in Copilot Business and Enterprise when the organization hides models from extensions."
+          "description": "Unsupported. Show Switchyard models in Copilot Business and Enterprise when the organization hides models from extensions. This overrides the organization's Copilot policy."
         }
       }
     }

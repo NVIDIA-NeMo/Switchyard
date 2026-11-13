@@ -88,6 +88,8 @@ function createModel(config, apiKey) {
           headers: headers(config.format, apiKey),
           body: JSON.stringify(engine.encodeRequest(config.format, request).body),
           signal: controller.signal,
+          // Redirects would carry the API key to another host. API endpoints should not redirect.
+          redirect: 'error',
         });
         if (!response.ok) {
           const reason = (await response.text()).slice(0, 200);

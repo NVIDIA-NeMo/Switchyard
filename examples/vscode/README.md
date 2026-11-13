@@ -89,5 +89,8 @@ model more often. Lower it to use the capable model more often.
 >
 > It works within a few seconds. Select it again to turn it off, then reload
 > the window. You can also set `"switchyard.enterpriseWorkaround": true` in
-> `settings.json`. The workaround relies on Copilot internals, so it is
+> `settings.json`.
+>
+> The workaround overrides your organization's Copilot policy. This is known
+> and is why it is off by default. It relies on Copilot internals, so it is
 > unsupported and may stop working.

@@ -27,14 +27,18 @@ class Provider {
   // Copilot models and custom endpoints. Both have the same sendRequest and countTokens methods.
   // Copilot counts tokens many times per request, so the list is cached until models or settings change.
   models() {
-    this.cache ??= (async () => {
+    const pending = this.cache ??= (async () => {
       const copilot = await vscode.lm.selectChatModels({ vendor: 'copilot' });
       const custom = await Promise.all(settings().get('customModels', []).map(async config =>
         customModels.createModel(config, await this.context.secrets.get(apiKeyName(config.id)))));
       // Copilot's own "auto" model is a router, not a model.
       return [...copilot.filter(model => model.id !== 'auto'), ...custom];
     })();
-    return this.cache;
+    // Do not keep a failed lookup, for example while Copilot is still starting.
+    pending.catch(() => {
+      if (this.cache === pending) this.cache = undefined;
+    });
+    return pending;
   }
 
   refresh() {
@@ -227,7 +231,8 @@ async function editProfile(provider) {
 async function offerEnterpriseWorkaround() {
   const choice = await vscode.window.showInformationMessage(
     'Copilot Business and Enterprise can hide models from extensions. Ask your admin to allow them. '
-    + 'You can also turn on an unsupported workaround that shows them in this VS Code.',
+    + 'You can also turn on an unsupported workaround that shows them in this VS Code. '
+    + 'It overrides your organization\'s Copilot policy.',
     { modal: true }, 'Turn On Workaround');
   if (choice) await toggleEnterpriseWorkaround(true);
 }
@@ -241,7 +246,8 @@ async function toggleEnterpriseWorkaround(on) {
 }
 
 // Copilot Business and Enterprise hide extension models when the organization
-// has not allowed them. This sets Copilot's internal flag that shows them.
+// has not allowed them. This sets Copilot's internal flag that shows them, which
+// overrides the organization's policy. This is known and opt-in.
 // Copilot resets the flag, so it is set again every few seconds.
 function startEnterpriseWorkaround(context) {
   const apply = () => {
