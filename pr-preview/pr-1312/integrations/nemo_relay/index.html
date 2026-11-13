@@ -2823,7 +2823,7 @@
 
 
 <h1 id="use-switchyard-with-nemo-relay">Use Switchyard with NeMo Relay<a class="headerlink" href="#use-switchyard-with-nemo-relay" title="Permanent link">&para;</a></h1>
-<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c931c8c85d071971b3f5662d5ade5f27f42dcf10/crates/switchyard-nemo-relay-plugin/README.md">Switchyard native plugin</a>
+<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4fd4bc24bb59c13b5b1a0d692dec14ec3a3abe68/crates/switchyard-nemo-relay-plugin/README.md">Switchyard native plugin</a>
 loads Switchyard into an existing
 <a href="https://docs.nvidia.com/nemo/relay/about-nemo-relay/overview">NeMo Relay runtime</a>
 deployment through Relay's
@@ -2864,7 +2864,7 @@ See the <a href="#upstream-error-compatibility">upstream error compatibility not
 using older Relay versions.</p>
 <p>Routing does not require Relay. You can instead run the
 <a href="../../operations/local_evaluation/">standalone server</a> or embed
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c931c8c85d071971b3f5662d5ade5f27f42dcf10/crates/libsy/README.md"><code>switchyard-libsy</code></a> directly.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4fd4bc24bb59c13b5b1a0d692dec14ec3a3abe68/crates/libsy/README.md"><code>switchyard-libsy</code></a> directly.</p>
 <h3 id="measure-the-cost-of-routing">Measure the Cost of Routing<a class="headerlink" href="#measure-the-cost-of-routing" title="Permanent link">&para;</a></h3>
 <p>A routed request can spend tokens choosing a model and generating the answer.
 Some routes call a judge or classifier first. The selected model, or a fallback,
@@ -2967,11 +2967,11 @@ organization SSO/SAML authorization where required. An HTTP 404 can indicate
 missing access. A Switchyard release does not guarantee that a matching plugin
 bundle has been published.</p>
 <p>Follow the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c931c8c85d071971b3f5662d5ade5f27f42dcf10/crates/switchyard-nemo-relay-plugin/README.md#install-a-released-bundle">bundle installation steps</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4fd4bc24bb59c13b5b1a0d692dec14ec3a3abe68/crates/switchyard-nemo-relay-plugin/README.md#install-a-released-bundle">bundle installation steps</a>
 to download the archive and sidecars, verify the checksum, and extract the
 bundle. If a matching published bundle is unavailable or you need a custom
 build, follow
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c931c8c85d071971b3f5662d5ade5f27f42dcf10/crates/switchyard-nemo-relay-plugin/README.md#build-from-source">Build from source</a>.
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4fd4bc24bb59c13b5b1a0d692dec14ec3a3abe68/crates/switchyard-nemo-relay-plugin/README.md#build-from-source">Build from source</a>.
 Then register the manifest, configure the deployment and trust policy, enable
 the plugin, and restart Relay. Relay documents how to
 <a href="https://docs.nvidia.com/nemo/relay/configure-plugins/discoverable-plugins#add-and-enable-a-plugin">add and enable a discoverable plugin</a>
@@ -2981,7 +2981,7 @@ and how it
 <p class="admonition-title">Relay compatibility</p>
 <p>The plugin requires <code>relay = "&gt;=0.10.0, &lt;1.0.0"</code> and native plugin API <code>1</code>.
 The packaged
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c931c8c85d071971b3f5662d5ade5f27f42dcf10/crates/switchyard-nemo-relay-plugin/relay-plugin.toml"><code>relay-plugin.toml</code></a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4fd4bc24bb59c13b5b1a0d692dec14ec3a3abe68/crates/switchyard-nemo-relay-plugin/relay-plugin.toml"><code>relay-plugin.toml</code></a>
 is the source of truth.</p>
 </div>
 <p>Configure exactly one Switchyard deployment source: either
@@ -3026,7 +3026,7 @@ of its forwarding clients use the same scheme, host, and port, such as one LLM
 gateway; such a route serves Chat Completions and Responses callers.</p>
 <p>Support for provider-specific fields depends on the source and target formats.
 Test any fields that your application relies on before deploying a translated
-route. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c931c8c85d071971b3f5662d5ade5f27f42dcf10/crates/switchyard-nemo-relay-plugin/README.md#request-handling">native-plugin README</a>
+route. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4fd4bc24bb59c13b5b1a0d692dec14ec3a3abe68/crates/switchyard-nemo-relay-plugin/README.md#request-handling">native-plugin README</a>
 describes the same format and credential rules.</p>
 <h3 id="header-forwarding">Header Forwarding<a class="headerlink" href="#header-forwarding" title="Permanent link">&para;</a></h3>
 <p>Caller headers are forwarded upstream except credentials and headers owned by
@@ -3104,7 +3104,7 @@ can receive these records, but each output format presents them differently.</p>
 </tr>
 <tr>
 <td>OpenTelemetry traces, including OpenInference</td>
-<td>Relay's outer LLM span, nested <code>libsy.client_call</code> and <code>libsy.upstream_attempt</code> duration scopes, plus eligible routing marks.</td>
+<td>Relay's outer LLM span, nested <code>libsy.client_call</code>, <code>libsy.upstream_attempt</code>, and <code>libsy.decision_client_call</code> duration scopes, plus eligible routing marks.</td>
 </tr>
 <tr>
 <td>OpenTelemetry metrics</td>
@@ -3116,10 +3116,11 @@ can receive these records, but each output format presents them differently.</p>
 </tr>
 </tbody>
 </table>
-<p>The plugin captures two existing Switchyard spans. Each routing or answer LLM
+<p>The plugin captures existing Switchyard spans. Each routing or answer LLM
 call becomes a <code>libsy.client_call</code> scope. Physical HTTP attempts and retries
 become <code>libsy.upstream_attempt</code> child scopes. Buffered calls close with the response;
-streaming calls close when the stream finishes, fails, or is dropped. The
+streaming calls close when the stream finishes, fails, or is dropped. Typed
+decision calls become <code>libsy.decision_client_call</code> scopes. The
 projection contains allowlisted routing metadata by default. Optional
 <a href="#inspect-classifier-and-judge-payloads">routing payload capture</a> adds the final
 classifier/judge request and successful buffered response.</p>
@@ -3152,6 +3153,12 @@ classification as <code>routing</code> or <code>answer</code>.</p>
 <td>Starts before the HTTP attempt and closes on response, error, or cancellation.</td>
 </tr>
 <tr>
+<td>System One or OpenAI Decisions call</td>
+<td><code>libsy.decision_client_call</code> scope</td>
+<td>Relay's managed request scope</td>
+<td>Starts with the decision call and closes on response, error, or cancellation.</td>
+</tr>
+<tr>
 <td>Routing request, decision, overhead, or failure</td>
 <td>Existing <code>switchyard.routing.*</code> mark</td>
 <td>Active Relay scope at emission</td>
@@ -3165,7 +3172,8 @@ is disabled by default. It is not a standalone Switchyard configuration option.
 Use it to inspect the final classifier/judge request, including its system
 prompt, task context, output schema, resolved model, and target body settings,
 plus its successful buffered response. This helps distinguish a poor verdict
-from missing task context.</p>
+from missing task context. System One and OpenAI Decisions requests and
+successful buffered responses are supported too.</p>
 <p>Add these options to the existing <code>plugins.dynamic.config</code> table in your Relay
 <code>plugins.toml</code>, then restart the host:</p>
 <div class="language-toml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">[plugins.dynamic.config]</span>
@@ -3202,20 +3210,23 @@ to restore the default for later sessions.</p>
    for the selected and served model. The judge response contains the returned
    verdict; the decision mark records what Switchyard did with it.</li>
 </ol>
+<p>For System One or OpenAI Decisions, inspect the input and output on
+<code>libsy.decision_client_call</code> directly. The captured request uses the provider's
+final <code>state</code> or <code>input</code> field and encoded questions.</p>
 <p>For an <a href="https://docs.nvidia.com/nemo/relay/configure-plugins/observability/atof">ATOF export</a>,
 the request appears directly in the attempt start event's <code>data</code>, and the
 response in the matching end event's <code>data</code>. Their <code>uuid</code> values match;
 <code>parent_uuid</code> identifies the classifier call. For example, inspect complete
 captured requests with:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>jq<span class="w"> </span><span class="s1">&#39;select(.name == &quot;libsy.upstream_attempt&quot; and .scope_category == &quot;start&quot; and .data.body != null) | .data.body | fromjson&#39;</span><span class="w"> </span>events.jsonl
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>jq<span class="w"> </span><span class="s1">&#39;select((.name == &quot;libsy.upstream_attempt&quot; or .name == &quot;libsy.decision_client_call&quot;) and .scope_category == &quot;start&quot; and .data.body != null) | .data.body | fromjson&#39;</span><span class="w"> </span>events.jsonl
 </span></code></pre></div>
 <p>Find omitted request or response bodies with:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>jq<span class="w"> </span><span class="s1">&#39;select(.name == &quot;libsy.upstream_attempt&quot; and .data.truncated == true) | {uuid, scope_category}&#39;</span><span class="w"> </span>events.jsonl
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>jq<span class="w"> </span><span class="s1">&#39;select((.name == &quot;libsy.upstream_attempt&quot; or .name == &quot;libsy.decision_client_call&quot;) and .data.truncated == true) | {uuid, scope_category}&#39;</span><span class="w"> </span>events.jsonl
 </span></code></pre></div>
 <p>Capture follows routing-phase HTTP calls, which include LLM classifier/judge
-calls and may include other model calls used while deciding a route. It excludes
-completion-phase payloads, streamed response bodies, HTTP error bodies, and
-non-LLM decision-client payloads such as SystemOne. This option belongs to the
+calls, typed decision-client calls, and other model calls used while deciding a
+route. It excludes completion-phase payloads, streamed response bodies, and
+HTTP error bodies. This option belongs to the
 native Relay plugin; enabling standalone Switchyard TRACE logging does not
 enable payload capture.</p>
 <p>Payloads can contain sensitive task data. To mask configured provider keys,
@@ -3246,6 +3257,7 @@ omits marks. With <code>mark_projection = "tool"</code>, the trace has this shap
     llm["LLM call"]
     call["libsy.client_call&lt;br/&gt;routing or completion"]
     attempt["libsy.upstream_attempt&lt;br/&gt;one per HTTP attempt"]
+    decision_call["libsy.decision_client_call&lt;br/&gt;typed decision"]
     requested["mark:switchyard.routing.requested&lt;br/&gt;zero duration"]
     calls["mark:switchyard.routing.llm_call&lt;br/&gt;zero duration"]
     overhead["mark:switchyard.routing.overhead&lt;br/&gt;zero duration"]
@@ -3254,6 +3266,7 @@ omits marks. With <code>mark_projection = "tool"</code>, the trace has this shap
     agent --&gt; llm
     llm --&gt; call
     call --&gt; attempt
+    llm --&gt; decision_call
     agent --&gt; requested
     agent --&gt; calls
     agent --&gt; overhead
@@ -3390,7 +3403,8 @@ types are <code>input</code>, <code>cached_input</code>, <code>cache_creation_in
 <p>By default, Switchyard routing telemetry excludes request and response content.
 Enabling <a href="#inspect-classifier-and-judge-payloads">routing payload capture</a> adds
 internal routing requests and successful buffered responses to
-<code>libsy.upstream_attempt</code> scopes. Routing marks remain payload-free.
+<code>libsy.upstream_attempt</code> and <code>libsy.decision_client_call</code> scopes. Routing marks
+remain payload-free.
 Relay's LLM events can capture request and response data according to Relay's
 <a href="https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/events#input-and-output-payloads">input and output event semantics</a>,
 independently of these Switchyard marks.</p>
