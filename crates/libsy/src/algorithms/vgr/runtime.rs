@@ -185,6 +185,9 @@ impl Classifier for VgrClassifier {
             let reason = "chat_after_tool_error";
             return Ok(self.escalate(driver, reason, Some(Branch::Chat), request, state, None));
         }
+        if self.config.bounded_efficient && self.remaining(started).is_none() {
+            return Ok(self.escalate(driver, "efficient_timed_out", None, request, state, None));
+        }
         let attempted = self
             .within_budget(started, async {
                 let response = driver
