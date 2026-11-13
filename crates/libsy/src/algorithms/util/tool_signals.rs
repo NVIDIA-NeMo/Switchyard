@@ -12,7 +12,7 @@
 
 #![allow(dead_code)]
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::LazyLock;
 
@@ -439,6 +439,13 @@ struct ObservedToolCall<'a> {
     code_semantic: Option<ToolSemantic>,
 }
 
+#[derive(Clone, Copy, Default)]
+struct ToolResultContext {
+    is_retrieval: bool,
+    search_no_match: bool,
+    codex_session: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MutationKind {
     Write,
@@ -624,6 +631,26 @@ fn command_is_retrieval(command: &Value) -> bool {
         }
         _ => false,
     }
+}
+
+// Only a final search can explain exit 1 as "no matches". Conditional execution
+// may have stopped before the search, so leave those statuses uninterpreted.
+fn command_ends_with_search(command: &str) -> bool {
+    if quoted_chars(command).any(|(_, c, quote)| quote.is_none() && c == '&') {
+        return false;
+    }
+    shell_segments(command)
+        .last()
+        .and_then(shlex::split)
+        .and_then(|words| words.first().cloned())
+        .is_some_and(|program| matches!(program_name(&program), "rg" | "grep"))
+}
+
+fn codex_session_id(header: &str) -> Option<&str> {
+    header.lines().find_map(|line| {
+        line.strip_prefix("Process running with session ID ")
+            .filter(|id| !id.is_empty() && id.bytes().all(|c| c.is_ascii_digit()))
+    })
 }
 
 // Keep shell parsing bounded on the request thread. Larger commands retain
@@ -1066,8 +1093,8 @@ fn extract_tool_signals_with_window_and_semantics(
     let namespaces = tool_namespaces(&request.llm_request.extensions);
     let mut tool_texts: Vec<(String, bool)> = Vec::new();
     let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
-    // IDs whose latest call is a retrieval tool.
-    let mut retrieval_calls: HashSet<&str> = HashSet::new();
+    let mut result_contexts: HashMap<&str, ToolResultContext> = HashMap::new();
+    let mut sessions: HashMap<String, ToolResultContext> = HashMap::new();
     let mut tool_result_count = 0usize;
     let mut assistant_turn_count = 0usize;
 
@@ -1093,7 +1120,7 @@ fn extract_tool_signals_with_window_and_semantics(
                     let command_field = command_of(arguments);
                     // Codex uses exec.input for JavaScript. OpenClaw's exec.command
                     // remains a shell call, even when the names are identical.
-                    let code_semantic = (bare_name.unwrap_or(&call.name) == "exec"
+                    let mut code_semantic = (bare_name.unwrap_or(&call.name) == "exec"
                         && arguments.get("command").is_none()
                         && arguments.get("cmd").is_none())
                     .then(|| arguments.get("input").and_then(Value::as_str))
@@ -1120,15 +1147,45 @@ fn extract_tool_signals_with_window_and_semantics(
                         }
                         _ => call.name.as_str(),
                     };
-                    let is_retrieval =
+                    let mut is_retrieval =
                         code_semantic.is_none() && is_retrieval_tool(name, command_field);
+                    let mut context = ToolResultContext {
+                        is_retrieval,
+                        search_no_match: is_retrieval
+                            && command.as_deref().is_some_and(command_ends_with_search),
+                        codex_session: name == "exec_command",
+                    };
+                    if name == "write_stdin" {
+                        let session_id = arguments.get("session_id").map(|id| {
+                            id.as_str()
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| id.to_string())
+                        });
+                        if let Some(id) = session_id {
+                            if arguments
+                                .get("chars")
+                                .and_then(Value::as_str)
+                                .unwrap_or("")
+                                .is_empty()
+                            {
+                                context = sessions.get(&id).copied().unwrap_or_default();
+                                is_retrieval = context.is_retrieval;
+                                // Polling observes an existing command; it does not
+                                // repeat a write or edit performed by that command.
+                                code_semantic = Some(if is_retrieval {
+                                    ToolSemantic::Observe
+                                } else {
+                                    ToolSemantic::Unknown
+                                });
+                            } else {
+                                // Input can change what an interactive command does.
+                                sessions.remove(&id);
+                            }
+                        }
+                    }
                     if !call.id.is_empty() {
                         // A reused ID links to its latest call.
-                        if is_retrieval {
-                            retrieval_calls.insert(call.id.as_str());
-                        } else {
-                            retrieval_calls.remove(call.id.as_str());
-                        }
+                        result_contexts.insert(call.id.as_str(), context);
                     }
                     tool_calls.push(ObservedToolCall {
                         name: call.name.clone(),
@@ -1148,9 +1205,21 @@ fn extract_tool_signals_with_window_and_semantics(
                         .filter_map(text_of)
                         .collect::<Vec<_>>()
                         .join("\n");
-                    let is_retrieval_result =
-                        retrieval_calls.contains(result.tool_call_id.as_str());
-                    if is_retrieval_result {
+                    let context = result_contexts
+                        .get(result.tool_call_id.as_str())
+                        .copied()
+                        .unwrap_or_default();
+                    // Never interpret a session marker inside retrieved file contents.
+                    let status = text
+                        .split_once("\nOutput:\n")
+                        .map_or(text.as_str(), |(header, _)| header);
+                    if context.codex_session
+                        && !is_error
+                        && let Some(id) = codex_session_id(status)
+                    {
+                        sessions.insert(id.to_owned(), context);
+                    }
+                    if context.is_retrieval {
                         // Shell reads can return bare JSON from a file. Hermes wraps
                         // terminal output with output and exit_code fields.
                         let shell_result = serde_json::Deserializer::from_str(&text)
@@ -1162,9 +1231,6 @@ fn extract_tool_signals_with_window_and_semantics(
                             });
                         // Codex reports the exit status in a header before `Output:`.
                         // An exit line after it is part of what was read.
-                        let status = text
-                            .split_once("\nOutput:\n")
-                            .map_or(text.as_str(), |(header, _)| header);
                         // Hermes reports it in fields, so its output is not scanned.
                         let shell_failed = match &shell_result {
                             Some(value) => {
@@ -1176,7 +1242,20 @@ fn extract_tool_signals_with_window_and_semantics(
                             }
                             None => has_nonzero_exit_status(&status.to_lowercase()),
                         };
-                        if is_missing_file(&text) || (!is_error && !shell_failed) {
+                        let exit_code = shell_result
+                            .as_ref()
+                            .and_then(|value| value["exit_code"].as_i64())
+                            .or_else(|| {
+                                status.lines().find_map(|line| {
+                                    line.strip_prefix("Process exited with code ")?
+                                        .parse::<i64>()
+                                        .ok()
+                                })
+                            });
+                        let no_match = context.search_no_match
+                            && exit_code == Some(1)
+                            && classify_text(&text).0 <= SOFT;
+                        if is_missing_file(&text) || (!is_error && (!shell_failed || no_match)) {
                             // Keep the window slot after dropping retrieved content.
                             if !text.is_empty() {
                                 tool_texts.push((String::new(), false));
@@ -2254,6 +2333,128 @@ mod tests {
         assert_eq!(read("Chunk ID: abc\nProcess exited with code 0"), 0.0);
         // The read itself failed, so its output counts.
         assert_eq!(read("Chunk ID: abc\nProcess exited with code 1"), CRITICAL);
+    }
+
+    #[test]
+    fn search_no_match_is_an_observation_not_a_failure() {
+        for command in [
+            "rg missing .",
+            "grep missing file.txt",
+            "rg version poetry.lock; rg limits poetry.lock | sed -n '1,80p'; rg headers .",
+        ] {
+            for output in [
+                "Process exited with code 1\nOutput:\n",
+                r#"{"output":"","exit_code":1,"error":null}"#,
+            ] {
+                let request = call_with_result(exec_command(json!({"cmd": command})), tr(output));
+                let signal = ToolSignals::from_request(&request, None);
+                assert_eq!(signal.severity, 0.0, "{command}: {output}");
+                assert_eq!(signal.read_count, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn search_errors_and_non_search_exit_one_remain_failures() {
+        for (command, output) in [
+            (
+                "rg missing .",
+                "Process exited with code 2\nOutput:\nrg: invalid regex",
+            ),
+            (
+                "rg missing .",
+                "Process exited with code 1\nOutput:\nMemoryError",
+            ),
+            (
+                "rg missing .",
+                r#"{"output":"","exit_code":1,"error":"execution failed"}"#,
+            ),
+            (
+                "cat file.txt",
+                "Process exited with code 1\nOutput:\npermission denied",
+            ),
+            (
+                "pytest; rg missing .",
+                "Process exited with code 1\nOutput:\n",
+            ),
+            (
+                "false && rg missing .",
+                "Process exited with code 1\nOutput:\n",
+            ),
+        ] {
+            let request = call_with_result(exec_command(json!({"cmd": command})), tr(output));
+            assert!(
+                ToolSignals::from_request(&request, None).severity > 0.0,
+                "{command}: {output}"
+            );
+        }
+        let mut request = call_with_result(
+            exec_command(json!({"cmd": "rg missing ."})),
+            tr("Process exited with code 1\nOutput:\n"),
+        );
+        if let ContentBlock::ToolResult(result) = &mut request.llm_request.messages[1].content[0] {
+            result.is_error = Some(true);
+        }
+        assert_eq!(ToolSignals::from_request(&request, None).severity, HARD);
+    }
+
+    fn polled_command(command: &str, chars: &str, output: &str) -> Request {
+        let mut request = call_with_result(
+            exec_command(json!({"cmd": command})),
+            tr("Process running with session ID 123\nOutput:\n"),
+        );
+        let mut poll = tc("write_stdin");
+        if let ContentBlock::ToolCall(call) = &mut poll.content[0] {
+            call.id = "poll-1".into();
+            call.arguments = json!({"session_id":123, "chars":chars});
+        }
+        let mut result = tr(output);
+        if let ContentBlock::ToolResult(result) = &mut result.content[0] {
+            result.tool_call_id = "poll-1".into();
+        }
+        request.llm_request.messages.extend([poll, result]);
+        request
+    }
+
+    #[test]
+    fn codex_poll_preserves_read_context_without_hiding_execution_errors() {
+        let output = "Process exited with code 0\nOutput:\nMemoryError\n5 passed in 0.12s";
+        let request = polled_command("cat run.log", "", output);
+        let signal = ToolSignals::from_request(&request, Some(1));
+        assert_eq!(signal.severity, 0.0);
+        assert_eq!(signal.recent_read_count, 1);
+        assert!(!signal.tests_passed);
+        for (command, chars) in [("python script.py", ""), ("cat run.log", "x")] {
+            let signal =
+                ToolSignals::from_request(&polled_command(command, chars, output), Some(1));
+            assert_eq!(signal.severity, CRITICAL);
+        }
+        let failed = polled_command(
+            "cat run.log",
+            "",
+            "Process exited with code 2\nOutput:\nMemoryError",
+        );
+        assert_eq!(
+            ToolSignals::from_request(&failed, Some(1)).severity,
+            CRITICAL
+        );
+        let no_match = polled_command("rg missing .", "", "Process exited with code 1\nOutput:\n");
+        assert_eq!(ToolSignals::from_request(&no_match, Some(1)).severity, 0.0);
+        let tests = polled_command(
+            "yarn test",
+            "",
+            "Process exited with code 0\nOutput:\n5 passed in 0.12s",
+        );
+        assert!(ToolSignals::from_request(&tests, Some(1)).tests_passed);
+        let write = polled_command(
+            "echo done > result.txt",
+            "",
+            "Process exited with code 0\nOutput:\n",
+        );
+        assert_eq!(
+            ToolSignals::from_request(&write, Some(1)).recent_write_count,
+            0
+        );
     }
 
     #[test]
