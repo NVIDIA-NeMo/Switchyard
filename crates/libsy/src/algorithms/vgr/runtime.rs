@@ -171,6 +171,23 @@ impl Classifier for VgrClassifier {
         let Some(trial) = self.breaker.attempt() else {
             return Ok(self.escalate(driver, "breaker_open", None, request, state, None));
         };
+        let typed = if text::ToolRecord::from_request(request).errors > 0 {
+            let context = RequestContext {
+                driver,
+                request,
+                started,
+            };
+            Some(self.type_task(&context).await)
+        } else {
+            None
+        };
+        if typed == Some(Some(TaskType::Chat)) {
+            let reason = "chat_after_tool_error";
+            return Ok(self.escalate(driver, reason, Some(Branch::Chat), request, state, None));
+        }
+        if self.config.bounded_efficient && self.remaining(started).is_none() {
+            return Ok(self.escalate(driver, "efficient_timed_out", None, request, state, None));
+        }
         let attempted = self
             .within_budget(started, async {
                 let response = driver
@@ -255,7 +272,10 @@ impl Classifier for VgrClassifier {
         }
 
         let attempt = rungs::response_text(&buffered.agg).unwrap_or_default();
-        let task_type = self.type_task(&context).await;
+        let task_type = match typed {
+            Some(task_type) => task_type,
+            None => self.type_task(&context).await,
+        };
         let caps = derive_capabilities(
             request,
             &attempt,
@@ -451,7 +471,10 @@ impl VgrClassifier {
         let run = (branch == Branch::Agentic).then(|| decide::agentic_run(caps, confirmed));
         let (Some(judged), false) = (
             caps.transcript.as_deref(),
-            branch == Branch::Unknown || run == Some(AgenticRun::Vetoed),
+            branch == Branch::Unknown
+                || run == Some(AgenticRun::Vetoed)
+                || (matches!(branch, Branch::Chat | Branch::DefaultVerified)
+                    && caps.tools.is_some_and(|tools| tools.errors > 0)),
         ) else {
             return signals;
         };
