@@ -1056,7 +1056,7 @@ fn openai_chat_response_with_text_and_tool_call_translates_both_to_responses() -
         "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7}
     });
 
-    let output = engine
+    let mut output = engine
         .translate_response(
             WireFormat::OpenAiChat,
             WireFormat::OpenAiResponses,
@@ -1069,6 +1069,22 @@ fn openai_chat_response_with_text_and_tool_call_translates_both_to_responses() -
     assert_eq!(output["output"][0]["content"][0]["text"], "Let me check.");
     assert_eq!(output["output"][1]["type"], "function_call");
     assert_eq!(output["output"][1]["call_id"], "call_1");
+
+    // Check text before the tool call, then reverse the items to check text after it.
+    for _ in 0..2 {
+        let decoded = engine
+            .decode_response(
+                WireFormat::OpenAiResponses,
+                &output,
+                &TranslationPolicy::default(),
+            )?
+            .response;
+        assert_eq!(decoded.outputs[0].stop_reason, Some(StopReason::ToolUse));
+        output["output"]
+            .as_array_mut()
+            .ok_or("output should be an array")?
+            .reverse();
+    }
     Ok(())
 }
 
