@@ -2646,7 +2646,7 @@ entry and leave the route's <code>context_window</code> unset. Switchyard then r
 service's <code>/props</code> response and advertises a positive context capacity when
 available. Missing or invalid properties leave the capacity unknown; routing
 continues normally. Discovery does not configure the service or load a model.</p>
-<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4bf87e2d8f19a6a12964784c240347cdc999a2dc/examples/vgr-local-servers.toml">the local-server example</a>
+<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ea0aa1ed117e1e85cf9be66fc6267db10c044a66/examples/vgr-local-servers.toml">the local-server example</a>
 for an active llama.cpp configuration and commented Ollama/vLLM alternatives.
 For Ollama and vLLM, set <code>context_window</code> to match the running service; automatic
 discovery for those servers is not implemented.</p>
@@ -2705,7 +2705,7 @@ Client and upstream HTTP timeouts still apply. Configure those timeouts in the
 harness and Switchyard client for long-running decisions. Configured durations
 must remain positive even when these VGR limits are disabled.</p>
 <h2 id="hermes-auxiliary-routing">Hermes auxiliary routing<a class="headerlink" href="#hermes-auxiliary-routing" title="Permanent link">&para;</a></h2>
-<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/4bf87e2d8f19a6a12964784c240347cdc999a2dc/examples/vgr-local-servers.toml">local-server example</a> exposes
+<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/ea0aa1ed117e1e85cf9be66fc6267db10c044a66/examples/vgr-local-servers.toml">local-server example</a> exposes
 <code>switchyard/only-efficient</code> through the existing passthrough router. Hermes can
 use it for titles and approval checks, independently of the conversation's VGR
 route. Configure Hermes against the same Switchyard server:</p>
@@ -2760,9 +2760,11 @@ immediate recovery nudges retain the turn hold and budget. A reply to a complete
 final answer releases them after a two-second quiet period. Explicit user/agent
 headers take precedence. Hosts that omit reporting retain message-shape detection.</p>
 <h2 id="verification-and-capable-tier-outages">Verification and capable-tier outages<a class="headerlink" href="#verification-and-capable-tier-outages" title="Permanent link">&para;</a></h2>
-<p>Policy version <code>1.2</code> allows the default verification branch to accept a clean
+<p>Policy version <code>1.3</code> allows the default verification branch to accept a clean
 efficient attempt when the capable judge approves both the evidence and the
 answer. A negative or unavailable evidence verdict skips the answer check.</p>
+<p>After a failed tool result, chat steps escalate without verification, and steps
+typed as chat escalate before any efficient attempt.</p>
 <p>Typed factual answers are verified on the answer itself, including
 later user turns without tool work. A readout of at least 0.9 can serve the
 efficient answer; lower scores require capable-tier verification. Scored verdicts
