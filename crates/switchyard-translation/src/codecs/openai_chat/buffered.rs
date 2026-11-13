@@ -150,15 +150,14 @@ impl FormatCodec for OpenAiChatCodec {
                     ));
                     continue;
                 }
-                match role {
-                    Role::System | Role::Developer => {
-                        request
-                            .instructions
-                            .push(InstructionBlock { role, content });
-                    }
-                    Role::User | Role::Assistant | Role::Tool => {
-                        request.messages.push(Message::new(role, content));
-                    }
+                // Leading system and developer messages are top-level instructions.
+                // Later ones stay in place as messages.
+                if matches!(role, Role::System | Role::Developer) && request.messages.is_empty() {
+                    request
+                        .instructions
+                        .push(InstructionBlock { role, content });
+                } else {
+                    request.messages.push(Message::new(role, content));
                 }
             }
         }
