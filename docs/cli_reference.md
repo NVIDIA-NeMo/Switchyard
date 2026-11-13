@@ -20,11 +20,14 @@ switchyard-server --config <deployment.toml> [options]
 | `--shutdown-timeout SHUTDOWN_TIMEOUT` | `30s` | Maximum time active requests may drain during shutdown. |
 | `--dry-run` | Off | Validate the deployment without binding a socket. |
 | `--routing-log-file PATH` | None | Append durable per-request routing records to this JSONL file. |
-| `--pricing-file PATH` | None | Estimate unreported call costs from this JSON file of USD rates per million tokens; requires `--routing-log-file`. |
+| `--pricing-file PATH` | None | Estimate unreported call costs from a TOML or JSON file of USD rates per million tokens; requires `--routing-log-file`. |
 | `--tls-cert PATH` | None | PEM certificate path; requires `--tls-key`. |
 | `--tls-key PATH` | None | PEM private-key path; requires `--tls-cert`. |
 | `-h, --help` | — | Print command help. |
 | `-V, --version` | — | Print the server version. |
+
+Saved routing records use bundled model prices by default. `--pricing-file` replaces
+the entire bundled table, so include every model you want to price.
 
 Validate a deployment, then start the proxy:
 
