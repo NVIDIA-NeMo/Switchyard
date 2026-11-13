@@ -153,6 +153,9 @@ releases. Pin the version you integrate.
 
 Features and integrations recently merged into `main`.
 
+- **2026-11-12 · Route Copilot Chat in VS Code**\
+  Pair a capable and an efficient model, and let Auto routing pick one for each request in Copilot Chat. [Setup guide →](examples/vscode/README.md)
+
 - **2026-10-16 · Route between Sonnet and Opus in Claude Code**\
   Use your Claude login for automatic routing on Linux x86_64 and see the selected model in the status line. [Setup guide →](examples/claude/README.md)
 

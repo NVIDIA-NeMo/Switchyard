@@ -1,0 +1,100 @@
+{
+  "name": "switchyard-vscode",
+  "displayName": "Switchyard for Copilot Chat",
+  "description": "Route each Copilot Chat request to a capable or an efficient model with Switchyard.",
+  "version": "0.3.0",
+  "publisher": "nvidia",
+  "private": true,
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NVIDIA-NeMo/Switchyard.git"
+  },
+  "engines": {
+    "vscode": "^1.145.0"
+  },
+  "categories": ["AI", "Chat"],
+  "main": "./src/extension.js",
+  "extensionKind": ["ui"],
+  "activationEvents": ["onStartupFinished"],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "package": "vsce package --skip-license --out switchyard.vsix"
+  },
+  "dependencies": {
+    "@switchyard/libsy": "file:../../bindings/typescript"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "4.1.0"
+  },
+  "contributes": {
+    "languageModelChatProviders": [
+      {
+        "vendor": "switchyard",
+        "displayName": "Switchyard"
+      }
+    ],
+    "commands": [
+      { "command": "switchyard.createProfile", "title": "Switchyard: Create Routing Profile" },
+      { "command": "switchyard.editProfile", "title": "Switchyard: Edit Routing Profile" },
+      { "command": "switchyard.viewProfiles", "title": "Switchyard: View Routing Profiles" },
+      { "command": "switchyard.addCustomModel", "title": "Switchyard: Add Custom Model" },
+      { "command": "switchyard.removeCustomModel", "title": "Switchyard: Remove Custom Model" },
+      { "command": "switchyard.showLog", "title": "Switchyard: Show Routing Log" }
+    ],
+    "configuration": {
+      "title": "Switchyard",
+      "properties": {
+        "switchyard.profiles": {
+          "type": "array",
+          "scope": "application",
+          "default": [],
+          "description": "Routing profiles. Each one appears as a model in the chat model picker.",
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "capable", "efficient"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "capable": { "type": "string", "description": "Model for hard turns: a Copilot model ID or custom:<id>." },
+              "efficient": { "type": "string", "description": "Model for routine turns: a Copilot model ID or custom:<id>." },
+              "threshold": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "default": 0.5,
+                "description": "How sure the tool signals must be before they pick a model. Below it, the efficient model is used. Higher values use the efficient model more often."
+              }
+            }
+          }
+        },
+        "switchyard.customModels": {
+          "type": "array",
+          "scope": "application",
+          "default": [],
+          "description": "Your own model endpoints. Add them with Switchyard: Add Custom Model so the API key is stored securely.",
+          "items": {
+            "type": "object",
+            "required": ["id", "name", "model", "url", "format", "maxInputTokens"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "name": { "type": "string" },
+              "model": { "type": "string" },
+              "url": { "type": "string" },
+              "format": { "enum": ["openai_chat", "openai_responses", "anthropic_messages"] },
+              "maxInputTokens": { "type": "integer", "minimum": 8192 }
+            }
+          }
+        },
+        "switchyard.enterpriseWorkaround": {
+          "type": "boolean",
+          "scope": "application",
+          "default": false,
+          "description": "Unsupported. Show Switchyard models in Copilot Business and Enterprise when the organization hides models from extensions."
+        }
+      }
+    }
+  }
+}
