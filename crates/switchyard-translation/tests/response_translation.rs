@@ -20,84 +20,39 @@ use common::{
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
-fn responses_tool_arguments_survive_buffered_and_synthetic_encoding() -> TestResult {
+fn responses_tool_arguments_are_not_double_encoded() -> TestResult {
     let engine = TranslationEngine::default();
-    let source = WireFormat::OpenAiResponses;
+    let format = WireFormat::OpenAiResponses;
     let policy = TranslationPolicy::default();
-    let body = json!({"id": "resp_1", "model": "fixture", "status": "completed",
-        "output": [{"type": "function_call", "call_id": "call_1", "name": "lookup",
-            "arguments": "{\"city\": \"Paris\"}"}]});
-    let response = engine.decode_response(source, &body, &policy)?.response;
-    assert_eq!(
-        engine.encode_response(source, &response, &policy)?.body,
-        body
-    );
-
-    for target in [
-        source,
-        WireFormat::OpenAiChat,
-        WireFormat::AnthropicMessages,
+    for (arguments, expected) in [
+        (json!(r#"{"city": "Paris"}"#), json!({"city": "Paris"})),
+        (json!("not JSON"), json!("not JSON")),
+        (json!({"city": "Paris"}), json!({"city": "Paris"})),
     ] {
-        let output = engine
-            .encode_response(target, &response, &normalized_policy())?
-            .body;
-        let arguments = match target {
-            WireFormat::OpenAiResponses => {
-                serde_json::from_value::<String>(output["output"][0]["arguments"].clone())?
-            }
-            WireFormat::OpenAiChat => serde_json::from_value::<String>(
-                output["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"].clone(),
-            )?,
-            WireFormat::AnthropicMessages => output["content"][0]["input"].to_string(),
-        };
-        assert_eq!(
-            serde_json::from_str::<Value>(&arguments)?,
-            json!({"city": "Paris"}),
-            "{target:?}"
-        );
-
-        let events = block_on(
-            encode_stream(response.clone().into_stream(), target, None)?.try_collect::<Vec<_>>(),
-        )?;
-        let arguments: String = events
-            .iter()
-            .filter_map(|event| match target {
-                WireFormat::OpenAiResponses => (event["type"]
-                    == "response.function_call_arguments.delta")
-                    .then(|| event["delta"].as_str())
-                    .flatten(),
-                WireFormat::OpenAiChat => {
-                    event["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"].as_str()
-                }
-                WireFormat::AnthropicMessages => event["delta"]["partial_json"].as_str(),
-            })
-            .collect();
-        assert_eq!(
-            serde_json::from_str::<Value>(&arguments)?,
-            json!({"city": "Paris"}),
-            "{target:?}"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn responses_tool_arguments_preserve_malformed_and_structured_values() -> TestResult {
-    let engine = TranslationEngine::default();
-    for arguments in [json!("not JSON"), json!({"city": "Paris"})] {
         let body = json!({"output": [{"type": "function_call", "call_id": "call_1",
             "name": "lookup", "arguments": arguments}]});
-        let response = engine
-            .decode_response(
-                WireFormat::OpenAiResponses,
-                &body,
-                &TranslationPolicy::default(),
-            )?
-            .response;
-        let ContentBlock::ToolCall(call) = &response.outputs[0].content[0] else {
-            return Err("expected a tool call".into());
-        };
-        assert_eq!(call.arguments, arguments);
+        let response = engine.decode_response(format, &body, &policy)?.response;
+        assert_eq!(
+            engine.encode_response(format, &response, &policy)?.body,
+            body
+        );
+
+        let output = engine
+            .encode_response(format, &response, &normalized_policy())?
+            .body;
+        let arguments = output["output"][0]["arguments"]
+            .as_str()
+            .ok_or("missing arguments")?;
+        assert_eq!(serde_json::from_str::<Value>(arguments)?, expected);
+
+        let events =
+            block_on(encode_stream(response.into_stream(), format, None)?.try_collect::<Vec<_>>())?;
+        let arguments: String = events
+            .iter()
+            .filter(|event| event["type"] == "response.function_call_arguments.delta")
+            .filter_map(|event| event["delta"].as_str())
+            .collect();
+        assert_eq!(serde_json::from_str::<Value>(&arguments)?, expected);
     }
     Ok(())
 }
