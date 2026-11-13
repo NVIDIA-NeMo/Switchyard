@@ -352,7 +352,7 @@
 <a href=#352 id=352 data-nosnippet>352</a>                        })
 <a href=#353 id=353 data-nosnippet>353</a>                        .sum::&lt;usize&gt;();
 <a href=#354 id=354 data-nosnippet>354</a>                    content.extend(output.content);
-<a href=#355 id=355 data-nosnippet>355</a>                    <span class="kw">if </span>output.stop_reason.is_some() {
+<a href=#355 id=355 data-nosnippet>355</a>                    <span class="kw">if </span>output.stop_reason.is_some() &amp;&amp; stop_reason != <span class="prelude-val">Some</span>(StopReason::ToolUse) {
 <a href=#356 id=356 data-nosnippet>356</a>                        stop_reason = output.stop_reason;
 <a href=#357 id=357 data-nosnippet>357</a>                    }
 <a href=#358 id=358 data-nosnippet>358</a>                }
