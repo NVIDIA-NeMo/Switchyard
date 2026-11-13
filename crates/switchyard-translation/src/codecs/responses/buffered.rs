@@ -352,7 +352,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                         })
                         .sum::<usize>();
                     content.extend(output.content);
-                    if output.stop_reason.is_some() {
+                    if output.stop_reason.is_some() && stop_reason != Some(StopReason::ToolUse) {
                         stop_reason = output.stop_reason;
                     }
                 }
