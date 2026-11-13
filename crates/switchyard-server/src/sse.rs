@@ -109,25 +109,22 @@ fn error_event(target_format: WireFormat, message: String, redactor: &Redactor) 
                 .to_string(),
             ),
         ),
-        WireFormat::AnthropicMessages | WireFormat::OpenAiResponses => {
-            let error_type = if target_format == WireFormat::AnthropicMessages {
-                "api_error"
-            } else {
-                "SwitchyardError"
-            };
-            Event::default().event("error").data(
-                redactor.json(
-                    json!({
-                        "type": "error",
-                        "error": {
-                            "message": message,
-                            "type": error_type,
-                        }
-                    })
-                    .to_string(),
-                ),
-            )
-        }
+        WireFormat::AnthropicMessages => Event::default().event("error").data(
+            redactor.json(
+                json!({
+                    "type": "error",
+                    "error": {
+                        "message": message,
+                        "type": "api_error",
+                    }
+                })
+                .to_string(),
+            ),
+        ),
+        // Match the Responses codec, which keeps an error event's message at the top level.
+        WireFormat::OpenAiResponses => Event::default()
+            .event("error")
+            .data(redactor.json(json!({"type": "error", "message": message}).to_string())),
     }
 }
 
@@ -279,6 +276,29 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<Value>(data)?,
             json!({"type": "error", "error": {"type": "api_error", "message": "boom"}})
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn responses_stream_error_puts_message_at_top_level() -> TestResult {
+        let failure = LlmClientError::General("boom".to_string());
+        let stream: RawEventStream =
+            Box::pin(stream::iter(vec![Err(LlmStreamError::Client(failure))]));
+        let response = frame_stream(
+            stream,
+            WireFormat::OpenAiResponses,
+            Arc::new(Redactor::default()),
+        )
+        .into_response();
+        let body = String::from_utf8(to_bytes(response.into_body(), usize::MAX).await?.to_vec())?;
+        let data = body
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .ok_or("missing data line")?;
+        assert_eq!(
+            serde_json::from_str::<Value>(data)?,
+            json!({"type": "error", "message": "boom"})
         );
         Ok(())
     }

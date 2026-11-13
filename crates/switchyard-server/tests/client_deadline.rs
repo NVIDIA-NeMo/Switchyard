@@ -290,6 +290,21 @@ async fn client_deadline_stops_routing_and_counts_attempts() -> TestResult {
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(body.contains("PONG") && body.contains("100 ms"), "{body}");
         assert!(!body.contains(success), "{body}");
+        if endpoint == "/v1/responses" {
+            // A Responses error event carries its message at the top level, like the codec's.
+            let error = body
+                .lines()
+                .filter_map(|line| line.strip_prefix("data: "))
+                .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+                .find(|event| event["type"] == "error")
+                .ok_or("missing error event")?;
+            assert!(
+                error["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("100 ms")),
+                "{body}"
+            );
+        }
         assert!(!body.contains("\"finish_reason\":\"stop\""), "{body}");
     }
 
