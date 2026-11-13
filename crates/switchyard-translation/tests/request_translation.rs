@@ -2196,6 +2196,81 @@ fn responses_rebuild_preserves_inline_instructions() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn chat_rebuild_preserves_inline_instructions() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "gpt-4",
+        "messages": [
+            {"role": "system", "content": "Initial system."},
+            {"role": "developer", "content": "Initial developer."},
+            {"role": "user", "content": "Hello."},
+            {"role": "system", "content": "Later system."},
+            {"role": "developer", "content": "Later developer."},
+            {"role": "developer", "content": "Separate message."},
+            {"role": "user", "content": "Original suffix."}
+        ]
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiChat, &body, &policy)?
+        .request;
+    request.preservation.requests.clear();
+
+    // Leading instructions stay top-level. Later ones stay in place.
+    assert_eq!(request.instructions.len(), 2);
+    assert_eq!(request.messages[1].role, Role::System);
+    assert_eq!(request.messages[2].role, Role::Developer);
+
+    assert_eq!(
+        engine
+            .encode_request(WireFormat::OpenAiChat, &request, &policy)?
+            .body,
+        body
+    );
+
+    let responses = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+    assert_eq!(
+        responses,
+        json!({
+            "model": "gpt-4",
+            "instructions": "Initial system.\n\nInitial developer.",
+            "input": [
+                {"type": "message", "role": "user", "content": "Hello."},
+                {"type": "message", "role": "system", "content": "Later system."},
+                {"type": "message", "role": "developer", "content": "Later developer."},
+                {"type": "message", "role": "developer", "content": "Separate message."},
+                {"type": "message", "role": "user", "content": "Original suffix."}
+            ]
+        })
+    );
+
+    let anthropic = engine
+        .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
+        .body;
+    assert_eq!(
+        anthropic["system"],
+        "Initial system.\n\nInitial developer.\n\nLater system.\n\nLater developer.\n\nSeparate message."
+    );
+    assert_eq!(anthropic["messages"].as_array().map(Vec::len), Some(2));
+
+    // A suffix-only edit leaves earlier messages unchanged.
+    request.messages.last_mut().ok_or("missing suffix")?.content = vec![ContentBlock::Text {
+        text: "Edited suffix.".into(),
+    }];
+    let mut expected = body.clone();
+    expected["messages"][6]["content"] = json!("Edited suffix.");
+    assert_eq!(
+        engine
+            .encode_request(WireFormat::OpenAiChat, &request, &policy)?
+            .body,
+        expected
+    );
+    Ok(())
+}
+
 // Anthropic `system` is text only, so non-text instruction content is lossy.
 #[test]
 fn anthropic_reports_dropped_instruction_content() -> TestResult {
