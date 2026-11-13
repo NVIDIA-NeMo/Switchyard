@@ -152,8 +152,6 @@ static BASH_EDIT_PATTERNS: &[&str] = &[
     "sed --in-place",
     "awk -i inplace",
     "awk 'inplace=1'",
-    "patch ",
-    "patch -p",
     "perl -i",
     "perl -p -i",
     "perl -pi",
@@ -427,18 +425,6 @@ impl ToolSignals {
     }
 }
 
-// `command` is the lowercased Bash command line; None for non-Bash tools.
-// `bare_name` is the tool's own name when `name` joins it to a namespace or MCP server.
-// `is_retrieval` marks a call that only reads; it counts as an observation.
-#[derive(Debug, Clone)]
-struct ObservedToolCall<'a> {
-    name: String,
-    bare_name: Option<&'a str>,
-    command: Option<String>,
-    is_retrieval: bool,
-    code_semantic: Option<ToolSemantic>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MutationKind {
     Write,
@@ -502,7 +488,13 @@ impl Processor for ToolSignalProcessor {
 }
 
 fn classify_tool_call(name: &str, command: Option<&str>) -> ToolSemantic {
-    classify_tool_call_with_semantics(name, command, &ToolSemantics::default())
+    classify_tool_call_with_semantics(
+        name,
+        command
+            .map(|command| Value::String(command.to_owned()))
+            .as_ref(),
+        &ToolSemantics::default(),
+    )
 }
 
 /// Recognize straight-line Codex patch calls, with optional literal bindings and
@@ -543,7 +535,7 @@ fn code_mode_has_patch(mut input: &str) -> bool {
 
 fn classify_tool_call_with_semantics(
     name: &str,
-    command: Option<&str>,
+    command: Option<&Value>,
     semantics: &ToolSemantics,
 ) -> ToolSemantic {
     // Built-in names and Bash command inference take precedence over route-scoped mappings.
@@ -551,7 +543,11 @@ fn classify_tool_call_with_semantics(
     if WRITE_TOOL_NAMES.contains(&lower.as_str()) {
         return ToolSemantic::Mutate(MutationKind::Write);
     }
-    if EDITOR_TOOL_NAMES.contains(&lower.as_str()) && command == Some("view") {
+    if EDITOR_TOOL_NAMES.contains(&lower.as_str())
+        && command
+            .and_then(Value::as_str)
+            .is_some_and(|command| command.eq_ignore_ascii_case("view"))
+    {
         return ToolSemantic::Observe;
     }
     if EDIT_TOOL_NAMES.contains(&lower.as_str()) {
@@ -564,26 +560,30 @@ fn classify_tool_call_with_semantics(
         return ToolSemantic::Plan;
     }
     if BASH_TOOL_NAMES.contains(&lower.as_str())
-        && let Some(cmd) = command
+        && let Some(command) = command
+        && let Some(cmd) = command_text(command)
     {
         // Write/edit redirection trumps read-like operands.
-        if BASH_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) || shell_command_is_write(cmd) {
+        if BASH_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) || shell_command_is_write(&cmd) {
             return ToolSemantic::Mutate(MutationKind::Write);
         }
         if cmd.contains("python") && PYTHON_WRITE_PATTERNS.iter().any(|p| cmd.contains(p)) {
             return ToolSemantic::Mutate(MutationKind::Write);
         }
-        if shell_invokes_program(cmd, "node")
+        if shell_invokes_program(&cmd, "node")
             && JAVASCRIPT_WRITE_PATTERNS
                 .iter()
                 .any(|pattern| cmd.contains(pattern))
         {
             return ToolSemantic::Mutate(MutationKind::Write);
         }
-        if BASH_EDIT_PATTERNS.iter().any(|p| cmd.contains(p)) || shell_command_is_edit(cmd) {
+        if BASH_EDIT_PATTERNS.iter().any(|p| cmd.contains(p))
+            || shell_command_is_edit(&cmd)
+            || command_invokes_patch(command)
+        {
             return ToolSemantic::Mutate(MutationKind::Edit);
         }
-        if BASH_READ_PATTERNS.iter().any(|p| cmd.contains(p)) || shell_command_is_read(cmd) {
+        if BASH_READ_PATTERNS.iter().any(|p| cmd.contains(p)) || shell_command_is_read(&cmd) {
             return ToolSemantic::Observe;
         }
     }
@@ -677,21 +677,67 @@ fn has_short_flag(word: &str, flags: &[char]) -> bool {
 // Bounds recursion through nested wrappers and `sh -c` scripts.
 const MAX_COMMAND_DEPTH: usize = 20;
 
-fn retrieval_command(mut words: &[&str], depth: usize) -> bool {
-    if depth > MAX_COMMAND_DEPTH {
-        return false;
-    }
+/// This helper skips leading assignments whose names are valid shell identifiers.
+fn skip_shell_assignments<'a>(mut words: &'a [&'a str]) -> &'a [&'a str] {
     while words.first().is_some_and(|word| {
         word.split_once('=').is_some_and(|(name, _)| {
-            !name.is_empty()
-                && name.bytes().enumerate().all(|(i, c)| {
-                    c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit())
-                })
+            name.starts_with(|c: char| c == '_' || c.is_ascii_alphabetic())
+                && name.bytes().all(|c| c == b'_' || c.is_ascii_alphanumeric())
         })
     }) {
         words = &words[1..];
     }
-    let Some((&program, args)) = words.split_first() else {
+    words
+}
+
+/// This helper returns the command words after a supported launcher's options and values.
+/// It leaves `env -S` unrecognized because that option splits command text into arguments.
+fn shell_wrapper_arguments<'a>(program: &str, args: &'a [&'a str]) -> Option<&'a [&'a str]> {
+    let options: &[&str] = match program {
+        "sudo" => &[
+            "-u", "-g", "-h", "-p", "-C", "-T", "--user", "--group", "--host",
+        ],
+        "env" => &["-u", "--unset", "-C", "--chdir"],
+        "command" | "nohup" => &[],
+        "exec" => &["-a"],
+        "time" => &["-f", "--format", "-o", "--output"],
+        "timeout" => &["-s", "--signal", "-k", "--kill-after"],
+        "xargs" => &[
+            "-n",
+            "--max-args",
+            "-P",
+            "--max-procs",
+            "-I",
+            "--replace",
+            "-d",
+            "--delimiter",
+            "-L",
+            "--max-lines",
+            "-s",
+            "--max-chars",
+        ],
+        _ => return None,
+    };
+    // `env -S` splits its argument into a new command line.
+    if program == "env"
+        && args
+            .iter()
+            .any(|arg| arg.starts_with("--split-string") || has_short_flag(arg, &['S']))
+    {
+        return None;
+    }
+    let mut rest = skip_shell_options(args, options);
+    if program == "timeout" {
+        rest = rest.get(1..).unwrap_or_default();
+    }
+    Some(rest)
+}
+
+fn retrieval_command(words: &[&str], depth: usize) -> bool {
+    if depth > MAX_COMMAND_DEPTH {
+        return false;
+    }
+    let Some((&program, args)) = skip_shell_assignments(words).split_first() else {
         return false;
     };
     // The standard bin dirs hold the real programs. Any other path, such as
@@ -708,44 +754,7 @@ fn retrieval_command(mut words: &[&str], depth: usize) -> bool {
     .find_map(|dir| program.strip_prefix(dir))
     .unwrap_or(program);
     // Unwrap launchers before inspecting the actual command and its flags.
-    let wrapper_options: Option<&[&str]> = match program {
-        "sudo" => Some(&[
-            "-u", "-g", "-h", "-p", "-C", "-T", "--user", "--group", "--host",
-        ]),
-        "env" => Some(&["-u", "--unset", "-C", "--chdir"]),
-        "command" | "nohup" => Some(&[]),
-        "exec" => Some(&["-a"]),
-        "time" => Some(&["-f", "--format", "-o", "--output"]),
-        "timeout" => Some(&["-s", "--signal", "-k", "--kill-after"]),
-        "xargs" => Some(&[
-            "-n",
-            "--max-args",
-            "-P",
-            "--max-procs",
-            "-I",
-            "--replace",
-            "-d",
-            "--delimiter",
-            "-L",
-            "--max-lines",
-            "-s",
-            "--max-chars",
-        ]),
-        _ => None,
-    };
-    if let Some(options) = wrapper_options {
-        // `env -S` splits its argument into a new command line.
-        if program == "env"
-            && args
-                .iter()
-                .any(|arg| arg.starts_with("--split-string") || has_short_flag(arg, &['S']))
-        {
-            return false;
-        }
-        let mut rest = skip_shell_options(args, options);
-        if program == "timeout" {
-            rest = rest.get(1..).unwrap_or_default();
-        }
+    if let Some(rest) = shell_wrapper_arguments(program, args) {
         return (program == "env" && rest.is_empty()) || retrieval_command(rest, depth + 1);
     }
     if matches!(program, "bash" | "sh" | "dash" | "zsh" | "ksh") {
@@ -940,6 +949,122 @@ fn shell_invokes_program(command: &str, expected: &str) -> bool {
     })
 }
 
+/// This recognizer preserves argv boundaries.
+/// Shell syntax within an argument stays data until a shell wrapper interprets it.
+fn command_invokes_patch(command: &Value) -> bool {
+    match command {
+        Value::String(command) => shell_invokes_patch(command, 0),
+        Value::Array(argv) => argv
+            .iter()
+            .map(Value::as_str)
+            .collect::<Option<Vec<_>>>()
+            .is_some_and(|words| patch_command(&words, 0)),
+        _ => false,
+    }
+}
+
+/// This recognizer finds patch programs in a limited set of shell syntax.
+/// It skips comments and stops at heredoc input.
+fn shell_invokes_patch(mut command: &str, depth: usize) -> bool {
+    if depth > MAX_COMMAND_DEPTH {
+        return false;
+    }
+    while !command.is_empty() {
+        let marker = quoted_chars(command).find(|&(index, c, quote)| {
+            quote.is_none()
+                && (command[index..].starts_with("<<")
+                    || (c == '#'
+                        && command[..index].chars().next_back().is_none_or(|previous| {
+                            previous.is_whitespace() || ";|&()".contains(previous)
+                        })))
+        });
+        let end = marker.map_or(command.len(), |(index, _, _)| index);
+        if shell_segments(&command[..end]).any(|segment| {
+            shlex::split(segment).is_some_and(|words| {
+                patch_command(&words.iter().map(String::as_str).collect::<Vec<_>>(), depth)
+            })
+        }) {
+            return true;
+        }
+        // A comment ends at the next newline. Heredoc input can contain command
+        // text, so scanning stops there without interpreting the body or delimiter.
+        let Some((index, '#', _)) = marker else {
+            return false;
+        };
+        command = command[index..]
+            .split_once('\n')
+            .map_or("", |(_, remaining)| remaining);
+    }
+    false
+}
+
+/// This recognizer follows supported launchers and shell `-c` scripts to find patch programs.
+/// It limits nesting and excludes known shell modes that do not execute commands.
+fn patch_command(words: &[&str], depth: usize) -> bool {
+    if depth > MAX_COMMAND_DEPTH {
+        return false;
+    }
+    let Some((&program, args)) = skip_shell_assignments(words).split_first() else {
+        return false;
+    };
+    let program = program_name(program);
+    if matches!(program, "patch" | "apply_patch") {
+        return true;
+    }
+    // `command -v` and `command -V` inspect a program without executing it.
+    if program == "command"
+        && args
+            .iter()
+            .take_while(|arg| arg.starts_with('-') && **arg != "--")
+            .any(|arg| has_short_flag(arg, &['v', 'V']))
+    {
+        return false;
+    }
+    if let Some(rest) = shell_wrapper_arguments(program, args) {
+        let options = &args[..args.len() - rest.len()];
+        return !options
+            .iter()
+            .any(|option| matches!(*option, "--help" | "--version"))
+            && patch_command(rest, depth + 1);
+    }
+    if matches!(program, "bash" | "sh" | "dash" | "zsh" | "ksh") {
+        // Only leading shell options can select a script with `-c`; later words
+        // belong to that script. Syntax-check mode (`-n`) does not execute it.
+        let mut options = args.iter();
+        while let Some(option) = options.next() {
+            if !option.starts_with('-') || matches!(*option, "-" | "--") {
+                break;
+            }
+            if has_short_flag(option, &['n']) {
+                return false;
+            }
+            if option.starts_with("--")
+                && !matches!(
+                    *option,
+                    "--login" | "--noprofile" | "--norc" | "--rcfile" | "--init-file"
+                )
+            {
+                return false;
+            }
+            if has_short_flag(option, &['o', 'O']) || matches!(*option, "--rcfile" | "--init-file")
+            {
+                let Some(value) = options.next() else {
+                    return false;
+                };
+                if has_short_flag(option, &['o']) && *value == "noexec" {
+                    return false;
+                }
+            }
+            if has_short_flag(option, &['c']) {
+                return options
+                    .next()
+                    .is_some_and(|command| shell_invokes_patch(command, depth + 1));
+            }
+        }
+    }
+    false
+}
+
 fn shell_command_is_write(command: &str) -> bool {
     shell_segments(command).any(|segment| {
         let mut words = shell_words(segment);
@@ -1065,7 +1190,7 @@ fn extract_tool_signals_with_window_and_semantics(
     let start = boundary.map_or(0, |index| index + 1);
     let namespaces = tool_namespaces(&request.llm_request.extensions);
     let mut tool_texts: Vec<(String, bool)> = Vec::new();
-    let mut tool_calls: Vec<ObservedToolCall> = Vec::new();
+    let mut tool_calls: Vec<ToolSemantic> = Vec::new();
     // IDs whose latest call is a retrieval tool.
     let mut retrieval_calls: HashSet<&str> = HashSet::new();
     let mut tool_result_count = 0usize;
@@ -1105,15 +1230,11 @@ fn extract_tool_signals_with_window_and_semantics(
                             ToolSemantic::Unknown
                         }
                     });
-                    let command = command_field.and_then(command_text);
-                    // The joined name wins, as in `build_signal`. A joined name
-                    // configured as observe still counts when its bare name is a
-                    // retrieval tool, such as `mcp__files__read`.
-                    let full = classify_tool_call_with_semantics(
-                        &call.name,
-                        command.as_deref(),
-                        semantics,
-                    );
+                    // The joined name takes precedence. A joined name configured
+                    // as observe still counts as retrieval when its bare name is
+                    // a retrieval tool, such as `mcp__files__read`.
+                    let full =
+                        classify_tool_call_with_semantics(&call.name, command_field, semantics);
                     let name = match (full, bare_name) {
                         (ToolSemantic::Unknown | ToolSemantic::Observe, Some(bare_name)) => {
                             bare_name
@@ -1130,13 +1251,18 @@ fn extract_tool_signals_with_window_and_semantics(
                             retrieval_calls.remove(call.id.as_str());
                         }
                     }
-                    tool_calls.push(ObservedToolCall {
-                        name: call.name.clone(),
-                        bare_name,
-                        command,
-                        is_retrieval,
-                        code_semantic,
-                    });
+                    let semantic = if let Some(semantic) = code_semantic {
+                        semantic
+                    } else if is_retrieval {
+                        ToolSemantic::Observe
+                    } else if full == ToolSemantic::Unknown {
+                        bare_name.map_or(full, |name| {
+                            classify_tool_call_with_semantics(name, command_field, semantics)
+                        })
+                    } else {
+                        full
+                    };
+                    tool_calls.push(semantic);
                 }
                 ContentBlock::ToolResult(result) => {
                     // Before the empty-text filter: empty results still count.
@@ -1253,7 +1379,6 @@ fn extract_tool_signals_with_window_and_semantics(
         tool_calls,
         (messages.len() - boundary.unwrap_or(0)) as u32,
         recent_window,
-        semantics,
     );
     signal.compacted = request.llm_request.has_compaction;
     signal.tool_result_count = u32::try_from(tool_result_count).unwrap_or(u32::MAX);
@@ -1312,10 +1437,9 @@ fn is_missing_file(text: &str) -> bool {
 
 fn build_signal(
     tool_texts: Vec<(String, bool)>,
-    tool_calls: Vec<ObservedToolCall>,
+    tool_calls: Vec<ToolSemantic>,
     turn_depth: u32,
     recent_window: usize,
-    semantics: &ToolSemantics,
 ) -> ToolSignals {
     // Windowed severity: take the MAX severity across the last `recent_window` tool
     // results rather than only the last one. An error's severity then persists for
@@ -1357,23 +1481,7 @@ fn build_signal(
     let mut recent_new_count = 0u32;
     let mut pure_bash_streak = 0u32;
     let mut streak_open = true;
-    for (i, tc) in tool_calls.iter().enumerate().rev() {
-        // Every read, found or missed, is an observation. The read check parses
-        // the command, so it beats the substring patterns. Otherwise the joined
-        // name wins, so configs that list it keep working.
-        let mut cat = if let Some(semantic) = tc.code_semantic {
-            semantic
-        } else if tc.is_retrieval {
-            ToolSemantic::Observe
-        } else {
-            classify_tool_call_with_semantics(&tc.name, tc.command.as_deref(), semantics)
-        };
-        if matches!(cat, ToolSemantic::Unknown)
-            && tc.code_semantic.is_none()
-            && let Some(bare_name) = tc.bare_name
-        {
-            cat = classify_tool_call_with_semantics(bare_name, tc.command.as_deref(), semantics);
-        }
+    for (i, cat) in tool_calls.iter().enumerate().rev() {
         if streak_open {
             if matches!(cat, ToolSemantic::Unknown) {
                 pure_bash_streak += 1;
@@ -2560,6 +2668,74 @@ mod tests {
     }
 
     #[test]
+    fn shell_patch_mentions_do_not_count_as_edits() {
+        for arguments in [
+            json!({"cmd": "printf 'worker dispatch locations\\n'; rg worker src 2>/dev/null"}),
+            json!(r#"{"cmd":"find /usr /opt -name apply_patch -o -name patch 2>/dev/null"}"#),
+            json!({"command": ["bash", "-lc", "find . -name apply_patch -o -name patch 2>/dev/null"]}),
+            json!({"input": "printf 'patch utility\\n'; command -v apply_patch 2>/dev/null"}),
+            json!({"cmd": "rg 'patch -p1|apply_patch fix.diff' src 2>/dev/null"}),
+            json!({"cmd": "bash -lc \"printf 'patch -p1' 2>/dev/null\""}),
+            json!({"cmd": ["inspect", "patch -p1; apply_patch fix.diff"]}),
+            json!({"cmd": "printf 'patch -p1"}),
+            json!({"cmd": "cat <<'TEXT'\npatch -p1\nTEXT"}),
+            json!({"cmd": "printf x # ; patch -p1"}),
+            json!({"cmd": ["bash", "script.sh", "-c", "patch -p1"]}),
+            json!({"cmd": "env --help patch"}),
+            json!({"cmd": "bash -nc 'patch -p1'"}),
+            json!({"cmd": "bash -o noexec -c 'patch -p1'"}),
+            json!({"cmd": "bash --norc -n -c 'patch -p1'"}),
+            json!({"cmd": "bash --help -c 'patch -p1'"}),
+            json!({"cmd": "bash --version -c 'patch -p1'"}),
+            json!({"cmd": "bash --dump-strings -c 'patch -p1'"}),
+            json!({"cmd": "bash --dump-po-strings -c 'patch -p1'"}),
+            json!({"cmd": "zsh --noexec -c 'patch -p1'"}),
+            json!({"cmd": "ksh --no-exec -c 'patch -p1'"}),
+            json!({"cmd": "zsh --NO_EXEC -c 'patch -p1'"}),
+            json!({"command": ["bash", "--rcfile", "-c", "script.sh", "patch -p1"]}),
+            json!({"cmd": "bash -- -c 'patch -p1'"}),
+            json!({"cmd": "bash -o pipefail -c \"printf 'patch -p1' 2>/dev/null\""}),
+        ] {
+            let request = call_with_result(exec_command(arguments.clone()), tr("MemoryError"));
+            let signal = ToolSignals::from_request(&request, None);
+            assert_eq!(signal.recent_edit_count, 0, "{arguments}");
+            assert_eq!(signal.recent_write_count, 0, "{arguments}");
+            assert_eq!(signal.severity, CRITICAL, "{arguments}");
+        }
+    }
+
+    #[test]
+    fn shell_patch_invocations_count_as_edits() {
+        for arguments in [
+            json!({"cmd": "patch -p1 < fix.diff"}),
+            json!({"cmd": "apply_patch <<'PATCH'\n*** Begin Patch\n*** End Patch\nPATCH"}),
+            json!({"cmd": "env -u MODE MODE=debug /usr/bin/patch -p1 < fix.diff"}),
+            json!({"cmd": "cat fix.diff | command patch -p1"}),
+            json!({"cmd": "command patch -v -p1 < fix.diff"}),
+            json!({"cmd": "sudo timeout 5 /usr/local/bin/apply_patch fix.diff"}),
+            json!({"cmd": "bash -lc 'patch -p1 < fix.diff'"}),
+            json!({"cmd": "bash -l -c 'patch -p1 < fix.diff'"}),
+            json!({"cmd": "bash -o pipefail -c 'patch -p1 < fix.diff'"}),
+            json!({"cmd": "bash -oc pipefail 'patch -p1 < fix.diff'"}),
+            json!({"cmd": "bash -O extglob -c 'patch -p1 < fix.diff'"}),
+            json!({"cmd": "bash --login -c 'patch -p1 < fix.diff'"}),
+            json!({"cmd": "bash --noprofile --norc -c 'apply_patch fix.diff'"}),
+            json!({"command": ["bash", "--rcfile", "/dev/null", "-c", "apply_patch fix.diff"]}),
+            json!({"cmd": ["bash", "--init-file", "/dev/null", "-c", "apply_patch fix.diff"]}),
+            json!(r#"{"cmd":["bash","-o","pipefail","-c","apply_patch fix.diff"]}"#),
+            json!({"cmd": "printf x # note\npatch -p1 < fix.diff"}),
+            json!({"cmd": "printf '%s' name#suffix; patch -p1 < fix.diff"}),
+            json!({"command": ["bash", "-lc", "apply_patch fix.diff"]}),
+            json!(r#"{"cmd":["env","MODE=debug","patch","-p1"]}"#),
+        ] {
+            let request = with_messages(vec![exec_command(arguments.clone()), tr("ok")]);
+            let signal = ToolSignals::from_request(&request, None);
+            assert_eq!(signal.recent_edit_count, 1, "{arguments}");
+            assert_eq!(signal.recent_write_count, 0, "{arguments}");
+        }
+    }
+
+    #[test]
     fn python_write_expressions_need_a_python_command() {
         let write = with_messages(vec![
             exec_command(json!({"cmd": "python3 - <<'PY'\np.write_text(s)\nPY"})),
@@ -3228,7 +3404,7 @@ mod tests {
             ("./run_tests.sh", ToolSemantic::Unknown),
         ] {
             assert_eq!(
-                classify_tool_call_with_semantics("BASH", Some(command), &semantics),
+                classify_tool_call_with_semantics("BASH", Some(&json!(command)), &semantics),
                 expected,
                 "bash command {command:?} changed classification"
             );
