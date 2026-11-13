@@ -19,6 +19,51 @@ use common::{
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
+fn chat_tool_arguments_keep_invalid_json_as_strings() -> TestResult {
+    let engine = TranslationEngine::default();
+    for (arguments, expected) in [
+        ("not JSON", json!("not JSON")),
+        (r#"{"path":"#, json!(r#"{"path":"#)),
+        (r#"{"raw":"not JSON"}"#, json!({"raw": "not JSON"})),
+        (r#"{"path":"README.md"}"#, json!({"path": "README.md"})),
+    ] {
+        let message = json!({"role": "assistant", "content": null, "tool_calls": [{
+            "id": "call_lookup", "type": "function",
+            "function": {"name": "lookup", "arguments": arguments}
+        }]});
+        let body = json!({"choices": [{"message": message, "finish_reason": "tool_calls"}]});
+        for policy in [TranslationPolicy::default(), normalized_policy()] {
+            let response = engine
+                .decode_response(WireFormat::OpenAiChat, &body, &policy)?
+                .response;
+            let ContentBlock::ToolCall(call) = &response.outputs[0].content[0] else {
+                panic!("expected a tool call");
+            };
+            assert_eq!(call.arguments, expected);
+            let encoded = engine
+                .encode_response(WireFormat::OpenAiChat, &response, &policy)?
+                .body;
+            assert_eq!(
+                encoded["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"],
+                arguments
+            );
+            let request = engine
+                .decode_request(
+                    WireFormat::OpenAiChat,
+                    &json!({"messages": [message]}),
+                    &policy,
+                )?
+                .request;
+            let ContentBlock::ToolCall(call) = &request.messages[0].content[0] else {
+                panic!("expected a history tool call");
+            };
+            assert_eq!(call.arguments, expected);
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn responses_native_output_is_preserved_or_rejected() -> TestResult {
     use switchyard_translation::{StreamTranslationState, TranslationError};
     let engine = TranslationEngine::default();
