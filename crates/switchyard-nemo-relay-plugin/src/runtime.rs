@@ -302,14 +302,16 @@ impl SwitchyardRuntime {
                     &metadata,
                     route,
                 );
-                self.route_execution_error_mark(
-                    &mut events,
-                    &error.execution_error_summary(),
-                    None,
-                    outcome_fields,
-                );
+                let summary = error.execution_error_summary();
+                self.route_execution_error_mark(&mut events, &summary, None, outcome_fields);
+                // Preserve the status without exposing the provider's error body.
+                let message = "Switchyard route execution failed";
+                let message = summary
+                    .upstream_status
+                    .and_then(|status| nemo_relay_plugin::http_error_message(status, message).ok())
+                    .unwrap_or_else(|| message.to_owned());
                 Execution {
-                    result: Err("Switchyard route execution failed".into()),
+                    result: Err(message),
                     events,
                 }
             }
@@ -955,6 +957,7 @@ mod tests {
                 "target": {
                     "format": format,
                     "base_url": base_url,
+                    "max_retries": 0,
                 }
             },
             "targets": {
@@ -1166,6 +1169,43 @@ seed = 17
             }
         }
         assert!(saw_decision);
+    }
+
+    #[tokio::test]
+    async fn failed_routes_preserve_upstream_status_without_provider_body() {
+        for status in [401, 429, 503] {
+            let server = MockServer::start().await;
+            let private_body = "private provider error details";
+            Mock::given(method("POST"))
+                .and(path("/v1/chat/completions"))
+                .respond_with(ResponseTemplate::new(status).set_body_string(private_body))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let runtime = runtime_for_target("openai_chat", &format!("{}/v1", server.uri()));
+            let request = runtime
+                .decode_request(
+                    WireFormat::OpenAiChat,
+                    RelayRequest {
+                        headers: Map::new(),
+                        content: json!({
+                            "model": "switchyard/default",
+                            "messages": [{"role": "user", "content": "hello"}],
+                        }),
+                    },
+                    false,
+                )
+                .unwrap();
+            let execution = runtime
+                .execute_buffered(WireFormat::OpenAiChat, request)
+                .await;
+            let error = execution.result.unwrap_err();
+            assert_eq!(
+                error,
+                format!("HTTP {status}: Switchyard route execution failed")
+            );
+            assert!(!format!("{error} {:?}", execution.events).contains(private_body));
+        }
     }
 
     // Routing succeeds before answer candidates exhaust, so the error keeps its metadata.
