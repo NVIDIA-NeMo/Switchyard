@@ -51,15 +51,21 @@ impl OpenAiDecisionClient {
 #[async_trait]
 impl RoutedDecisionClient for OpenAiDecisionClient {
     async fn call(&self, request: DecisionRequest) -> Result<DecisionResponse> {
-        let response = self
+        let builder = self
             .client
             .post(self.endpoint.clone())
             .bearer_auth(&self.api_key)
-            .json(&encode(&request)?)
-            .send()
-            .await
-            .inspect_err(|_| metrics::record_upstream_attempt(None))
-            .map_err(convert_reqwest_error)?;
+            .json(&encode(&request)?);
+        let response = async {
+            let request = builder.build()?;
+            if let Some(body) = request.body().and_then(reqwest::Body::as_bytes) {
+                crate::payload_capture::record("request", || String::from_utf8_lossy(body));
+            }
+            self.client.execute(request).await
+        }
+        .await
+        .inspect_err(|_| metrics::record_upstream_attempt(None))
+        .map_err(convert_reqwest_error)?;
         let status = response.status();
         let body = response
             .bytes()
@@ -73,6 +79,7 @@ impl RoutedDecisionClient for OpenAiDecisionClient {
                 body: String::from_utf8_lossy(&body).replace(&self.api_key, "[REDACTED]"),
             });
         }
+        crate::payload_capture::record("response", || String::from_utf8_lossy(&body));
         let response: WireResponse =
             serde_json::from_slice(&body).map_err(|source| LlmClientError::InvalidResponse {
                 source: Box::new(source),
