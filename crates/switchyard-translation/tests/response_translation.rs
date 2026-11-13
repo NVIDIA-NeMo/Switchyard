@@ -5,11 +5,12 @@
 
 pub mod common;
 
+use futures::{TryStreamExt, executor::block_on};
 use pretty_assertions::assert_eq;
-use serde_json::json;
+use serde_json::{Value, json};
 use switchyard_translation::{
     ContentBlock, PreservationPolicy, ProviderExtensions, StopReason, TranslationEngine,
-    TranslationPolicy, WireFormat,
+    TranslationPolicy, WireFormat, encode_stream,
 };
 
 use common::{
@@ -17,6 +18,44 @@ use common::{
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+#[test]
+fn responses_tool_arguments_are_not_double_encoded() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let policy = TranslationPolicy::default();
+    for (arguments, expected) in [
+        (json!(r#"{"city": "Paris"}"#), json!({"city": "Paris"})),
+        (json!("not JSON"), json!("not JSON")),
+        (json!({"city": "Paris"}), json!({"city": "Paris"})),
+    ] {
+        let body = json!({"output": [{"type": "function_call", "call_id": "call_1",
+            "name": "lookup", "arguments": arguments}]});
+        let response = engine.decode_response(format, &body, &policy)?.response;
+        assert_eq!(
+            engine.encode_response(format, &response, &policy)?.body,
+            body
+        );
+
+        let output = engine
+            .encode_response(format, &response, &normalized_policy())?
+            .body;
+        let arguments = output["output"][0]["arguments"]
+            .as_str()
+            .ok_or("missing arguments")?;
+        assert_eq!(serde_json::from_str::<Value>(arguments)?, expected);
+
+        let events =
+            block_on(encode_stream(response.into_stream(), format, None)?.try_collect::<Vec<_>>())?;
+        let arguments: String = events
+            .iter()
+            .filter(|event| event["type"] == "response.function_call_arguments.delta")
+            .filter_map(|event| event["delta"].as_str())
+            .collect();
+        assert_eq!(serde_json::from_str::<Value>(&arguments)?, expected);
+    }
+    Ok(())
+}
 
 #[test]
 fn responses_native_output_is_preserved_or_rejected() -> TestResult {

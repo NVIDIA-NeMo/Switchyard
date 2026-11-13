@@ -1822,7 +1822,15 @@ fn decode_responses_output_item(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                arguments: item
+                    .get("arguments")
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .and_then(|text| serde_json::from_str(text).ok())
+                            .unwrap_or_else(|| value.clone())
+                    })
+                    .unwrap_or_else(|| json!({})),
             })],
             stop_reason: Some(StopReason::ToolUse),
         })),
