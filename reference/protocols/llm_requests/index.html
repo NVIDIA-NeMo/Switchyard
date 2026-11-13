@@ -2616,14 +2616,14 @@ the destination model. Select a Rust field or type for its full crate definition
 <td>Top-level system and developer instructions.</td>
 <td>Top-level <code>system</code>; no distinct developer authority</td>
 <td><code>instructions</code></td>
-<td>System/developer messages in <code>messages</code></td>
+<td>Leading system/developer messages in <code>messages</code></td>
 </tr>
 <tr>
 <td><a href="../../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.messages"><code>LlmRequest.messages: Vec&lt;Message&gt;</code></a></td>
 <td>Ordered turns, each with a role and content blocks.</td>
 <td><code>messages[]</code>; inline system/developer messages are added to top-level <code>system</code> on encode</td>
 <td>Messages, including system/developer messages, and tool items in <code>input</code></td>
-<td><code>messages[]</code></td>
+<td><code>messages[]</code>, including later system/developer messages</td>
 </tr>
 <tr>
 <td><a href="../../../rust/switchyard_protocol/llm/struct.LlmRequest.html#structfield.tools"><code>LlmRequest.tools: Vec&lt;Tool&gt;</code></a></td>
