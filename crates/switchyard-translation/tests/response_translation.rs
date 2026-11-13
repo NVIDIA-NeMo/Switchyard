@@ -5,11 +5,12 @@
 
 pub mod common;
 
+use futures::{TryStreamExt, executor::block_on};
 use pretty_assertions::assert_eq;
-use serde_json::json;
+use serde_json::{Value, json};
 use switchyard_translation::{
     ContentBlock, PreservationPolicy, ProviderExtensions, StopReason, TranslationEngine,
-    TranslationPolicy, WireFormat,
+    TranslationPolicy, WireFormat, encode_stream,
 };
 
 use common::{
@@ -17,6 +18,89 @@ use common::{
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+#[test]
+fn responses_tool_arguments_survive_buffered_and_synthetic_encoding() -> TestResult {
+    let engine = TranslationEngine::default();
+    let source = WireFormat::OpenAiResponses;
+    let policy = TranslationPolicy::default();
+    let body = json!({"id": "resp_1", "model": "fixture", "status": "completed",
+        "output": [{"type": "function_call", "call_id": "call_1", "name": "lookup",
+            "arguments": "{\"city\": \"Paris\"}"}]});
+    let response = engine.decode_response(source, &body, &policy)?.response;
+    assert_eq!(
+        engine.encode_response(source, &response, &policy)?.body,
+        body
+    );
+
+    for target in [
+        source,
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+    ] {
+        let output = engine
+            .encode_response(target, &response, &normalized_policy())?
+            .body;
+        let arguments = match target {
+            WireFormat::OpenAiResponses => {
+                serde_json::from_value::<String>(output["output"][0]["arguments"].clone())?
+            }
+            WireFormat::OpenAiChat => serde_json::from_value::<String>(
+                output["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"].clone(),
+            )?,
+            WireFormat::AnthropicMessages => output["content"][0]["input"].to_string(),
+        };
+        assert_eq!(
+            serde_json::from_str::<Value>(&arguments)?,
+            json!({"city": "Paris"}),
+            "{target:?}"
+        );
+
+        let events = block_on(
+            encode_stream(response.clone().into_stream(), target, None)?.try_collect::<Vec<_>>(),
+        )?;
+        let arguments: String = events
+            .iter()
+            .filter_map(|event| match target {
+                WireFormat::OpenAiResponses => (event["type"]
+                    == "response.function_call_arguments.delta")
+                    .then(|| event["delta"].as_str())
+                    .flatten(),
+                WireFormat::OpenAiChat => {
+                    event["choices"][0]["delta"]["tool_calls"][0]["function"]["arguments"].as_str()
+                }
+                WireFormat::AnthropicMessages => event["delta"]["partial_json"].as_str(),
+            })
+            .collect();
+        assert_eq!(
+            serde_json::from_str::<Value>(&arguments)?,
+            json!({"city": "Paris"}),
+            "{target:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn responses_tool_arguments_preserve_malformed_and_structured_values() -> TestResult {
+    let engine = TranslationEngine::default();
+    for arguments in [json!("not JSON"), json!({"city": "Paris"})] {
+        let body = json!({"output": [{"type": "function_call", "call_id": "call_1",
+            "name": "lookup", "arguments": arguments}]});
+        let response = engine
+            .decode_response(
+                WireFormat::OpenAiResponses,
+                &body,
+                &TranslationPolicy::default(),
+            )?
+            .response;
+        let ContentBlock::ToolCall(call) = &response.outputs[0].content[0] else {
+            return Err("expected a tool call".into());
+        };
+        assert_eq!(call.arguments, arguments);
+    }
+    Ok(())
+}
 
 #[test]
 fn responses_native_output_is_preserved_or_rejected() -> TestResult {
