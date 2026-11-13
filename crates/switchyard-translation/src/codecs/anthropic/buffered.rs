@@ -180,7 +180,9 @@ impl FormatCodec for AnthropicMessagesCodec {
                 // OpenAI-only identity fields must not leak through Anthropic decoding.
                 "safety_identifier",
             ],
-        );
+            policy,
+            &mut diagnostics,
+        )?;
         if let Some(is_disabled) = body
             .get("tool_choice")
             .and_then(|choice| choice.get("disable_parallel_tool_use"))
@@ -399,12 +401,9 @@ impl FormatCodec for AnthropicMessagesCodec {
         Ok(EncodedRequest { body, diagnostics })
     }
 
-    fn decode_response(
-        &self,
-        body: &Value,
-        _policy: &TranslationPolicy,
-    ) -> Result<DecodedResponse> {
+    fn decode_response(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedResponse> {
         let body = crate::util::object(body, "$")?;
+        let mut diagnostics = Vec::new();
         let mut content = Vec::new();
         if let Some(blocks) = body.get("content").and_then(Value::as_array) {
             for (index, block) in blocks.iter().enumerate() {
@@ -454,17 +453,19 @@ impl FormatCodec for AnthropicMessagesCodec {
                         "stop_reason",
                         "usage",
                     ],
-                ),
+                    policy,
+                    &mut diagnostics,
+                )?,
             },
             preservation: capture_response_preservation(
                 WireFormat::AnthropicMessages,
                 &Value::Object(body.clone()),
-                _policy,
+                policy,
             ),
         };
         Ok(DecodedResponse {
             response,
-            diagnostics: Vec::new(),
+            diagnostics,
         })
     }
 

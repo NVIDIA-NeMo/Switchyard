@@ -158,7 +158,9 @@ impl FormatCodec for OpenAiResponsesCodec {
                 "top_p",
                 "stream",
             ],
-        );
+            policy,
+            &mut diagnostics,
+        )?;
         crate::codex_namespaces::attach_tool_namespaces(&mut request.extensions, tool_namespaces);
         crate::codex_custom_tools::attach_custom_tools(&mut request.extensions, custom_tools);
         crate::codex_custom_tools::attach_custom_call_outputs(
@@ -400,7 +402,9 @@ impl FormatCodec for OpenAiResponsesCodec {
                 fields: provider_extensions(
                     body,
                     &["id", "model", "object", "output", "usage", "status"],
-                ),
+                    policy,
+                    &mut diagnostics,
+                )?,
             },
             preservation: capture_response_preservation(
                 WireFormat::OpenAiResponses,

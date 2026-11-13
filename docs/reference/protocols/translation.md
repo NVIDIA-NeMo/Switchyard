@@ -47,6 +47,10 @@ provider can still reject the encoded request. Known-loss rejection covers the
 codec's implemented checks, rather than proving semantic equivalence for every
 possible provider extension.
 
+Unknown-field rules apply to fields collected into `ProviderExtensions` by the
+buffered codecs. Original-body retention and replay follow the preservation
+rules below; these policies do not validate every nested provider field.
+
 ## Preservation and edits
 
 **An original body takes precedence over reconstructed fields for its own format.**
