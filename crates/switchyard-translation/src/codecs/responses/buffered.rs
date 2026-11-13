@@ -6,11 +6,13 @@
 use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
+use switchyard_protocol::MAX_IR_TEMPERATURE;
 
+use super::MAX_TEMPERATURE;
 use crate::codecs::common::{
     collect_responses_reasoning_text, encrypted_reasoning_data, encrypted_reasoning_item_id,
     is_anthropic_request, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
-    text_from_blocks,
+    scale_temperature, text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::openai_media::{
@@ -68,7 +70,10 @@ impl FormatCodec for OpenAiResponsesCodec {
                 raw: body.get("reasoning").cloned(),
             },
             sampling: SamplingParams {
-                temperature: body.get("temperature").and_then(Value::as_f64),
+                temperature: body
+                    .get("temperature")
+                    .and_then(Value::as_f64)
+                    .map(|value| scale_temperature(value, MAX_TEMPERATURE, MAX_IR_TEMPERATURE)),
                 top_p: body.get("top_p").and_then(Value::as_f64),
                 top_k: None,
             },
@@ -288,6 +293,7 @@ impl FormatCodec for OpenAiResponsesCodec {
             body.insert("reasoning".to_string(), Value::Object(reasoning));
         }
         if let Some(value) = request.sampling.temperature {
+            let value = scale_temperature(value, MAX_IR_TEMPERATURE, MAX_TEMPERATURE);
             body.insert("temperature".to_string(), json!(value));
         }
         if let Some(value) = request.sampling.top_p {

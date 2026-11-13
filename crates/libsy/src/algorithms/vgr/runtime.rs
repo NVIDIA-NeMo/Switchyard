@@ -154,7 +154,7 @@ impl Classifier for VgrClassifier {
             Some("turn_verification_latched")
         } else if turn_budget_spent {
             Some("efficient_turn_budget")
-        } else if !self.config.efficient_supports_images && request_has_image(request) {
+        } else if !self.config.efficient_supports_attachments && request_has_image(request) {
             Some("efficient_image_unsupported")
         } else if text::newest_prompt_is_blank(request) {
             Some("empty_prompt")
@@ -256,7 +256,12 @@ impl Classifier for VgrClassifier {
 
         let attempt = rungs::response_text(&buffered.agg).unwrap_or_default();
         let task_type = self.type_task(&context).await;
-        let caps = derive_capabilities(request, &attempt, task_type);
+        let caps = derive_capabilities(
+            request,
+            &attempt,
+            task_type,
+            self.config.efficient_supports_attachments,
+        );
         let signals = self.gather(&context, &caps).await;
         let route = decide::decide(&caps, &signals, self.config.confirmed_min_clean_tail());
         if route == Route::Capable {
@@ -310,7 +315,7 @@ impl VgrClassifier {
                 .as_ref()
                 .is_some_and(|switch| switch.is_engaged())
             && !self.breaker.is_open()
-            && (self.config.efficient_supports_images || !request_has_image(request))
+            && (self.config.efficient_supports_attachments || !request_has_image(request))
     }
 
     fn escalate(

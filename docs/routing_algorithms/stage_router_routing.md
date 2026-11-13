@@ -41,7 +41,8 @@ overrides to the capable tier. Set `compaction_override = false` to disable the
 compaction override in either picker. Active holds bypass signal extraction and scoring.
 Severity and test results come from tool output that ran something. The contents
 returned by the built-in read and search tools do not count, unless the tool
-reports a failure.
+reports a failure. Reading a missing file does not add error severity, even
+when the tool marks the result as an error.
 
 `confidence_threshold` sets how sure that estimate must be before the router acts
 on the signal alone. Scores inside the ambiguous band go to the optional

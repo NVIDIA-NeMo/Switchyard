@@ -41,7 +41,7 @@ pub(super) fn result(id: &str, text: &str) -> Message {
 }
 
 fn branch(request: &Request, attempt: &str, task_type: Option<TaskType>) -> Branch {
-    derive_capabilities(request, attempt, task_type).branch
+    derive_capabilities(request, attempt, task_type, false).branch
 }
 
 #[test]
@@ -223,7 +223,7 @@ fn trajectory_labels_agree_with_tool_failure_counts() {
                 })],
             ),
         ]);
-        let caps = derive_capabilities(&session, "checked", Some(TaskType::Agentic));
+        let caps = derive_capabilities(&session, "checked", Some(TaskType::Agentic), false);
         assert_eq!(caps.tools.unwrap().errors, i32::from(failed), "{output}");
         let view = caps.transcript.unwrap();
         let label = if failed { "tool error" } else { "tool result" };
@@ -243,7 +243,7 @@ fn the_agentic_view_keeps_the_task_and_redacts_the_trajectory() {
         call("c1"),
         result("c1", "Authorization: Bearer abcdefghijklmnopqrstuvwxyz"),
     ]);
-    let caps = derive_capabilities(&session, "rotated", None);
+    let caps = derive_capabilities(&session, "rotated", None, false);
     let view = caps.transcript.unwrap_or_default();
     assert_eq!(caps.branch, Branch::Agentic);
     assert!(view.starts_with("USER TASK AND UPDATES:\n[user task] rotate the key"));

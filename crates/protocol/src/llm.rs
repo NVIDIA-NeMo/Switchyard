@@ -15,6 +15,9 @@ use serde_json::{Map, Value};
 
 use crate::format::FormatId;
 
+/// Maximum temperature on the shared IR's zero-based scale.
+pub const MAX_IR_TEMPERATURE: f64 = 2.0;
+
 /// Actor role normalized across provider APIs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, strum_macros::Display)]
 #[serde(rename_all = "snake_case")]
@@ -457,7 +460,9 @@ pub enum ToolChoice {
 /// Provider sampling parameters with common cross-provider names.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SamplingParams {
-    /// Sampling temperature.
+    /// Sampling temperature on the `0.0..=MAX_IR_TEMPERATURE` scale.
+    /// Directly constructed requests use this scale; omission retains provider defaults.
+    /// See [`MAX_IR_TEMPERATURE`].
     pub temperature: Option<f64>,
     /// Nucleus-sampling probability mass.
     pub top_p: Option<f64>,

@@ -3922,25 +3922,56 @@ fn openai_tool_strictness_is_preserved_for_anthropic() -> TestResult {
     Ok(())
 }
 
-// Verifies Anthropic-bound OpenAI requests get the required max_tokens fallback.
+// Verifies Anthropic defaults and the policy for discarded non-default temperatures.
 #[test]
-fn openai_request_to_anthropic_adds_required_default_max_tokens() -> TestResult {
+fn openai_request_to_anthropic_parameters() -> TestResult {
     let engine = TranslationEngine::default();
     let body = json!({
         "model": "gpt-5",
         "messages": [{"role": "user", "content": "hi"}]
     });
 
-    let output = engine
-        .translate_request(
-            WireFormat::OpenAiChat,
-            WireFormat::AnthropicMessages,
-            &body,
-            &TranslationPolicy::default(),
-        )?
-        .body;
-
-    assert_eq!(output["max_tokens"], 64_000);
+    for (temperature, is_lossy) in [
+        (None, false),
+        (Some(1.0), true),
+        (Some(0.5), true),
+        (Some(2.0), false),
+    ] {
+        let mut body = body.clone();
+        if let Some(temperature) = temperature {
+            body["temperature"] = json!(temperature);
+        }
+        for lossy_conversion_policy in [
+            LossyConversionPolicy::AllowWithDiagnostics,
+            LossyConversionPolicy::Reject,
+        ] {
+            let policy = TranslationPolicy {
+                lossy_conversion_policy,
+                ..normalized_policy()
+            };
+            let result = engine.translate_request(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &body,
+                &policy,
+            );
+            if is_lossy && lossy_conversion_policy == LossyConversionPolicy::Reject {
+                assert!(
+                    matches!(result, Err(TranslationError::LossyConversion(message))
+                    if message.contains("temperature"))
+                );
+                continue;
+            }
+            let output = result?;
+            assert_eq!(output.body["max_tokens"], 64_000);
+            assert!(output.body.get("temperature").is_none());
+            assert_eq!(output.diagnostics.len(), usize::from(is_lossy));
+            if is_lossy {
+                assert_eq!(output.diagnostics[0].code, "lossy_conversion");
+                assert!(output.diagnostics[0].message.contains("temperature"));
+            }
+        }
+    }
     Ok(())
 }
 

@@ -58,8 +58,8 @@ pub struct VgrConfig {
     pub breaker: BreakerConfig,
     /// Whether a cheap typing call selects a verification regime.
     pub task_typing: bool,
-    /// Whether the efficient tier accepts image content.
-    pub efficient_supports_images: bool,
+    /// Whether the efficient tier accepts attachments.
+    pub efficient_supports_attachments: bool,
     /// Lets a long agentic run with earlier tool errors commit on a capable-tier
     /// confirmation once it ends in this many consecutive clean tool results.
     pub confirmed_recovery_min_clean_tail: Option<u32>,
@@ -92,7 +92,7 @@ impl VgrConfig {
             kill_switch: None,
             breaker: BreakerConfig::default(),
             task_typing: true,
-            efficient_supports_images: false,
+            efficient_supports_attachments: false,
             confirmed_recovery_min_clean_tail: None,
             agentic_handoff: false,
             compact_handoff: false,

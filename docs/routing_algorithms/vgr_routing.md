@@ -208,6 +208,12 @@ answer. That call receives the original request without the capable handoff note
 Fallback is disabled by the kill switch, an open efficient circuit breaker, or an
 image request the efficient tier cannot serve.
 
+By default the efficient tier does not serve requests that contain images. Set
+`efficient_supports_attachments = true` on the VGR route to let it attempt requests
+with attachments. This setting permits attempts; it does not guarantee that the
+efficient model understands every attachment format. The judge reads only the
+surrounding text.
+
 ## Serving modes
 
 - `off` skips candidate generation and serves the capable tier. This is the default.

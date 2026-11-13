@@ -24,7 +24,7 @@ pub(crate) fn to_python<T: Serialize>(py: Python<'_>, value: &T) -> PyResult<Py<
 }
 
 fn jsonable_python(value: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    if let Ok(model_dump) = value.getattr("model_dump")
+    if let Some(model_dump) = value.getattr_opt("model_dump")?
         && model_dump.is_callable()
     {
         let kwargs = PyDict::new(value.py());
@@ -32,7 +32,7 @@ fn jsonable_python(value: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         kwargs.set_item("exclude_none", true)?;
         return model_dump.call((), Some(&kwargs)).map(Bound::unbind);
     }
-    if let Ok(to_dict) = value.getattr("to_dict")
+    if let Some(to_dict) = value.getattr_opt("to_dict")?
         && to_dict.is_callable()
     {
         return to_dict.call0().map(Bound::unbind);

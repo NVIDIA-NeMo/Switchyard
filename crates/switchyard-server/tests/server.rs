@@ -4414,7 +4414,20 @@ async fn disabled_route_capabilities_reject_requests_before_calling_upstream() -
         (
             "/v1/chat/completions",
             "tool_calling",
-            json!({"messages": [{"role": "user", "content": "hello"}], "tools": [{"type": "function", "function": {"name": "exec_command", "parameters": {"type": "object"}}}]}),
+            json!({"messages": [{"role": "user", "content": "hello"}], "tools": [{"type": "function", "function": {"name": "exec_command", "parameters": {"type": "object"}}}], "tool_choice": "none", "parallel_tool_calls": false}),
+        ),
+        (
+            "/v1/chat/completions",
+            "tool_calling",
+            json!({"messages": [{"role": "user", "content": "hello"}], "function_call": {"name": "exec_command", "type": "none"}}),
+        ),
+        (
+            "/v1/chat/completions",
+            "tool_calling",
+            json!({"messages": [
+                {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "exec_command", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "done"}
+            ], "tool_choice": "none"}),
         ),
         (
             "/v1/messages",
@@ -4451,6 +4464,37 @@ async fn disabled_route_capabilities_reject_requests_before_calling_upstream() -
     }
     assert!(upstream.calls.lock().await.is_empty());
 
+    for (endpoint, mut body) in [
+        (
+            "/v1/chat/completions",
+            json!({"messages": [{"role": "system", "content": "Keep the caller's instructions."}, {"role": "user", "content": "hello"}], "tool_choice": "none", "parallel_tool_calls": false}),
+        ),
+        (
+            "/v1/chat/completions",
+            json!({"messages": [{"role": "system", "content": "Keep the caller's instructions."}, {"role": "user", "content": "hello"}], "function_call": "none"}),
+        ),
+        (
+            "/v1/responses",
+            json!({"instructions": "Keep the caller's instructions.", "input": "hello", "tool_choice": "none", "parallel_tool_calls": false}),
+        ),
+        (
+            "/v1/messages",
+            json!({"system": "Keep the caller's instructions.", "messages": [{"role": "user", "content": "hello"}], "tool_choice": {"type": "none"}}),
+        ),
+    ] {
+        body["model"] = json!("restricted");
+        let response = send(&app, "POST", endpoint, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::OK, "{endpoint}");
+    }
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 4);
+    assert!(
+        calls
+            .iter()
+            .all(|call| call["model"] == "model/efficient" && call.get("tools").is_none())
+    );
+    drop(calls);
+
     let body = json!({
         "model": "restricted", "instructions": "Keep the caller's instructions.", "input": "hello"
     });
@@ -4467,13 +4511,13 @@ async fn disabled_route_capabilities_reject_requests_before_calling_upstream() -
         assert_eq!(response.status, StatusCode::OK);
     }
     let calls = upstream.calls.lock().await;
-    assert_eq!(calls.len(), 3);
+    assert_eq!(calls.len(), 7);
     assert!(
         calls
             .iter()
             .all(|call| has_system_prompt(call, "Keep the caller's instructions."))
     );
-    for call in &calls[1..] {
+    for call in &calls[5..] {
         assert_eq!(call["reasoning_effort"], "high");
         assert_eq!(call["tools"][0]["function"]["name"], "exec_command");
         assert!(call["messages"].as_array().is_some_and(|messages| {
@@ -6489,6 +6533,62 @@ task_typing = false
                 "{limit}, {configured}"
             );
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_image_requests_stay_on_the_efficient_tier_when_configured() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    for (configured, served) in [
+        ("", "model/vgr-capable"),
+        (
+            "efficient_supports_attachments = true",
+            "model/vgr-efficient",
+        ),
+    ] {
+        let app = build_switchyard_router(load_test_config(&format!(
+            r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{}"
+[targets]
+efficient = {{ id = "model/vgr-efficient", llm_client = "primary" }}
+capable = {{ id = "model/vgr-capable", llm_client = "primary" }}
+judge = {{ id = "model/vgr-judge", llm_client = "primary" }}
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+efficient_target = "efficient"
+capable_target = "capable"
+judge_target = "judge"
+mode = "evaluate"
+task_typing = false
+bounded_efficient = false
+{configured}
+"#,
+            upstream.base_url
+        ))?);
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/vgr",
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "answer the question"},
+                    {"type": "image_url", "image_url": {"url": "https://example.test/image.png"}}
+                ]}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+        assert_eq!(
+            response.headers.get("x-model-router-selected-model"),
+            Some(&HeaderValue::from_str(served)?),
+            "{configured}"
+        );
     }
     Ok(())
 }

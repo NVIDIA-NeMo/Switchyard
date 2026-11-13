@@ -560,6 +560,9 @@ pub struct VgrRouteConfig {
     /// Holds escalations across later user turns.
     #[serde(default)]
     pub latch_escalation: bool,
+    /// Lets the efficient tier attempt requests that contain attachments.
+    #[serde(default)]
+    pub efficient_supports_attachments: bool,
 }
 
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -2142,6 +2145,7 @@ fn build_vgr(
     runtime.agentic_handoff = config.agentic_handoff;
     runtime.compact_handoff = config.compact_handoff;
     runtime.latch_escalation = config.latch_escalation;
+    runtime.efficient_supports_attachments = config.efficient_supports_attachments;
     runtime.efficient_turn_budget = config
         .efficient_turn_budget_seconds
         .map(|seconds| vgr_duration(route_name, "efficient_turn_budget_seconds", seconds))
