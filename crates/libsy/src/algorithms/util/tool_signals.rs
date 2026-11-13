@@ -635,15 +635,43 @@ fn command_is_retrieval(command: &Value) -> bool {
 
 // Only a final search can explain exit 1 as "no matches". Conditional execution
 // may have stopped before the search, so leave those statuses uninterpreted.
-fn command_ends_with_search(command: &str) -> bool {
-    if quoted_chars(command).any(|(_, c, quote)| quote.is_none() && c == '&') {
+fn command_ends_with_search(command: &Value) -> bool {
+    match command {
+        Value::String(command) => {
+            if quoted_chars(command).any(|(_, c, quote)| quote.is_none() && c == '&') {
+                return false;
+            }
+            shell_segments(command)
+                .last()
+                .and_then(shlex::split)
+                .is_some_and(|words| {
+                    search_command(&words.iter().map(String::as_str).collect::<Vec<_>>(), 0)
+                })
+        }
+        Value::Array(words) => search_command(
+            &words.iter().filter_map(Value::as_str).collect::<Vec<_>>(),
+            0,
+        ),
+        _ => false,
+    }
+}
+
+fn search_command(words: &[&str], depth: usize) -> bool {
+    if depth > MAX_COMMAND_DEPTH {
         return false;
     }
-    shell_segments(command)
-        .last()
-        .and_then(shlex::split)
-        .and_then(|words| words.first().cloned())
-        .is_some_and(|program| matches!(program_name(&program), "rg" | "grep"))
+    let words = skip_shell_assignments(words);
+    match words.split_first() {
+        Some((program, args)) => match program_name(program) {
+            "env" => search_command(
+                skip_shell_options(args, &["-u", "--unset", "-C", "--chdir"]),
+                depth + 1,
+            ),
+            "rg" | "grep" => true,
+            _ => false,
+        },
+        None => false,
+    }
 }
 
 fn codex_session_id(header: &str) -> Option<&str> {
@@ -704,10 +732,7 @@ fn has_short_flag(word: &str, flags: &[char]) -> bool {
 // Bounds recursion through nested wrappers and `sh -c` scripts.
 const MAX_COMMAND_DEPTH: usize = 20;
 
-fn retrieval_command(mut words: &[&str], depth: usize) -> bool {
-    if depth > MAX_COMMAND_DEPTH {
-        return false;
-    }
+fn skip_shell_assignments<'a>(mut words: &'a [&'a str]) -> &'a [&'a str] {
     while words.first().is_some_and(|word| {
         word.split_once('=').is_some_and(|(name, _)| {
             !name.is_empty()
@@ -718,6 +743,14 @@ fn retrieval_command(mut words: &[&str], depth: usize) -> bool {
     }) {
         words = &words[1..];
     }
+    words
+}
+
+fn retrieval_command(words: &[&str], depth: usize) -> bool {
+    if depth > MAX_COMMAND_DEPTH {
+        return false;
+    }
+    let words = skip_shell_assignments(words);
     let Some((&program, args)) = words.split_first() else {
         return false;
     };
@@ -1104,7 +1137,6 @@ fn extract_tool_signals_with_window_and_semantics(
         }
         for block in &message.content {
             match block {
-                _ if index < start => continue,
                 ContentBlock::ToolCall(call) => {
                     // Responses namespaced tools arrive as `<namespace>__<tool>`.
                     let bare_name = namespaces
@@ -1152,7 +1184,7 @@ fn extract_tool_signals_with_window_and_semantics(
                     let mut context = ToolResultContext {
                         is_retrieval,
                         search_no_match: is_retrieval
-                            && command.as_deref().is_some_and(command_ends_with_search),
+                            && command_field.is_some_and(command_ends_with_search),
                         codex_session: name == "exec_command",
                     };
                     if name == "write_stdin" {
@@ -1187,6 +1219,9 @@ fn extract_tool_signals_with_window_and_semantics(
                         // A reused ID links to its latest call.
                         result_contexts.insert(call.id.as_str(), context);
                     }
+                    if index < start {
+                        continue;
+                    }
                     tool_calls.push(ObservedToolCall {
                         name: call.name.clone(),
                         bare_name,
@@ -1196,8 +1231,6 @@ fn extract_tool_signals_with_window_and_semantics(
                     });
                 }
                 ContentBlock::ToolResult(result) => {
-                    // Before the empty-text filter: empty results still count.
-                    tool_result_count += 1;
                     let is_error = result.is_error == Some(true);
                     let text = result
                         .content
@@ -1219,6 +1252,12 @@ fn extract_tool_signals_with_window_and_semantics(
                     {
                         sessions.insert(id.to_owned(), context);
                     }
+                    // Old calls can establish session context, but their activity
+                    // and results stay outside the current user-turn counters.
+                    if index < start {
+                        continue;
+                    }
+                    tool_result_count += 1;
                     if context.is_retrieval {
                         // Shell reads can return bare JSON from a file. Hermes wraps
                         // terminal output with output and exit_code fields.
@@ -1270,7 +1309,8 @@ fn extract_tool_signals_with_window_and_semantics(
                 }
                 // Built-in tool history stays opaque so it can be replayed unchanged.
                 ContentBlock::Unknown { provider, raw }
-                    if provider.as_str() == WireFormat::OpenAiResponses.as_str()
+                    if index >= start
+                        && provider.as_str() == WireFormat::OpenAiResponses.as_str()
                         && raw.get("type").and_then(Value::as_str)
                             == Some("apply_patch_call_output") =>
                 {
@@ -1283,7 +1323,8 @@ fn extract_tool_signals_with_window_and_semantics(
                     tool_texts.push((text.to_owned(), is_error));
                 }
                 ContentBlock::Unknown { provider, raw }
-                    if provider.as_str() == WireFormat::OpenAiResponses.as_str()
+                    if index >= start
+                        && provider.as_str() == WireFormat::OpenAiResponses.as_str()
                         && raw.get("type").and_then(Value::as_str) == Some("shell_call_output") =>
                 {
                     tool_result_count += 1;
@@ -2338,9 +2379,13 @@ mod tests {
     #[test]
     fn search_no_match_is_an_observation_not_a_failure() {
         for command in [
-            "rg missing .",
-            "grep missing file.txt",
-            "rg version poetry.lock; rg limits poetry.lock | sed -n '1,80p'; rg headers .",
+            json!("rg missing ."),
+            json!("grep missing file.txt"),
+            json!("LC_ALL=C rg missing ."),
+            json!("env LC_ALL=C rg missing ."),
+            json!(["env", "LC_ALL=C", "rg", "missing", "."]),
+            json!(["rg", "needle; cat file", "."]),
+            json!("rg version poetry.lock; rg limits poetry.lock | sed -n '1,80p'; rg headers ."),
         ] {
             for output in [
                 "Process exited with code 1\nOutput:\n",
@@ -2352,6 +2397,15 @@ mod tests {
                 assert_eq!(signal.read_count, 1);
             }
         }
+    }
+
+    #[test]
+    fn search_detection_preserves_argv_boundaries() {
+        let request = call_with_result(
+            exec_command(json!({"cmd": ["cat", "log; rg needle ."]})),
+            tr("Process exited with code 1\nOutput:\nPermission denied"),
+        );
+        assert_eq!(ToolSignals::from_request(&request, None).severity, SOFT);
     }
 
     #[test]
@@ -2455,6 +2509,23 @@ mod tests {
             ToolSignals::from_request(&write, Some(1)).recent_write_count,
             0
         );
+    }
+
+    #[test]
+    fn codex_poll_keeps_context_across_user_turns_without_old_activity() {
+        let mut request = polled_command(
+            "cat run.log",
+            "",
+            "Process exited with code 0\nOutput:\nMemoryError",
+        );
+        request
+            .llm_request
+            .messages
+            .insert(2, Message::text(Role::User, "Check the command"));
+        let signal = ToolSignalProcessor::default().for_user_turn(&request);
+        assert_eq!(signal.severity, 0.0);
+        assert_eq!(signal.read_count, 1);
+        assert_eq!(signal.tool_result_count, 1);
     }
 
     #[test]
