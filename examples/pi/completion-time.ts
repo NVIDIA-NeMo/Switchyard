@@ -18,6 +18,11 @@ export class CompletionTiming {
   #calls = 0;
   #toolMs = 0;
   #timedTurns = new Set<string>();
+  #fullInput = 0;
+  #fullOutput = 0;
+  #fullRead = 0;
+  #fullWrite = 0;
+  #fullLongWrite = 0;
 
   record(call: CallMetrics) {
     if (call.call_kind !== "answer" || !call.is_success || call.ttft_ms === undefined
@@ -36,6 +41,11 @@ export class CompletionTiming {
     this.#ttftMs += call.ttft_ms;
     this.#outputMs += call.duration_ms - call.ttft_ms;
     this.#calls++;
+    this.#fullInput += call.usage.input_tokens;
+    this.#fullOutput += call.usage.output_tokens;
+    this.#fullRead += call.usage.cached_input_tokens ?? 0;
+    this.#fullWrite += call.usage.cache_creation_input_tokens ?? 0;
+    this.#fullLongWrite += call.usage.cache_creation_1h_input_tokens ?? 0;
     this.#timedTurns.add(turnKey(call.context));
   }
 
@@ -46,6 +56,27 @@ export class CompletionTiming {
 
   /** Mean prompt size per call, for selecting the current model's pricing tier. */
   get meanPromptTokens(): number { return this.#calls ? this.#promptTokens / this.#calls : 0; }
+
+  get fullTokens(): number { return this.#fullInput + this.#fullOutput + this.#fullRead + this.#fullWrite; }
+
+  /** Allocate one full-token budget across disjoint channels using observed session totals. */
+  remainingFullUsage(remainingTokens: number): TokenUsage | undefined {
+    if (this.fullTokens === 0 && remainingTokens > 0) return undefined;
+    const total = Math.round(remainingTokens);
+    const share = (value: number) => this.fullTokens ? Math.round(total * value / this.fullTokens) : 0;
+    const output = Math.min(total, share(this.#fullOutput));
+    const read = Math.min(total - output, share(this.#fullRead));
+    const write = Math.min(total - output - read, share(this.#fullWrite));
+    return { input_tokens: total - output - read - write, output_tokens: output,
+      cached_input_tokens: read, cache_creation_input_tokens: write,
+      cache_creation_1h_input_tokens: Math.min(write, share(this.#fullLongWrite)) };
+  }
+
+  /** Scale observed model-plus-tool wall time by the full-token budget. */
+  estimateFullMs(remainingTokens: number): number | undefined {
+    if (remainingTokens === 0) return 0;
+    return this.fullTokens ? remainingTokens * (this.#ttftMs + this.#outputMs + this.#toolMs) / this.fullTokens : undefined;
+  }
 
   /** Splits the uncached budget and projects additional cache reads for monetary pricing. */
   remainingUsage(remainingTokens: number): TokenUsage | undefined {

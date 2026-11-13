@@ -1,0 +1,7 @@
+{
+  "completion_model": "openrouter/openai/gpt-6.1-sol",
+  "decision_model": "openrouter/~typesafe/jev-latest",
+  "python": "/absolute/path/to/agent-progress-research/v1/.venv/bin/python",
+  "research_root": "/absolute/path/to/agent-progress-research/v1",
+  "tokencast_root": "/absolute/path/to/TokenCast"
+}

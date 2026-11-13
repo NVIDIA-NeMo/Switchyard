@@ -12,6 +12,28 @@ const call = (changes = {}) => ({
     output_tokens: 200, reasoning_tokens: 50 }, ...changes,
 });
 
+test("full-token projections preserve the budget, including cache, and scale observed wall time", () => {
+  const timing = new CompletionTiming();
+  assert.equal(timing.remainingFullUsage(1000), undefined);
+  assert.equal(timing.estimateFullMs(1000), undefined);
+  assert.equal(timing.estimateFullMs(0), 0);
+  const response = call({ usage: { input_tokens: 700, output_tokens: 200, cached_input_tokens: 10000,
+    cache_creation_input_tokens: 100, cache_creation_1h_input_tokens: 20, reasoning_tokens: 50 } });
+  timing.record(response);
+  timing.recordTools(response.context, 8000);
+  assert.deepEqual(timing.remainingFullUsage(22000), {
+    input_tokens: 1400, output_tokens: 400, cached_input_tokens: 20000,
+    cache_creation_input_tokens: 200, cache_creation_1h_input_tokens: 40,
+  });
+  assert.equal(timing.estimateFullMs(22000), 28000);
+  for (let budget = 0; budget < 30; budget++) {
+    const usage = timing.remainingFullUsage(budget);
+    assert.equal(usage.input_tokens + usage.output_tokens + usage.cached_input_tokens + usage.cache_creation_input_tokens, budget);
+    assert.ok(Object.values(usage).every(value => value >= 0));
+    assert.ok(usage.cache_creation_1h_input_tokens <= usage.cache_creation_input_tokens);
+  }
+});
+
 test("splits the combined budget before applying input latency and output throughput", () => {
   const timing = new CompletionTiming();
   timing.record(call());

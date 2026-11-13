@@ -96,7 +96,7 @@ interface ToolWindow {
 }
 
 /** Feed Pi-owned calls into Switchyard and read status data from its metric snapshots. */
-export function registerMetrics(pi: ExtensionAPI) {
+export function registerMetrics(pi: ExtensionAPI, options: { status?: boolean } = {}) {
   let collector: Metrics | undefined;
   const metrics = () => collector ??= new Metrics();
   const sessions = new Map<string, Session>();
@@ -142,7 +142,7 @@ export function registerMetrics(pi: ExtensionAPI) {
   }
 
   function render(ctx: ExtensionContext) {
-    if (!ctx.hasUI) return;
+    if (!ctx.hasUI || options.status === false) return;
     const state = session(ctx);
     const filter = { session_id: ctx.sessionManager.getSessionId(), agent_id: "root" };
     const all = metrics().stats(filter);
@@ -234,6 +234,16 @@ export function registerMetrics(pi: ExtensionAPI) {
   });
 
   return {
+    /** Shared Greg-style pricing and timing for forecasts in either token basis. */
+    projectRemaining(ctx: ExtensionContext, remainingTokens: number, basis: "uncached" | "full", modelCost?: ModelCost) {
+      const state = session(ctx);
+      const usage = basis === "full" ? state.completion.remainingFullUsage(remainingTokens) : state.completion.remainingUsage(remainingTokens);
+      const rates = tokenRates(modelCost ?? state.modelCost, { input: state.completion.meanPromptTokens, cacheRead: 0, cacheWrite: 0 });
+      return {
+        usd: usage && rates ? estimateCost(usage, rates)?.usd : undefined,
+        eta_ms: basis === "full" ? state.completion.estimateFullMs(remainingTokens) : state.completion.estimateMs(remainingTokens),
+      };
+    },
     begin(reason: "user" | "continuation" | "retry" | "direct", ctx: ExtensionContext) {
       // Direct helper requests do not emit the agent message events used to finish measurements.
       if (reason === "direct") return undefined;
@@ -249,6 +259,8 @@ export function registerMetrics(pi: ExtensionAPI) {
       active = current;
       return {
         context: current.context,
+        /** Forecasting is measured separately; start answer latency when routing finishes. */
+        answerStarted() { current.started = performance.now(); current.firstToken = undefined; },
         modelCost(cost: ModelCost | undefined) { current.cost = cost; session(ctx).modelCost = cost; },
         prediction(value: TaskPrediction | null, tokensUsed?: number) {
           if (ctx.sessionManager.getSessionId() !== current.context.session_id || active !== current) return;

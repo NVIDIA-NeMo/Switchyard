@@ -1,5 +1,8 @@
 # Pi virtual model using Switchyard composite routing
 
+For a fixed-model demo comparing LightGBM and Jev forecasts, see
+[FORECAST_COMPARISON.md](FORECAST_COMPARISON.md).
+
 This extension registers `switchyard/auto`. Pi calls a Decision classifier on
 user turns. Switchyard's composite algorithm uses that answer and recent tool
 activity to select a completion model. Thinking stays `medium`.
