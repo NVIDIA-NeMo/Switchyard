@@ -273,8 +273,12 @@ fn redact_captured_text(
             Some(b'{' | b'[' | b'"')
         )
     {
-        let decoded = serde_json::from_str::<Json>(&text).ok()?;
-        Some(redact_captured_json(decoded, redactor, depth)?.to_string())
+        match serde_json::from_str::<Json>(&text) {
+            Ok(decoded) => Some(redact_captured_json(decoded, redactor, depth)?.to_string()),
+            // Malformed escaped JSON may conceal a configured credential.
+            Err(_) if text.contains('\\') => None,
+            Err(_) => Some(redactor.text(text)),
+        }
     } else {
         Some(redactor.text(text))
     }
@@ -744,6 +748,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(response_body["ordinary"], response["ordinary"]);
+    }
+
+    #[test]
+    fn captured_payload_redaction_preserves_bracketed_prose() {
+        let redactor = ProviderKeyRedactor::new(&["qa-secret".into()]);
+        for text in [
+            "[Current time: Thursday]",
+            "{ordinary prose}",
+            "\"Quoted prose",
+        ] {
+            let body = serde_json::json!({"content": format!("{text} Inspect qa-secret.")});
+            let mut span = span_with_payloads(Payloads {
+                request: Some(serde_json::json!({"body": body.to_string(), "truncated": false})),
+                response: None,
+            });
+            span.sanitize(&redactor);
+            let payload = span.payloads.request.unwrap();
+            let decoded: Json = serde_json::from_str(payload["body"].as_str().unwrap()).unwrap();
+            assert_eq!(decoded["content"], format!("{text} Inspect [REDACTED]."));
+        }
     }
 
     #[test]
