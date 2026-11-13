@@ -36,6 +36,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- The standalone `switchyard-server` now binds to `127.0.0.1` by default.
+  Existing deployments that accept remote clients must add `--host 0.0.0.0`.
+  The provided Docker image and `dev-server/switchyard.service` set this explicitly.
 - **TypeScript composite stage profiles** - `CompositeRouter` options take
   `stage.efficient_first` and `stage.capable_first` profiles in place of
   `efficient_first_threshold`, `capable_first_threshold`, and
