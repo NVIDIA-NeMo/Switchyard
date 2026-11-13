@@ -9,7 +9,7 @@
 use super::{Branch, Capabilities};
 
 /// Version of these rules and dials, carried on every decision record.
-pub(super) const POLICY_VERSION: &str = "1.2";
+pub(super) const POLICY_VERSION: &str = "1.3";
 
 const READOUT: f64 = 0.9;
 const DELIBERATION: f64 = 0.5;

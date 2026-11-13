@@ -190,9 +190,12 @@ headers take precedence. Hosts that omit reporting retain message-shape detectio
 
 ## Verification and capable-tier outages
 
-Policy version `1.2` allows the default verification branch to accept a clean
+Policy version `1.3` allows the default verification branch to accept a clean
 efficient attempt when the capable judge approves both the evidence and the
 answer. A negative or unavailable evidence verdict skips the answer check.
+
+After a failed tool result, chat steps escalate without verification, and steps
+typed as chat escalate before any efficient attempt.
 
 Typed factual answers are verified on the answer itself, including
 later user turns without tool work. A readout of at least 0.9 can serve the

@@ -472,7 +472,7 @@ async fn decisions_attach_the_reason_and_exclude_efficient_capable_fallbacks() -
         assert_eq!(evidence["source"], "vgr");
         assert_eq!(evidence["reason_code"], reason);
         assert_eq!(evidence["verdict"], served);
-        assert_eq!(evidence["policy_version"], "1.2");
+        assert_eq!(evidence["policy_version"], "1.3");
         if reason == "decided" {
             assert_eq!(evidence["branch"], "DefaultVerified");
         }
@@ -1374,5 +1374,35 @@ async fn a_failed_capable_verifier_still_offers_the_efficient_answer() -> Result
         .fallback_request
         .expect("an efficient fallback request");
     assert_eq!(fallback.llm_request.messages, task().llm_request.messages);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_step_that_cannot_commit_over_a_tool_error_skips_local_checks() -> Result<()> {
+    let failed = session(vec![
+        Message::text(Role::User, "What is happening today?"),
+        call("c1"),
+        result("c1", r#"{"error": "search-only backend"}"#),
+    ]);
+    // A typed answer with tool use in its turn is judged as chat, which needs a clean record.
+    for (typed, expected) in [
+        ("Answer", vec!["judge", "efficient", "capable"]),
+        ("Chat", vec!["judge", "capable"]),
+    ] {
+        let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let seen = Arc::clone(&calls);
+        let (selected, _) = test_drive_with_models(
+            route(|config| config.task_typing = true)?,
+            failed.clone(),
+            category_models(Category::Any, &["efficient", "capable"]),
+            move |target: ModelId, _| {
+                seen.lock().push(target.to_string());
+                std::future::ready(Ok(reply(typed)))
+            },
+        )
+        .await?;
+        assert_eq!(selected.as_str(), "capable");
+        assert_eq!(*calls.lock(), expected, "typed {typed}");
+    }
     Ok(())
 }
