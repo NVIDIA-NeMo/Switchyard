@@ -46,19 +46,29 @@ litellm/
 ```text
 application → LiteLLM Router → Switchyard routing plugin
                               → Algorithm.run_stream()
+                              → judge call, if the algorithm asks for one,
+                                served back through LiteLLM to the judge deployment
                               → one selected candidate + optional request delta
             → LiteLLM deployment selection
             → same object as deployment callback → provider inference
 ```
 
-The candidate-bound Stage and Random plugins construct Switchyard algorithms from the live
-candidate list supplied by LiteLLM. The low-level `SwitchyardRoutingPlugin` then:
+The candidate-bound Stage, Random and Classifier plugins construct Switchyard algorithms from
+the live candidate list supplied by LiteLLM. The low-level `SwitchyardRoutingPlugin` then:
 
 1. converts LiteLLM's `structured_messages` to a normalized Switchyard request;
-2. runs the supplied algorithm until `Step.Done`;
+2. runs the supplied algorithm until `Step.Done`, serving any `Step.CallModel` through the
+   configured judge client (`LiteLLMJudge` calls the judge deployment through the same Router,
+   so the call is spend-tracked and uses the gateway's credentials);
 3. validates and converts any supported request delta;
 4. replaces `context.candidate_models` with the selected exact deployment; and
-5. records the decision and private delta under `context.signals["switchyard"]`.
+5. records the decision, the judge's evidence and the private delta under
+   `context.signals["switchyard"]`.
+
+While `LiteLLMJudge` serves a call, `is_judge_call()` is true in that task. Every plugin here checks
+it and passes the judge request through unchanged, so routing never re-enters itself. The flag is a
+context variable, so a client cannot set it through request metadata. Keep the judge in its own
+`model_name`, separate from the candidates.
 
 LiteLLM copies those signals into request metadata. After LiteLLM selects a deployment, the same
 object's `async_pre_call_deployment_hook` applies the delta and removes it from the metadata passed
@@ -71,14 +81,14 @@ OpenAI-compatible API.
 ## Supported algorithm semantics
 
 Compatibility is determined by behavior rather than an algorithm-name allowlist.
-`StageRoutingPlugin` and `RandomRoutingPlugin` provide the deployer-oriented bindings supported by
-the checked-in configuration loader.
+`StageRoutingPlugin`, `RandomRoutingPlugin` and `ClassifierRoutingPlugin` provide the
+deployer-oriented bindings supported by the checked-in configuration loader.
 
 | Behavior | Result |
 |---|---|
 | Random selects a current candidate | Supported |
 | Stage uses only request-history signals | Supported |
-| Algorithm requests `Step.CallModel` | Rejected |
+| Algorithm requests `Step.CallModel` | Served through the configured judge client; rejected without one |
 | Algorithm returns an existing response | Rejected |
 | Algorithm rewrites text instructions/messages | Applied after deployment selection |
 | Algorithm rewrites tools/tool choice | Applied after deployment selection |
@@ -88,10 +98,12 @@ the checked-in configuration loader.
 | Algorithm selects outside the current candidate pool | Rejected |
 | Algorithm stream ends without `Step.Done` | Rejected |
 
-Escalation and classifier-backed routers are not compatible because a LiteLLM routing plugin cannot
-service intermediate model calls. Stage's system prompts and handoff notes do not require an
-intermediate call, so the dual-role Stage plugin supports them. Unsupported behavior fails closed
-before LiteLLM sends inference.
+Classifier-backed routing is supported through the judge client: the plugin makes the judge call
+itself, before deployment selection, and a judge failure follows Switchyard's own fail-open policy
+(the capable tier). Escalation routing is still not supported, because it needs the efficient
+tier's answer before it decides, and a routing plugin runs before any answer exists. Stage's
+system prompts and handoff notes do not require an intermediate call. Unsupported behavior fails
+closed before LiteLLM sends inference.
 
 LiteLLM 1.102.0's routing context exposes structured messages but does not expose the caller's tools,
 sampling controls, output controls, or provider-specific arguments. The adapter therefore uses
@@ -233,10 +245,43 @@ Random selects across every unique candidate ID in first-seen LiteLLM order. `we
 same order, so its length must equal the number of unique candidates in the request. Omitting
 `weights` gives each candidate equal weight; omitting `seed` uses Switchyard's unseeded behavior.
 
+### Classifier fields
+
+```toml
+algorithm = "llm_classifier"
+judge_model = "switchyard-judge"
+base_threshold = 0.5
+threshold_step = 0.1
+max_output_tokens = 512
+response_format_type = "json_schema"
+judge_max_tokens_field = "max_completion_tokens"
+judge_timeout_seconds = 60
+prompt = "Forecast whether the efficient model, a small text model with no tools, solves the task."
+```
+
+| Field | Required | Accepted value |
+|---|---:|---|
+| `algorithm` | yes | `"llm_classifier"` |
+| `judge_model` | yes | the LiteLLM `model_name` of the judge deployment; its own group, never a candidate |
+| `base_threshold` | yes | finite number from `0` through `1`; lowest `p_solve` that routes a supported task to the efficient tier |
+| `threshold_step` | no | finite number from `0` through `1`; `base_threshold + 2 * threshold_step` must not exceed `1` |
+| `max_output_tokens` | no | positive integer for the judge's verdict; defaults to Switchyard's `4096` |
+| `response_format_type` | no | `"json_schema"` (default) or `"json_object"` for judges without JSON Schema support |
+| `judge_max_tokens_field` | no | `"max_completion_tokens"` (default) or `"max_tokens"`, whichever the judge deployment accepts |
+| `judge_timeout_seconds` | no | positive number passed to LiteLLM as the judge call's `timeout` |
+| `prompt` | no | replaces the packaged capability card; the verdict schema stays Switchyard's |
+
+The classifier uses the same candidate contract as Stage: exactly two unique candidates, the capable
+model declared first and the efficient model second. The judge call goes through the Router the
+plugin is installed in (the proxy's router in the proxy) and is flagged in-process so the plugins
+pass it through. The packaged capability card describes a coding agent with tools and a harness;
+against a plain text model it tends to rate every task as supported, so set `prompt` to describe
+the efficient model you actually deploy.
+
 Static errors—missing files, malformed TOML, unknown keys, wrong types, invalid ranges, and invalid
 weight values—fail while LiteLLM imports the plugin at proxy startup. Constraints that depend on
-LiteLLM's live candidates fail at request time: Stage's two-candidate requirement and Random's
-candidate-to-weight count.
+LiteLLM's live candidates fail at request time: Stage's and the classifier's two-candidate requirement
+and Random's candidate-to-weight count.
 
 To add a profile, copy an existing directory, edit both files, and select its directory name:
 

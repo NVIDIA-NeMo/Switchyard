@@ -13,6 +13,7 @@ from litellm.types.router import RoutingContext
 
 from switchyard.libsy import Algorithm, Step
 
+from .judge import JudgeClient, is_judge_call
 from .lite_llm_request_rewriter import LiteLLMRequestRewriter
 from .request_rewrite import build_request_patch
 
@@ -152,11 +153,19 @@ def _request(structured_messages: Sequence[object]) -> dict[str, object]:
 
 
 class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
-    """Narrow LiteLLM candidates with a decision-only Switchyard algorithm.
+    """Narrow LiteLLM candidates with a Switchyard algorithm.
 
-    Compatible algorithms must finish without intermediate model calls or an
-    already-produced response. Supported request rewrites are carried to the
-    selected deployment by the object's LiteLLM callback role.
+    An algorithm may ask for intermediate model calls (a capability or
+    escalation judge) only when a `judge` client is configured; the plugin
+    serves each call through it and returns the normalized response to
+    Switchyard. Without a judge, an intermediate call is rejected. An algorithm
+    must never produce the final response itself. Supported request rewrites
+    are carried to the selected deployment by the object's LiteLLM callback
+    role.
+
+    While `is_judge_call()` is true, the request being routed is a judge call
+    this integration issued through LiteLLM; the plugin passes it through
+    unchanged so routing never re-enters itself.
 
     `models` maps a category name (`any`, `capable`, `efficient`, `judge`, or a
     deployment-defined group) to its LiteLLM model names, ordered best-first.
@@ -174,9 +183,13 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
         self,
         algorithm: Algorithm,
         models: Mapping[str, Sequence[str]] | None = None,
+        *,
+        judge: JudgeClient | None = None,
     ) -> None:
+        """Copy the category map so later changes by the caller do not affect routing."""
         super().__init__()
         self._algorithm = algorithm
+        self._judge = judge
         self._models = (
             {category: list(names) for category, names in models.items()}
             if models is not None
@@ -185,6 +198,8 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
 
     async def run(self, context: RoutingContext) -> RoutingContext:
         """Run Switchyard and retain only its selected LiteLLM candidate."""
+        if is_judge_call():
+            return context
         candidates = list(context.candidate_models)
         request = _request(context.structured_messages)
 
@@ -200,11 +215,15 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
         )
         async for step in self._algorithm.run_stream(request, models):
             match step:
-                case Step.CallModel(_):
-                    raise ValueError(
-                        "Switchyard algorithm requested an intermediate model call, "
-                        "which a LiteLLM routing plugin cannot serve"
-                    )
+                case Step.CallModel(call):
+                    if self._judge is None:
+                        raise ValueError(
+                            "Switchyard algorithm requested an intermediate model call; "
+                            "configure a judge client to serve it through LiteLLM"
+                        )
+                    # A failing judge is reported to Switchyard through the same reply
+                    # path, so the algorithm's own fail-open policy decides the tier.
+                    await call.respond(self._judge(call.request, call.models[0]))
                 case Step.Done(outcome):
                     if outcome.response is not None:
                         raise ValueError(
@@ -225,9 +244,14 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
                     context.candidate_models = [
                         candidate for candidate in candidates if candidate == selected
                     ]
+                    # Every algorithm reports how it decided: the classifier's score and
+                    # threshold, the stage router's fall-open or override. Recorded as given,
+                    # so a gateway can show the reason beside the selection.
                     context.signals["switchyard"] = {
                         "selected_model_id": selected,
                         "fallback_models": outcome.selected_model_ids[1:],
+                        "algorithm": outcome.metadata.algorithm,
+                        "evidence": dict(outcome.metadata.evidence or {}),
                     }
                     if request_patch["set"] or request_patch.get("remove"):
                         context.signals["switchyard"]["request_patch"] = request_patch

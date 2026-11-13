@@ -87,6 +87,8 @@ async def test_stage_converts_tool_history_and_narrows_to_capable_candidate() ->
         "switchyard": {
             "selected_model_id": SOL,
             "fallback_models": [TERRA],
+            "algorithm": "stage_router",
+            "evidence": {"source": "override"},
         },
     }
 
@@ -182,6 +184,8 @@ async def test_litellm_conversion_preserves_stage_tool_signal_input() -> None:
     assert context.signals["switchyard"] == {
         "selected_model_id": direct_outcome.selected_model_ids[0],
         "fallback_models": direct_outcome.selected_model_ids[1:],
+        "algorithm": direct_outcome.metadata.algorithm,
+        "evidence": dict(direct_outcome.metadata.evidence or {}),
     }
 
 
@@ -194,6 +198,8 @@ async def test_stage_selects_efficient_candidate_without_tool_signals() -> None:
     assert context.signals["switchyard"] == {
         "selected_model_id": TERRA,
         "fallback_models": [SOL],
+        "algorithm": "stage_router",
+        "evidence": {"source": "fall_open"},
     }
 
 
