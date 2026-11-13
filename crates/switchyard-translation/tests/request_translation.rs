@@ -1587,9 +1587,9 @@ fn anthropic_tool_result_followup_text_splits_to_openai_messages() -> TestResult
     Ok(())
 }
 
-// Verifies Anthropic multimodal blocks retain provider fields inside tool results.
+// Verifies Anthropic multimodal blocks decode into the expected IR and retain provider fields.
 #[test]
-fn anthropic_tool_result_multimodal_blocks_round_trip_complete() -> TestResult {
+fn anthropic_multimodal_blocks_decode_and_round_trip() -> TestResult {
     let engine = TranslationEngine::default();
     let policy = TranslationPolicy {
         preservation: switchyard_translation::PreservationPolicy::Disabled,
@@ -1606,48 +1606,101 @@ fn anthropic_tool_result_multimodal_blocks_round_trip_complete() -> TestResult {
             "data": "ZG9jdW1lbnQ="
         }
     });
-    let image = json!({
-        "type": "image",
-        "source": {
-            "type": "base64",
-            "media_type": "image/png",
-            "data": "aW1hZ2U="
-        }
+    let mut images = vec![
+        (
+            json!({
+                "type": "image",
+                "source": {"type": "url", "url": "https://example.test/image.png"}
+            }),
+            ImageSource::Url {
+                url: "https://example.test/image.png".into(),
+                detail: None,
+            },
+        ),
+        (
+            json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": "image/png",
+                    "data": "aW1hZ2U="
+                }
+            }),
+            ImageSource::Base64 {
+                media_type: Some("image/png".into()),
+                data: "aW1hZ2U=".into(),
+            },
+        ),
+    ];
+    for raw in [
+        json!({
+            "type": "image",
+            "source": {"type": "file", "file_id": "file_anthropic_123"}
+        }),
+        json!({
+            "type": "image",
+            "source": {"type": "url", "url": "https://example.test/cached.png"},
+            "cache_control": {"type": "ephemeral", "ttl": "5m"}
+        }),
+        json!({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/png", "data": "aW1hZ2U="},
+            "transformations": {"oversized_image": "error"}
+        }),
+    ] {
+        images.push((raw.clone(), ImageSource::Raw(raw)));
+    }
+    let mut content = vec![json!({"type": "text", "text": "content ready"})];
+    content.extend(images.iter().map(|(image, _)| image.clone()));
+    content.push(document.clone());
+    let mut expected_content = vec![ContentBlock::Text {
+        text: "content ready".into(),
+    }];
+    expected_content.extend(
+        images
+            .into_iter()
+            .map(|(_, source)| ContentBlock::Image { source }),
+    );
+    expected_content.push(ContentBlock::File {
+        source: switchyard_translation::FileSource::Raw(document),
     });
-    let body = json!({
-        "model": "claude-sonnet-4-20250514",
-        "messages": [{
-            "role": "user",
-            "content": [{
+
+    for nested in [false, true] {
+        let message_content = if nested {
+            json!([{
                 "type": "tool_result",
                 "tool_use_id": "toolu_document",
-                "content": [
-                    {"type": "text", "text": "content ready"},
-                    image.clone(),
-                    document.clone()
-                ]
-            }]
-        }],
-        "max_tokens": 1024
-    });
+                "content": content
+            }])
+        } else {
+            json!(content)
+        };
+        let body = json!({
+            "model": "claude-sonnet-4-20250514",
+            "messages": [{"role": "user", "content": message_content}],
+            "max_tokens": 1024
+        });
+        let request = engine
+            .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
+            .request;
+        let decoded_content = if nested {
+            let ContentBlock::ToolResult(result) = &request.messages[0].content[0] else {
+                return Err("expected a tool result".into());
+            };
+            &result.content
+        } else {
+            &request.messages[0].content
+        };
+        assert_eq!(decoded_content, &expected_content, "nested={nested}");
 
-    let output = engine
-        .translate_request(
-            WireFormat::AnthropicMessages,
-            WireFormat::AnthropicMessages,
-            &body,
-            &policy,
-        )?
-        .body;
-
-    assert_eq!(
-        output["messages"][0]["content"][0]["content"],
-        json!([
-            {"type": "text", "text": "content ready"},
-            image,
-            document
-        ])
-    );
+        let output = engine
+            .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
+            .body;
+        assert_eq!(
+            output["messages"][0]["content"], message_content,
+            "nested={nested}"
+        );
+    }
     Ok(())
 }
 

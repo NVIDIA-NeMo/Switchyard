@@ -799,7 +799,7 @@ fn decode_anthropic_content_block(
             is_error: block.get("is_error").and_then(Value::as_bool),
         })],
         Some("image") => vec![ContentBlock::Image {
-            source: ImageSource::Raw(Value::Object(block.clone())),
+            source: decode_anthropic_image_source(block),
         }],
         Some("input_image") | Some("image_url") => decode_image_source(block)
             .map(|source| vec![ContentBlock::Image { source }])
@@ -834,7 +834,7 @@ fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
                                 .to_string(),
                         }),
                         Some("image") => content.push(ContentBlock::Image {
-                            source: ImageSource::Raw(Value::Object(block.clone())),
+                            source: decode_anthropic_image_source(block),
                         }),
                         Some("document") => content.push(ContentBlock::File {
                             source: decode_anthropic_file_source(block),
@@ -855,6 +855,44 @@ fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
             text: json_string(other),
         }],
     }
+}
+
+// Normalizes image payloads when every field fits the typed source; otherwise uses ImageSource::Raw.
+fn decode_anthropic_image_source(block: &Map<String, Value>) -> ImageSource {
+    let source = (|| {
+        // This also preserves cache_control and transformations, even when null.
+        if block
+            .keys()
+            .any(|key| !matches!(key.as_str(), "type" | "source"))
+        {
+            return None;
+        }
+        let source = block.get("source")?.as_object()?;
+        match source.get("type")?.as_str()? {
+            "url"
+                if source
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "type" | "url")) =>
+            {
+                Some(ImageSource::Url {
+                    url: source.get("url")?.as_str()?.to_string(),
+                    detail: None,
+                })
+            }
+            "base64"
+                if source
+                    .keys()
+                    .all(|key| matches!(key.as_str(), "type" | "media_type" | "data")) =>
+            {
+                Some(ImageSource::Base64 {
+                    media_type: Some(source.get("media_type")?.as_str()?.to_string()),
+                    data: source.get("data")?.as_str()?.to_string(),
+                })
+            }
+            _ => None,
+        }
+    })();
+    source.unwrap_or_else(|| ImageSource::Raw(Value::Object(block.clone())))
 }
 
 // Keeps Anthropic document fields together for same-format re-encoding.
