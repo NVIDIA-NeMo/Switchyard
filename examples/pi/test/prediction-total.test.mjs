@@ -11,7 +11,7 @@ test("Jev's full-token prompt includes cache usage, model and selected reasoning
     { role: "assistant", content: [{ type: "text", text: "Inspecting" }],
       usage: { input: 800, cacheRead: 5000, cacheWrite: 200, output: 100, reasoning: 40 } },
   ];
-  for (const level of ["medium", "max"]) {
+  for (const level of ["medium", "high", "max"]) {
     const request = totalTokenPredictionRequest("provider/judge", messages, "provider/worker", level);
     assert.equal(request.context.token_usage.tokens_used_so_far, 6100);
     assert.equal(request.context.token_usage.per_step[0].input_tokens, 6000);

@@ -121,12 +121,12 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_shutdown", () => worker?.close());
   pi.registerVirtualModel({
     provider: "switchyard", id: "compare", name: "LightGBM + Greg forecasts (passthrough)",
-    thinkingLevels: ["medium", "max"],
+    thinkingLevels: ["medium", "high", "max"],
     async route(request, ctx) {
       const measurement = metrics.begin(request.reason, ctx);
       try {
         const thinkingLevel = request.thinkingLevel ?? "medium";
-        if (thinkingLevel !== "medium" && thinkingLevel !== "max") throw new Error("Select --thinking medium or --thinking max");
+        if (thinkingLevel !== "medium" && thinkingLevel !== "high" && thinkingLevel !== "max") throw new Error("Select --thinking medium, --thinking high, or --thinking max");
         const config = JSON.parse(readFileSync(process.env.SY_FORECAST_CONFIG ?? join(getAgentDir(), "switchyard-forecast.json"), "utf8"));
         const identity = modelIdentity(config.completion_model);
         const model = ctx.modelRegistry.find(identity.provider, identity.id);

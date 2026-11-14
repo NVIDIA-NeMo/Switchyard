@@ -56,7 +56,7 @@ test("both forecasts share a cutoff and completion; rendering survives classifie
   const user = { role: "user", content: "Read the parser and explain it" };
   entries.push({ type: "message", message: user });
   const request = { reason: "user", thinkingLevel: "max", messages: [user] };
-  assert.deepEqual(definition.thinkingLevels, ["medium", "max"]);
+  assert.deepEqual(definition.thinkingLevels, ["medium", "high", "max"]);
   emit("session_start");
   assert.match(widgets.at(-1)[1], /^Jev · waiting/);
   const firstRoute = await definition.route(request, ctx);

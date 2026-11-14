@@ -11,7 +11,7 @@ while (( $# )); do
     --) pi_args+=("$@"); break ;;
     --thinking)
       if (( $# < 2 )); then
-        printf '%s\n' 'Use --thinking medium or --thinking max.' >&2
+        printf '%s\n' 'Use --thinking medium, --thinking high, or --thinking max.' >&2
         exit 2
       fi
       thinking_level="$2"; shift 2 ;;
@@ -20,8 +20,8 @@ while (( $# )); do
   esac
 done
 case "$thinking_level" in
-  medium|max) ;;
-  *) printf '%s\n' 'Use --thinking medium or --thinking max.' >&2; exit 2 ;;
+  medium|high|max) ;;
+  *) printf '%s\n' 'Use --thinking medium, --thinking high, or --thinking max.' >&2; exit 2 ;;
 esac
 
 agent_root="${SY_FORECAST_AGENT_ROOT:-${XDG_CONFIG_HOME:-$HOME/.config}/switchyard-pi-forecast}"

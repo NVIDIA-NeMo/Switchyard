@@ -12,7 +12,7 @@ Jev · ~$0.0400 · ETA ~40s · remaining ~60.0k tok (avg err +12.0%)
 ```
 
 These are illustrative values. Cost and ETA describe remaining work. The two
-rows replace the Switchyard footer. `medium` and `max` are passed through to the
+rows replace the Switchyard footer. `medium`, `high`, and `max` are passed through to the
 completion model, which must support the selected level.
 
 ## Setup
@@ -64,9 +64,15 @@ In another task directory:
 /path/to/Switchyard/examples/pi/run-forecast.sh --thinking medium
 ```
 
+For a third comparison, run from another task directory:
+
+```bash
+/path/to/Switchyard/examples/pi/run-forecast.sh --thinking high
+```
+
 Use separate directories and the same prompt to compare reasoning settings
 without editing the same task files. Each level has its own Pi settings and
-sessions under `~/.config/switchyard-pi-forecast/{max,medium}`. Add `--continue`
+sessions under `~/.config/switchyard-pi-forecast/{max,high,medium}`. Add `--continue`
 from the same task directory to resume. `SY_FORECAST_AGENT_ROOT` overrides the
 settings root; `SY_FORECAST_CONFIG` selects a shared configuration file. When
 set, `XDG_CONFIG_HOME` replaces `~/.config` for the default locations.
