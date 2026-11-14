@@ -643,6 +643,35 @@ advisor's plan. See
 | `reviewer_system_prompt` | No | packaged prompt | Replaces the APPROVE/REDO reviewer prompt. |
 | `redo_feedback_prefix` | No | packaged prompt | Replaces the text put in front of a REDO plan fed back to the executor. |
 
+### `vgr`
+
+Generates an efficient candidate and verifies it before serving a final answer.
+See [Verification-Gated Routing](../routing_algorithms/vgr_routing.md) for the
+verification policy, tool turns, handoff behavior, and serving modes.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `efficient_target` | Yes | — | Target that generates the candidate. |
+| `capable_target` | Yes | — | Target used when the candidate is not accepted. Must resolve to a different model ID from `efficient_target`. |
+| `judge_target` | No | `efficient_target` | Target used for efficient-tier verification. |
+| `capable_judge_target` | No | unset | Optional target for capable-tier confirmation. |
+| `mode` | No | `off` | `off` serves capable directly; `shadow` evaluates but serves capable; `evaluate` serves the policy decision for evaluation; `active` serves it in production. |
+| `active_approval` | In `active` mode | unset | Must be `"prospective-validation-and-canary-approved"`. |
+| `deadline_seconds` | No | `30` | Time budget for the efficient attempt and verification. Must be finite and greater than zero. |
+| `bounded_efficient` | No | `true` | Enforce the decision deadline and efficient turn budget. |
+| `task_typing` | No | `true` | Use a judge call to select the task's verification path. |
+| `breaker_threshold` | No | `5` | Efficient endpoint failures needed to open the circuit breaker. Must be at least `1`. |
+| `breaker_cooldown_seconds` | No | `30` | Wait before retrying an open efficient circuit. Must be finite and greater than zero. |
+| `confirmed_recovery_min_clean_tail` | No | unset | Clean trailing tool results needed to accept a recovered run with capable-judge confirmation. |
+| `agentic_handoff` | No | `false` | Tell the capable tier when it inherits unverified tool-using work. |
+| `compact_handoff` | No | `false` | Condense efficient-tier history at handoff. Requires `agentic_handoff = true`. Experimental and lossy. |
+| `efficient_turn_budget_seconds` | No | unset | Wall-clock budget for efficient work within one user turn, including tool execution. Must be finite and greater than zero. |
+| `latch_escalation` | No | `false` | Retain escalation across later user turns. In `shadow` mode, the hold ends at the next user turn. |
+| `efficient_supports_attachments` | No | `false` | Allow the efficient tier to attempt requests containing attachments. The model must support the input. |
+
+Start with the [route configuration](../routing_algorithms/vgr_routing.md#configure-a-route)
+or the [complete local-server example](../../examples/vgr-local-servers.toml).
+
 ## Validation Errors
 
 `--dry-run` prefixes configuration failures with
