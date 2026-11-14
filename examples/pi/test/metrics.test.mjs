@@ -30,6 +30,7 @@ function setup(t) {
   return {
     ctx, emit, sessions,
     begin: (reason = "user") => measurements.begin(reason, ctx),
+    project: (remaining, cost) => measurements.projectRemaining(ctx, remaining, "full", cost),
     time: (value) => { now = value; },
     status: () => ctx.ui.setStatus.mock.calls.at(-1).arguments[1],
     entries: () => sessions.get(sessionId),
@@ -45,6 +46,32 @@ function setup(t) {
 
 const assistant = (reportedUsage, stopReason = "stop") => ({
   role: "assistant", provider: "provider", model: "answer", usage: reportedUsage, stopReason,
+});
+
+test("shared full-token cost and ETA exclude forecast latency, count cache once, and restore", (t) => {
+  const fixture = setup(t);
+  const cost = { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 };
+  const request = fixture.begin();
+  request.modelCost(cost);
+  assert.equal(fixture.project(2440).usd, undefined);
+  assert.equal(fixture.project(2440).eta_ms, undefined);
+  fixture.time(5000);
+  request.answerStarted();
+  fixture.time(7000);
+  update(fixture, "text_delta", { delta: "answer" });
+  fixture.time(11000);
+  fixture.emit("message_end", { message: assistant(usage(100, 20, 1000, 100, 5), "toolUse") });
+  fixture.emit("tool_execution_start", { toolCallId: "tool" });
+  fixture.time(13000);
+  fixture.emit("tool_execution_end", { toolCallId: "tool" });
+  const estimate = fixture.project(2440);
+  assert.ok(Math.abs(estimate.usd - 0.0015) < 1e-12);
+  assert.equal(estimate.eta_ms, 16000);
+  assert.equal(fixture.entries().find(entry => entry.data.call_kind === "answer").data.duration_ms, 6000);
+  fixture.reload();
+  assert.deepEqual(fixture.project(2440, cost), estimate);
+  assert.equal(fixture.project(0, cost).usd, 0);
+  assert.equal(fixture.project(0, cost).eta_ms, 0);
 });
 const update = (fixture, type, data = {}) => fixture.emit("message_update", {
   message: { role: "assistant" }, assistantMessageEvent: { type, ...data },
