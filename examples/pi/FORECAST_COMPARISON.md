@@ -2,7 +2,9 @@
 
 `switchyard/compare` runs both predictors before each acting-model call. One
 fixed completion model executes the task, so both forecasts observe the same
-pre-call conversation. The display has two rows below the editor:
+pre-call conversation. The example configuration uses Opus 4.8 through
+OpenRouter (`openrouter/anthropic/claude-opus-4.8`). The display has two rows
+below the editor:
 
 ```text
 LightGBM · ~$0.0200 · ETA ~20s · next ~8.0k tok (avg err +4.0%) | remaining ~30.0k tok (avg err −8.0%)
