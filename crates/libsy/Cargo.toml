@@ -33,6 +33,7 @@ rand.workspace = true
 regex.workspace = true
 shlex = "2"
 switchyard-protocol.workspace = true
+switchyard-translation.workspace = true
 thiserror.workspace = true
 tokio-stream = "0.1"
 tracing.workspace = true
@@ -46,7 +47,6 @@ tokio.workspace = true
 tokio = { version = "1", features = ["rt", "sync", "macros", "time"] }
 
 [dev-dependencies]
-switchyard-translation.workspace = true
 # SDK + in-memory exporter to assert what the observability layer records.
 opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing", "trace"] }
 tokio.workspace = true

@@ -1,170 +1,195 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Adding text to a request on its way to the model it was routed to.
-//!
-//! These helpers mutate the normalized request. A codec asked to encode for the format the
-//! request arrived in replays the body captured at decode instead of reading that
-//! request — so an addition that leaves exact replay in place never reaches the
-//! model. This is not enforced: a future processor that mutates the request and
-//! forgets the call reintroduces SWITCH-1224, silently and without a failing
-//! test.
+//! Router guidance uses the shared request edits so preserved provider content stays intact.
 
-use switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role};
+use switchyard_protocol::Request;
 
-/// Appends `note` to the request as conversation text.
-///
-/// It joins the trailing user message when there is one, rather than opening a
-/// turn of its own: Anthropic rejects two consecutive user messages, and a
-/// `tool_result` must stay first within its message. A text block after it
-/// satisfies both and keeps the addition a cache-safe suffix. Any other trailing
-/// role — an empty conversation, or one ending on an assistant turn — takes a
-/// fresh user message.
+/// This helper appends temporary guidance and updates preserved provider bodies.
 pub fn append_note(request: &mut Request, note: &str) {
-    match request.llm_request.messages.last_mut() {
-        Some(last) if last.role == Role::User => last.content.push(ContentBlock::Text {
-            text: note.to_string(),
-        }),
-        _ => request
-            .llm_request
-            .messages
-            .push(Message::text(Role::User, note)),
-    }
-    drop_exact_replay(request);
+    switchyard_translation::append_note(&mut request.llm_request, note);
 }
 
-/// Gives up exact same-format replay for this turn.
-///
-/// A codec replays the preserved inbound body verbatim when the target format
-/// matches the source, which is what keeps a same-format hop lossless. That body
-/// predates anything added here, so leaving it in place would encode the request
-/// as it arrived and silently drop the addition. Dropping it sends the codec down
-/// its normal path, which encodes from the request itself.
-///
-/// Every stored body goes, not just the one for the inbound format: preservation
-/// also carries bodies embedded by earlier hops, and the addition is missing from
-/// all of them equally.
-///
-/// Call this from any new code that mutates the request. Nothing checks that you
-/// have.
+/// This helper clears preserved bodies and the note count after other conversation edits.
+/// Subsequent encoding uses the edited request instead of replaying stale provider bodies.
 pub(crate) fn drop_exact_replay(request: &mut Request) {
     request.llm_request.preservation.requests.clear();
-}
-
-/// Prepends a system prompt and disables exact replay so the edit reaches the provider.
-pub(crate) fn prepend_system_prompt(request: &mut Request, prompt: &str) {
-    request.llm_request.instructions.insert(
-        0,
-        InstructionBlock {
-            role: Role::System,
-            content: vec![ContentBlock::Text {
-                text: prompt.to_string(),
-            }],
-        },
-    );
-    drop_exact_replay(request);
+    request.llm_request.temporary_note_count = 0;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use switchyard_protocol::{LlmRequest, ToolResult, text_request};
+    use serde_json::json;
+    use switchyard_protocol::WireFormat;
+    use switchyard_translation::{TranslationEngine, TranslationPolicy};
 
-    const NOTE: &str = "recovering from an error";
-
-    /// Every test request carries the exact inbound body a codec keeps for
-    /// same-format replay, so each assertion below also says what happens to it.
-    fn request_with(messages: Vec<Message>) -> Request {
-        Request {
-            llm_request: LlmRequest {
-                messages,
-                preservation: preserved_body(),
-                ..LlmRequest::default()
-            },
-            raw_request: None,
-            metadata: None,
+    // Native bodies retain provider fields and tool argument text that decoding may not preserve.
+    #[test]
+    fn edits_preserve_native_prefixes_and_provider_fields() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let engine = TranslationEngine::default();
+        let policy = TranslationPolicy::default();
+        let fixtures = [
+            (
+                WireFormat::OpenAiChat,
+                json!({
+                    "model":"auto", "messages":[
+                        {"role":"developer","content":[{"type":"text","text":"Keep this instruction.","vendor":"keep"}]},
+                        {"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"run","arguments":"{ \"cmd\": \"test\" }"}}]},
+                        {"role":"tool","tool_call_id":"call_1","content":"exit 1","vendor":"keep"}
+                    ], "metadata":{"caller":"keep"}, "temperature":0.2
+                }),
+            ),
+            (
+                WireFormat::OpenAiResponses,
+                json!({
+                    "model":"auto", "instructions":"Keep this instruction.", "input":[
+                        {"type":"message","role":"developer","content":[{"type":"input_text","text":"Keep this too."}]},
+                        {"type":"function_call","call_id":"call_1","name":"run","arguments":"{ \"cmd\": \"test\" }"},
+                        {"type":"function_call_output","call_id":"call_1","output":"exit 1"}
+                    ], "metadata":{"caller":"keep"}, "store":false
+                }),
+            ),
+            (
+                WireFormat::AnthropicMessages,
+                json!({
+                    "model":"auto", "max_tokens":32,
+                    "system":[{"type":"text","text":"Keep this instruction.","cache_control":{"type":"ephemeral","ttl":"1h"}}],
+                    "messages":[
+                        {"role":"assistant","content":[{"type":"tool_use","id":"call_1","name":"run","input":{"cmd":"test"}}]},
+                        {"role":"user","content":[{"type":"tool_result","tool_use_id":"call_1","content":"exit 1","is_error":true,"cache_control":{"type":"ephemeral"}}]}
+                    ], "metadata":{"user_id":"keep"}
+                }),
+            ),
+        ];
+        for (format, original) in fixtures {
+            let mut request = Request {
+                llm_request: engine.decode_request(format, &original, &policy)?.request,
+                ..Default::default()
+            };
+            append_note(&mut request, "Reassess the failure.");
+            let encoded = engine
+                .encode_request(format, &request.llm_request, &policy)?
+                .body;
+            let mut expected = original.clone();
+            match format {
+                WireFormat::OpenAiChat => expected["messages"].as_array_mut().ok_or("messages")?.push(json!({"role":"user","content":[{"type":"text","text":"Reassess the failure."}]})),
+                WireFormat::OpenAiResponses => expected["input"].as_array_mut().ok_or("input")?.push(json!({"role":"user","content":[{"type":"input_text","text":"Reassess the failure."}]})),
+                WireFormat::AnthropicMessages => expected["messages"][1]["content"].as_array_mut().ok_or("content")?.push(json!({"type":"text","text":"Reassess the failure."})),
+            }
+            assert_eq!(encoded, expected, "{format}: only the note may change");
+            switchyard_translation::prepend_system_prompt(
+                &mut request.llm_request,
+                "Use the capable tier.",
+            );
+            let edited = engine
+                .encode_request(format, &request.llm_request, &policy)?
+                .body;
+            // The system prompt edit must retain the earlier note and all conversation and tool items.
+            let key = if format == WireFormat::OpenAiResponses {
+                "input"
+            } else {
+                "messages"
+            };
+            if format == WireFormat::OpenAiChat {
+                assert_eq!(
+                    edited[key].as_array().ok_or("messages")?[1..],
+                    encoded[key].as_array().ok_or("messages")?[..]
+                );
+            } else {
+                assert_eq!(edited[key], encoded[key]);
+            }
+            assert_eq!(edited["metadata"], original["metadata"]);
         }
-    }
-
-    fn preserved_body() -> switchyard_protocol::PreservationMetadata {
-        let mut preservation = switchyard_protocol::PreservationMetadata::default();
-        preservation.requests.insert(
-            "openai_chat".into(),
-            serde_json::json!({"model": "weak", "messages": [{"role": "user", "content": "hi"}]}),
-        );
-        preservation
-    }
-
-    fn replays_exactly(request: &Request) -> bool {
-        !request.llm_request.preservation.requests.is_empty()
+        Ok(())
     }
 
     #[test]
-    fn a_note_joins_a_trailing_user_turn_after_its_tool_result() {
-        // The shape a coding-agent turn actually arrives in: the tool result
-        // leads the trailing user message, so the note has to follow it.
-        let tool_result = ContentBlock::ToolResult(ToolResult {
-            tool_call_id: "call_1".to_string(),
-            content: vec![ContentBlock::Text {
-                text: "exit 1".to_string(),
-            }],
-            is_error: Some(true),
-        });
-        let mut request = request_with(vec![Message {
-            role: Role::User,
-            content: vec![tool_result.clone()],
-        }]);
-
-        append_note(&mut request, NOTE);
-
-        let messages = &request.llm_request.messages;
-        assert_eq!(messages.len(), 1, "no second consecutive user turn");
-        assert_eq!(
-            messages[0].content,
-            vec![
-                tool_result,
-                ContentBlock::Text {
-                    text: NOTE.to_string()
-                }
-            ]
-        );
+    fn string_inputs_and_assistant_endings_keep_the_original_message()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = TranslationEngine::default();
+        let policy = TranslationPolicy::default();
+        for (format, body, key) in [
+            (
+                WireFormat::OpenAiChat,
+                json!({"model":"m","messages":[{"role":"assistant","content":"done"}]}),
+                "messages",
+            ),
+            (
+                WireFormat::AnthropicMessages,
+                json!({"model":"m","max_tokens":8,"messages":[{"role":"user","content":"question"},{"role":"assistant","content":"done"}]}),
+                "messages",
+            ),
+            (
+                WireFormat::OpenAiResponses,
+                json!({"model":"m","input":"question"}),
+                "input",
+            ),
+        ] {
+            let mut request = Request {
+                llm_request: engine.decode_request(format, &body, &policy)?.request,
+                ..Default::default()
+            };
+            append_note(&mut request, "note one");
+            append_note(&mut request, "note two");
+            let encoded = engine
+                .encode_request(format, &request.llm_request, &policy)?
+                .body;
+            let items = encoded[key].as_array().ok_or("items")?;
+            if body[key].is_array() {
+                let original = body[key].as_array().ok_or("original")?;
+                assert_eq!(&items[..original.len()], original);
+            } else {
+                assert_eq!(items[0], json!({"role":"user","content":"question"}));
+            }
+        }
+        Ok(())
     }
-
+    // Unsupported preserved bodies must not cause encoding to omit the note.
     #[test]
-    fn a_note_opens_a_user_turn_after_an_assistant_turn() {
-        let mut request = request_with(vec![Message::text(Role::Assistant, "done")]);
-
-        append_note(&mut request, NOTE);
-
-        let messages = &request.llm_request.messages;
-        assert_eq!(messages.len(), 2);
-        assert_eq!(messages[1].role, Role::User);
-        assert_eq!(messages[1].text_content(""), Some(NOTE.to_string()));
-    }
-
-    #[test]
-    fn a_note_leaves_the_rest_of_the_conversation_untouched() {
+    fn invalid_preservation_falls_back_without_losing_the_note()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let engine = TranslationEngine::default();
+        let policy = TranslationPolicy::default();
+        let source = json!({"model":"m","messages":[{"role":"user","content":"original task"}]});
         let mut request = Request {
-            llm_request: LlmRequest {
-                preservation: preserved_body(),
-                ..text_request(Some("auto".to_string()), "fix the build")
-            },
-            raw_request: None,
-            metadata: None,
+            llm_request: engine
+                .decode_request(WireFormat::OpenAiChat, &source, &policy)?
+                .request,
+            ..Default::default()
         };
-
-        append_note(&mut request, NOTE);
-
-        let trail: Vec<String> = request
+        request
             .llm_request
-            .messages
-            .iter()
-            .filter_map(|message| message.text_content("|"))
-            .collect();
-        assert_eq!(trail, vec![format!("fix the build|{NOTE}")]);
-        assert!(
-            !replays_exactly(&request),
-            "a same-format hop would replay the body captured before the note"
+            .preservation
+            .requests
+            .insert("custom".into(), json!({"messages":"unsupported"}));
+        request.llm_request.preservation.requests.insert(
+            WireFormat::OpenAiChat.into(),
+            json!({"model":"m","messages":"unsupported"}),
         );
+        append_note(&mut request, "reassess the failure");
+        assert!(request.llm_request.preservation.requests.is_empty());
+        for target in [
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+        ] {
+            let body = engine
+                .encode_request(target, &request.llm_request, &policy)?
+                .body;
+            let decoded = engine.decode_request(target, &body, &policy)?.request;
+            let text: Vec<_> = decoded
+                .messages
+                .iter()
+                .filter_map(|message| message.text_content(""))
+                .collect();
+            assert_eq!(
+                text,
+                vec!["original task", "reassess the failure"],
+                "{target}"
+            );
+        }
+        Ok(())
     }
 }

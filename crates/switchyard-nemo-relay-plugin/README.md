@@ -231,11 +231,16 @@ marks. Call marks distinguish routing from answer calls; decisions distinguish
 selected from served models. Token metrics cover both call roles, while Relay
 retains ownership of the outer LLM lifecycle.
 
-The plugin also captures the existing `libsy.client_call` and
-`libsy.upstream_attempt` spans for each routed request. It replays completed
+The plugin also captures the existing `libsy.client_call`,
+`libsy.upstream_attempt`, and `libsy.decision_client_call` spans for each routed
+request. It replays completed
 spans beneath Relay's outer LLM scope with their original timestamps. The
-projection includes allowlisted, payload-free routing metadata only; it excludes
-prompts, responses, provider error bodies, and credentials.
+projection contains allowlisted routing metadata by default. To inspect the
+final classifier/judge or typed decision request and buffered response, enable
+[routing payload capture](../../docs/integrations/nemo_relay.md#inspect-classifier-and-judge-payloads)
+in the plugin configuration. Capture uses Relay's existing exporters and writes
+no payload files inside the plugin. It is disabled by default and omits bodies
+above the configured size limit.
 
 ## Observability
 
@@ -281,7 +286,8 @@ meaning requires a new schema version.
 `served_model` and `fallback_used` are `null` when serving metadata is unavailable.
 `outcome_id` is present when the algorithm runner supplies outcome metadata.
 `evidence` is an object containing the supported string fields `source`, `verdict`,
-`trigger`, and `reason_code`, and numeric fields `score`, `confidence`, and `threshold`.
+`trigger`, and `reason_code`, and numeric fields `score`, `confidence`, `threshold`,
+`capable_score`, and `capable_threshold`.
 String values longer than 64 bytes are omitted and should be stable, non-sensitive labels.
 
 ## Failure policy

@@ -37,10 +37,12 @@ The axes are **corroborative**: the signed score is `tanh`-squashed to a
 confidence in `[0, 1]`. One maxed scoring dimension produces about `0.46`;
 corroborating evidence pushes confidence decisively past a `0.5` threshold.
 Repeated failures, critical-error severity, and context compaction are hard
-overrides to the capable tier. Active holds bypass signal extraction and scoring.
+overrides to the capable tier. Set `compaction_override = false` to disable the
+compaction override in either picker. Active holds bypass signal extraction and scoring.
 Severity and test results come from tool output that ran something. The contents
 returned by the built-in read and search tools do not count, unless the tool
-reports a failure.
+reports a failure. Reading a missing file does not add error severity, even
+when the tool marks the result as an error.
 
 `confidence_threshold` sets how sure that estimate must be before the router acts
 on the signal alone. Scores inside the ambiguous band go to the optional
@@ -253,6 +255,7 @@ required columns.
 | `capable_system_prompt` | unset | System prompt prepended for capable requests. |
 | `efficient_system_prompt` | unset | System prompt prepended for efficient requests. |
 | `recent_turn_window` | `3` | Trailing tool results the signals are computed over. |
+| `compaction_override` | `true` | Context compaction forces capable. Set `false` to use the other signals and picker normally. |
 | `capable_hold_turns` | `2` | Requests kept on capable after switching to it; signal-driven capable decisions also start finite holds. `0` disables; `-1` pins after a switch. |
 | `efficient_hold_turns` | `0` | Requests kept on efficient after switching to it. `0` disables; `-1` pins after a switch. |
 | `tool_semantics.observe` | `[]` | Domain tool names that count as investigation. |
@@ -320,6 +323,44 @@ switchyard-server --config routes.toml --port 4000
 ```
 
 This is the recommended default: routing on tool signals alone, no classifier.
+
+### Plan and execute
+
+To start with the capable model and keep using the efficient model after a
+switch, add this route to the [minimal configuration](#minimal-route):
+
+```toml
+[routes.plan_execute]
+id = "switchyard/plan-execute"
+type = "stage_router"
+capable_target = "capable"
+efficient_target = "efficient"
+picker = "capable_first"
+confidence_threshold = 0.0
+capable_hold_turns = 0
+efficient_hold_turns = -1
+capable_system_prompt = "Inspect the task and plan before modifying files."
+```
+
+With no tool history, Stage selects capable and adds the planning prompt.
+After successful writes, Stage can select efficient; critical failures can keep
+capable selected. A switch from capable to efficient starts a hold that keeps
+selecting efficient while the session state remains. Later tool errors do not
+end it. Only capable requests receive the planning prompt. See
+[How it works](#how-it-works) for scoring and hold behavior.
+
+Send requests to `switchyard/plan-execute` with the same
+`x-switchyard-session-id` from the first planning request onward. Include the
+full conversation, including the plan, tool calls, and results. For the Responses
+API, send that history in `input` and omit both `previous_response_id` and
+`conversation`. Known continuation IDs bypass Stage even with full input
+history. Send `x-switchyard-session-final: true` when the shared session ends to
+clear all of its agents' state.
+
+When migrating from the removed `plan_execute` type, use this recipe and replace
+`planning_prompt` with `capable_system_prompt`. Stage has no exact equivalent
+for the old judged handoff or reasoning-to-text conversion; keep the plan in
+ordinary conversation text so the executor receives it.
 
 ### Optional: custom tool semantics
 
@@ -454,3 +495,4 @@ the `stage router override` log line carries it for overrides:
 - [Mechanics of Libsy](../mechanics_of_libsy.md): the execution model and host responsibilities.
 - [TOML Schema](../reference/toml_schema.md#stage_router): the complete
   configuration reference.
+- [Tuning](../tuning/index.md): check your current route and compare candidate settings on your workload.

@@ -176,12 +176,18 @@ impl FallThrough {
                         let mut request = outcome.request.clone();
                         request.llm_request.model = Some(target.to_string());
                         if let Some(prompt) = prompts.get(target) {
-                            super::util::prompts::prepend_system_prompt(&mut request, prompt);
+                            switchyard_translation::prepend_system_prompt(
+                                &mut request.llm_request,
+                                prompt,
+                            );
                         }
                         outcome.candidate_requests.insert(target.clone(), request);
                     }
                     if let Some(prompt) = prompts.get(&outcome.selected_model_ids[0]) {
-                        super::util::prompts::prepend_system_prompt(&mut outcome.request, prompt);
+                        switchyard_translation::prepend_system_prompt(
+                            &mut outcome.request.llm_request,
+                            prompt,
+                        );
                     }
                 }
                 Ok(outcome)
@@ -551,7 +557,10 @@ mod tests {
             .filter_map(|message| message.text_content("|"))
             .collect();
 
-        assert_eq!(messages, vec![format!("fix the build|{NOTE}")]);
+        assert_eq!(
+            messages,
+            vec!["fix the build".to_string(), NOTE.to_string()]
+        );
         assert!(
             request.llm_request.instructions.is_empty(),
             "a note is not an instruction"

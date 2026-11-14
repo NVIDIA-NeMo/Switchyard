@@ -1,0 +1,31 @@
+# Merge with deployment bindings for Astra medium, Luna max, and a Luna Decision target.
+# Uses the default Decision instructions and Composite planning prompt.
+
+[routes.switchyard]
+id = "switchyard"
+type = "composite"
+
+[routes.switchyard.classifier]
+target = "classifier"
+classify_trigger = "new_session"
+fail_open = false
+
+[routes.switchyard.classifier.decision]
+cutoff = 0.92
+
+[routes.switchyard.stage]
+capable_target = "astra"
+efficient_target = "luna"
+recent_turn_window = 3
+
+[routes.switchyard.efficient]
+picker = "efficient_first"
+confidence_threshold = 0.4
+capable_hold_turns = 2
+efficient_hold_turns = 0
+
+[routes.switchyard.capable]
+picker = "capable_first"
+confidence_threshold = 0.0
+capable_hold_turns = 0
+efficient_hold_turns = -1

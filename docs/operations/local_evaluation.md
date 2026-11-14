@@ -65,6 +65,11 @@ switchyard-server --config routes.toml --dry-run
 switchyard-server --config routes.toml --host 127.0.0.1 --port 4000
 ```
 
+The standalone binary binds to `127.0.0.1` by default. For remote clients,
+pass `--host 0.0.0.0` explicitly and secure access to the server. The provided
+Docker image and `dev-server/switchyard.service` set this option to preserve
+network access. A later `--host` argument overrides the image's default.
+
 The dry run prints `server OK: switchyard`. It checks configuration and credential lookup, not whether the provider accepts the key.
 
 In a second terminal, check local readiness:
@@ -152,6 +157,7 @@ With an unreleased build from main, `GET /v1/routing/session-stats?session_id=..
 
 - [Benchmark results](../benchmarks.md) link to model pools, results, and runnable profiles. For Terminal-Bench 2.1, the [escalation profile](../../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml) includes its judge and reasoning settings. Its comments explain the endpoint differences from the measured runs.
 - [Benchmark setup](../../benchmark/README.md) explains how to compare routing against single-model baselines on the same tasks.
+- [Tuning](../tuning/index.md) explains how to define an objective, compare candidate configurations on calibration tasks, and validate the selected one on held-out tasks.
 - [Routing overview](../routing_algorithms/overview.md) explains Auto, Task, Execution, and Composite. A TOML file can expose multiple routes through different route IDs.
 - [Server reference](../../crates/switchyard-server/README.md) covers configuration, TLS, logging, and metrics.
 

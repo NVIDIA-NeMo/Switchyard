@@ -381,18 +381,16 @@ impl AdvisorGate {
         review_tail: Option<&str>,
         trigger: &'static str,
     ) -> Result<ConsultOutcome> {
-        // The advisor reviews the FULL transcript: system/developer content is
-        // normalized out of `messages` into `instructions`, so prepend it back
-        // as leading messages (identical {role, content} shape) — the task
-        // constraints the verdict must check against usually live there.
+        // The advisor reviews the FULL transcript. Top-level system/developer
+        // content lives in `instructions`, so prepend it as leading messages
+        // (identical {role, content} shape). The task constraints the verdict
+        // must check against usually live there. Inline instruction messages
+        // stay in place.
         let transcript_messages: Vec<Message> = base
             .llm_request
             .instructions
             .iter()
-            .map(|block| Message {
-                role: block.role,
-                content: block.content.clone(),
-            })
+            .map(|block| Message::new(block.role, block.content.clone()))
             .chain(base.llm_request.messages.iter().cloned())
             .collect();
         let transcript = review_transcript(

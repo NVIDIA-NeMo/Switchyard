@@ -45,9 +45,10 @@ Evaluate the complete agent, model pool, and routing configuration against your 
 
 | Gateway | Start here | Deployment and limits |
 | --- | --- | --- |
-| **OpenRouter** | [Use Switchyard through OpenRouter](https://openrouter.ai/docs/guides/routing/routers/switchyard-router) | Hosted by OpenRouter. Set `model` to `nvidia/switchyard` in API requests. |
+| **Agent Router** | [Agent Router](https://github.com/tetratelabs/built-on-envoy/blob/main/extensions/switchyard/README.md) | Open-source and self-hosted. It provides an OpenAI-compatible API and runs on Envoy. |
 | **LiteLLM** | [Run the Switchyard routing-plugin example](examples/litellm/README.md#quick-start-with-the-local-proxy) | Experimental and checkout-only. The example pins LiteLLM 1.102.0 and supports Stage routing based on request history, plus Random routing. It cannot service intermediate model calls required by classifier or escalation algorithms. |
 | **NeMo Relay** | [Build and configure the native plugin](crates/switchyard-nemo-relay-plugin/README.md#build-from-source) | Requires Relay `>=0.10.0, <1.0.0`. The source-build path requires a Rust toolchain and Python 3. |
+| **OpenRouter** | [Use Switchyard through OpenRouter](https://openrouter.ai/docs/guides/routing/routers/switchyard-router) | Hosted by OpenRouter. Set `model` to `nvidia/switchyard` in API requests. |
 
 Relay 0.8.x and 0.9.0 can lose upstream error status and details when the plugin
 is enabled, even for models outside its routes. Review the
@@ -118,7 +119,7 @@ Start with Auto. Choose Task, Execution, or Composite when you need more control
 
 Auto is a fixed preset in v0.3.0. It does not compare strategies at runtime. The TOML runner supports `type = "auto"`. In Rust, use `StageRouterConfig::new(PickerMode::EfficientFirst, 0.5)` for the same preset.
 
-The [routing overview](docs/routing_algorithms/overview.md) retains the full catalogue, including [Plan/Execute](docs/routing_algorithms/plan_execute_routing.md), [escalation](docs/routing_algorithms/escalation_router_routing.md), [advisor](docs/routing_algorithms/advisor_gate_routing.md), [sub-agent](docs/routing_algorithms/subagent_routing.md), and [random](docs/routing_algorithms/random_routing.md) strategies. Integration support varies: check the gateway guide before choosing an algorithm.
+The [routing overview](docs/routing_algorithms/overview.md) lists all strategies, including the [Plan/Execute configuration for Stage](docs/routing_algorithms/stage_router_routing.md#plan-and-execute), [escalation](docs/routing_algorithms/escalation_router_routing.md), [advisor](docs/routing_algorithms/advisor_gate_routing.md), [sub-agent](docs/routing_algorithms/subagent_routing.md), and [random](docs/routing_algorithms/random_routing.md). Integration support varies: check the gateway guide before choosing an algorithm.
 
 [Prefill routing](docs/routing_algorithms/prefill_routing.md) is designed for fast, efficient model selection using a model's prefill activations and a classifier trained on your own evaluation data.
 
@@ -152,6 +153,9 @@ releases. Pin the version you integrate.
 ## What’s new
 
 Features and integrations recently merged into `main`.
+
+- **2026-11-12 · Route Copilot Chat in VS Code**\
+  Pair a capable and an efficient model, and let Auto routing pick one for each request in Copilot Chat. [Setup guide →](examples/vscode/README.md)
 
 - **2026-10-16 · Route between Sonnet and Opus in Claude Code**\
   Use your Claude login for automatic routing on Linux x86_64 and see the selected model in the status line. [Setup guide →](examples/claude/README.md)

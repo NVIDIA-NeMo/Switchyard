@@ -88,6 +88,12 @@ fn translate_response() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+To restore Responses tool namespaces and custom tool calls, use
+`translate_response_with_extensions(source, target, body, request_extensions, policy)`.
+Pass `&decoded_request.request.extensions` from the original request returned by
+`decode_request`. Empty extensions preserve the behavior of `translate_response`.
+Extensions apply after encoding, including when a same-format response is preserved.
+
 ## Translation policy
 
 The examples above use `TranslationPolicy::default()`. A translation policy decides what happens

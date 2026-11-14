@@ -12,7 +12,7 @@ You need Rust 1.96.1+ with Cargo and a native build toolchain. See [installation
 cargo new switchyard-demo
 cd switchyard-demo
 # Keep libsy and its protocol types on the same API revision.
-cargo add switchyard-libsy switchyard-protocol --git https://github.com/NVIDIA-NeMo/Switchyard.git --rev 5415db205c1f4db7e079731e7bf33a6609c67c8e
+cargo add switchyard-libsy switchyard-protocol --git https://github.com/NVIDIA-NeMo/Switchyard.git --rev ef958a9a8099bb0493b3d42862273e09eced0f52
 # futures reads the step stream; Tokio runs the asynchronous routing tasks.
 cargo add futures@0.3
 cargo add tokio@1 --features macros,rt
@@ -99,17 +99,17 @@ use switchyard_protocol::{ContentBlock, Message, Role, ToolCall, ToolResult};
 let mut request = request;
 // Describe the agent's past activity; this example does not execute bash.
 request.llm_request.messages.extend([
-    Message {
-        role: Role::Assistant,
-        content: vec![ContentBlock::ToolCall(ToolCall {
+    Message::new(
+        Role::Assistant,
+        vec![ContentBlock::ToolCall(ToolCall {
             id: "c1".into(),
             name: "bash".into(),
             arguments: r#"{"command":"cargo test"}"#.parse()?,
         })],
-    },
-    Message {
-        role: Role::User,
-        content: vec![ContentBlock::ToolResult(ToolResult {
+    ),
+    Message::new(
+        Role::User,
+        vec![ContentBlock::ToolResult(ToolResult {
             // The result refers to the tool call above by its ID.
             tool_call_id: "c1".into(),
             is_error: Some(true),
@@ -117,7 +117,7 @@ request.llm_request.messages.extend([
                 text: "MemoryError: cannot allocate memory\nKilled".into(),
             }],
         })],
-    },
+    ),
 ]);
 ```
 
@@ -139,7 +139,7 @@ Add the dependencies:
 
 ```bash
 # Translation converts neutral protocol types to and from provider JSON.
-cargo add switchyard-translation --git https://github.com/NVIDIA-NeMo/Switchyard.git --rev 5415db205c1f4db7e079731e7bf33a6609c67c8e
+cargo add switchyard-translation --git https://github.com/NVIDIA-NeMo/Switchyard.git --rev ef958a9a8099bb0493b3d42862273e09eced0f52
 # reqwest handles HTTPS and JSON; serde_json represents the provider's reply.
 cargo add reqwest@0.13 --no-default-features --features json,rustls
 cargo add serde_json@1
@@ -264,6 +264,7 @@ Your client returns `switchyard_protocol::Response` and adapts errors to `libsy:
 - **Explore the Rust API:** [libsy crate](../crates/libsy/README.md) and [generated API reference](reference/rust_api.md).
 - **Use a gateway integration:** [LiteLLM](../examples/litellm/README.md) or [NeMo Relay](integrations/nemo_relay.md). Check each guide's supported algorithms and versions.
 - **Choose another algorithm:** [routing overview](routing_algorithms/overview.md).
+- **Tune your configuration:** [Tuning](tuning/index.md) explains how to define an objective, compare candidate configurations on calibration tasks, and validate the selected one on held-out tasks.
 - **Try the standalone proxy:** [local evaluation guide](operations/local_evaluation.md). The server is for demos, evaluation, and personal use, not a supported production path.
 - **Use Python:** [Python bindings](reference/host_integration.md#python-bindings).
 - **Use an agent directly:** [Claude Code example](../examples/claude/README.md), [pi](integrations/pi.md), or [Oh My Pi](integrations/oh_my_pi.md).

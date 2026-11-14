@@ -529,6 +529,7 @@ pub struct StageClassifier {
     mode: PickerMode,
     confidence_threshold: f64,
     capable_first_threshold: f64,
+    compaction_override: bool,
     capable_hold_turns: i64,
     efficient_hold_turns: Option<i64>,
     pub(crate) reset_on_user_turn: bool,
@@ -544,6 +545,7 @@ impl StageClassifier {
             mode,
             confidence_threshold,
             capable_first_threshold: 0.0,
+            compaction_override: true,
             capable_hold_turns: 2,
             efficient_hold_turns: None,
             reset_on_user_turn: false,
@@ -555,6 +557,12 @@ impl StageClassifier {
     /// Threshold used when an outer classifier selects capable-first.
     pub fn with_capable_first_threshold(mut self, threshold: f64) -> Self {
         self.capable_first_threshold = threshold;
+        self
+    }
+
+    /// Whether context compaction forces the capable tier. Enabled by default.
+    pub fn with_compaction_override(mut self, enabled: bool) -> Self {
+        self.compaction_override = enabled;
         self
     }
 
@@ -738,7 +746,7 @@ impl Classifier for StageClassifier {
         ] {
             if Self::consume_hold(state, &Self::agent_key(request, key)) {
                 let target = driver.first_model_for(&category)?.clone();
-                record_routing_decision(source, &target);
+                record_routing_decision(source, driver.provider_model(&target));
                 driver.set_evidence(serde_json::json!({"source": source.as_str()}));
                 return Ok((
                     Classification::Scores(vec![Score {
@@ -750,11 +758,12 @@ impl Classifier for StageClassifier {
                 ));
             }
         }
-        let Some(signal) = state.tool_signals.clone() else {
+        let Some(mut signal) = state.tool_signals.clone() else {
             // No tool activity yet — nothing to score, so the signals have no
             // opinion, same as a below-threshold turn.
             return Ok((Self::abstain(), None));
         };
+        signal.compacted &= self.compaction_override;
         let (mode, threshold) = match fall_open_tier(state) {
             Some(Tier::Capable) => (PickerMode::CapableFirst, self.capable_first_threshold),
             Some(Tier::Efficient) => (PickerMode::EfficientFirst, self.confidence_threshold),
@@ -783,7 +792,7 @@ impl Classifier for StageClassifier {
                 {
                     Self::set_hold(state, &capable_hold_key, self.capable_hold_turns);
                 }
-                record_routing_decision(source, target);
+                record_routing_decision(source, driver.provider_model(target));
                 if source == DecisionSource::Override
                     && let Some(reason) = override_reason(&signal)
                 {
@@ -1497,7 +1506,7 @@ mod tests {
             .score(&mut state, &mut request, &driver)
             .await?;
 
-        assert_eq!(trailing_text(&request), Some(format!("hi|{ESCALATION}")));
+        assert_eq!(trailing_text(&request), Some(ESCALATION.to_string()));
         Ok(())
     }
 
@@ -1509,7 +1518,7 @@ mod tests {
 
         let mut first = request();
         classifier.score(&mut state, &mut first, &driver).await?;
-        assert_eq!(trailing_text(&first), Some(format!("hi|{ESCALATION}")));
+        assert_eq!(trailing_text(&first), Some(ESCALATION.to_string()));
 
         for _ in 0..2 {
             let mut held = request();
@@ -1535,7 +1544,7 @@ mod tests {
             .score(&mut state, &mut request, &driver)
             .await?;
 
-        assert_eq!(trailing_text(&request), Some(format!("hi|{DEESCALATION}")));
+        assert_eq!(trailing_text(&request), Some(DEESCALATION.to_string()));
         Ok(())
     }
 

@@ -8,6 +8,12 @@ use serde_json::{Map, Value};
 use switchyard_protocol::WireFormat;
 use switchyard_runner::Runner;
 
+pub(crate) const DEFAULT_ROUTING_PAYLOAD_BYTES: usize = 256 * 1024;
+
+fn default_routing_payload_bytes() -> usize {
+    DEFAULT_ROUTING_PAYLOAD_BYTES
+}
+
 pub(crate) fn protocol_from_call(name: &str) -> Option<WireFormat> {
     match name {
         "openai.chat_completions" => Some(WireFormat::OpenAiChat),
@@ -20,6 +26,11 @@ pub(crate) fn protocol_from_call(name: &str) -> Option<WireFormat> {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SwitchyardConfig {
+    /// Includes bounded final routing HTTP bodies in Relay scopes when explicitly enabled.
+    #[serde(default)]
+    pub(crate) capture_routing_payloads: bool,
+    #[serde(default = "default_routing_payload_bytes")]
+    pub(crate) max_routing_payload_bytes: usize,
     #[serde(default)]
     pub(crate) priority: i32,
     #[serde(default)]
@@ -30,6 +41,9 @@ pub(crate) struct SwitchyardConfig {
 
 impl SwitchyardConfig {
     pub(crate) fn load_runner(&self) -> Result<Runner, String> {
+        if self.max_routing_payload_bytes == 0 {
+            return Err("max_routing_payload_bytes must be positive".into());
+        }
         let runner = match (&self.switchyard_config_path, &self.switchyard_config) {
             (Some(path), None) => Runner::load(path).map_err(|error| error.to_string()),
             (None, Some(config)) => toml::to_string(config)
@@ -116,6 +130,8 @@ mod tests {
     #[test]
     fn builds_runner_from_inline_deployment() {
         let config = SwitchyardConfig {
+            capture_routing_payloads: false,
+            max_routing_payload_bytes: crate::config::DEFAULT_ROUTING_PAYLOAD_BYTES,
             priority: 0,
             switchyard_config_path: None,
             switchyard_config: Some(inline_deployment()),
@@ -123,6 +139,27 @@ mod tests {
 
         let runner = config.load_runner().unwrap();
         assert!(runner.route("switchyard/default").is_some());
+    }
+
+    #[test]
+    fn payload_capture_defaults_off_and_requires_a_positive_limit() {
+        let mut config: SwitchyardConfig = serde_json::from_value(json!({
+            "switchyard_config": inline_deployment(),
+        }))
+        .unwrap();
+        assert!(!config.capture_routing_payloads);
+        assert_eq!(config.max_routing_payload_bytes, 256 * 1024);
+        let schema: Value = serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        assert_eq!(
+            schema["properties"]["max_routing_payload_bytes"]["default"],
+            config.max_routing_payload_bytes
+        );
+        config.max_routing_payload_bytes = 0;
+        assert!(
+            matches!(config.load_runner(), Err(error) if error.contains("max_routing_payload_bytes"))
+        );
+        config.max_routing_payload_bytes = 2 * 1024 * 1024;
+        assert!(config.load_runner().is_ok());
     }
 
     #[test]
@@ -135,6 +172,8 @@ mod tests {
         )
         .unwrap();
         let config = SwitchyardConfig {
+            capture_routing_payloads: false,
+            max_routing_payload_bytes: crate::config::DEFAULT_ROUTING_PAYLOAD_BYTES,
             priority: 0,
             switchyard_config_path: Some(deployment.path().to_path_buf()),
             switchyard_config: None,
@@ -244,6 +283,8 @@ mod tests {
     #[test]
     fn requires_exactly_one_configuration_source() {
         let neither = SwitchyardConfig {
+            capture_routing_payloads: false,
+            max_routing_payload_bytes: crate::config::DEFAULT_ROUTING_PAYLOAD_BYTES,
             priority: 0,
             switchyard_config_path: None,
             switchyard_config: None,
@@ -254,6 +295,8 @@ mod tests {
         ));
 
         let both = SwitchyardConfig {
+            capture_routing_payloads: false,
+            max_routing_payload_bytes: crate::config::DEFAULT_ROUTING_PAYLOAD_BYTES,
             priority: 0,
             switchyard_config_path: Some(PathBuf::from("routes.toml")),
             switchyard_config: Some(inline_deployment()),

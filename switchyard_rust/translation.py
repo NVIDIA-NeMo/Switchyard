@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Native bindings for buffered request and response translation."""
+"""Native bindings for request, response, and stream translation."""
 
 from enum import Enum
 from typing import TYPE_CHECKING, Any, final
@@ -18,6 +18,9 @@ class WireFormat(str, Enum):
 
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterable
+
+    from switchyard_rust._translation_stream import _TranslationStream
 
     class TranslationError(Exception):
         """Translation failure with a readable message and structured details."""
@@ -27,7 +30,7 @@ if TYPE_CHECKING:
 
     @final
     class TranslationEngine:
-        """Translate buffered provider JSON using the default translation policy.
+        """Translate provider JSON and streams.
 
         Calls are independent. Request context is not retained for responses.
         """
@@ -69,9 +72,43 @@ if TYPE_CHECKING:
             ...
 
         def translate_response(
-            self, source: WireFormat | str, target: WireFormat | str, body: dict[str, Any]
+            self,
+            source: WireFormat | str,
+            target: WireFormat | str,
+            body: dict[str, Any],
+            *,
+            request_extensions: dict[str, Any] | None = None,
         ) -> dict[str, Any]:
-            """Translate a complete response, returning body and diagnostics."""
+            """Return body and diagnostics, optionally using decoded request extensions."""
+            ...
+
+        def decode_stream(
+            self, source: WireFormat | str, byte_stream: AsyncIterable[bytes]
+        ) -> _TranslationStream:
+            """Decode SSE bytes into IR events; prefer consumption inside async with."""
+            ...
+
+        def encode_stream(
+            self,
+            target: WireFormat | str,
+            chunks: AsyncIterable[dict[str, Any]],
+            *,
+            served_model: str | None = None,
+            request_extensions: dict[str, Any] | None = None,
+        ) -> _TranslationStream:
+            """Encode IR events into provider dictionaries; the caller owns input cleanup."""
+            ...
+
+        def translate_stream(
+            self,
+            source: WireFormat | str,
+            target: WireFormat | str,
+            byte_stream: AsyncIterable[bytes],
+            *,
+            served_model: str | None = None,
+            request_extensions: dict[str, Any] | None = None,
+        ) -> _TranslationStream:
+            """Translate SSE byte chunks into target-format event dictionaries."""
             ...
 
 

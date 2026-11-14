@@ -125,9 +125,9 @@ mod tests {
 
     #[test]
     fn message_text_keeps_tool_calls_and_results() {
-        let call = Message {
-            role: Role::Assistant,
-            content: vec![
+        let call = Message::new(
+            Role::Assistant,
+            vec![
                 ContentBlock::Text {
                     text: "running it".to_string(),
                 },
@@ -137,21 +137,21 @@ mod tests {
                     arguments: json!({"cmd": "ls"}),
                 }),
             ],
-        };
+        );
         let text = message_text(&call);
         assert!(text.contains("running it"), "{text}");
         assert!(text.contains(r#"tool_call bash({"cmd":"ls"})"#), "{text}");
 
-        let result = Message {
-            role: Role::Tool,
-            content: vec![ContentBlock::ToolResult(ToolResult {
+        let result = Message::new(
+            Role::Tool,
+            vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "call-1".to_string(),
                 content: vec![ContentBlock::Text {
                     text: "no such file".to_string(),
                 }],
                 is_error: Some(true),
             })],
-        };
+        );
         assert_eq!(message_text(&result), "no such file");
     }
 
@@ -160,9 +160,9 @@ mod tests {
     fn message_text_deduplicates_terminus_commands_for_the_judge() {
         let first_command = "grep -n bug app.py\n";
         let second_command = "sed -n '1,80p' app.py\n";
-        let message = Message {
-            role: Role::Assistant,
-            content: vec![
+        let message = Message::new(
+            Role::Assistant,
+            vec![
                 ContentBlock::Text {
                     text: format!(
                         "Before\n```json\n{}\n```\nAfter",
@@ -186,7 +186,7 @@ mod tests {
                     arguments: json!({"keystrokes": second_command, "duration": 0.1}),
                 }),
             ],
-        };
+        );
 
         let text = message_text(&message);
 
@@ -211,9 +211,9 @@ mod tests {
             })
             .to_string()
         };
-        let message = Message {
-            role: Role::Assistant,
-            content: vec![
+        let message = Message::new(
+            Role::Assistant,
+            vec![
                 ContentBlock::Text {
                     text: format!(
                         "First {} second {} repeated {}",
@@ -233,7 +233,7 @@ mod tests {
                     arguments: json!({"keystrokes": second_command}),
                 }),
             ],
-        };
+        );
 
         let text = message_text(&message);
 
@@ -251,13 +251,13 @@ mod tests {
             "commands": [{"keystrokes": command}],
         })
         .to_string();
-        let without_tool_call = Message {
-            role: Role::Assistant,
-            content: vec![ContentBlock::Text { text: text.clone() }],
-        };
-        let mismatched_tool_call = Message {
-            role: Role::Assistant,
-            content: vec![
+        let without_tool_call = Message::new(
+            Role::Assistant,
+            vec![ContentBlock::Text { text: text.clone() }],
+        );
+        let mismatched_tool_call = Message::new(
+            Role::Assistant,
+            vec![
                 ContentBlock::Text { text },
                 ContentBlock::ToolCall(ToolCall {
                     id: "call-1".to_string(),
@@ -265,7 +265,7 @@ mod tests {
                     arguments: json!({"keystrokes": "sed -n '1,20p' app.py\n", "duration": 0.1}),
                 }),
             ],
-        };
+        );
 
         assert_eq!(
             message_text(&without_tool_call)
@@ -286,9 +286,9 @@ mod tests {
     fn message_text_keeps_a_partially_encoded_terminus_batch() {
         let first_command = "grep -n bug app.py\n";
         let second_command = "sed -n '1,80p' app.py\n";
-        let message = Message {
-            role: Role::Assistant,
-            content: vec![
+        let message = Message::new(
+            Role::Assistant,
+            vec![
                 ContentBlock::Text {
                     text: json!({
                         "commands": [
@@ -304,7 +304,7 @@ mod tests {
                     arguments: json!({"keystrokes": first_command}),
                 }),
             ],
-        };
+        );
 
         let text = message_text(&message);
 
@@ -317,9 +317,9 @@ mod tests {
     #[test]
     fn message_text_keeps_duplicate_commands_without_one_tool_call_each() {
         let command = "grep -n bug app.py\n";
-        let message = Message {
-            role: Role::Assistant,
-            content: vec![
+        let message = Message::new(
+            Role::Assistant,
+            vec![
                 ContentBlock::Text {
                     text: json!({
                         "commands": [
@@ -335,7 +335,7 @@ mod tests {
                     arguments: json!({"keystrokes": command}),
                 }),
             ],
-        };
+        );
 
         let text = message_text(&message);
 

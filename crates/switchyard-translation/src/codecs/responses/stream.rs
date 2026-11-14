@@ -27,6 +27,30 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
         WireFormat::OpenAiResponses.into()
     }
 
+    fn is_terminal_event(&self, event: &Value) -> bool {
+        matches!(
+            event
+                .get("type")
+                .or_else(|| event.get("event"))
+                .and_then(Value::as_str),
+            Some("response.completed" | "response.incomplete" | "response.failed")
+        )
+    }
+
+    fn stops_at_terminal_event(&self) -> bool {
+        true
+    }
+
+    fn sse_done_is_terminal(&self) -> bool {
+        true
+    }
+
+    fn stamp_streamed_response_model(&self, event: &mut Value, served_model: &str) {
+        if let Some(response) = event.get_mut("response").and_then(Value::as_object_mut) {
+            response.insert("model".to_string(), Value::String(served_model.to_string()));
+        }
+    }
+
     fn decode_event(
         &self,
         state: &mut StreamTranslationState,
@@ -132,10 +156,13 @@ fn decode_responses_stream(
                 model: state.model.clone(),
             }]
         }
-        Some("response.output_text.delta") => event
+        Some("response.output_text.delta" | "response.refusal.delta") => event
             .get("delta")
             .and_then(Value::as_str)
             .map(|text| {
+                if event_type == Some("response.refusal.delta") {
+                    state.stop_reason = Some("refusal".to_string());
+                }
                 let index = event
                     .get("output_index")
                     .and_then(Value::as_u64)
@@ -157,6 +184,31 @@ fn decode_responses_stream(
                 }]
             })
             .unwrap_or_default(),
+        Some("response.refusal.done") => {
+            state.stop_reason = Some("refusal".to_string());
+            let Some(text) = event.get("refusal").and_then(Value::as_str) else {
+                return Vec::new();
+            };
+            let index = event
+                .get("output_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            let content_index = event
+                .get("content_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            let decoded = state
+                .decoded_response_text
+                .entry(index)
+                .or_default()
+                .entry(content_index)
+                .or_default();
+            match snapshot_suffix(decoded, text) {
+                Ok(Some(text)) => vec![LlmResponseChunk::TextDelta { index, text }],
+                Ok(None) => Vec::new(),
+                Err(error) => vec![error],
+            }
+        }
         Some("response.reasoning_text.delta") | Some("response.reasoning_summary_text.delta") => {
             event
                 .get("delta")
@@ -284,30 +336,28 @@ fn decode_responses_stream(
                     }
                 }
             }
-            if let Some(usage) = event
-                .get("response")
-                .and_then(Value::as_object)
-                .and_then(|response| response.get("usage"))
-                .and_then(Value::as_object)
-            {
-                let usage = responses_usage(usage);
-                state.usage = usage.clone();
-                state.saw_backend_usage = true;
-                out.push(LlmResponseChunk::Usage(usage));
-            }
+            decode_terminal_usage(state, event, &mut out);
             // A completed response that produced a tool call ended the turn to run that
             // tool, not because the assistant was done. The buffered decoder reports tool
             // use for such output; the stream must too, or stop-reason-driven tool loops
             // (Anthropic `tool_use`, Chat `tool_calls`) stop without running the tool.
             // Carries the Anthropic spelling because every encoder already maps it.
-            let reason = state.decoded_tool_call.then(|| "tool_use".to_string());
+            let reason = state
+                .stop_reason
+                .clone()
+                .or_else(|| state.decoded_tool_call.then(|| "tool_use".to_string()));
             out.push(LlmResponseChunk::MessageStop { reason });
             out
         }
         // Carries the Anthropic spelling because every encoder already maps it.
-        Some("response.incomplete") => vec![LlmResponseChunk::MessageStop {
-            reason: Some("max_tokens".to_string()),
-        }],
+        Some("response.incomplete") => {
+            let mut out = Vec::new();
+            decode_terminal_usage(state, event, &mut out);
+            out.push(LlmResponseChunk::MessageStop {
+                reason: Some("max_tokens".to_string()),
+            });
+            out
+        }
         Some("response.failed") => vec![LlmResponseChunk::StreamError {
             message: event
                 .get("response")
@@ -732,10 +782,15 @@ fn decode_responses_completed_item(
         let mut out = Vec::new();
         if let Some(content) = item.get("content").and_then(Value::as_array) {
             for (content_index, part) in content.iter().enumerate() {
-                if part.get("type").and_then(Value::as_str) != Some("output_text") {
-                    continue;
-                }
-                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                let text = match part.get("type").and_then(Value::as_str) {
+                    Some("output_text") => part.get("text"),
+                    Some("refusal") => {
+                        state.stop_reason = Some("refusal".to_string());
+                        part.get("refusal")
+                    }
+                    _ => continue,
+                };
+                if let Some(text) = text.and_then(Value::as_str) {
                     let decoded = state
                         .decoded_response_text
                         .entry(index)
@@ -1147,6 +1202,25 @@ fn encode_responses_tool_delta(
     out
 }
 
+// Both completed and token-limited Responses events can carry final usage and provider cost.
+fn decode_terminal_usage(
+    state: &mut StreamTranslationState,
+    event: &Value,
+    out: &mut Vec<LlmResponseChunk>,
+) {
+    if let Some(usage) = event
+        .get("response")
+        .and_then(Value::as_object)
+        .and_then(|response| response.get("usage"))
+        .and_then(Value::as_object)
+    {
+        let usage = responses_usage(usage);
+        state.usage = usage.clone();
+        state.saw_backend_usage = true;
+        out.push(LlmResponseChunk::Usage(usage));
+    }
+}
+
 // Normalizes OpenAI Responses token usage fields.
 fn responses_usage(usage: &serde_json::Map<String, Value>) -> Usage {
     let aggregate_input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
@@ -1225,4 +1299,41 @@ fn responses_id(state: &StreamTranslationState) -> String {
     target_message_id_or_source_message_id(state)
         .unwrap_or("resp_switchyard")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_stream_completion() {
+        let codec = OpenAiResponsesStreamCodec;
+        assert!(codec.sse_done_is_terminal());
+        for kind in [
+            "response.completed",
+            "response.incomplete",
+            "response.failed",
+        ] {
+            assert!(codec.is_terminal_event(&json!({"type": kind})));
+            assert!(codec.is_terminal_event(&json!({"event": kind})));
+        }
+        assert!(!codec.is_terminal_event(&json!({"type": "response.created"})));
+    }
+
+    #[test]
+    fn responses_replay_stamps_the_served_model_inside_response() {
+        let mut event = json!({
+            "type": "response.created",
+            "response": {
+                "id": "resp_1",
+                "model": "provider/model",
+                "provider_extension": true,
+            },
+        });
+
+        OpenAiResponsesStreamCodec.stamp_streamed_response_model(&mut event, "served/model");
+
+        assert_eq!(event["response"]["model"], "served/model");
+        assert_eq!(event["response"]["provider_extension"], true);
+    }
 }
