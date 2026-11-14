@@ -488,6 +488,19 @@ fn python_client_error(py: Python<'_>, error: PyErr, model: &ModelId) -> LlmClie
     }
 }
 
+// The thread-safe Future forwards cancellation to the read on its owning Python loop.
+struct PythonStreamRead(Py<PyAny>);
+
+impl Drop for PythonStreamRead {
+    fn drop(&mut self) {
+        Python::try_attach(|py| {
+            if let Err(error) = self.0.call_method0(py, "cancel") {
+                error.write_unraisable(py, Some(self.0.bind(py)));
+            }
+        });
+    }
+}
+
 fn python_response_stream(
     py: Python<'_>,
     stream: Py<PyAny>,
@@ -498,14 +511,31 @@ fn python_response_stream(
     let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
     let stream = futures::stream::unfold(Some((iterator, locals, model)), |state| async move {
         let (iterator, locals, model) = state?;
-        let next = Python::attach(|py| {
-            pyo3_async_runtimes::into_future_with_locals(
-                &locals,
-                iterator.bind(py).call_method0("__anext__")?,
-            )
+        let next = Python::attach(|py| -> PyResult<_> {
+            let asyncio = py.import("asyncio")?;
+            let coroutine = py
+                .import("switchyard_rust._libsy_async")?
+                .getattr("next_item")?
+                .call1((iterator.bind(py),))?;
+            let context = locals.context(py).call_method0("copy")?;
+            let task = context.call_method1(
+                "run",
+                (
+                    asyncio.getattr("run_coroutine_threadsafe")?,
+                    coroutine,
+                    locals.event_loop(py),
+                ),
+            )?;
+            let read = PythonStreamRead(task.unbind());
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("loop", locals.event_loop(py))?;
+            let awaitable =
+                asyncio.call_method("wrap_future", (read.0.bind(py),), Some(&kwargs))?;
+            let next = pyo3_async_runtimes::into_future_with_locals(&locals, awaitable)?;
+            Ok((next, read))
         });
         match next {
-            Ok(next) => match next.await {
+            Ok((next, _read)) => match next.await {
                 Ok(item) => {
                     let event =
                         Python::attach(|py| from_python::<LlmResponseStreamEvent>(item.bind(py)))
