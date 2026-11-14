@@ -398,9 +398,41 @@ impl FormatCodec for OpenAiChatCodec {
             });
         }
         let output = response.first_output();
-        let content = output
-            .map(|output| text_from_blocks(&output.content, ""))
+        let mut content = String::new();
+        let mut refusal = None::<String>;
+        let mut url_citations = output
+            .map(|output| output.url_citations.clone())
             .unwrap_or_default();
+        let mut content_offset = 0;
+        if let Some(output) = output {
+            for block in &output.content {
+                match block {
+                    ContentBlock::Text { text } => {
+                        content.push_str(text);
+                        content_offset += text.chars().count();
+                    }
+                    ContentBlock::Refusal { text } => {
+                        refusal.get_or_insert_with(String::new).push_str(text);
+                        let refusal_len = text.chars().count();
+                        // IR offsets include refusal text; Chat content excludes it.
+                        for citation in &mut url_citations {
+                            citation.start_index -= refusal_len
+                                .min(citation.start_index.saturating_sub(content_offset));
+                            citation.end_index -=
+                                refusal_len.min(citation.end_index.saturating_sub(content_offset));
+                        }
+                        url_citations.retain(|citation| citation.start_index < citation.end_index);
+                    }
+                    ContentBlock::Unknown { raw, .. } => {
+                        if let Some(text) = raw.as_str() {
+                            content.push_str(text);
+                            content_offset += text.chars().count();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         let tool_calls = output
             .map(|output| {
                 output
@@ -422,16 +454,18 @@ impl FormatCodec for OpenAiChatCodec {
             .unwrap_or_default();
         let mut message = json!({
             "role": "assistant",
-            "content": if content.is_empty() && !tool_calls.is_empty() {
+            "content": if content.is_empty() && (!tool_calls.is_empty() || refusal.is_some()) {
                 Value::Null
             } else {
                 Value::String(content)
             },
         });
-        if let Some(output) = output.filter(|output| !output.url_citations.is_empty()) {
+        if let Some(refusal) = refusal {
+            message["refusal"] = Value::String(refusal);
+        }
+        if !url_citations.is_empty() {
             message["annotations"] = Value::Array(
-                output
-                    .url_citations
+                url_citations
                     .iter()
                     .map(|citation| json!({"type": "url_citation", "url_citation": citation}))
                     .collect(),
