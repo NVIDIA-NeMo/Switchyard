@@ -54,6 +54,10 @@ pub struct StreamTranslationState {
     pub(crate) tool_states: BTreeMap<usize, StreamToolState>,
     #[serde(default)]
     pub(crate) pending_chat_tool_names: BTreeMap<usize, String>,
+    /// Slot and id of the most recent Chat tool call, used to number deltas from backends
+    /// that omit `tool_calls[].index`.
+    #[serde(default)]
+    pub(crate) chat_tool_slot: Option<(usize, Option<String>)>,
     #[serde(default)]
     pub(crate) active_anthropic_tool: Option<usize>,
     #[serde(default)]
