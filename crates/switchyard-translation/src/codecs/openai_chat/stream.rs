@@ -176,8 +176,26 @@ fn decode_openai_chat_stream(
                 for tool_call in tool_calls {
                     if let Some(tool_call) = tool_call.as_object() {
                         let function = tool_call.get("function").and_then(Value::as_object);
-                        let index =
-                            tool_call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+                        let call_id = tool_call.get("id").and_then(Value::as_str);
+                        // Some backends (e.g. Gemini's OpenAI-compatible endpoint) omit `index`.
+                        // Without it, a new call id starts a new slot; id-less deltas continue
+                        // the current one.
+                        let index = match tool_call.get("index").and_then(Value::as_u64) {
+                            Some(index) => index as usize,
+                            None => match (&state.chat_tool_slot, call_id) {
+                                (None, _) => 0,
+                                (Some((slot, _)), None) => *slot,
+                                (Some((slot, Some(last))), Some(id)) if last == id => *slot,
+                                (Some((slot, _)), Some(_)) => slot + 1,
+                            },
+                        };
+                        if let Some(id) = call_id {
+                            state.chat_tool_slot = Some((index, Some(id.to_string())));
+                        } else if state.chat_tool_slot.as_ref().map(|(slot, _)| *slot)
+                            != Some(index)
+                        {
+                            state.chat_tool_slot = Some((index, None));
+                        }
                         if let Some(name) = function
                             .and_then(|function| function.get("name"))
                             .and_then(Value::as_str)

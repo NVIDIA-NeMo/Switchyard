@@ -3656,3 +3656,36 @@ fn responses_custom_tool_calls_decode_from_the_finished_item() -> TestResult {
     }
     Ok(())
 }
+
+// Some OpenAI-compatible backends (Gemini) stream tool calls without `tool_calls[].index`.
+// Each new call id must open its own slot instead of being merged into slot 0.
+#[test]
+fn chat_stream_tool_calls_without_index_get_separate_slots() -> TestResult {
+    let engine = TranslationEngine::default();
+    let mut state =
+        StreamTranslationState::new(WireFormat::OpenAiChat, WireFormat::AnthropicMessages);
+    let mut events = Vec::new();
+    for event in [
+        json!({"choices": [{"delta": {"tool_calls": [{"id": "call_a",
+            "function": {"name": "alpha", "arguments": "{\"x\":"}}]}}]}),
+        json!({"choices": [{"delta": {"tool_calls": [{
+            "function": {"arguments": "1}"}}]}}]}),
+        json!({"choices": [{"delta": {"tool_calls": [{"id": "call_b",
+            "function": {"name": "beta", "arguments": "{}"}}]}}]}),
+        json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+    ] {
+        events.extend(engine.translate_event(
+            &mut state,
+            WireFormat::OpenAiChat,
+            WireFormat::AnthropicMessages,
+            &event,
+        )?);
+    }
+    events.extend(engine.finish_stream(&mut state, WireFormat::AnthropicMessages)?);
+    let names: Vec<_> = events
+        .iter()
+        .filter_map(|event| event.get("content_block")?.get("name")?.as_str())
+        .collect();
+    assert_eq!(names, vec!["alpha", "beta"]);
+    Ok(())
+}
