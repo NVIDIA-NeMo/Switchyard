@@ -53,13 +53,20 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     const history = messages(ctx);
+    const branch = ctx.sessionManager.getBranch();
+    const lastState = branch.findLast(entry => entry.type === "custom"
+      && (entry.customType === ENTRY || entry.customType === REMAINING_ERROR_ENTRY)
+      && (entry.data as { session_id: string }).session_id === pair.session_id);
+    // A completed turn has no future usage. Keep its original forecasts for error scoring.
+    const completed = lastState?.type === "custom" && lastState.customType === REMAINING_ERROR_ENTRY
+      && (lastState.data as RemainingSettlement).completed;
     const fullNow = observedTokens(history);
-    const lgbmRemaining = pair.lightgbm && fullNow !== undefined && pair.full_used !== undefined
+    const lgbmRemaining = completed ? 0 : pair.lightgbm && fullNow !== undefined && pair.full_used !== undefined
       ? Math.max(0, pair.lightgbm.remaining_task.tokens - (fullNow - pair.full_used)) : undefined;
     // Use the distribution's point estimate (band midpoints), not its upper-bound buffer.
-    const gregRemaining = pair.greg?.predicted_tokens == null || fullNow === undefined ? undefined
+    const gregRemaining = completed ? 0 : pair.greg?.predicted_tokens == null || fullNow === undefined ? undefined
       : Math.max(0, pair.greg.predicted_tokens - fullNow);
-    const savedErrors = ctx.sessionManager.getBranch().flatMap(entry => entry.type === "custom"
+    const savedErrors = branch.flatMap(entry => entry.type === "custom"
       && entry.customType === REMAINING_ERROR_ENTRY ? [(entry.data as RemainingSettlement)] : [])
       .filter(record => record.session_id === pair.session_id).flatMap(record => record.samples);
     const formatError = (stats: ReturnType<NextCallMAE["summary"]>) => errorStatus(stats)
@@ -68,12 +75,14 @@ export default function (pi: ExtensionAPI) {
       const stats = new NextCallMAE(pair.session_id, savedErrors.filter(sample => sample.predictor === predictor)).summary();
       const err = formatError(stats);
       const estimate = remaining === undefined ? undefined : metrics.projectRemaining(ctx, remaining, "full", pair.model_cost);
-      const cost = estimate?.usd === undefined ? "$—" : `~$${estimate.usd.toFixed(4)}`;
-      const prefix = `${label} · ${cost} · ETA ${completionDuration(estimate?.eta_ms)} · ${next ? `${next} | ` : ""}remaining`;
+      const cost = completed ? "$0.0000" : estimate?.usd === undefined ? "$—" : `~$${estimate.usd.toFixed(4)}`;
+      const eta = completed ? "0s" : completionDuration(estimate?.eta_ms);
+      const prefix = `${label} · ${cost} · ETA ${eta} · ${next ? `${next} | ` : ""}remaining`;
       if (remaining === undefined) return `${prefix} unavailable (${err})`;
-      return `${prefix} ~${count(remaining)} tok (${err})`;
+      return `${prefix} ${completed ? "" : "~"}${count(remaining)} tok (${err})`;
     };
-    const next = pair.lightgbm ? `next ~${count(pair.lightgbm.next_call.tokens)} tok (${formatError(tracker(ctx).summary())})` : "next unavailable";
+    const next = completed ? `next — (${formatError(tracker(ctx).summary())})`
+      : pair.lightgbm ? `next ~${count(pair.lightgbm.next_call.tokens)} tok (${formatError(tracker(ctx).summary())})` : "next unavailable";
     const lines = [row("LightGBM", "lightgbm", lgbmRemaining, next), row("Jev", "greg", gregRemaining)];
     ctx.ui.setWidget("switchyard-forecast-compare", lines, { placement: "belowEditor" });
   }

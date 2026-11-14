@@ -106,6 +106,10 @@ Both predictors run concurrently before each normal user, continuation, or
 retry call. Direct helper calls skip forecasting. Cancellation propagates to
 Pi. Failed forecasts are recorded independently and allow completion to proceed.
 The displayed remaining values consume observed usage until the next forecast.
+When Pi finishes a turn normally, both rows show remaining `0 tok`, `$0.0000`,
+and `ETA 0s`; LightGBM shows `next —`. The original forecasts remain unchanged
+for error scoring. This completed display restores on resume and resets at
+the next forecast. Aborted or failed turns retain their forecast estimates.
 
 ## Cost, ETA, and errors
 

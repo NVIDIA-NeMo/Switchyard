@@ -90,6 +90,13 @@ test("both forecasts share a cutoff and completion; rendering survives classifie
   assert.equal(settlements()[0].data.samples.length, 2);
   assert.equal(settlements()[0].data.samples.find(s => s.predictor === "greg").actual_tokens, 1110);
   assert.equal(settlements()[0].data.samples.find(s => s.predictor === "lightgbm").actual_tokens, 1110);
+  for (const line of widgets.at(-1)) {
+    assert.match(line, / · \$0\.0000 · ETA 0s · /);
+    assert.match(line, /remaining 0 tok \(avg err /);
+  }
+  assert.match(widgets.at(-1)[0], /next — \(avg err .*\) \| remaining 0 tok/);
+  assert.equal(pair.lightgbm.remaining_task.tokens, 6000);
+  assert.equal(pair.greg.predicted_tokens, 46000);
   assert.match(widgets.at(-1)[0], /remaining .*avg err \+[\d,]+\.\d%\)/);
   assert.match(widgets.at(-1)[1], /remaining .*avg err \+[\d,]+\.\d%\)/);
   emit("agent_settled");
@@ -103,6 +110,7 @@ test("both forecasts share a cutoff and completion; rendering survives classifie
   assert.equal(secondRoute.thinkingLevel, "medium");
   assert.equal(contexts.at(-1).state.thinking_level, "medium");
   assert.equal(contexts.at(-1).state.token_usage.tokens_used_so_far, 1110);
+  assert.match(widgets.at(-1)[0], /ETA ~.* \| remaining ~/);
   assert.match(widgets.at(-1)[0], /^LightGBM · .* · ETA .* · next .* \| remaining/);
   assert.match(widgets.at(-1)[1], /^Jev · \$— · ETA — · remaining unavailable/);
   const number = contexts.length;
@@ -113,6 +121,7 @@ test("both forecasts share a cutoff and completion; rendering survives classifie
   assert.equal(settlements().length, 2);
   assert.equal(settlements()[1].data.completed, false);
   assert.deepEqual(settlements()[1].data.samples, []);
+  assert.doesNotMatch(widgets.at(-1)[0], /ETA 0s|remaining 0 tok/);
   assert.match(widgets.at(-1)[1], /avg err \+[\d,]+\.\d%\)/);
   assert.ok(statuses.every(value => value === undefined));
 });
