@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import type { ErrorSample } from "./forecast-error.ts";
+import type { CostOutcome } from "./cost-forecast.ts";
 
 export const REMAINING_ERROR_ENTRY = "switchyard.compare.remaining-errors.v2";
 export interface RemainingForecast {
@@ -18,6 +19,7 @@ export interface RemainingSettlement {
   session_id: string;
   completed: boolean;
   samples: RemainingError[];
+  cost_outcome?: CostOutcome;
 }
 
 /** Score original pre-call forecasts against usage from their cutoff to the final response. */

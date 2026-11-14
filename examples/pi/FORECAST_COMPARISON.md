@@ -7,11 +7,12 @@ OpenRouter (`openrouter/anthropic/claude-opus-4.8`). The display has two rows
 below the editor:
 
 ```text
-LightGBM · ~$0.0200 · ETA ~20s · next ~8.0k tok (avg err +4.0%) | remaining ~30.0k tok (avg err −8.0%)
-Jev · ~$0.0400 · ETA ~40s · remaining ~60.0k tok (avg err +12.0%)
+LightGBM · rem ~$0.0200 · total ~$0.0500 · ETA ~20s · next ~8.0k tok (avg err +4.0%) | remaining ~30.0k tok (avg err −8.0%)
+Jev · rem ~$0.0400 · total ~$0.0700 · ETA ~40s · remaining ~60.0k tok (avg err +12.0%)
 ```
 
-These are illustrative values. Cost and ETA describe remaining work. The two
+These are illustrative values. `rem` and ETA describe remaining work; `total`
+adds observed acting-model spending for the current task/turn. The two
 rows replace the Switchyard footer. `medium`, `high`, and `max` are passed through to the
 completion model, which must support the selected level.
 
@@ -118,6 +119,45 @@ for error scoring. This completed display restores on resume and resets at
 the next forecast. Aborted or failed turns retain their forecast estimates.
 
 ## Cost, ETA, and errors
+
+For a task/turn, let `C[t]` be the remaining-cost prediction before call `t`,
+`c[t]` its observed cost, and `S[t]` the sum of observed acting-model costs so
+far. The cost-to-go identity is `C[t] = c[t] + C[t+1]` for a consistent forecast;
+the projected total is `S[t] + C[t]`. Remaining forecasts are not summed across
+calls. Predictions may revise this total, so their differences are not treated
+as observed charges.
+
+Every saved forecast has a typed `cost` frame with USD fields for each
+predictor: `remaining_usd`, `next_call_usd` (LightGBM), `total_usd`,
+`session_total_usd`, `initial_total_usd`, the first-priced baseline, and forecast
+revisions. The frame records observed task and session spend, plus forecasting
+API spend and the current forecasting API call's cost separately. See
+[`cost-forecast.ts`](cost-forecast.ts) for the API types. Charges are computed
+from actual recorded usage and its saved per-call catalog rates; missing prices
+or usage remain unknown, not zero. Retries and partially charged failed calls
+are included when their usage and prices are available.
+
+Each forecast's dollar value is frozen at its pre-call boundary. Observed
+dollars consume that budget until a new prediction arrives; updated token mix
+does not retroactively reprice an old forecast. `initial_total_usd` freezes the
+first total-cost prediction (`C[0]` at zero task spend). At normal completion,
+the settlement's `cost_outcome` reports observed acting-model cost minus that
+original prediction, and the widget prints `C0 err` in dollars. Positive means
+actual cost exceeded the predicted budget; this sign is the reverse of the
+token error convention below. Remaining cost and ETA still become zero.
+
+A completely fresh session initially has no observed token/cache mix, so its
+first dollar forecast and `C0` are unknown. A later estimate is saved as
+`first_priced_total_usd` and is scored/displayed as `first err`, not relabeled
+as `C0`. Existing timed observations can price the first forecast of a new
+turn. Baselines persist on resume and reset after each settled turn, since
+future user requests are outside the current forecast horizon.
+
+`revision_usd = total[t] - total[t-1]` records each forecast update. The API also
+retains `C[t-1] - C[t]` as an implied preceding-call cost and the actual observed
+cost separately. Including the final revision to actual spend makes revisions
+telescope to `actual - C[0]` when all values are known. Predictor API charges
+remain outside the acting-model forecast/error target.
 
 Both rows use the same calibration from successful, timed acting-model calls
 in their session. Let `F` be their observed full-token total and `R` the

@@ -14,6 +14,8 @@ import { ForecastWorker, observedTokens, type HorizonForecast } from "./forecast
 import { NextCallMAE, ERROR_ENTRY, errorStatus, type ErrorSample } from "./forecast-error.ts";
 import { scoreRemainingForecasts, REMAINING_ERROR_ENTRY,
   type RemainingSettlement } from "./remaining-error.ts";
+import { observedSpend, costFrame, costView, finalCost, formatDollars, formatCostError,
+  type CostFrame, type Predictor } from "./cost-forecast.ts";
 
 const ENTRY = "switchyard.compare.forecast.v2";
 interface Pair {
@@ -26,6 +28,7 @@ interface Pair {
   token_basis: "full_input_plus_output";
   thinking_level: ModelThinkingLevel;
   model_cost?: ModelCost;
+  cost?: CostFrame;
   errors: { lightgbm?: string; greg?: string };
 }
 const count = (n: number) => n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(Math.round(n));
@@ -42,6 +45,14 @@ export default function (pi: ExtensionAPI) {
     if (!errors.has(id)) errors.set(id, new NextCallMAE(id, ctx.sessionManager.getEntries().flatMap(entry =>
       entry.type === "custom" && entry.customType === ERROR_ENTRY ? [entry.data as ErrorSample] : [])));
     return errors.get(id)!;
+  }
+  function pendingPairs(ctx: ExtensionContext): Pair[] {
+    const id = ctx.sessionManager.getSessionId();
+    const branch = ctx.sessionManager.getBranch();
+    const boundary = branch.findLastIndex(entry => entry.type === "custom" && entry.customType === REMAINING_ERROR_ENTRY
+      && (entry.data as RemainingSettlement).session_id === id);
+    return branch.slice(boundary + 1).flatMap(entry => entry.type === "custom" && entry.customType === ENTRY
+      && (entry.data as Pair).session_id === id ? [entry.data as Pair] : []);
   }
   function render(ctx: ExtensionContext) {
     if (!ctx.hasUI) return;
@@ -69,15 +80,20 @@ export default function (pi: ExtensionAPI) {
     const savedErrors = branch.flatMap(entry => entry.type === "custom"
       && entry.customType === REMAINING_ERROR_ENTRY ? [(entry.data as RemainingSettlement)] : [])
       .filter(record => record.session_id === pair.session_id).flatMap(record => record.samples);
+    const spend = pair.cost ? observedSpend(branch, pair.session_id, pair.cost.task_start_agent_turn_idx) : undefined;
     const formatError = (stats: ReturnType<NextCallMAE["summary"]>) => errorStatus(stats)
       .replace(/^ \| /, "").replace(/ \(n=\d+\)/, "");
-    const row = (label: string, predictor: "lightgbm" | "greg", remaining: number | undefined, next?: string) => {
+    const row = (label: string, predictor: Predictor, remaining: number | undefined, next?: string) => {
       const stats = new NextCallMAE(pair.session_id, savedErrors.filter(sample => sample.predictor === predictor)).summary();
       const err = formatError(stats);
       const estimate = remaining === undefined ? undefined : metrics.projectRemaining(ctx, remaining, "full", pair.model_cost);
-      const cost = completed ? "$0.0000" : estimate?.usd === undefined ? "$—" : `~$${estimate.usd.toFixed(4)}`;
+      const view = pair.cost && spend ? costView(pair.cost, predictor, spend.completion_usd, Boolean(completed)) : undefined;
+      const remainingCost = view ? view.remaining_usd : completed ? 0 : estimate?.usd ?? null;
+      const cost = formatDollars(remainingCost, !completed);
+      const total = formatDollars(view?.total_usd ?? null, !completed);
+      const finalError = completed && view ? ` · ${formatCostError(view)}` : "";
       const eta = completed ? "0s" : completionDuration(estimate?.eta_ms);
-      const prefix = `${label} · ${cost} · ETA ${eta} · ${next ? `${next} | ` : ""}remaining`;
+      const prefix = `${label} · rem ${cost} · total ${total}${finalError} · ETA ${eta} · ${next ? `${next} | ` : ""}remaining`;
       if (remaining === undefined) return `${prefix} unavailable (${err})`;
       return `${prefix} ${completed ? "" : "~"}${count(remaining)} tok (${err})`;
     };
@@ -114,6 +130,9 @@ export default function (pi: ExtensionAPI) {
       const completed = finalEntry?.type === "message" && finalEntry.message.role === "assistant" && finalEntry.message.stopReason === "stop";
       const record: RemainingSettlement = { session_id: id, completed,
         samples: completed ? scoreRemainingForecasts(pending, observedTokens(history)) : [] };
+      const costs = pending.findLast(pair => pair.cost)?.cost;
+      if (completed && costs) record.cost_outcome = finalCost(costs,
+        observedSpend(branch, id, costs.task_start_agent_turn_idx));
       pi.appendEntry(REMAINING_ERROR_ENTRY, record);
     }
     render(ctx);
@@ -168,6 +187,19 @@ export default function (pi: ExtensionAPI) {
               full_used: observedTokens(history), token_basis: "full_input_plus_output", thinking_level: thinkingLevel, model_cost: model.cost,
               errors: { lightgbm: lgbm.status === "rejected" ? String(lgbm.reason?.message ?? lgbm.reason) : undefined,
                 greg: greg.status === "rejected" ? String(greg.reason?.message ?? greg.reason) : undefined } };
+            const previous = pendingPairs(ctx);
+            const taskStart = previous[0]?.agent_turn_idx ?? pair.agent_turn_idx;
+            const branch = ctx.sessionManager.getBranch();
+            const projection = (tokens: number | undefined) => tokens === undefined ? null
+              : metrics.projectRemaining(ctx, tokens, "full", model.cost).usd ?? null;
+            pair.cost = costFrame({ taskStart, agentTurn: pair.agent_turn_idx,
+              spent: observedSpend(branch, id, taskStart), sessionSpent: observedSpend(branch, id).completion_usd,
+              predictionApiCall: observedSpend(branch, id, pair.agent_turn_idx).prediction_api_usd,
+              remaining: { lightgbm: projection(pair.lightgbm?.remaining_task.tokens),
+                greg: projection(pair.greg?.predicted_tokens == null || pair.full_used === undefined ? undefined
+                  : Math.max(0, pair.greg.predicted_tokens - pair.full_used)) },
+              nextCall: projection(pair.lightgbm?.next_call.tokens), previous: previous.flatMap(p => p.cost ? [p.cost] : []),
+            });
             latest.set(id, pair);
             pi.appendEntry(ENTRY, pair);
             tracker(ctx).begin(`${id}:${pair.agent_turn_idx}`, pair.lightgbm?.next_call.tokens);
