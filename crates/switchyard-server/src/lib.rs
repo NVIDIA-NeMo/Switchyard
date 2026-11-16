@@ -97,8 +97,12 @@ fn should_forward_upstream_header(name: &HeaderName) -> bool {
 
 // Copies allowed upstream headers without replacing headers this server already set.
 fn forward_upstream_headers(target: &mut HeaderMap, upstream: &HeaderMap) {
+    let connection_headers = connection_header_names(upstream);
     for name in upstream.keys() {
-        if !should_forward_upstream_header(name) || target.contains_key(name) {
+        if !should_forward_upstream_header(name)
+            || target.contains_key(name)
+            || connection_headers.contains(name)
+        {
             continue;
         }
         for value in upstream.get_all(name) {
@@ -742,15 +746,18 @@ fn fallback_url(base_url: &str, path_and_query: &str) -> Result<reqwest::Url, St
     Ok(url)
 }
 
-fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
-    let connection_headers = headers
+fn connection_header_names(headers: &HeaderMap) -> Vec<HeaderName> {
+    headers
         .get_all(axum::http::header::CONNECTION)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
         .filter_map(|name| HeaderName::from_bytes(name.trim().as_bytes()).ok())
-        .collect::<Vec<_>>();
-    for name in connection_headers {
+        .collect()
+}
+
+fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
+    for name in connection_header_names(headers) {
         headers.remove(name);
     }
     for name in [

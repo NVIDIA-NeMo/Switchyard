@@ -145,6 +145,8 @@ async fn upstream_chat(
                 ("retry-after-ms", "7000"),
                 ("x-should-retry", "true"),
                 ("x-request-id", "req-err-1"),
+                ("connection", "keep-alive, X-Upstream-Hop"),
+                ("x-upstream-hop", "remove"),
                 ("set-cookie", "a=b"),
                 ("x-switchyard-session-id", "spoofed"),
                 ("x-model-router-selected-model", "model/upstream-echo"),
@@ -6411,12 +6413,14 @@ targets = ["only"]
             let response = send(&app, "POST", path, Some(body)).await?;
             assert_eq!(response.status, StatusCode::TOO_MANY_REQUESTS, "{case}");
             // An empty list means the header must be absent.
-            let expected: [(&str, &[&str]); 9] = [
+            let expected: [(&str, &[&str]); 11] = [
                 ("retry-after", &["7"]),
                 ("retry-after-ms", &["7000"]),
                 ("x-should-retry", &["true"]),
                 ("x-request-id", &["req-err-1"]),
                 ("x-upstream-trace", &["trace-1", "trace-2"]),
+                ("connection", &[]),
+                ("x-upstream-hop", &[]),
                 ("set-cookie", &[]),
                 ("x-switchyard-session-id", &[]),
                 ("x-model-router-selected-model", &[]),
