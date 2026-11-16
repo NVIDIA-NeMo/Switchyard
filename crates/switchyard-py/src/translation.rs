@@ -392,7 +392,7 @@ fn client_error(py: Python<'_>, error: LlmClientError) -> PyErr {
             "ContextWindowExceeded",
             json!({"model": model, "message": message}),
         ),
-        LlmClientError::UpstreamHttp { status, body } => (
+        LlmClientError::UpstreamHttp { status, body, .. } => (
             "UpstreamHttp",
             json!({"status": status.as_u16(), "body": body}),
         ),

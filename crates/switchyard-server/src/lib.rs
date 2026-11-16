@@ -73,10 +73,14 @@ const FORWARDED_UPSTREAM_HEADERS: &[&str] = &[
     "openai-processing-ms",
     // Anthropic spells its correlation id without the `x-` prefix.
     "request-id",
+    // Callers use these to decide when to retry an upstream error.
+    "retry-after",
+    "retry-after-ms",
     "traceparent",
     "tracestate",
     "x-litellm-response-cost",
     "x-request-id",
+    "x-should-retry",
 ];
 const FORWARDED_UPSTREAM_HEADER_PREFIXES: &[&str] =
     &["anthropic-ratelimit-", "x-ratelimit-", "x-upstream-"];
@@ -90,6 +94,19 @@ fn should_forward_upstream_header(name: &HeaderName) -> bool {
             .iter()
             .any(|prefix| name.starts_with(prefix))
 }
+
+// Copies allowed upstream headers without replacing headers this server already set.
+fn forward_upstream_headers(target: &mut HeaderMap, upstream: &HeaderMap) {
+    for name in upstream.keys() {
+        if !should_forward_upstream_header(name) || target.contains_key(name) {
+            continue;
+        }
+        for value in upstream.get_all(name) {
+            target.append(name.clone(), value.clone());
+        }
+    }
+}
+
 /// Non-standard status used only in logs and metrics for a request whose
 /// downstream client disconnected before any response was written.
 const CLIENT_CLOSED_REQUEST: u16 = 499;
@@ -1199,13 +1216,7 @@ async fn handle_llm_request(
     };
     // Forward upstream headers before Switchyard writes its own so any header
     // this server emits always overrides an upstream echo of the same name.
-    let response_headers = response.headers_mut();
-    for (name, value) in upstream_headers.iter() {
-        if !should_forward_upstream_header(name) {
-            continue;
-        }
-        response_headers.append(name.clone(), value.clone());
-    }
+    forward_upstream_headers(response.headers_mut(), &upstream_headers);
     if let Some(provider_model) = provider_model.as_ref() {
         attach_routing_headers(&mut response, provider_model);
     }
@@ -1401,7 +1412,11 @@ fn client_error(error: &LlmClientError) -> Response {
             "upstream_error",
             "temporarily_unavailable",
         ),
-        LlmClientError::UpstreamHttp { status, body } => upstream_error(*status, body),
+        LlmClientError::UpstreamHttp {
+            status,
+            body,
+            headers,
+        } => upstream_error(*status, body, headers),
         LlmClientError::Transport { source } | LlmClientError::InvalidResponse { source } => {
             error_response(
                 StatusCode::BAD_GATEWAY,
@@ -1428,7 +1443,7 @@ fn client_error(error: &LlmClientError) -> Response {
 }
 
 // Keep the provider's message and nonempty string code in our error JSON.
-fn upstream_error(status: StatusCode, body: &str) -> Response {
+fn upstream_error(status: StatusCode, body: &str, headers: &HeaderMap) -> Response {
     let parsed = serde_json::from_str::<Value>(body).unwrap_or_default();
     let error = &parsed["error"];
     let message = error["message"].as_str().unwrap_or(body);
@@ -1436,7 +1451,9 @@ fn upstream_error(status: StatusCode, body: &str) -> Response {
         .as_str()
         .filter(|code| !code.is_empty())
         .unwrap_or("upstream_error");
-    let mut response = error_response(status, message, "upstream_error", code);
+    let mut error = ApiError::new(status, message, "upstream_error", code);
+    error.upstream_headers = headers.clone();
+    let mut response = error.into_response(WireFormat::OpenAiChat);
     // Provider messages and codes can quote request content; log only fixed metadata.
     response
         .extensions_mut()
@@ -1451,6 +1468,8 @@ struct ApiError {
     message: String,
     error_type: &'static str,
     code: String,
+    // Unfiltered headers from an upstream HTTP error; the allowed ones are forwarded.
+    upstream_headers: HeaderMap,
 }
 
 impl ApiError {
@@ -1465,6 +1484,7 @@ impl ApiError {
             message: message.into(),
             error_type,
             code: code.into(),
+            upstream_headers: HeaderMap::new(),
         }
     }
 
@@ -1486,6 +1506,7 @@ impl ApiError {
             }),
         };
         let mut response = (self.status, Json(body)).into_response();
+        forward_upstream_headers(response.headers_mut(), &self.upstream_headers);
         response
             .extensions_mut()
             .insert(RequestLogError(self.message.clone()));
@@ -2315,6 +2336,7 @@ target = "judge"
             body: format!(
                 r#"{{"error":{{"message":"validation failed: {LEAKED}","code":"invalid_request_{LEAKED}"}}}}"#
             ),
+            headers: Box::default(),
         };
         for wire_format in [
             WireFormat::OpenAiChat,
@@ -2344,7 +2366,10 @@ target = "judge"
     fn upstream_header_forwarding_covers_litellm_cost() {
         for name in [
             "baggage",
+            "retry-after",
+            "retry-after-ms",
             "x-litellm-response-cost",
+            "x-should-retry",
             "x-ratelimit-remaining",
             "x-upstream-retry",
         ] {

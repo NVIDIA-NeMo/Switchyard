@@ -644,6 +644,7 @@ impl TranslatingLlmClient {
         }
 
         let retry_after = retry_after_delay(response.headers());
+        let headers = Box::new(response.headers().clone());
         let body = match response.text().await {
             Ok(body) => body,
             Err(error) => {
@@ -664,7 +665,11 @@ impl TranslatingLlmClient {
                     message: body,
                 }
             } else {
-                LlmClientError::UpstreamHttp { status, body }
+                LlmClientError::UpstreamHttp {
+                    status,
+                    body,
+                    headers,
+                }
             };
         Err(AttemptFailure {
             error,
@@ -750,6 +755,7 @@ impl TranslatingLlmClient {
                                         metadata.as_ref(),
                                         backend.is_forwarding_auth(),
                                     ),
+                                    headers: Box::new(upstream_headers.clone()),
                                 }
                             }
                             error => LlmClientError::ResponseTranslation(error.to_string()),
@@ -1132,7 +1138,7 @@ fn normalize_codex_string_input(url: &str, body: &mut Value) {
 }
 
 fn rejects_template_options(error: &LlmClientError) -> bool {
-    let LlmClientError::UpstreamHttp { status, body } = error else {
+    let LlmClientError::UpstreamHttp { status, body, .. } = error else {
         return false;
     };
     if !matches!(
@@ -3311,7 +3317,8 @@ mod tests {
             error,
             LlmClientError::UpstreamHttp {
                 status: StatusCode::UNAUTHORIZED,
-                body
+                body,
+                ..
             } if body == "invalid key"
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -3392,10 +3399,46 @@ mod tests {
             error,
             LlmClientError::UpstreamHttp {
                 status: StatusCode::INTERNAL_SERVER_ERROR,
-                body
+                body,
+                ..
             } if body == "attempt 3"
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 3);
+        Ok(())
+    }
+
+    // The error keeps every header of the last attempt; consumers choose what to forward.
+    #[tokio::test]
+    async fn upstream_error_carries_headers_from_the_last_attempt()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        // A zero `retry-after` keeps the retry from sleeping.
+        let reply = |id: &str| {
+            ResponseTemplate::new(429)
+                .insert_header("retry-after", "0")
+                .insert_header("x-request-id", id)
+                .insert_header("set-cookie", "a=b")
+        };
+        Mock::given(method("POST"))
+            .respond_with(reply("first"))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(reply("second"))
+            .mount(&server)
+            .await;
+        let client =
+            TranslatingLlmClient::new(&chat_map_with_retries(&format!("{}/v1", server.uri()), 1))?;
+        let Err(LlmClientError::UpstreamHttp { headers, .. }) = client
+            .call_rewrite_model(request_for(Some("gpt"), false), None)
+            .await
+        else {
+            panic!("expected an upstream HTTP error");
+        };
+        assert_eq!(headers["x-request-id"], "second");
+        assert_eq!(headers["retry-after"], "0");
+        assert_eq!(headers["set-cookie"], "a=b");
         Ok(())
     }
 
@@ -3502,6 +3545,7 @@ mod tests {
                 error: LlmClientError::UpstreamHttp {
                     status,
                     body: String::new(),
+                    headers: Box::default(),
                 },
                 status: Some(status),
                 retry_after: None,
@@ -3519,6 +3563,7 @@ mod tests {
                 error: LlmClientError::UpstreamHttp {
                     status,
                     body: String::new(),
+                    headers: Box::default(),
                 },
                 status: Some(status),
                 retry_after: None,
@@ -3686,6 +3731,7 @@ mod tests {
         let LlmClientError::UpstreamHttp {
             status,
             body: actual,
+            ..
         } = error
         else {
             panic!("expected the upstream HTTP error, got {error:?}");

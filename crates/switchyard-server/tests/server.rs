@@ -137,6 +137,28 @@ async fn upstream_chat(
         )
             .into_response();
     }
+    if prompt == "upstream-error-headers" {
+        let mut response = (
+            StatusCode::TOO_MANY_REQUESTS,
+            [
+                ("retry-after", "7"),
+                ("retry-after-ms", "7000"),
+                ("x-should-retry", "true"),
+                ("x-request-id", "req-err-1"),
+                ("set-cookie", "a=b"),
+                ("x-switchyard-session-id", "spoofed"),
+                ("x-model-router-selected-model", "model/upstream-echo"),
+            ],
+            Json(json!({"error": {"message": "slow down", "code": "rate_limit_exceeded"}})),
+        )
+            .into_response();
+        for value in ["trace-1", "trace-2"] {
+            response
+                .headers_mut()
+                .append("x-upstream-trace", HeaderValue::from_static(value));
+        }
+        return response;
+    }
     if prompt == "auth-fail" {
         return (
             StatusCode::UNAUTHORIZED,
@@ -6340,6 +6362,93 @@ async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
     Ok(())
 }
 
+/// An upstream HTTP error carries the same allowed upstream headers as a success,
+/// on every inbound wire format, for buffered and streaming requests.
+#[tokio::test]
+async fn upstream_headers_forward_on_error_responses() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    // Switchyard sleeps for `retry-after` between its own retries, so it makes one attempt.
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.mock]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 0
+failure_cooldown_ms = 0
+fallback_on_rate_limit = false
+[targets]
+only = {{ id = "model/a", llm_client = "mock" }}
+[routes.test]
+id = "{ROUTE_MODEL}"
+type = "random"
+targets = ["only"]
+"#,
+        base_url = upstream.base_url,
+    ))?);
+    for stream in [false, true] {
+        for (path, body) in [
+            (
+                "/v1/chat/completions",
+                json!({
+                    "model": ROUTE_MODEL, "stream": stream,
+                    "messages": [{"role": "user", "content": "upstream-error-headers"}]
+                }),
+            ),
+            (
+                "/v1/responses",
+                json!({"model": ROUTE_MODEL, "stream": stream, "input": "upstream-error-headers"}),
+            ),
+            (
+                "/v1/messages",
+                json!({
+                    "model": ROUTE_MODEL, "stream": stream, "max_tokens": 64,
+                    "messages": [{"role": "user", "content": "upstream-error-headers"}]
+                }),
+            ),
+        ] {
+            let case = format!("{path}, stream={stream}");
+            let response = send(&app, "POST", path, Some(body)).await?;
+            assert_eq!(response.status, StatusCode::TOO_MANY_REQUESTS, "{case}");
+            // An empty list means the header must be absent.
+            let expected: [(&str, &[&str]); 9] = [
+                ("retry-after", &["7"]),
+                ("retry-after-ms", &["7000"]),
+                ("x-should-retry", &["true"]),
+                ("x-request-id", &["req-err-1"]),
+                ("x-upstream-trace", &["trace-1", "trace-2"]),
+                ("set-cookie", &[]),
+                ("x-switchyard-session-id", &[]),
+                ("x-model-router-selected-model", &[]),
+                // The body is still Switchyard's own error JSON.
+                ("content-type", &["application/json"]),
+            ];
+            for (name, values) in expected {
+                let actual: Vec<_> = response.headers.get_all(name).iter().collect();
+                assert_eq!(actual, values, "{case}: {name}");
+            }
+            let json = response.json()?;
+            assert_eq!(json["error"]["message"], "slow down", "{case}");
+            assert_eq!(json["type"] == "error", path == "/v1/messages", "{case}");
+        }
+    }
+
+    // An upstream error without these headers adds none.
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "fail"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::IM_A_TEAPOT);
+    assert!(!response.headers.contains_key("retry-after"));
+    Ok(())
+}
+
 #[tokio::test]
 async fn configured_responses_reasoning_policy_reaches_upstream() -> TestResult {
     let upstream = MockUpstream::start().await?;
@@ -6471,6 +6580,13 @@ seed = 17
             if is_terminal {
                 assert_eq!(response.status, StatusCode::TOO_MANY_REQUESTS);
                 assert_eq!(response.json()?["error"]["code"], "usage_limit");
+                assert_eq!(
+                    response
+                        .headers
+                        .get("retry-after")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("0")
+                );
             } else {
                 assert_eq!(response.status, StatusCode::OK);
                 expected_calls.push("model/fallback");

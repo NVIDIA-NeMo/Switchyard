@@ -329,7 +329,7 @@ after a stream has started does not count another attempt.
 | `Timeout { source }` | request or response body read exceeded its timeout |
 | `Transport { source }` | connection failure, including a connect timeout, or another transport failure |
 | `ContextWindowExceeded { model, message }` | upstream 400 detected as a context overflow (checked before `UpstreamHttp`, so callers can evict-and-retry) |
-| `UpstreamHttp { status, body }` | any other non-2xx upstream response |
+| `UpstreamHttp { status, body, headers }` | any other non-2xx upstream response |
 | `InvalidResponse { source }` | the upstream response could not be decoded |
 | `Other(source)` | a client-specific failure outside the shared categories |
 
