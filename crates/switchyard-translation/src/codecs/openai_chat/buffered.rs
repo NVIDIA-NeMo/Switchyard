@@ -30,7 +30,8 @@ use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,
     exact_preserved_request, exact_preserved_response, json_string, object, push_lossy,
-    reject_responses_native_input_item, stable_id, string_value, validate_request_capabilities,
+    push_lossy_at, reject_responses_native_input_item, stable_id, string_value,
+    validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Chat Completions payloads.
@@ -254,6 +255,14 @@ impl FormatCodec for OpenAiChatCodec {
         }
         if let Some(value) = request.sampling.top_p {
             body.insert("top_p".to_string(), json!(value));
+        }
+        if let Some(value) = request.sampling.top_k {
+            push_lossy_at(
+                &mut diagnostics,
+                policy,
+                "$.top_k",
+                format!("top_k {value} is omitted because OpenAI Chat Completions has no top_k"),
+            )?;
         }
         if request.stream {
             body.insert("stream".to_string(), Value::Bool(true));

@@ -3997,6 +3997,70 @@ fn openai_request_to_anthropic_parameters() -> TestResult {
     Ok(())
 }
 
+// Verifies OpenAI targets report the Anthropic top_k they cannot carry.
+#[test]
+fn anthropic_top_k_to_openai_is_reported_as_lossy() -> TestResult {
+    let engine = TranslationEngine::default();
+    let body = json!({
+        "model": "claude",
+        "max_tokens": 16,
+        "messages": [{"role": "user", "content": "hi"}]
+    });
+
+    for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+        for top_k in [None, Some(40)] {
+            let mut body = body.clone();
+            if let Some(top_k) = top_k {
+                body["top_k"] = json!(top_k);
+            }
+            for lossy_conversion_policy in [
+                LossyConversionPolicy::AllowWithDiagnostics,
+                LossyConversionPolicy::Reject,
+            ] {
+                let policy = TranslationPolicy {
+                    lossy_conversion_policy,
+                    ..normalized_policy()
+                };
+                let result =
+                    engine.translate_request(WireFormat::AnthropicMessages, target, &body, &policy);
+                if top_k.is_some() && lossy_conversion_policy == LossyConversionPolicy::Reject {
+                    assert!(
+                        matches!(result, Err(TranslationError::LossyConversion(ref message))
+                        if message.contains("top_k")),
+                        "{target:?}: {result:?}"
+                    );
+                    continue;
+                }
+                let output = result?;
+                assert!(output.body.get("top_k").is_none(), "{target:?}");
+                assert_eq!(
+                    output.diagnostics.len(),
+                    usize::from(top_k.is_some()),
+                    "{target:?}"
+                );
+                if top_k.is_some() {
+                    assert_eq!(output.diagnostics[0].code, "lossy_conversion");
+                    assert_eq!(output.diagnostics[0].path.as_deref(), Some("$.top_k"));
+                    assert!(output.diagnostics[0].message.contains("top_k"));
+                }
+            }
+        }
+    }
+
+    // Anthropic carries top_k, so nothing is lost.
+    let mut body = body;
+    body["top_k"] = json!(40);
+    let output = engine.translate_request(
+        WireFormat::AnthropicMessages,
+        WireFormat::AnthropicMessages,
+        &body,
+        &normalized_policy(),
+    )?;
+    assert_eq!(output.body["top_k"], 40);
+    assert!(output.diagnostics.is_empty());
+    Ok(())
+}
+
 // Verifies OpenAI string stop values map to Anthropic stop_sequences arrays.
 #[test]
 fn openai_stop_string_maps_to_anthropic_stop_sequences() -> TestResult {
