@@ -18,11 +18,21 @@ a configured Switchyard route. For example, if the route is `switchyard/core`
 and its target is `azure/openai/gpt-5.5`, requesting the target name directly
 still delegates the request to Relay.
 
-This plugin build uses `nemo-relay-plugin` 0.10.0 and requires Relay
-`>=0.10.0, <1.0.0`. Older hosts cannot load it because Relay 0.10 changes the
-native callback layout. If you use an older plugin build on Relay 0.8.x or
-0.9.0, send unmanaged traffic through a separate Relay instance with the plugin
-disabled. Upgrading Switchyard alone does not upgrade the Relay host.
+This plugin build uses `nemo-relay-plugin` 0.10.1 and requires Relay
+`>=0.10.1, <1.0.0`. Relay 0.10 changed the native callback layout; 0.10.1 adds
+the HTTP-error status handling used by this build. If you use an older plugin
+build on Relay 0.8.x or 0.9.0, send unmanaged traffic through a separate Relay
+instance with the plugin disabled. Upgrading Switchyard alone does not upgrade
+the Relay host.
+
+For managed routes, known upstream HTTP errors retain their status through
+Relay's HTTP-error API. The client receives the generic message
+`Switchyard route execution failed`; provider error bodies remain private.
+Failures without a known HTTP error status keep Relay's existing error handling.
+
+This preserves the HTTP status for buffered responses. Relay's streaming path
+can send HTTP 200 before route execution finishes, so later failures cannot
+change that status and retain the existing stream-error behavior.
 
 ## Why Use Switchyard with NeMo Relay?
 
@@ -171,7 +181,7 @@ and how it
 
 !!! note "Relay compatibility"
 
-    The plugin requires `relay = ">=0.10.0, <1.0.0"` and native plugin API `1`.
+    The plugin requires `relay = ">=0.10.1, <1.0.0"` and native plugin API `1`.
     The packaged
     [`relay-plugin.toml`](../../crates/switchyard-nemo-relay-plugin/relay-plugin.toml)
     is the source of truth.
