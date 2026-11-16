@@ -62,6 +62,19 @@ impl StreamCodec for OpenAiChatStreamCodec {
         encode_openai_chat_stream(state, event)
     }
 
+    fn observe_replayed_event(
+        &self,
+        state: &mut StreamTranslationState,
+        _raw: &Value,
+        normalized: Vec<LlmResponseChunk>,
+    ) {
+        for chunk in normalized {
+            drop(encode_openai_chat_stream(state, chunk));
+        }
+        // Replayed text has already been delivered; retain no pending delta.
+        drop(flush_openai_chat_text(state));
+    }
+
     fn finish(&self, state: &mut StreamTranslationState) -> Vec<Value> {
         finish_openai_chat_stream(state)
     }
@@ -260,21 +273,24 @@ fn encode_openai_chat_stream(
                 )]
             }
         }
-        LlmResponseChunk::TextDelta { text, .. } => {
-            vec![openai_stream_chunk(
+        LlmResponseChunk::TextDelta { text, .. } => match state.pending_chat_text.replace(text) {
+            Some(previous) => vec![openai_stream_chunk(
                 state,
-                json!({"content": text}),
+                json!({"content": previous}),
                 None,
                 None,
-            )]
-        }
+            )],
+            None => Vec::new(),
+        },
         LlmResponseChunk::ReasoningDelta { text, .. } => {
-            vec![openai_stream_chunk(
+            let mut out = flush_openai_chat_text(state);
+            out.push(openai_stream_chunk(
                 state,
                 json!({"reasoning_content": text}),
                 None,
                 None,
-            )]
+            ));
+            out
         }
         LlmResponseChunk::ReasoningDetailsDelta { details, text, .. } => {
             // Chat cannot replay Anthropic signature fragments or an encrypted item's
@@ -295,7 +311,9 @@ fn encode_openai_chat_stream(
             if !text.is_empty() && details_text.as_deref() != Some(text.as_str()) {
                 delta["reasoning"] = Value::String(text);
             }
-            vec![openai_stream_chunk(state, delta, None, None)]
+            let mut out = flush_openai_chat_text(state);
+            out.push(openai_stream_chunk(state, delta, None, None));
+            out
         }
         LlmResponseChunk::ToolCallDelta {
             index,
@@ -303,6 +321,7 @@ fn encode_openai_chat_stream(
             name,
             arguments_delta,
         } => {
+            let mut out = flush_openai_chat_text(state);
             let tool = state.tool_states.entry(index).or_default();
             // Repeated full names would be concatenated by Chat clients as new fragments.
             let name = name.filter(|name| tool.name.as_ref() != Some(name));
@@ -322,13 +341,14 @@ fn encode_openai_chat_stream(
                     chat_index
                 }
             };
-            vec![openai_tool_call_chunk(
+            out.push(openai_tool_call_chunk(
                 state,
                 chat_index,
                 id,
                 name,
                 arguments_delta,
-            )]
+            ));
+            out
         }
         LlmResponseChunk::Usage(usage) => {
             state.usage = usage;
@@ -343,21 +363,39 @@ fn encode_openai_chat_stream(
             if state.finished {
                 return Vec::new();
             }
+            let mut out = if reason.as_deref() == Some("refusal") {
+                // Streaming IR has no refusal block. This assumes the final text
+                // delta contains the entire refusal explanation.
+                match state.pending_chat_text.take() {
+                    Some(text) => vec![openai_stream_chunk(
+                        state,
+                        json!({"refusal": text}),
+                        None,
+                        None,
+                    )],
+                    None => Vec::new(),
+                }
+            } else {
+                flush_openai_chat_text(state)
+            };
             state.finished = true;
-            vec![openai_stream_chunk(
+            out.push(openai_stream_chunk(
                 state,
                 json!({}),
                 Some(openai_finish_reason(reason.as_deref())),
                 state
                     .saw_backend_usage
                     .then(|| encode_openai_usage(&state.usage)),
-            )]
+            ));
+            out
         }
         LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
             // An in-band error is terminal: emit the error, then nothing further.
+            let mut out = flush_openai_chat_text(state);
             state.finished = true; // finish() adds no success events
             state.errored = true; // the entry guard drops any later chunk
-            vec![json!({"error": {"message": message}})]
+            out.push(json!({"error": {"message": message}}));
+            out
         }
     }
 }
@@ -367,15 +405,29 @@ fn finish_openai_chat_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     if state.finished || !state.saw_message_start {
         return Vec::new();
     }
+    let mut out = flush_openai_chat_text(state);
     state.finished = true;
-    vec![openai_stream_chunk(
+    out.push(openai_stream_chunk(
         state,
         json!({}),
         Some(openai_finish_reason(state.stop_reason.as_deref())),
         state
             .saw_backend_usage
             .then(|| encode_openai_usage(&state.usage)),
-    )]
+    ));
+    out
+}
+
+fn flush_openai_chat_text(state: &mut StreamTranslationState) -> Vec<Value> {
+    match state.pending_chat_text.take() {
+        Some(text) => vec![openai_stream_chunk(
+            state,
+            json!({"content": text}),
+            None,
+            None,
+        )],
+        None => Vec::new(),
+    }
 }
 
 // Builds a single OpenAI Chat stream chunk payload.

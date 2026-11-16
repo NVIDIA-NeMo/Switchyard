@@ -82,6 +82,8 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
         for chunk in normalized {
             drop(encode_responses_stream(state, chunk));
         }
+        // Replayed text has already been delivered; retain no pending delta.
+        drop(flush_responses_text(state));
         state.response_sequence_number = raw
             .get("sequence_number")
             .and_then(Value::as_u64)
@@ -392,15 +394,23 @@ fn encode_responses_stream(
             record_source_identity(state, id, model);
             ensure_responses_created(state)
         }
-        LlmResponseChunk::TextDelta { text, .. } => encode_responses_text_delta(state, text),
+        LlmResponseChunk::TextDelta { text, .. } => {
+            match state.pending_responses_text.replace(text) {
+                Some(previous) => encode_responses_text_delta(state, previous),
+                None => Vec::new(),
+            }
+        }
         LlmResponseChunk::ReasoningDelta { index, text } => {
-            encode_responses_reasoning_delta(state, index, text)
+            let mut out = flush_responses_text(state);
+            out.extend(encode_responses_reasoning_delta(state, index, text));
+            out
         }
         LlmResponseChunk::ReasoningDetailsDelta {
             index,
             details,
             text,
         } => {
+            let mut out = flush_responses_text(state);
             // Encrypted reasoning has no streamable text, but the item must still be emitted
             // so the client can replay it on the next turn.
             let data = encrypted_reasoning_data(&details);
@@ -437,9 +447,10 @@ fn encode_responses_stream(
             // the text until that id arrives, or until later output shows none is coming.
             if !item.started && item.item_id.is_none() && summary_lacks_item_id(&details) {
                 item.pending_text.push_str(&text);
-                return ensure_responses_created(state);
+                out.extend(ensure_responses_created(state));
+                return out;
             }
-            let mut out = ensure_responses_reasoning_started(state, index);
+            out.extend(ensure_responses_reasoning_started(state, index));
             if !text.is_empty() {
                 out.extend(encode_responses_reasoning_delta(state, index, text));
             }
@@ -450,21 +461,43 @@ fn encode_responses_stream(
             id,
             name,
             arguments_delta,
-        } => encode_responses_tool_delta(state, index, id, name, arguments_delta),
+        } => {
+            let mut out = flush_responses_text(state);
+            out.extend(encode_responses_tool_delta(
+                state,
+                index,
+                id,
+                name,
+                arguments_delta,
+            ));
+            out
+        }
         LlmResponseChunk::Usage(usage) => {
             state.usage = usage;
             state.saw_backend_usage = true;
             Vec::new()
         }
         LlmResponseChunk::MessageStop { reason } => {
+            let out = if reason.as_deref() == Some("refusal") {
+                // Streaming IR has no refusal block. This assumes the final text
+                // delta contains the entire refusal explanation.
+                if let Some(text) = state.pending_responses_text.take() {
+                    state.response_refusal = Some(text);
+                }
+                Vec::new()
+            } else {
+                flush_responses_text(state)
+            };
             state.stop_reason = reason.or_else(|| state.stop_reason.clone());
-            Vec::new()
+            out
         }
         LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
             // An in-band error is terminal: emit the error, then nothing further.
+            let mut out = flush_responses_text(state);
             state.finished = true; // finish() adds no success events
             state.errored = true; // the entry guard drops any later chunk
-            vec![json!({"type": "error", "message": message})]
+            out.push(json!({"type": "error", "message": message}));
+            out
         }
     }
 }
@@ -484,8 +517,13 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         ("response.completed", "completed")
     };
     let incomplete_details = is_truncated.then(|| json!({ "reason": "max_output_tokens" }));
-    let mut out = open_held_reasoning(state, None);
+    let mut out = flush_responses_text(state);
+    out.extend(open_held_reasoning(state, None));
     out.extend(ensure_responses_created(state));
+    if state.response_refusal.is_some() {
+        out.extend(ensure_responses_message_started(state));
+    }
+    let mut content = Vec::new();
     if state.response_text_started
         && let Some(output_index) = state.response_text_output_index
     {
@@ -505,20 +543,60 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             "content_index": 0,
             "part": {"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []},
         }));
+        content.push(json!({"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []}));
+    }
+    if let Some(refusal) = &state.response_refusal {
+        let output_index = state.response_text_output_index.unwrap_or(0);
+        let item_id = responses_item_id(state, "msg", output_index);
+        let content_index = content.len();
+        let part = json!({"type": "refusal", "refusal": refusal});
         out.push(json!({
-            "type": "response.output_item.done",
+            "type": "response.content_part.added",
+            "item_id": item_id,
             "output_index": output_index,
-            "item": {
-                "type": "message",
-                "id": item_id,
-                "role": "assistant",
-                "status": status,
-                "content": [{"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []}],
-            },
+            "content_index": content_index,
+            "part": {"type": "refusal", "refusal": ""},
         }));
+        out.push(json!({
+            "type": "response.refusal.delta",
+            "item_id": item_id,
+            "output_index": output_index,
+            "content_index": content_index,
+            "delta": refusal,
+        }));
+        out.push(json!({
+            "type": "response.refusal.done",
+            "item_id": item_id,
+            "output_index": output_index,
+            "content_index": content_index,
+            "refusal": refusal,
+        }));
+        out.push(json!({
+            "type": "response.content_part.done",
+            "item_id": item_id,
+            "output_index": output_index,
+            "content_index": content_index,
+            "part": part,
+        }));
+        content.push(part);
     }
 
     let mut final_items: Vec<(usize, Value)> = Vec::new();
+    if let Some(output_index) = state.response_text_output_index {
+        let item = json!({
+            "type": "message",
+            "id": responses_item_id(state, "msg", output_index),
+            "role": "assistant",
+            "status": status,
+            "content": content,
+        });
+        out.push(json!({
+            "type": "response.output_item.done",
+            "output_index": output_index,
+            "item": item,
+        }));
+        final_items.push((output_index, item));
+    }
     let mut reasoning_items: Vec<(usize, usize)> = state
         .response_reasoning
         .iter()
@@ -571,21 +649,6 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         }));
         final_items.push((output_index, item));
     }
-    if state.response_text_started
-        && let Some(output_index) = state.response_text_output_index
-    {
-        final_items.push((
-            output_index,
-            json!({
-                "type": "message",
-                "id": responses_item_id(state, "msg", output_index),
-                "role": "assistant",
-                "status": status,
-                "content": [{"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []}],
-            }),
-        ));
-    }
-
     for tool in state.tool_states.values() {
         if !tool.started {
             continue;
@@ -925,12 +988,18 @@ fn add_sequence_numbers(state: &mut StreamTranslationState, mut events: Vec<Valu
     events
 }
 
-// Accumulates assistant text and emits Responses text delta events.
-fn encode_responses_text_delta(state: &mut StreamTranslationState, text: String) -> Vec<Value> {
+fn flush_responses_text(state: &mut StreamTranslationState) -> Vec<Value> {
+    match state.pending_responses_text.take() {
+        Some(text) => encode_responses_text_delta(state, text),
+        None => Vec::new(),
+    }
+}
+
+// Text and refusal parts share one assistant message output item.
+fn ensure_responses_message_started(state: &mut StreamTranslationState) -> Vec<Value> {
     let mut out = open_held_reasoning(state, None);
     out.extend(ensure_responses_created(state));
-    if !state.response_text_started {
-        state.response_text_started = true;
+    if state.response_text_output_index.is_none() {
         let output_index = state.next_response_output_index;
         state.next_response_output_index += 1;
         state.response_text_output_index = Some(output_index);
@@ -945,6 +1014,16 @@ fn encode_responses_text_delta(state: &mut StreamTranslationState, text: String)
                 "content": [],
             },
         }));
+    }
+    out
+}
+
+// Accumulates assistant text and emits Responses text delta events.
+fn encode_responses_text_delta(state: &mut StreamTranslationState, text: String) -> Vec<Value> {
+    let mut out = ensure_responses_message_started(state);
+    if !state.response_text_started {
+        state.response_text_started = true;
+        let output_index = state.response_text_output_index.unwrap_or(0);
         out.push(json!({
             "type": "response.content_part.added",
             "item_id": responses_item_id(state, "msg", output_index),
