@@ -101,6 +101,9 @@ ordered fallback tries the next candidate. A terminal cooldown error returns HTT
 503. Calls resume together after expiry. Auxiliary calls and errors after a stream
 is returned leave cooldown state unchanged.
 
+When retries are exhausted, Switchyard returns the upstream error with its
+`Retry-After`, `retry-after-ms`, and `x-should-retry` headers from the last attempt.
+
 With `fallback_on_rate_limit = false`, HTTP 429 does not start cooldown, so later
 requests can receive the upstream response too. Retry budgets and deadlines still
 apply. Other errors keep their existing fallback and cooldown behavior. This option
