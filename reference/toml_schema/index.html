@@ -3047,6 +3047,8 @@ For shared credentials, HTTP 429 also triggers cooldown by default. During coold
 ordered fallback tries the next candidate. A terminal cooldown error returns HTTP
 503. Calls resume together after expiry. Auxiliary calls and errors after a stream
 is returned leave cooldown state unchanged.</p>
+<p>When retries are exhausted, Switchyard returns the upstream error with its
+<code>Retry-After</code>, <code>retry-after-ms</code>, and <code>x-should-retry</code> headers from the last attempt.</p>
 <p>With <code>fallback_on_rate_limit = false</code>, HTTP 429 does not start cooldown, so later
 requests can receive the upstream response too. Retry budgets and deadlines still
 apply. Other errors keep their existing fallback and cooldown behavior. This option
@@ -3298,7 +3300,7 @@ counts. Plain <code>decide</code> and <code>execute</code> retain task routing. 
 </span></code></pre></div>
 <p>All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/6cf985f25206fbd403949606581715d693c343bf/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/fc85ab772e41732be9dd8063b927616810f3f469/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
 for collection and capacity safeguards.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
