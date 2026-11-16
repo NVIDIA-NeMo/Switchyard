@@ -419,6 +419,11 @@ impl FormatCodec for AnthropicMessagesCodec {
                 }
             }
         }
+        if body.get("stop_reason").and_then(Value::as_str) == Some("refusal") {
+            content.push(ContentBlock::Refusal {
+                text: decode_anthropic_refusal(body.get("stop_details")),
+            });
+        }
         if content.is_empty() {
             content.push(ContentBlock::Text {
                 text: String::new(),
@@ -452,6 +457,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                         "model",
                         "content",
                         "stop_reason",
+                        "stop_details",
                         "usage",
                     ],
                 ),
@@ -485,11 +491,15 @@ impl FormatCodec for AnthropicMessagesCodec {
             });
         }
         let output = response.first_output();
-        let content = output
+        let (content, refusal) = output
             .map(|output| encode_anthropic_content(&output.content))
             .transpose()?
-            .unwrap_or_else(|| vec![json!({"type": "text", "text": ""})]);
-        let normalized_stop_reason = output.and_then(|output| output.stop_reason);
+            .unwrap_or_else(|| (vec![json!({"type": "text", "text": ""})], None));
+        let normalized_stop_reason = if refusal.is_some() {
+            Some(StopReason::ContentFilter)
+        } else {
+            output.and_then(|output| output.stop_reason)
+        };
         let body = json!({
             "id": response.id.clone().unwrap_or_else(|| "msg_switchyard".to_string()),
             "type": "message",
@@ -501,9 +511,7 @@ impl FormatCodec for AnthropicMessagesCodec {
                 .unwrap_or("end_turn"),
             "stop_sequence": Value::Null,
             "stop_details": normalized_stop_reason
-                .map(|reason| {
-                    anthropic_stop_details(reason, response.extensions.fields.get("stop_details"))
-                })
+                .map(|reason| anthropic_stop_details(reason, refusal.as_deref()))
                 .unwrap_or(Value::Null),
             "usage": encode_anthropic_usage(&response.usage),
         });
@@ -1097,16 +1105,21 @@ fn encode_anthropic_file(source: &FileSource) -> Result<Value> {
 }
 
 // Encodes content without producing diagnostics for response paths.
-fn encode_anthropic_content(content: &[ContentBlock]) -> Result<Vec<Value>> {
+fn encode_anthropic_content(content: &[ContentBlock]) -> Result<(Vec<Value>, Option<String>)> {
     let mut blocks = Vec::new();
+    let mut refusal = None::<String>;
     for block in content {
         crate::codecs::openai_media::validate_media(block, WireFormat::AnthropicMessages)?;
-        blocks.extend(encode_one_anthropic_response_block(block)?);
+        if let ContentBlock::Refusal { text } = block {
+            refusal.get_or_insert_with(String::new).push_str(text);
+        } else {
+            blocks.extend(encode_one_anthropic_response_block(block)?);
+        }
     }
-    if blocks.is_empty() {
+    if blocks.is_empty() && refusal.is_none() {
         blocks.push(json!({"type": "text", "text": ""}));
     }
-    Ok(blocks)
+    Ok((blocks, refusal))
 }
 
 // Encodes response content, where synthetic reasoning may be shown to clients.
@@ -1407,6 +1420,21 @@ fn encode_anthropic_usage(usage: &Usage) -> Value {
     crate::codecs::common::encode_usage_metadata(value, usage)
 }
 
+// Anthropic refusal details: https://platform.claude.com/docs/en/build-with-claude/refusals-and-fallback
+pub(super) fn decode_anthropic_refusal(details: Option<&Value>) -> String {
+    let category = details
+        .and_then(|details| details.get("category"))
+        .and_then(Value::as_str);
+    let explanation = details
+        .and_then(|details| details.get("explanation"))
+        .and_then(Value::as_str);
+    match (category, explanation) {
+        (Some(category), Some(explanation)) => format!("{category}: {explanation}"),
+        (Some(text), None) | (None, Some(text)) => text.to_string(),
+        (None, None) => String::new(),
+    }
+}
+
 // Maps Anthropic stop reasons to normalized stop reasons.
 fn map_anthropic_stop_reason(reason: Option<&str>) -> StopReason {
     match reason {
@@ -1430,23 +1458,14 @@ fn anthropic_stop_reason(reason: StopReason) -> &'static str {
 
 // Emits the metadata object Anthropic pairs with a `refusal` stop reason.
 //
-// An Anthropic source keeps its `stop_details` in provider extensions, so replay that
-// object and preserve the named policy category and its explanation. Only a refusal
-// synthesized from a provider that reports no category falls back to the null form,
-// which Anthropic documents as the normal value for a refusal that maps to no named
-// category.
-fn anthropic_stop_details(reason: StopReason, source: Option<&Value>) -> Value {
+// The IR refusal text is opaque; a category prefix must not be parsed back out.
+fn anthropic_stop_details(reason: StopReason, explanation: Option<&str>) -> Value {
     match reason {
-        StopReason::ContentFilter => source
-            .filter(|details| !details.is_null())
-            .cloned()
-            .unwrap_or_else(|| {
-                json!({
-                    "type": "refusal",
-                    "category": Value::Null,
-                    "explanation": Value::Null,
-                })
-            }),
+        StopReason::ContentFilter => json!({
+            "type": "refusal",
+            "category": Value::Null,
+            "explanation": explanation,
+        }),
         _ => Value::Null,
     }
 }

@@ -42,9 +42,11 @@ pub struct StreamTranslationState {
     pub(crate) output_tokens_seen: u64,
     pub(crate) saw_backend_usage: bool,
     pub(crate) stop_reason: Option<String>,
-    /// Refusal metadata carried by the source, replayed instead of a synthesized
-    /// object so a named policy category and its explanation are not flattened away.
+    /// Anthropic refusal metadata synthesized by the encoder from the final text delta.
     pub(crate) stop_details: Option<Value>,
+    /// Held until the next content delta or stop identifies how Anthropic should emit it.
+    #[serde(default)]
+    pub(crate) pending_anthropic_text: Option<String>,
     pub(crate) emitted_message_delta: bool,
 
     pub(crate) next_content_index: usize,

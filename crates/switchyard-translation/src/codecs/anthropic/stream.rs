@@ -5,6 +5,7 @@
 
 use serde_json::{Map, Value, json};
 
+use super::buffered::decode_anthropic_refusal;
 use crate::LlmResponseChunk;
 use crate::codecs::stream::{
     StreamCodec, StreamTranslationState, record_source_identity,
@@ -67,6 +68,8 @@ impl StreamCodec for AnthropicMessagesStreamCodec {
         for chunk in normalized {
             drop(encode_anthropic_stream(state, chunk));
         }
+        // Replayed text has already been delivered; retain no pending delta.
+        drop(flush_anthropic_text(state));
 
         match raw.get("type").and_then(Value::as_str) {
             // Anthropic carries the stop reason and usage in `message_delta`, but the separate
@@ -147,13 +150,17 @@ fn decode_anthropic_stream(
             {
                 // Remember the provider stop reason: Anthropic delivers it here, on
                 // `message_delta`, while the terminal `message_stop` carries none of its own.
+                if stop_reason == "refusal" && state.stop_reason.as_deref() != Some("refusal") {
+                    out.push(LlmResponseChunk::TextDelta {
+                        index: 0,
+                        text: decode_anthropic_refusal(
+                            object
+                                .get("delta")
+                                .and_then(|delta| delta.get("stop_details")),
+                        ),
+                    });
+                }
                 state.stop_reason = Some(stop_reason.to_string());
-                state.stop_details = object
-                    .get("delta")
-                    .and_then(Value::as_object)
-                    .and_then(|delta| delta.get("stop_details"))
-                    .filter(|details| !details.is_null())
-                    .cloned();
                 out.push(LlmResponseChunk::MessageStop {
                     reason: Some(stop_reason.to_string()),
                 });
@@ -212,16 +219,14 @@ fn encode_anthropic_stream(
         }
         LlmResponseChunk::TextDelta { text, .. } => {
             state.output_tokens_seen += 1;
-            let mut out = ensure_anthropic_text_block(state);
-            out.push(json!({
-                "type": "content_block_delta",
-                "index": state.text_block_index.unwrap_or(0),
-                "delta": {"type": "text_delta", "text": text},
-            }));
-            out
+            match state.pending_anthropic_text.replace(text) {
+                Some(previous) => encode_anthropic_text_delta(state, previous),
+                None => Vec::new(),
+            }
         }
         LlmResponseChunk::ReasoningDelta { text, .. } => {
-            let mut out = ensure_anthropic_reasoning_block(state);
+            let mut out = flush_anthropic_text(state);
+            out.extend(ensure_anthropic_reasoning_block(state));
             out.push(json!({
                 "type": "content_block_delta",
                 "index": state.reasoning_block_index.unwrap_or(0),
@@ -233,7 +238,8 @@ fn encode_anthropic_stream(
             if text.is_empty() {
                 return Vec::new();
             }
-            let mut out = ensure_anthropic_reasoning_block(state);
+            let mut out = flush_anthropic_text(state);
+            out.extend(ensure_anthropic_reasoning_block(state));
             out.push(json!({
                 "type": "content_block_delta",
                 "index": state.reasoning_block_index.unwrap_or(0),
@@ -246,7 +252,17 @@ fn encode_anthropic_stream(
             id,
             name,
             arguments_delta,
-        } => encode_anthropic_tool_delta(state, index, id, name, arguments_delta),
+        } => {
+            let mut out = flush_anthropic_text(state);
+            out.extend(encode_anthropic_tool_delta(
+                state,
+                index,
+                id,
+                name,
+                arguments_delta,
+            ));
+            out
+        }
         LlmResponseChunk::Usage(usage) => {
             state.usage = usage;
             state.saw_backend_usage = true;
@@ -254,13 +270,31 @@ fn encode_anthropic_stream(
         }
         LlmResponseChunk::MessageStop { reason } => {
             state.stop_reason = reason.or_else(|| state.stop_reason.clone());
-            Vec::new()
+            if matches!(
+                state.stop_reason.as_deref(),
+                Some("refusal" | "content_filter")
+            ) {
+                // Streaming IR has no refusal block. This assumes the final text
+                // delta contains the entire refusal explanation.
+                if let Some(explanation) = state.pending_anthropic_text.take() {
+                    state.stop_details = Some(json!({
+                        "type": "refusal",
+                        "category": Value::Null,
+                        "explanation": explanation,
+                    }));
+                }
+                Vec::new()
+            } else {
+                flush_anthropic_text(state)
+            }
         }
         LlmResponseChunk::StreamError { message } | LlmResponseChunk::DecodeError { message } => {
             // An in-band error is terminal: emit the error, then nothing further.
+            let mut out = flush_anthropic_text(state);
             state.finished = true; // finish() adds no success events
             state.errored = true; // the entry guard drops any later chunk
-            vec![json!({"type": "error", "error": {"type": "api_error", "message": message}})]
+            out.push(json!({"type": "error", "error": {"type": "api_error", "message": message}}));
+            out
         }
     }
 }
@@ -291,6 +325,7 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             },
         ));
     }
+    out.extend(flush_anthropic_text(state));
 
     if state.text_block_started {
         if let Some(index) = state.text_block_index {
@@ -322,7 +357,12 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         state.active_anthropic_tool = None;
     }
 
-    if !state.emitted_content_block {
+    if !state.emitted_content_block
+        && !matches!(
+            state.stop_reason.as_deref(),
+            Some("refusal" | "content_filter")
+        )
+    {
         out.push(json!({
             "type": "content_block_start",
             "index": 0,
@@ -482,6 +522,23 @@ fn anthropic_signature_delta(index: usize, signature: &str) -> LlmResponseChunk 
         details: vec![json!({"type": "anthropic.signature_delta", "signature": signature})],
         text: String::new(),
     }
+}
+
+fn flush_anthropic_text(state: &mut StreamTranslationState) -> Vec<Value> {
+    match state.pending_anthropic_text.take() {
+        Some(text) => encode_anthropic_text_delta(state, text),
+        None => Vec::new(),
+    }
+}
+
+fn encode_anthropic_text_delta(state: &mut StreamTranslationState, text: String) -> Vec<Value> {
+    let mut out = ensure_anthropic_text_block(state);
+    out.push(json!({
+        "type": "content_block_delta",
+        "index": state.text_block_index.unwrap_or(0),
+        "delta": {"type": "text_delta", "text": text},
+    }));
+    out
 }
 
 // Starts an Anthropic text block when the target stream needs one.
@@ -738,10 +795,7 @@ fn anthropic_stop_reason(reason: Option<&str>) -> String {
 
 // Emits the metadata object Anthropic pairs with a `refusal` stop reason.
 //
-// A source that already reported `stop_details` carries the named policy category and
-// its explanation, so replay that object verbatim. Only a refusal synthesized from a
-// provider that reports no category falls back to the null form, which Anthropic
-// documents as the normal value for a refusal that maps to no named category.
+// The encoder supplies an explanation from its held text delta when available.
 fn anthropic_stop_details(reason: Option<&str>, source: Option<&Value>) -> Value {
     match reason {
         Some("content_filter" | "refusal") => source.cloned().unwrap_or_else(|| {
