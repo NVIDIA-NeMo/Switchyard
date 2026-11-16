@@ -358,15 +358,17 @@ impl FormatCodec for OpenAiResponsesCodec {
                 }
             }
         }
-        // The truncation signal is on the response, not the output items.
-        if body.get("status").and_then(Value::as_str) == Some("incomplete")
-            && body
+        // The incomplete reason is on the response, not the output items.
+        if body.get("status").and_then(Value::as_str) == Some("incomplete") {
+            match body
                 .get("incomplete_details")
                 .and_then(|details| details.get("reason"))
                 .and_then(Value::as_str)
-                == Some("max_output_tokens")
-        {
-            stop_reason = Some(StopReason::MaxTokens);
+            {
+                Some("max_output_tokens") => stop_reason = Some(StopReason::MaxTokens),
+                Some("content_filter") => stop_reason = Some(StopReason::ContentFilter),
+                _ => {}
+            }
         }
         let outputs = vec![if has_output {
             ResponseOutput {
@@ -382,7 +384,8 @@ impl FormatCodec for OpenAiResponsesCodec {
                 content: vec![ContentBlock::Text {
                     text: String::new(),
                 }],
-                stop_reason: Some(StopReason::EndTurn),
+                // An incomplete response can have no output items.
+                stop_reason: stop_reason.or(Some(StopReason::EndTurn)),
             }
         }];
         let response = AggLlmResponse {

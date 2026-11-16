@@ -1270,6 +1270,66 @@ fn incomplete_responses_source_survives_translation() -> TestResult {
     Ok(())
 }
 
+// Verifies an incomplete Responses source reports its reason to Chat and Anthropic
+// clients, including when the response has no output items.
+#[test]
+fn incomplete_responses_reason_reaches_chat_and_anthropic_clients() -> TestResult {
+    let engine = TranslationEngine::default();
+    let message = json!({
+        "type": "message",
+        "role": "assistant",
+        "status": "incomplete",
+        "content": [{"type": "output_text", "text": "Partial answer", "annotations": []}]
+    });
+    for (reason, output, finish_reason, stop_reason) in [
+        (
+            "content_filter",
+            json!([message]),
+            "content_filter",
+            "refusal",
+        ),
+        ("content_filter", json!([]), "content_filter", "refusal"),
+        ("max_output_tokens", json!([]), "length", "max_tokens"),
+    ] {
+        let body = json!({
+            "id": "resp_1",
+            "object": "response",
+            "model": "gpt-4o",
+            "status": "incomplete",
+            "incomplete_details": {"reason": reason},
+            "output": output,
+            "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14}
+        });
+        let chat = engine
+            .translate_response(
+                WireFormat::OpenAiResponses,
+                WireFormat::OpenAiChat,
+                &body,
+                &TranslationPolicy::default(),
+            )?
+            .body;
+        assert_eq!(
+            chat["choices"][0]["finish_reason"], finish_reason,
+            "{reason} with output {}",
+            body["output"]
+        );
+        let anthropic = engine
+            .translate_response(
+                WireFormat::OpenAiResponses,
+                WireFormat::AnthropicMessages,
+                &body,
+                &TranslationPolicy::default(),
+            )?
+            .body;
+        assert_eq!(
+            anthropic["stop_reason"], stop_reason,
+            "{reason} with output {}",
+            body["output"]
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn failed_responses_return_upstream_failure_with_provider_message() -> TestResult {
     let engine = TranslationEngine::default();
