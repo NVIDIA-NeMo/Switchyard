@@ -295,11 +295,12 @@ fn openai_chat_response_translates_to_anthropic_message() -> TestResult {
     Ok(())
 }
 
-// Verifies a Chat Completions refusal survives both neutral decoding and Anthropic encoding.
 #[test]
-fn openai_chat_refusal_decodes_and_translates_to_anthropic() -> TestResult {
+fn buffered_refusals_survive_translation() -> TestResult {
     let engine = TranslationEngine::default();
-    let body = json!({
+    let policy = normalized_policy();
+    let refusal = "I cannot help with that request.";
+    let chat = json!({
         "id": "chatcmpl-refusal",
         "model": "gpt-4o",
         "choices": [{
@@ -307,40 +308,77 @@ fn openai_chat_refusal_decodes_and_translates_to_anthropic() -> TestResult {
             "message": {
                 "role": "assistant",
                 "content": null,
-                "refusal": "I cannot help with that request."
+                "refusal": refusal
             },
             "finish_reason": "stop"
         }],
         "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
     });
-
-    let decoded =
-        engine.decode_response(WireFormat::OpenAiChat, &body, &TranslationPolicy::default())?;
-    let output = decoded.response.first_output().ok_or("missing output")?;
-    assert_eq!(
-        output.content,
-        vec![ContentBlock::Refusal {
-            text: "I cannot help with that request.".to_string()
+    let responses = json!({
+        "id": "resp_refusal",
+        "model": "gpt-4o",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "refusal", "refusal": refusal}]
         }]
-    );
-    assert_eq!(output.stop_reason, Some(StopReason::ContentFilter));
+    });
 
-    let translated = engine
-        .encode_response(
-            WireFormat::AnthropicMessages,
-            &decoded.response,
-            &TranslationPolicy::default(),
-        )?
-        .body;
-    assert_eq!(
-        translated["content"],
-        json!([{"type": "text", "text": "I cannot help with that request."}])
-    );
-    assert_eq!(translated["stop_reason"], "refusal");
-    assert_eq!(
-        translated["stop_details"],
-        json!({"type": "refusal", "category": null, "explanation": null})
-    );
+    for (source, body) in [
+        (WireFormat::OpenAiChat, chat),
+        (WireFormat::OpenAiResponses, responses),
+    ] {
+        let decoded = engine.decode_response(source, &body, &policy)?.response;
+        let output = decoded.first_output().ok_or("missing output")?;
+        assert_eq!(
+            output.content,
+            vec![ContentBlock::Refusal {
+                text: refusal.to_string()
+            }],
+            "{source:?} decoded content"
+        );
+        assert_eq!(
+            output.stop_reason,
+            Some(StopReason::ContentFilter),
+            "{source:?} decoded stop reason"
+        );
+
+        let chat = engine
+            .encode_response(WireFormat::OpenAiChat, &decoded, &policy)?
+            .body;
+        assert_eq!(
+            chat["choices"][0]["message"],
+            json!({"role": "assistant", "content": null, "refusal": refusal}),
+            "{source:?} to Chat"
+        );
+        assert_eq!(chat["choices"][0]["finish_reason"], "content_filter");
+
+        let responses = engine
+            .encode_response(WireFormat::OpenAiResponses, &decoded, &policy)?
+            .body;
+        assert_eq!(
+            responses["output"][0]["content"],
+            json!([{"type": "refusal", "refusal": refusal}]),
+            "{source:?} to Responses"
+        );
+        assert_eq!(responses["status"], "completed");
+
+        let anthropic = engine
+            .encode_response(WireFormat::AnthropicMessages, &decoded, &policy)?
+            .body;
+        assert_eq!(
+            anthropic["content"],
+            json!([{"type": "text", "text": refusal}]),
+            "{source:?} to Anthropic"
+        );
+        assert_eq!(anthropic["stop_reason"], "refusal");
+        assert_eq!(
+            anthropic["stop_details"],
+            json!({"type": "refusal", "category": null, "explanation": null})
+        );
+    }
     Ok(())
 }
 

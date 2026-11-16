@@ -1802,12 +1802,23 @@ fn decode_responses_output_item(
         return Ok(None);
     };
     match item.get("type").and_then(Value::as_str) {
-        Some("message") => Ok(Some(ResponseOutput {
-            url_citations: decode_responses_url_citations(item.get("content")),
-            role: role_from_responses(item.get("role").and_then(Value::as_str)),
-            content: decode_responses_content(item.get("content").unwrap_or(&Value::Null)),
-            stop_reason: Some(StopReason::EndTurn),
-        })),
+        Some("message") => {
+            let content = decode_responses_content(item.get("content").unwrap_or(&Value::Null));
+            let stop_reason = if content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Refusal { .. }))
+            {
+                StopReason::ContentFilter
+            } else {
+                StopReason::EndTurn
+            };
+            Ok(Some(ResponseOutput {
+                url_citations: decode_responses_url_citations(item.get("content")),
+                role: role_from_responses(item.get("role").and_then(Value::as_str)),
+                content,
+                stop_reason: Some(stop_reason),
+            }))
+        }
         Some("function_call") => Ok(Some(ResponseOutput {
             url_citations: Vec::new(),
             role: Role::Assistant,
@@ -1919,7 +1930,43 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                             if provider.as_str() == WireFormat::OpenAiResponses.as_str()
                                 && raw["type"].as_str().is_some_and(super::is_native_output))
                 });
-                let text = text_from_blocks(&output.content, "");
+                let mut content = Vec::new();
+                let mut text_offset = 0;
+                for block in &output.content {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            let text_end = text_offset + text.chars().count();
+                            let annotations = output
+                                .url_citations
+                                .iter()
+                                .filter(|citation| {
+                                    citation.start_index >= text_offset
+                                        && citation.end_index <= text_end
+                                })
+                                .map(|citation| {
+                                    json!({
+                                        "type": "url_citation",
+                                        "start_index": citation.start_index - text_offset,
+                                        "end_index": citation.end_index - text_offset,
+                                        "url": citation.url,
+                                        "title": citation.title,
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            content.push(json!({
+                                "type": "output_text",
+                                "text": text,
+                                "annotations": annotations,
+                            }));
+                            text_offset = text_end;
+                        }
+                        ContentBlock::Refusal { text } => {
+                            content.push(json!({"type": "refusal", "refusal": text}));
+                            text_offset += text.chars().count();
+                        }
+                        _ => {}
+                    }
+                }
                 let reasoning = reasoning_text_from_blocks(&output.content, "\n");
                 let status = if matches!(output.stop_reason, Some(StopReason::MaxTokens)) {
                     "incomplete"
@@ -1974,23 +2021,16 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     ));
                 }
 
-                if !text.is_empty() || (!has_output_items && reasoning.is_empty()) {
+                if content.is_empty() && !has_output_items && reasoning.is_empty() {
+                    content.push(json!({"type": "output_text", "text": "", "annotations": []}));
+                }
+                if !content.is_empty() {
                     items.push(json!({
                         "type": "message",
                         "id": "msg_switchyard",
                         "status": status,
                         "role": role_to_responses(output.role),
-                        "content": [{
-                            "type": "output_text",
-                            "text": text,
-                            "annotations": output.url_citations.iter().map(|citation| json!({
-                                "type": "url_citation",
-                                "start_index": citation.start_index,
-                                "end_index": citation.end_index,
-                                "url": citation.url,
-                                "title": citation.title,
-                            })).collect::<Vec<_>>(),
-                        }],
+                        "content": content,
                     }));
                 }
 
