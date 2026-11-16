@@ -167,3 +167,29 @@ make it a recommended production toolchain.
 Before merging changes, run the checks above with the latest patch of the
 declared minimum and the latest stable Go. Raise the minimum only when the
 binding or a dependency needs newer Go, and call out that change.
+
+## Distribution candidates
+
+The **Go distribution candidates** workflow builds a self-contained module for
+review, not a public Go release. It includes the WASM guest, C header, native
+Linux amd64/arm64 archives, licenses, source revision, and checksums. It tests
+the packaged module from a separate application and empty module cache, without
+Rust or a local `replace`. Native tests also exercise the shared-plugin host.
+The consumer checks cover vendoring and no-cgo cross-builds for Linux/macOS on
+amd64 and arm64, matching the gateway build paths.
+
+Native candidates use generic CPU targets and are built and tested on Ubuntu
+24.04. Compatibility with a partner's libc and deployment image must be verified
+before publication. The WASM backend does not require those native libraries.
+
+PRs and manual preview runs use local-only `v0.0.0-preview.g<source-sha>` versions.
+Stable candidates must be built at an existing root `vX.Y.Z` tag, with matching
+Python and Rust versions. The corresponding Go tag would be
+`bindings/go/vX.Y.Z`. The C ABI generation remains independent of that version.
+Python alpha releases are not mapped to a new Go release scheme by this workflow.
+
+Nothing creates or pushes tags, creates GitHub Releases, or publishes modules.
+The files remain temporary Actions artifacts. A later publishing change must
+place the packaged files in the tagged Git tree; uploading a ZIP alone does not
+make it available through the public Go module proxy. Generated binaries are
+not committed on development branches.
