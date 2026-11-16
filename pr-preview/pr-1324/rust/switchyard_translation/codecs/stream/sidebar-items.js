@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["decode_stream_event","encode_stream_event"],"struct":["StreamCodecRegistry","StreamTranslationEngine","StreamTranslationState"],"trait":["StreamCodec"]};
