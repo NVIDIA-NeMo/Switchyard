@@ -439,7 +439,6 @@ fn error_details(error: &CoreTranslationError) -> Value {
         CoreTranslationError::LossyConversion(message) | CoreTranslationError::Other(message) => {
             json!({"message": message})
         }
-        CoreTranslationError::UnknownField { path } => json!({"path": path}),
         CoreTranslationError::InvalidValue { path, message } => {
             json!({"path": path, "message": message})
         }
