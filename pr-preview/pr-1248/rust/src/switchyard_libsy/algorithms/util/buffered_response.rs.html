@@ -70,26 +70,27 @@
 <a href=#70 id=70 data-nosnippet>70</a>                            <span class="prelude-val">Some</span>(LlmClientError::UpstreamHttp {
 <a href=#71 id=71 data-nosnippet>71</a>                                status: http::StatusCode::BAD_GATEWAY,
 <a href=#72 id=72 data-nosnippet>72</a>                                body: message.clone(),
-<a href=#73 id=73 data-nosnippet>73</a>                            })
-<a href=#74 id=74 data-nosnippet>74</a>                        }
-<a href=#75 id=75 data-nosnippet>75</a>                        chunk =&gt; {
-<a href=#76 id=76 data-nosnippet>76</a>                            accumulator.push(chunk.clone());
-<a href=#77 id=77 data-nosnippet>77</a>                            <span class="prelude-val">None
-<a href=#78 id=78 data-nosnippet>78</a>                        </span>}
-<a href=#79 id=79 data-nosnippet>79</a>                    };
-<a href=#80 id=80 data-nosnippet>80</a>                    <span class="kw">if let </span><span class="prelude-val">Some</span>(source) = failure {
-<a href=#81 id=81 data-nosnippet>81</a>                        <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::client_call(executor.to_string(), source));
-<a href=#82 id=82 data-nosnippet>82</a>                    }
-<a href=#83 id=83 data-nosnippet>83</a>                }
-<a href=#84 id=84 data-nosnippet>84</a>                events.push(event);
-<a href=#85 id=85 data-nosnippet>85</a>            }
-<a href=#86 id=86 data-nosnippet>86</a>            <span class="prelude-val">Ok</span>(BufferedResponse {
-<a href=#87 id=87 data-nosnippet>87</a>                events: <span class="prelude-val">Some</span>(events),
-<a href=#88 id=88 data-nosnippet>88</a>                agg: accumulator.finish(),
-<a href=#89 id=89 data-nosnippet>89</a>                metadata,
-<a href=#90 id=90 data-nosnippet>90</a>                upstream_headers,
-<a href=#91 id=91 data-nosnippet>91</a>            })
-<a href=#92 id=92 data-nosnippet>92</a>        }
-<a href=#93 id=93 data-nosnippet>93</a>    }
-<a href=#94 id=94 data-nosnippet>94</a>}
+<a href=#73 id=73 data-nosnippet>73</a>                                headers: Box::new(upstream_headers.clone()),
+<a href=#74 id=74 data-nosnippet>74</a>                            })
+<a href=#75 id=75 data-nosnippet>75</a>                        }
+<a href=#76 id=76 data-nosnippet>76</a>                        chunk =&gt; {
+<a href=#77 id=77 data-nosnippet>77</a>                            accumulator.push(chunk.clone());
+<a href=#78 id=78 data-nosnippet>78</a>                            <span class="prelude-val">None
+<a href=#79 id=79 data-nosnippet>79</a>                        </span>}
+<a href=#80 id=80 data-nosnippet>80</a>                    };
+<a href=#81 id=81 data-nosnippet>81</a>                    <span class="kw">if let </span><span class="prelude-val">Some</span>(source) = failure {
+<a href=#82 id=82 data-nosnippet>82</a>                        <span class="kw">return </span><span class="prelude-val">Err</span>(LibsyError::client_call(executor.to_string(), source));
+<a href=#83 id=83 data-nosnippet>83</a>                    }
+<a href=#84 id=84 data-nosnippet>84</a>                }
+<a href=#85 id=85 data-nosnippet>85</a>                events.push(event);
+<a href=#86 id=86 data-nosnippet>86</a>            }
+<a href=#87 id=87 data-nosnippet>87</a>            <span class="prelude-val">Ok</span>(BufferedResponse {
+<a href=#88 id=88 data-nosnippet>88</a>                events: <span class="prelude-val">Some</span>(events),
+<a href=#89 id=89 data-nosnippet>89</a>                agg: accumulator.finish(),
+<a href=#90 id=90 data-nosnippet>90</a>                metadata,
+<a href=#91 id=91 data-nosnippet>91</a>                upstream_headers,
+<a href=#92 id=92 data-nosnippet>92</a>            })
+<a href=#93 id=93 data-nosnippet>93</a>        }
+<a href=#94 id=94 data-nosnippet>94</a>    }
+<a href=#95 id=95 data-nosnippet>95</a>}
 </code></pre></div></section></main></body></html>
