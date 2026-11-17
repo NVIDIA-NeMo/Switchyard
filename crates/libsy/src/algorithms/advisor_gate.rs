@@ -406,12 +406,9 @@ impl AdvisorGate {
             Ok(advisor) => {
                 let advisor = advisor.clone();
                 let advisor_models = driver.models_for(&Category::Judge).to_vec();
+                // Fail-closed errors must reach the gate to refund the review budget.
                 match driver
-                    .call_model_with_error_recovery(
-                        consult_request,
-                        advisor_models,
-                        self.config.fail_open,
-                    )
+                    .call_model_with_error_recovery(consult_request, advisor_models, true)
                     .await
                 {
                     Ok(response) => {
@@ -443,7 +440,8 @@ impl AdvisorGate {
                     // context_length_exceeded and trigger compaction of a
                     // healthy conversation.
                     return Err(algorithm_error(format!(
-                        "advisor consult failed (fail_open = false): {error}"
+                        "advisor consult failed (fail_open = false): {}",
+                        safe_error_summary(&error)
                     )));
                 }
                 // An upstream error's Display can quote request content back,
