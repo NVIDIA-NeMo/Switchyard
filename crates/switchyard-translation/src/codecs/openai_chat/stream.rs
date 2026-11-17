@@ -258,18 +258,22 @@ fn encode_openai_chat_stream(
                 )]
             }
         }
-        LlmResponseChunk::TextDelta { text, .. } => vec![openai_stream_chunk(
-            state,
-            json!({"content": text}),
-            None,
-            None,
-        )],
-        LlmResponseChunk::ReasoningDelta { text, .. } => vec![openai_stream_chunk(
-            state,
-            json!({"reasoning_content": text}),
-            None,
-            None,
-        )],
+        LlmResponseChunk::TextDelta { text, .. } => {
+            vec![openai_stream_chunk(
+                state,
+                json!({"content": text}),
+                None,
+                None,
+            )]
+        }
+        LlmResponseChunk::ReasoningDelta { text, .. } => {
+            vec![openai_stream_chunk(
+                state,
+                json!({"reasoning_content": text}),
+                None,
+                None,
+            )]
+        }
         LlmResponseChunk::ReasoningDetailsDelta { details, text, .. } => {
             // Chat cannot replay Anthropic signature fragments or an encrypted item's
             // id announcement without its payload.
@@ -463,9 +467,10 @@ fn openai_stream_id(state: &StreamTranslationState) -> String {
 // Maps provider stop reasons into OpenAI's finish-reason vocabulary.
 fn openai_finish_reason(reason: Option<&str>) -> String {
     match reason {
-        Some("end_turn" | "stop_sequence" | "refusal") | None => "stop".to_string(),
+        Some("end_turn") | Some("stop_sequence") | None => "stop".to_string(),
         Some("max_tokens") => "length".to_string(),
         Some("tool_use") => "tool_calls".to_string(),
+        Some("refusal") => "stop".to_string(),
         Some(other) => other.to_string(),
     }
 }

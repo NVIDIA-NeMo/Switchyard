@@ -72,6 +72,7 @@ pub struct StreamTranslationState {
     /// Text decoded from Responses, keyed by output index and then content index.
     #[serde(default)]
     pub(crate) decoded_response_text: BTreeMap<usize, BTreeMap<usize, String>>,
+
     pub(crate) response_created: bool,
     pub(crate) response_text_started: bool,
     pub(crate) response_text_output_index: Option<usize>,

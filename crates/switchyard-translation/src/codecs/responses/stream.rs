@@ -356,26 +356,22 @@ fn decode_responses_stream(
             });
             out
         }
-        Some("response.failed") => {
-            vec![LlmResponseChunk::StreamError {
-                message: event
-                    .get("response")
-                    .and_then(|response| response.get("error"))
-                    .and_then(|error| error.get("message"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown Responses stream error")
-                    .to_string(),
-            }]
-        }
-        Some("error") => {
-            vec![LlmResponseChunk::StreamError {
-                message: event
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown Responses stream error")
-                    .to_string(),
-            }]
-        }
+        Some("response.failed") => vec![LlmResponseChunk::StreamError {
+            message: event
+                .get("response")
+                .and_then(|response| response.get("error"))
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown Responses stream error")
+                .to_string(),
+        }],
+        Some("error") => vec![LlmResponseChunk::StreamError {
+            message: event
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown Responses stream error")
+                .to_string(),
+        }],
         _ => Vec::new(),
     }
 }
@@ -403,7 +399,6 @@ fn encode_responses_stream(
             details,
             text,
         } => {
-            let mut out = Vec::new();
             // Encrypted reasoning has no streamable text, but the item must still be emitted
             // so the client can replay it on the next turn.
             let data = encrypted_reasoning_data(&details);
@@ -440,10 +435,9 @@ fn encode_responses_stream(
             // the text until that id arrives, or until later output shows none is coming.
             if !item.started && item.item_id.is_none() && summary_lacks_item_id(&details) {
                 item.pending_text.push_str(&text);
-                out.extend(ensure_responses_created(state));
-                return out;
+                return ensure_responses_created(state);
             }
-            out.extend(ensure_responses_reasoning_started(state, index));
+            let mut out = ensure_responses_reasoning_started(state, index);
             if !text.is_empty() {
                 out.extend(encode_responses_reasoning_delta(state, index, text));
             }

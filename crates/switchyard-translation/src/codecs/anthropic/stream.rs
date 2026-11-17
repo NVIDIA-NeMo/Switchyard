@@ -217,7 +217,13 @@ fn encode_anthropic_stream(
         }
         LlmResponseChunk::TextDelta { text, .. } => {
             state.output_tokens_seen += 1;
-            encode_anthropic_text_delta(state, text)
+            let mut out = ensure_anthropic_text_block(state);
+            out.push(json!({
+                "type": "content_block_delta",
+                "index": state.text_block_index.unwrap_or(0),
+                "delta": {"type": "text_delta", "text": text},
+            }));
+            out
         }
         LlmResponseChunk::ReasoningDelta { text, .. } => {
             let mut out = ensure_anthropic_reasoning_block(state);
@@ -488,16 +494,6 @@ fn anthropic_signature_delta(index: usize, signature: &str) -> LlmResponseChunk 
         details: vec![json!({"type": "anthropic.signature_delta", "signature": signature})],
         text: String::new(),
     }
-}
-
-fn encode_anthropic_text_delta(state: &mut StreamTranslationState, text: String) -> Vec<Value> {
-    let mut out = ensure_anthropic_text_block(state);
-    out.push(json!({
-        "type": "content_block_delta",
-        "index": state.text_block_index.unwrap_or(0),
-        "delta": {"type": "text_delta", "text": text},
-    }));
-    out
 }
 
 // Starts an Anthropic text block when the target stream needs one.
