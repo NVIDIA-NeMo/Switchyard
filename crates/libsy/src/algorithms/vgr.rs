@@ -151,15 +151,15 @@ struct Capabilities {
 
 /// Derives capabilities from the router's own evidence, failing closed.
 ///
-/// Media blocks fail closed unless `media_judged_as_text` lets the judge read the text around them.
+/// Media blocks fail closed unless `attachments_supported` sends them to the judge.
 fn derive_capabilities(
     request: &Request,
     attempt: &str,
     task_type: Option<TaskType>,
-    media_judged_as_text: bool,
+    attachments_supported: bool,
 ) -> Capabilities {
     let (turns, unsupported) = text::turns(request);
-    if (unsupported && !media_judged_as_text)
+    if (unsupported && !attachments_supported)
         || text::user_task_text(&turns).trim().is_empty()
         || attempt.trim().is_empty()
     {

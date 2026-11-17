@@ -209,13 +209,17 @@ branches can use a separate scored verdict after efficient deliberation.
 In `active` mode, an unavailable capable tier can fall back to an unverified efficient
 answer. That call receives the original request without the capable handoff note.
 Fallback is disabled by the kill switch, an open efficient circuit breaker, or an
-image request the efficient tier cannot serve.
+attachment request the efficient tier cannot serve.
 
-By default the efficient tier does not serve requests that contain images. Set
+By default the efficient tier does not serve requests that contain image, file,
+audio, or video attachments, including attachments in tool results. Set
 `efficient_supports_attachments = true` on the VGR route to let it attempt requests
 with attachments. This setting permits attempts; it does not guarantee that the
-efficient model understands every attachment format. The judge reads only the
-surrounding text.
+efficient model understands every attachment format. All configured judges must
+also support the attachment formats: typing, confidence, deliberation, and verdict
+calls receive the original attachments in conversation order alongside the judged
+text. Image-only requests are judged with their attachments even without a text
+question.
 
 ## Serving modes
 
