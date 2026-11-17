@@ -352,7 +352,15 @@ async fn call_first_available<'a>(
             {
                 return Err(error);
             }
-            Err(error) => match fallback_reason(&error, fallback_request.is_none()) {
+            Err(error) => match if algorithm == "vgr"
+                && fallback_request.is_some()
+                && matches!(&error, LibsyError::ClientCall { source, .. }
+                    if source.is_attachment_rejection())
+            {
+                Some(RoutingFallbackReason::Unavailable)
+            } else {
+                fallback_reason(&error, fallback_request.is_none())
+            } {
                 Some(reason) => tracing::info!(
                     from = %target,
                     to = %models[index + 1],
@@ -2993,5 +3001,143 @@ mod tests {
             .map_err(|source| LibsyError::client_call("weak", source))?;
         assert_eq!(completion_text(&aggregate), "");
         Ok(())
+    }
+    struct MediaFailureClient {
+        fail_efficient: bool,
+        status: StatusCode,
+        body: String,
+        calls: Mutex<Vec<ModelId>>,
+    }
+
+    #[async_trait]
+    impl RoutedLlmClient for MediaFailureClient {
+        async fn call(&self, request: Request) -> std::result::Result<Response, LlmClientError> {
+            let target = request.model_id().unwrap();
+            self.calls.lock().push(target.clone());
+            if (self.fail_efficient && target == "efficient")
+                || (!self.fail_efficient && target == "capable")
+            {
+                return Err(LlmClientError::UpstreamHttp {
+                    status: self.status,
+                    body: self.body.clone(),
+                });
+            }
+            Ok(Response {
+                llm_response: LlmResponse::Agg(switchyard_protocol::text_response(
+                    Some(target.to_string()),
+                    if target == "judge" { "no" } else { "Red" },
+                )),
+                metadata: None,
+                upstream_headers: Default::default(),
+            })
+        }
+    }
+
+    async fn check_vgr_media_rejections(fail_efficient: bool) -> Result<()> {
+        use switchyard_libsy::{ACTIVE_APPROVAL, ServingMode, Vgr, VgrConfig};
+        use switchyard_protocol::{ContentBlock, ImageSource};
+        for (status, body, succeeds) in [
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"message":"unsupported content[].type"}}"#,
+                true,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"message":"The image data you provided does not represent a valid image"}}"#,
+                true,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"code":"content_policy_violation","message":"invalid image"}}"#,
+                false,
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                r#"{"error":{"code":"content_policy_violation"}}"#,
+                false,
+            ),
+            (StatusCode::BAD_REQUEST, "invalid sampling parameter", false),
+        ] {
+            let mut config = VgrConfig::new("efficient".into(), "capable".into());
+            config.mode = ServingMode::Active {
+                approval: ACTIVE_APPROVAL.into(),
+            };
+            config.task_typing = false;
+            config.efficient_supports_attachments = true;
+            config.targets.judge = Some("judge".into());
+            let client = Arc::new(MediaFailureClient {
+                fail_efficient,
+                status,
+                body: body.into(),
+                calls: Mutex::new(Vec::new()),
+            });
+            let mut input = request();
+            input.llm_request.messages = vec![Message::new(
+                Role::User,
+                vec![
+                    ContentBlock::Text {
+                        text: "What color?".into(),
+                    },
+                    ContentBlock::Image {
+                        source: ImageSource::Url {
+                            url: "https://example.test/red.bmp".into(),
+                            detail: None,
+                        },
+                    },
+                ],
+            )];
+            let result = run(
+                Arc::new(Vgr::new(config)?),
+                ClientRouter::single(client.clone()),
+                input,
+                to_category_map(&["efficient", "capable"]),
+                None,
+            )
+            .await;
+            if succeeds {
+                let (selected, response) = result?;
+                assert_eq!(selected.as_str(), "capable");
+                assert_eq!(
+                    response.served_model().map(ModelId::as_str),
+                    Some(if fail_efficient {
+                        "capable"
+                    } else {
+                        "efficient"
+                    })
+                );
+                assert_eq!(
+                    completion_text(
+                        &response
+                            .llm_response
+                            .into_agg()
+                            .await
+                            .map_err(|e| LibsyError::client_call(selected, e))?
+                    ),
+                    "Red"
+                );
+                let local_calls = client
+                    .calls
+                    .lock()
+                    .iter()
+                    .filter(|m| m.as_str() == "efficient")
+                    .count();
+                assert_eq!(local_calls, if fail_efficient { 1 } else { 2 });
+            } else {
+                assert!(result.is_err(), "{fail_efficient}, {status}, {body}");
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn efficient_media_rejections_escalate_without_hiding_other_bad_requests() -> Result<()> {
+        check_vgr_media_rejections(true).await
+    }
+
+    #[tokio::test]
+    async fn capable_media_rejections_allow_vgr_stand_in_without_hiding_other_bad_requests()
+    -> Result<()> {
+        check_vgr_media_rejections(false).await
     }
 }
