@@ -64,7 +64,11 @@ The classifier target returns a structured verdict containing:
 
 - `p_solve`: the estimated probability that the weak model completes the task.
 - `capability_boundary`: `supported`, `uncertain`, `unsupported`, or `unmatched`.
-- `primary_rule`: the capability-card rule that determines the boundary.
+- `primary_rule`: the capability-card rule that determines the boundary. The rule label
+  is authoritative: a verdict whose `capability_boundary` disagrees with its rule is
+  routed by the rule's boundary and its decision evidence carries
+  `boundary_corrected: true`. Verdicts with an unknown rule, an empty `crux`, or a
+  `p_solve` outside `[0, 1]` are still rejected and fall back.
 - `crux`: the hardest material requirement for whole-task success.
 
 For a usable verdict, Switchyard routes to `weak_target` when `p_solve` is
