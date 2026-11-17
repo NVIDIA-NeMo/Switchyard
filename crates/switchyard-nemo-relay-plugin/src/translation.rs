@@ -7,7 +7,6 @@ use switchyard_protocol::{AggLlmResponse, LlmRequest, ProviderExtensions, WireFo
 use switchyard_translation::{
     DeterministicIdPolicy, DiagnosticSeverity, LossyConversionPolicy, PreservationPolicy,
     TargetCapabilities, TranslationDiagnostic, TranslationEngine, TranslationPolicy,
-    UnknownFieldPolicy,
 };
 
 pub(crate) fn decode_request(
@@ -37,7 +36,6 @@ pub(crate) fn encode_response(
 
 fn policy() -> TranslationPolicy {
     TranslationPolicy {
-        unknown_field_policy: UnknownFieldPolicy::Preserve,
         lossy_conversion_policy: LossyConversionPolicy::Reject,
         deterministic_ids: DeterministicIdPolicy::GenerateStable {
             prefix: "relay".into(),
