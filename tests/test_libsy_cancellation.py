@@ -5,6 +5,7 @@
 
 import asyncio
 import gc
+from contextvars import ContextVar
 from typing import Any
 
 import pytest
@@ -132,3 +133,75 @@ async def test_decision_response_and_failure_keep_their_routing_behavior(
     assert outcome.outcome.selected_model_ids[0] == ("strong" if failure else expected)
     with pytest.raises(LibsyError, match="already been completed"):
         await step.call.respond(answer())
+
+
+@pytest.mark.parametrize("stop", ["deadline", "drop"])
+async def test_abandoning_a_response_stream_cancels_its_pending_read(stop: str) -> None:
+    context = ContextVar("stream_context", default="missing")
+    context.set("caller")
+    entered = asyncio.Event()
+    cleaned = asyncio.Event()
+    owner: asyncio.Task[Any] | None = None
+
+    async def events():
+        nonlocal owner
+        try:
+            assert context.get() == "caller"
+            yield {
+                "preservation": None,
+                "normalized": [{"MessageStart": {"id": "reply", "model": "judge"}}],
+            }
+            owner = asyncio.current_task()
+            entered.set()
+            await asyncio.Future()
+        finally:
+            await asyncio.sleep(0)
+            cleaned.set()
+
+    async def work():
+        return LlmResponse.Stream(events())
+
+    router = algorithms.llm_task_classifier(
+        config=TaskClassifierConfig(
+            0.5,
+            judge_deadline_ms=150 if stop == "deadline" else None,
+        )
+    )
+    stream = router.run_stream(
+        {"messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]},
+        {
+            "judge": ["judge"],
+            "capable": ["strong"],
+            "efficient": ["weak"],
+            "any": ["strong", "weak"],
+        },
+    )
+    step = await anext(stream)
+    assert isinstance(step, Step.CallModel)
+    handler = asyncio.create_task(step.call.respond(work()))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.wait_for(handler, 2)
+        if stop == "deadline":
+            terminal = await asyncio.wait_for(anext(stream), 2)
+            assert isinstance(terminal, Step.Done)
+            assert terminal.outcome.selected_model_ids == ["strong", "weak"]
+            assert terminal.outcome.metadata.evidence == {
+                "source": "fail_open",
+                "reason_code": "deadline",
+            }
+            with pytest.raises(StopAsyncIteration):
+                await anext(stream)
+        else:
+            del stream
+            gc.collect()
+        await asyncio.wait_for(cleaned.wait(), 2)
+        await asyncio.sleep(0)
+        assert owner is not None and owner.done()
+    finally:
+        if owner is not None and not owner.done():
+            owner.cancel()
+            await asyncio.gather(owner, return_exceptions=True)
+        if not handler.done():
+            handler.cancel()
+            await asyncio.gather(handler, return_exceptions=True)
