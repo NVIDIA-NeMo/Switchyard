@@ -13,6 +13,7 @@ import (
 
 type engineBackend interface {
 	route(context.Context, Input, HostCall) (Outcome, error)
+	targetModels() (map[string]TargetModel, error)
 	close()
 }
 
@@ -22,16 +23,19 @@ type Router struct {
 }
 
 type routerState struct {
-	mu      sync.RWMutex
-	backend engineBackend
+	mu         sync.RWMutex
+	backend    engineBackend
+	configured bool
 }
 
-// Input supplies a normalized request and the host-approved model groups for this run.
+// Input supplies a normalized request. Raw routers also require host-approved model groups.
 type Input struct {
 	Request        json.RawMessage     `json:"request"`
 	Models         map[string][]string `json:"models"`
 	SubagentModels map[string][]string `json:"subagent_models"`
 	Metadata       *RequestMetadata    `json:"metadata,omitempty"`
+	// Nil supplies no assessment; a non-nil empty slice explicitly supplies no requirements.
+	RequiredLabels []string `json:"required_labels"`
 }
 
 // RequestMetadata carries routing context separately from the model request.
@@ -41,6 +45,7 @@ type RequestMetadata struct {
 	IsSubagent      bool   `json:"is_subagent,omitempty"`
 	IsDelegatedWork bool   `json:"is_delegated_work,omitempty"`
 	SessionFinal    *bool  `json:"session_final,omitempty"`
+	TaskID          string `json:"task_id,omitempty"`
 }
 
 // Work requests either a model call (Models) or a typed decision call (Model).
@@ -56,6 +61,12 @@ type Work struct {
 type Reply struct {
 	Response    json.RawMessage `json:"response"`
 	ServedModel string          `json:"served_model,omitempty"`
+}
+
+// TargetModel identifies the host client and provider model serving a configured target.
+type TargetModel struct {
+	Client string `json:"client"`
+	ID     string `json:"id"`
 }
 
 // HostCall executes model or decision work. It must honor ctx and may run concurrently.
@@ -128,6 +139,46 @@ func New(config json.RawMessage) (*Router, error) {
 	return &Router{state: &routerState{backend: backend}}, nil
 }
 
+// NewConfigured loads one TOML route without provider clients.
+func NewConfigured(source, routeID string) (*Router, error) {
+	config, err := json.Marshal(struct {
+		Configured configuredSource `json:"configured"`
+	}{Configured: configuredSource{TOML: source, RouteID: routeID}})
+	if err != nil {
+		return nil, err
+	}
+	router, err := New(config)
+	if err != nil {
+		return nil, err
+	}
+	router.state.configured = true
+	return router, nil
+}
+
+type configuredSource struct {
+	TOML    string `json:"toml"`
+	RouteID string `json:"route_id"`
+}
+
+// TargetModels returns all configured targets, including alternatives, not the current eligible pool.
+// LLM keys are target names; Decision keys are provider model IDs. Requires NewConfigured.
+func (router *Router) TargetModels() (map[string]TargetModel, error) {
+	if router == nil || router.state == nil {
+		return nil, errors.New("Switchyard router is closed")
+	}
+	state := router.state
+	state.mu.RLock()
+	backend := state.backend
+	state.mu.RUnlock()
+	if backend == nil {
+		return nil, errors.New("Switchyard router is closed")
+	}
+	if !state.configured {
+		return nil, errors.New("target discovery needs NewConfigured")
+	}
+	return backend.targetModels()
+}
+
 // Close prevents new runs and releases this Router's backend. Repeated calls and value copies are safe.
 func (router *Router) Close() {
 	if router == nil || router.state == nil {
@@ -157,6 +208,12 @@ func (router *Router) Route(ctx context.Context, input Input, call HostCall) (Ou
 	}
 	if err := ctx.Err(); err != nil {
 		return Outcome{}, err
+	}
+	if input.RequiredLabels != nil && !state.configured {
+		return Outcome{}, errors.New("target requirements need NewConfigured")
+	}
+	if state.configured && (input.Models != nil || input.SubagentModels != nil) {
+		return Outcome{}, errors.New("configured routers do not accept host model groups")
 	}
 	return backend.route(ctx, input, call)
 }

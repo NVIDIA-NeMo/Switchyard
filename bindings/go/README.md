@@ -2,7 +2,7 @@
 
 NVIDIA NeMo Switchyard is a library for routing LLM requests between models.
 These Go bindings run Switchyard algorithms inside your application. Your
-application owns model eligibility, credentials, provider calls, and retries.
+application owns classification, credentials, provider calls, and retries.
 
 The default backend runs libsy in WebAssembly through wazero, with no cgo
 dependency. Native builds can use the C ABI instead.
@@ -97,15 +97,73 @@ evidence, and an optional answer. When it has no answer, the host calls the
 selected target. Routing-produced responses are buffered; the host may stream
 the final selected provider response separately.
 
+## Configured target requirements
+
+`NewConfigured` loads a TOML route and enforces its target labels and ordered
+alternatives before requesting any host calls. Use the configured route's `id`,
+not its TOML table name. This works with the default WASM backend and the native
+backend; both use the same Rust requirement checks.
+
+```go
+router, err := switchyard.NewConfigured(string(tomlSource), "switchyard/coding")
+if err != nil {
+    return err
+}
+defer router.Close()
+
+targets, err := router.TargetModels()
+if err != nil {
+    return err
+}
+// Use targets[emittedModelID].Client and .ID to resolve each host call.
+
+outcome, err := router.Route(ctx, switchyard.Input{
+    Request: normalizedRequest,
+    RequiredLabels: []string{"private", "customer_data"},
+    Metadata: &switchyard.RequestMetadata{TaskID: trustedTaskID},
+}, hostCall)
+```
+
+Leave `Models` and `SubagentModels` nil: TOML supplies those groups. `RequiredLabels`
+nil means no assessment was supplied; `[]string{}` explicitly supplies no
+requirements. Raw `New` routers reject both empty and nonempty requirements.
+
+The application supplies trusted labels and tenant-scoped task IDs. Task-scope
+requirements accumulate on this reused router; another router or process does
+not share that retention. Each run still starts with fresh per-run routing state.
+
+No provider clients are constructed or credentials read. The existing `HostCall`
+handles approved LLM and Decision calls. LLM work and final candidates use TOML
+target names; Decision work uses provider model IDs. `TargetModels()` maps those
+identifiers to `TargetModel{Client, ID}` for all configured targets, including
+alternatives. This inventory is not the current eligible pool: execute only calls
+and final candidates returned by routing. `Reply.ServedModel` remains the emitted
+target name, not its provider ID.
+
+The host resolves the corresponding client, applies target prompts/settings, and
+keeps answer retries/fallbacks within the returned candidates. This is not full
+Runner execution. Rebuild the native library or WASM guest and Go package
+(`go test -a` for tests) after updating; older artifacts lack configured routing
+and target discovery.
+
 ## Cancellation and ownership
 
 `Route` waits in its calling goroutine. A host that needs immediate return can
 call it in a goroutine; waiting for routing steps does not occupy a blocked
-native-reader thread. Each WASM router uses a pool of `GOMAXPROCS` guest instances.
+native-reader thread. Raw WASM routers use a pool of `GOMAXPROCS` guest instances.
 A session ID keeps the parent and all its child agents on the same instance.
 Without a session ID, the first user message is used, or requests are assigned round-robin.
 Guest calls are serialized within each instance; host callbacks can overlap.
-A trap fails runs sharing that instance. It is replaced and its retained state is lost.
+A trap fails runs sharing that instance. Raw instances are replaced and their
+retained algorithm state is lost.
+
+Configured WASM routers instead use one persistent guest, retaining each task's
+requirements by task ID. Guest execution is serialized, but host calls can still
+overlap. This trades parallel Rust execution for consistent task retention;
+native routing has no single-guest limit. A configured guest trap permanently
+fails that router rather than silently forgetting requirements. Recreating it
+resets local retention: existing tasks must supply their complete accumulated
+requirements again, not `[]`. Otherwise, use a new task with a fresh assessment.
 
 Each instance has its own algorithm state. VGR's circuit breaker is not shared
 across the pool. Advisor's review budget is also per instance when no session ID

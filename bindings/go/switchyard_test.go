@@ -42,6 +42,20 @@ func input() Input {
 	}
 }
 
+func TestRawRouterRejectsConfiguredFeatures(t *testing.T) {
+	router := newRouter(t, `{"type":"passthrough","target":"strong"}`)
+	if _, err := router.TargetModels(); err == nil || !strings.Contains(err.Error(), "NewConfigured") {
+		t.Fatalf("raw router returned configured targets: %v", err)
+	}
+	for _, labels := range [][]string{{}, {"private"}} {
+		request := input()
+		request.RequiredLabels = labels
+		if _, err := router.Route(context.Background(), request, nil); err == nil || !strings.Contains(err.Error(), "NewConfigured") {
+			t.Fatalf("raw router accepted requirements: %v", err)
+		}
+	}
+}
+
 // Completed outcomes retain fallback requests while absent requests remain optional.
 func TestOutcomeFallbackRequest(t *testing.T) {
 	request := input().Request
