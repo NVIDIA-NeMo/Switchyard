@@ -19,27 +19,18 @@ use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
-fn chat_refusal_fragments_are_immediate_and_track_each_choice() {
+fn chat_refusal_tracks_each_choice_and_preserves_finish_reasons() {
     for finish_reason in ["stop", "length", "content_filter"] {
         let source = WireFormat::OpenAiChat;
         let mut state = StreamTranslationState::default();
-        for (field, text) in [
-            ("refusal", ""),
-            ("refusal", "I cannot "),
-            ("refusal", "help."),
-            ("content", " Later text."),
-        ] {
-            let decoded = decode_stream_event(
+        for delta in [json!({"refusal": ""}), json!({"content": "Later text."})] {
+            drop(decode_stream_event(
                 &mut state,
                 source,
                 &json!({"choices": [{
-                    "index": 0, "delta": {field: text}, "finish_reason": null,
+                    "index": 0, "delta": delta, "finish_reason": null,
                 }]}),
-            );
-            assert!(decoded.contains(&LlmResponseChunk::TextDelta {
-                index: 0,
-                text: text.to_string()
-            }));
+            ));
         }
         let decoded = decode_stream_event(
             &mut state,
@@ -68,45 +59,6 @@ fn chat_refusal_fragments_are_immediate_and_track_each_choice() {
             ]
         );
     }
-}
-
-#[test]
-fn responses_refusal_fragments_are_immediate_and_snapshots_do_not_repeat_them() {
-    let source = WireFormat::OpenAiResponses;
-    let mut state = StreamTranslationState::default();
-    for text in ["I cannot ", "help."] {
-        assert_eq!(
-            decode_stream_event(
-                &mut state,
-                source,
-                &json!({
-                    "type": "response.refusal.delta", "output_index": 0, "content_index": 0, "delta": text,
-                })
-            ),
-            vec![LlmResponseChunk::TextDelta {
-                index: 0,
-                text: text.to_string()
-            }]
-        );
-    }
-    assert!(decode_stream_event(&mut state, source, &json!({
-        "type": "response.refusal.done", "output_index": 0, "content_index": 0, "refusal": "I cannot help.",
-    })).is_empty());
-    let completed = decode_stream_event(
-        &mut state,
-        source,
-        &json!({
-            "type": "response.completed", "response": {"output": [{"type": "message", "content": [
-                {"type": "refusal", "refusal": "I cannot help."},
-            ]}]},
-        }),
-    );
-    assert_eq!(
-        completed,
-        vec![LlmResponseChunk::MessageStop {
-            reason: Some("refusal".to_string())
-        }]
-    );
 }
 
 #[test]
@@ -685,16 +637,18 @@ fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResu
 fn refusal_stream_translates_to_anthropic() -> TestResult {
     let engine = TranslationEngine::default();
     let refusal = "I cannot help with that request.";
-    let chat_delta = json!({
-        "id": "chatcmpl-refusal",
-        "object": "chat.completion.chunk",
-        "model": "gpt-4o",
-        "choices": [{
-            "index": 0,
-            "delta": {"refusal": refusal},
-            "finish_reason": null
-        }]
-    });
+    let chat_delta = |text| {
+        json!({
+            "id": "chatcmpl-refusal",
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "delta": {"refusal": text},
+                "finish_reason": null
+            }]
+        })
+    };
     let chat_terminal = json!({
         "id": "chatcmpl-refusal",
         "object": "chat.completion.chunk",
@@ -710,18 +664,28 @@ fn refusal_stream_translates_to_anthropic() -> TestResult {
     let refusal_done = json!({"type": "response.refusal.done", "item_id": "msg_refusal",
         "output_index": 0, "content_index": 0, "refusal": refusal});
 
-    for (case, source, input, expected_fragments) in [
+    for (case, source, input, expected_text) in [
         (
             "chat_deltas",
             WireFormat::OpenAiChat,
-            vec![chat_delta, chat_terminal],
-            vec![refusal],
+            vec![
+                chat_delta(""),
+                chat_delta("I cannot "),
+                chat_delta("help with that request."),
+                chat_terminal,
+            ],
+            vec![
+                Some(""),
+                Some("I cannot "),
+                Some("help with that request."),
+                None,
+            ],
         ),
         (
             "responses_snapshot_only",
             WireFormat::OpenAiResponses,
             vec![completed.clone()],
-            vec![refusal],
+            vec![Some(refusal)],
         ),
         (
             "responses_refusal_done_only",
@@ -730,7 +694,7 @@ fn refusal_stream_translates_to_anthropic() -> TestResult {
                 refusal_done.clone(),
                 json!({"type": "response.completed", "response": {}}),
             ],
-            vec![refusal],
+            vec![Some(refusal), None],
         ),
         (
             "responses_full_lifecycle",
@@ -754,15 +718,53 @@ fn refusal_stream_translates_to_anthropic() -> TestResult {
                 json!({"type": "response.output_item.done", "output_index": 0, "item": message}),
                 completed,
             ],
-            vec!["I cannot ", "help with that request."],
+            vec![
+                None,
+                None,
+                None,
+                Some("I cannot "),
+                Some("help with that request."),
+                None,
+                None,
+                None,
+                None,
+            ],
         ),
     ] {
         let target = WireFormat::AnthropicMessages;
         let mut decoder = StreamTranslationState::new(source, target);
         let mut encoder = StreamTranslationState::new(source, target);
         let mut events = Vec::new();
-        for event in input {
+        assert_eq!(input.len(), expected_text.len(), "{case}");
+        let expected_fragments: Vec<_> = expected_text.iter().copied().flatten().collect();
+        for (event_index, (event, text)) in input.into_iter().zip(expected_text).enumerate() {
+            let mut expected = Vec::new();
+            if let Some(text) = text {
+                expected.push(LlmResponseChunk::TextDelta {
+                    index: 0,
+                    text: text.to_string(),
+                });
+            }
+            if event["type"] == "response.completed"
+                || event["choices"][0]["finish_reason"] == "stop"
+            {
+                expected.push(LlmResponseChunk::MessageStop {
+                    reason: Some("refusal".to_string()),
+                });
+            }
             let decoded = engine.decode_stream_event(&mut decoder, source, event)?;
+            let text_and_stops: Vec<_> = decoded
+                .normalized()
+                .iter()
+                .filter(|chunk| {
+                    matches!(
+                        chunk,
+                        LlmResponseChunk::TextDelta { .. } | LlmResponseChunk::MessageStop { .. }
+                    )
+                })
+                .cloned()
+                .collect();
+            assert_eq!(text_and_stops, expected, "{case}, event {event_index}");
             events.extend(engine.encode_stream_event(&mut encoder, target, decoded)?);
         }
         events.extend(engine.finish_stream(&mut encoder, target)?);
