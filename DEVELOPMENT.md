@@ -39,7 +39,6 @@ crates/
 ├── protocol/                      # Provider-neutral protocol types
 ├── switchyard-py/                 # PyO3 bindings for libsy and the server
 ├── switchyard-server/             # Native HTTP server and TOML configuration
-├── switchyard-skill-distillation/ # Skill-distillation contracts
 └── switchyard-translation/        # Request, response, and stream translation
 tests/                            # Python tests (no API keys required)
 docs/                             # User and architecture documentation

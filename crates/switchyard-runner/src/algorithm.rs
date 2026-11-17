@@ -2009,8 +2009,8 @@ fn build_algorithm(
                 Ok(config)
             });
             let [profile_0, profile_1] = profiles;
-            let algorithm = CompositeRouter::new_with_profiles(judge, profile_0?, profile_1?)
-                .map_err(|error| {
+            let algorithm =
+                CompositeRouter::new(judge, profile_0?, profile_1?).map_err(|error| {
                     AlgorithmConfigError::with_source(
                         format!("composite route {route_name}: {error}"),
                         error,

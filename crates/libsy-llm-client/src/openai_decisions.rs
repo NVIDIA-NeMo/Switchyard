@@ -56,7 +56,7 @@ impl RoutedDecisionClient for OpenAiDecisionClient {
             .post(self.endpoint.clone())
             .bearer_auth(&self.api_key)
             .json(&encode(&request)?);
-        let response = async {
+        let mut response = async {
             let request = builder.build()?;
             if let Some(body) = request.body().and_then(reqwest::Body::as_bytes) {
                 crate::payload_capture::record("request", || String::from_utf8_lossy(body));
@@ -67,6 +67,7 @@ impl RoutedDecisionClient for OpenAiDecisionClient {
         .inspect_err(|_| metrics::record_upstream_attempt(None))
         .map_err(convert_reqwest_error)?;
         let status = response.status();
+        let headers = std::mem::take(response.headers_mut());
         let body = response
             .bytes()
             .await
@@ -77,6 +78,7 @@ impl RoutedDecisionClient for OpenAiDecisionClient {
             return Err(LlmClientError::UpstreamHttp {
                 status,
                 body: String::from_utf8_lossy(&body).replace(&self.api_key, "[REDACTED]"),
+                headers: Box::new(headers),
             });
         }
         crate::payload_capture::record("response", || String::from_utf8_lossy(&body));

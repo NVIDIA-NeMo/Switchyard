@@ -13,9 +13,7 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{ContentBlock, LlmRequest, Message, PreservationMetadata};
-use crate::policy::{
-    LossyConversionPolicy, PreservationPolicy, TranslationPolicy, UnknownFieldPolicy,
-};
+use crate::policy::{LossyConversionPolicy, PreservationPolicy, TranslationPolicy};
 
 /// Metadata key used to embed exact preserved payloads in provider JSON.
 pub const SWITCHYARD_METADATA_KEY: &str = "_switchyard_translation";
@@ -49,37 +47,6 @@ pub fn string_value(value: &Value) -> Option<String> {
             }
             _ => other.to_string(),
         }),
-    }
-}
-
-/// Returns a non-empty string when the value is string-like enough to preserve.
-pub fn is_truthy_string(value: &Value) -> Option<String> {
-    match value {
-        Value::String(text) if !text.is_empty() => Some(text.clone()),
-        _ => None,
-    }
-}
-
-/// Applies the unknown-field policy and records diagnostics when configured.
-pub fn push_unknown_field(
-    diagnostics: &mut Vec<TranslationDiagnostic>,
-    policy: &TranslationPolicy,
-    path: impl Into<String>,
-) -> Result<()> {
-    let path = path.into();
-    match policy.unknown_field_policy {
-        UnknownFieldPolicy::Preserve => Ok(()),
-        UnknownFieldPolicy::DropWithWarning => {
-            diagnostics.push(
-                TranslationDiagnostic::warning(
-                    "unknown_field_dropped",
-                    format!("unknown field at {path} was dropped"),
-                )
-                .at_path(path),
-            );
-            Ok(())
-        }
-        UnknownFieldPolicy::Reject => Err(TranslationError::UnknownField { path }),
     }
 }
 
@@ -144,18 +111,6 @@ pub fn json_string(value: &Value) -> String {
         Value::String(text) => text.clone(),
         other => serde_json::to_string(other).unwrap_or_else(|_| other.to_string()),
     }
-}
-
-/// Joins non-empty text fragments with a caller-provided separator.
-pub fn compact_text_blocks<'a>(
-    blocks: impl IntoIterator<Item = &'a str>,
-    separator: &str,
-) -> String {
-    blocks
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(separator)
 }
 
 /// Checks a request against declared target capabilities.

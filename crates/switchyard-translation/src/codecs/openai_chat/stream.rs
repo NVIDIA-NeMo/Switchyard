@@ -124,6 +124,7 @@ fn decode_openai_chat_stream(
         let Some(choice) = choice.as_object() else {
             continue;
         };
+        let choice_index = choice.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
         if let Some(delta) = choice.get("delta").and_then(Value::as_object) {
             if let Some(details) = delta
                 .get("reasoning_details")
@@ -161,14 +162,10 @@ fn decode_openai_chat_stream(
                     text: text.to_string(),
                 });
             }
-            if let Some(text) = delta.get("refusal").and_then(Value::as_str)
-                && !text.is_empty()
-            {
-                // Refusal deltas mark the whole message as a content-filter stop. This state
-                // persists across chunks so a later `finish_reason: "stop"` cannot overwrite it.
-                state.stop_reason = Some("content_filter".to_string());
+            if let Some(text) = delta.get("refusal").and_then(Value::as_str) {
+                state.chat_refusal_choices.insert(choice_index);
                 out.push(LlmResponseChunk::TextDelta {
-                    index: 0,
+                    index: choice_index,
                     text: text.to_string(),
                 });
             }
@@ -234,12 +231,13 @@ fn decode_openai_chat_stream(
                     arguments_delta: None,
                 });
             }
-            let reason =
-                if reason == "stop" && state.stop_reason.as_deref() == Some("content_filter") {
-                    "content_filter"
-                } else {
-                    reason
-                };
+            let saw_refusal = state.chat_refusal_choices.remove(&choice_index);
+            let reason = if saw_refusal && reason == "stop" {
+                "refusal"
+            } else {
+                reason
+            };
+            state.stop_reason = Some(reason.to_string());
             out.push(LlmResponseChunk::MessageStop {
                 reason: Some(reason.to_string()),
             });
@@ -361,15 +359,26 @@ fn encode_openai_chat_stream(
             if state.finished {
                 return Vec::new();
             }
+            let mut out = Vec::new();
+            if reason.as_deref() == Some("refusal") {
+                // Text was already emitted. Preserve the refusal signal without repeating it.
+                out.push(openai_stream_chunk(
+                    state,
+                    json!({"refusal": ""}),
+                    None,
+                    None,
+                ));
+            }
             state.finished = true;
-            vec![openai_stream_chunk(
+            out.push(openai_stream_chunk(
                 state,
                 json!({}),
                 Some(openai_finish_reason(reason.as_deref())),
                 state
                     .saw_backend_usage
                     .then(|| encode_openai_usage(&state.usage)),
-            )]
+            ));
+            out
         }
         LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
             // An in-band error is terminal: emit the error, then nothing further.
@@ -385,15 +394,12 @@ fn finish_openai_chat_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     if state.finished || !state.saw_message_start {
         return Vec::new();
     }
-    state.finished = true;
-    vec![openai_stream_chunk(
+    encode_openai_chat_stream(
         state,
-        json!({}),
-        Some(openai_finish_reason(state.stop_reason.as_deref())),
-        state
-            .saw_backend_usage
-            .then(|| encode_openai_usage(&state.usage)),
-    )]
+        LlmResponseChunk::MessageStop {
+            reason: state.stop_reason.clone(),
+        },
+    )
 }
 
 // Builds a single OpenAI Chat stream chunk payload.
@@ -482,7 +488,7 @@ fn openai_finish_reason(reason: Option<&str>) -> String {
         Some("end_turn") | Some("stop_sequence") | None => "stop".to_string(),
         Some("max_tokens") => "length".to_string(),
         Some("tool_use") => "tool_calls".to_string(),
-        Some("refusal") => "content_filter".to_string(),
+        Some("refusal") => "stop".to_string(),
         Some(other) => other.to_string(),
     }
 }

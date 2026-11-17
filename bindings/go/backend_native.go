@@ -6,10 +6,6 @@
 package switchyard
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../crates/switchyard-ffi/include
-#cgo LDFLAGS: ${SRCDIR}/../../target/release/libswitchyard_ffi.a
-#cgo linux LDFLAGS: -ldl -lpthread -lm
-#cgo darwin LDFLAGS: -framework Security -framework CoreFoundation -liconv
 #include <stdlib.h>
 #include "switchyard.h"
 extern void syGoNext(uintptr_t user_data, char *error, char *step_json);

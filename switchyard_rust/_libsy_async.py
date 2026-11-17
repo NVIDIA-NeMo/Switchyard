@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable
+from collections.abc import AsyncIterator, Awaitable
 from typing import Any, Protocol
 
 
@@ -29,3 +29,8 @@ async def fail(call: _Call, error: BaseException) -> None:
         raise error
 
     await respond(call, raise_error())
+
+
+async def next_item(iterator: AsyncIterator[Any]) -> Any:
+    """Read on the owning loop through a cancellable coroutine."""
+    return await anext(iterator)

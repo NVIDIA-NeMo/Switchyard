@@ -95,6 +95,10 @@ pub enum LlmClientError {
         status: http::StatusCode,
         /// Raw upstream error body.
         body: String,
+        /// Upstream HTTP response headers from the last attempt. Consumers such as
+        /// switchyard-server may forward an allowed subset to the downstream client.
+        /// Boxed to keep the error type small.
+        headers: Box<http::HeaderMap>,
     },
 
     /// The upstream returned a response the client could not decode.

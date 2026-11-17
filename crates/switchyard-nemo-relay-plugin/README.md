@@ -10,13 +10,14 @@ algorithm construction, retry policy, and route validation.
 
 ## Install
 
-The plugin uses `nemo-relay-plugin` 0.10.0 and requires NeMo Relay
-`>=0.10.0, <1.0.0`. Relay 0.10 changes the native callback layout, so older
-hosts cannot load this build. The manifest's native plugin API label stays `1`.
+The plugin uses `nemo-relay-plugin` 0.10.1 and requires NeMo Relay
+`>=0.10.1, <1.0.0`. Relay 0.10 changed the native callback layout; 0.10.1 adds
+the HTTP-error status handling used by this build. The manifest's native plugin
+API label stays `1`.
 
 Relay 0.8.x and 0.9.0 can lose upstream error status and details when this native
 plugin is enabled, including for models outside its configured routes. This is
-a known issue on those older hosts. This build requires Relay 0.10 or later.
+a known issue on those older hosts. This build requires Relay 0.10.1 or later.
 See the [upstream error compatibility note](../../docs/integrations/nemo_relay.md#upstream-error-compatibility).
 
 ### Install a released bundle
