@@ -225,6 +225,12 @@ targets must also appear in `models.any`; one that does not is rejected when the
 configuration loads. `models.judge` supplies the judge call's own candidates in
 order and is not a completion destination.
 
+The native Rust host attempts only the first `models.judge` candidate. After
+that target's configured retries, a failure follows the route's `fail_open`
+policy; the host does not try the next judge. A custom host can implement ordered
+judge fallback when serving `CallModel`. This is separate from the answering-group
+fallback above. See the [native execution policy](../../crates/libsy-llm-client/README.md#headers--auth).
+
 `capable` and `efficient` are reserved names. Use them when you want a group to
 carry the tier meaning the stage and composite routers give it; otherwise any
 name works.

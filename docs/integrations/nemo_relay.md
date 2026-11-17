@@ -18,11 +18,21 @@ a configured Switchyard route. For example, if the route is `switchyard/core`
 and its target is `azure/openai/gpt-5.5`, requesting the target name directly
 still delegates the request to Relay.
 
-This plugin build uses `nemo-relay-plugin` 0.10.0 and requires Relay
-`>=0.10.0, <1.0.0`. Older hosts cannot load it because Relay 0.10 changes the
-native callback layout. If you use an older plugin build on Relay 0.8.x or
-0.9.0, send unmanaged traffic through a separate Relay instance with the plugin
-disabled. Upgrading Switchyard alone does not upgrade the Relay host.
+This plugin build uses `nemo-relay-plugin` 0.10.1 and requires Relay
+`>=0.10.1, <1.0.0`. Relay 0.10 changed the native callback layout; 0.10.1 adds
+the HTTP-error status handling used by this build. If you use an older plugin
+build on Relay 0.8.x or 0.9.0, send unmanaged traffic through a separate Relay
+instance with the plugin disabled. Upgrading Switchyard alone does not upgrade
+the Relay host.
+
+For managed routes, known upstream HTTP errors retain their status through
+Relay's HTTP-error API. The client receives the generic message
+`Switchyard route execution failed`; provider error bodies remain private.
+Failures without a known HTTP error status keep Relay's existing error handling.
+
+This preserves the HTTP status for buffered responses. Relay's streaming path
+can send HTTP 200 before route execution finishes, so later failures cannot
+change that status and retain the existing stream-error behavior.
 
 ## Why Use Switchyard with NeMo Relay?
 
@@ -171,7 +181,7 @@ and how it
 
 !!! note "Relay compatibility"
 
-    The plugin requires `relay = ">=0.10.0, <1.0.0"` and native plugin API `1`.
+    The plugin requires `relay = ">=0.10.1, <1.0.0"` and native plugin API `1`.
     The packaged
     [`relay-plugin.toml`](../../crates/switchyard-nemo-relay-plugin/relay-plugin.toml)
     is the source of truth.
@@ -295,8 +305,9 @@ provides a value, the Switchyard session ID remains unset.
 
 ## Routing Telemetry
 
-Relay sees one LLM lifecycle for the request made by the agent. Switchyard
-reports the routing work through Relay marks and metrics. Existing Relay
+Relay records one outer LLM lifecycle for the request made by the agent.
+Switchyard also reports internal client-call scopes, routing marks, and metrics.
+Existing Relay
 [subscribers](https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/subscribers#how-subscribers-relate-to-events)
 can receive these records, but each output format presents them differently.
 
@@ -304,10 +315,15 @@ can receive these records, but each output format presents them differently.
 
 | Output | What the current integration shows |
 | --- | --- |
-| ATIF | The request and response seen by the agent. Internal routing is not added as separate steps or included in `final_metrics`. Relay-managed ATIF files may retain the raw records under `extra.observed_events`. |
+| ATIF | Relay's trajectory projection. With Relay 0.11.1, internal Switchyard LLM scopes can become additional steps and contribute usage to `final_metrics`. The answer can appear in both an internal scope and the outer request. Relay-managed ATIF files may also retain raw records under `extra.observed_events`. |
 | OpenTelemetry traces, including OpenInference | Relay's outer LLM span, nested `libsy.client_call`, `libsy.upstream_attempt`, and `libsy.decision_client_call` duration scopes, plus eligible routing marks. |
 | OpenTelemetry metrics | Switchyard request, routing-call, latency, token, and failure measurements. Combine the reported routing usage with Relay's answer cost to estimate the observed routed cost. |
 | OTLP logs | Non-metric Switchyard marks that meet the configured severity threshold. |
+
+ATIF projection is controlled by the Relay host version. Do not treat
+`final_metrics` as answer-only usage or deduplicated provider consumption. Inspect
+the outer response usage and individual call scopes before calculating totals;
+repeated usage in an export does not imply additional provider requests or charges.
 
 The plugin captures existing Switchyard spans. Each routing or answer LLM
 call becomes a `libsy.client_call` scope. Physical HTTP attempts and retries

@@ -2717,6 +2717,54 @@ fn responses_incomplete_event_translates_to_chat_length_finish() -> TestResult {
     Ok(())
 }
 
+// Verifies a streamed content-filter stop from a Responses upstream reaches Chat and
+// Anthropic clients as a content-filter stop.
+#[test]
+fn responses_content_filter_incomplete_event_reaches_chat_and_anthropic_clients() -> TestResult {
+    let engine = TranslationEngine::default();
+    let events = [
+        json!({"type": "response.created", "response": {"id": "resp_1", "model": "gpt-4o",
+            "status": "in_progress", "output": []}}),
+        json!({"type": "response.output_text.delta", "item_id": "msg_1", "output_index": 0,
+            "content_index": 0, "delta": "Partial answer"}),
+        json!({"type": "response.incomplete", "response": {"id": "resp_1", "model": "gpt-4o",
+            "status": "incomplete", "incomplete_details": {"reason": "content_filter"},
+            "output": [{"id": "msg_1", "type": "message", "role": "assistant",
+                "status": "incomplete", "content": [{"type": "output_text",
+                    "text": "Partial answer", "annotations": []}]}],
+            "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14}}}),
+    ];
+
+    let chat = translate_stream(
+        &engine,
+        WireFormat::OpenAiResponses,
+        WireFormat::OpenAiChat,
+        &events,
+    )?;
+    let finish_reasons: Vec<_> = chat
+        .iter()
+        .filter_map(|event| event["choices"][0]["finish_reason"].as_str())
+        .collect();
+    assert_eq!(finish_reasons, ["content_filter"]);
+
+    let anthropic = translate_stream(
+        &engine,
+        WireFormat::OpenAiResponses,
+        WireFormat::AnthropicMessages,
+        &events,
+    )?;
+    let terminal = anthropic
+        .iter()
+        .find(|event| event["type"] == "message_delta")
+        .ok_or("missing Anthropic terminal delta")?;
+    assert_eq!(terminal["delta"]["stop_reason"], "refusal");
+    assert_eq!(
+        terminal["delta"]["stop_details"],
+        json!({"type": "refusal", "category": null, "explanation": null})
+    );
+    Ok(())
+}
+
 // Interleave text and two tool calls to check that deltas keep the right item IDs.
 // Completion events must include the full text and tool arguments, and the final
 // response must preserve each item's ID.

@@ -338,12 +338,21 @@ fn decode_responses_stream(
             out.push(LlmResponseChunk::MessageStop { reason });
             out
         }
-        // Carries the Anthropic spelling because every encoder already maps it.
+        // Both reasons use a spelling every encoder already maps.
         Some("response.incomplete") => {
             let mut out = Vec::new();
             decode_terminal_usage(state, event, &mut out);
+            let reason = match event
+                .get("response")
+                .and_then(|response| response.get("incomplete_details"))
+                .and_then(|details| details.get("reason"))
+                .and_then(Value::as_str)
+            {
+                Some("content_filter") => "content_filter",
+                _ => "max_tokens",
+            };
             out.push(LlmResponseChunk::MessageStop {
-                reason: Some("max_tokens".to_string()),
+                reason: Some(reason.to_string()),
             });
             out
         }

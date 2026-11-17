@@ -153,6 +153,24 @@ For per-request records, restart with `--routing-log-file routing.jsonl`. Each r
 
 With an unreleased build from main, `GET /v1/routing/session-stats?session_id=...` includes judge selections under `outcomes[].judgments`, with their targets, categories and available score evidence. Later Stage decisions leave these selections intact.
 
+## Forwarded response headers
+
+The server forwards these upstream response headers to the caller, on success and on
+upstream errors:
+
+- `baggage`, `traceparent`, `tracestate`
+- `openai-processing-ms`
+- `request-id`, `x-request-id`
+- `retry-after`, `retry-after-ms`, `x-should-retry`
+- `x-litellm-response-cost`
+- any header that starts with `anthropic-ratelimit-`, `x-ratelimit-`, or `x-upstream-`
+
+On an upstream error, the headers come from the last upstream attempt. Callers can use
+`retry-after` to decide how long to wait before they retry.
+
+Switchyard's own headers, such as `x-model-router-selected-model`, always win over an
+upstream header with the same name.
+
 ## Compare configurations
 
 - [Benchmark results](../benchmarks.md) link to model pools, results, and runnable profiles. For Terminal-Bench 2.1, the [escalation profile](../../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml) includes its judge and reasoning settings. Its comments explain the endpoint differences from the measured runs.
