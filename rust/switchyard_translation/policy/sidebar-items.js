@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"enum":["DeterministicIdPolicy","LossyConversionPolicy","PreservationPolicy","UnknownFieldPolicy"],"struct":["ProviderProfile","TargetCapabilities","TranslationPolicy"]};
+window.SIDEBAR_ITEMS = {"enum":["DeterministicIdPolicy","LossyConversionPolicy","PreservationPolicy"],"struct":["ProviderProfile","TargetCapabilities","TranslationPolicy"]};
