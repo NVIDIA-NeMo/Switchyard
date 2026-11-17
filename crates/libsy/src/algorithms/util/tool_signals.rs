@@ -10,8 +10,6 @@
 //!
 //! All logic is pure and deterministic — no I/O, no shared state.
 
-#![allow(dead_code)]
-
 use std::collections::HashSet;
 use std::path::Path;
 use std::sync::LazyLock;
@@ -487,6 +485,7 @@ impl Processor for ToolSignalProcessor {
     }
 }
 
+#[cfg(test)]
 fn classify_tool_call(name: &str, command: Option<&str>) -> ToolSemantic {
     classify_tool_call_with_semantics(
         name,
@@ -1165,6 +1164,7 @@ fn shell_command_is_read(command: &str) -> bool {
 ///
 /// Returns [`ToolSignals::default()`] when the message history contains no tool
 /// activity, so callers can always inspect the signal fields.
+#[cfg(test)]
 fn extract_tool_signals_with_window(request: &Request, recent_window: usize) -> ToolSignals {
     extract_tool_signals_with_window_and_semantics(
         request,
@@ -1553,30 +1553,6 @@ fn build_signal(
 }
 
 // ─── pure helpers ─────────────────────────────────────────────────────────────
-
-/// Normalise a JSON tool-result content value to a plain string.
-fn content_to_text(content: Option<&Value>) -> Option<String> {
-    match content? {
-        Value::String(s) => Some(s.clone()),
-        Value::Array(blocks) => {
-            let parts: Vec<&str> = blocks
-                .iter()
-                .filter_map(|b| {
-                    b.as_object()
-                        .filter(|o| o.get("type").and_then(Value::as_str) == Some("text"))
-                        .and_then(|o| o.get("text"))
-                        .and_then(Value::as_str)
-                })
-                .collect();
-            if parts.is_empty() {
-                None
-            } else {
-                Some(parts.join("\n"))
-            }
-        }
-        _ => None,
-    }
-}
 
 /// Match tool text and structured result fields against error patterns.
 ///

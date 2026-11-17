@@ -50,14 +50,6 @@ pub fn string_value(value: &Value) -> Option<String> {
     }
 }
 
-/// Returns a non-empty string when the value is string-like enough to preserve.
-pub fn is_truthy_string(value: &Value) -> Option<String> {
-    match value {
-        Value::String(text) if !text.is_empty() => Some(text.clone()),
-        _ => None,
-    }
-}
-
 /// Applies the lossy-conversion policy and records diagnostics when configured.
 pub fn push_lossy(
     diagnostics: &mut Vec<TranslationDiagnostic>,
@@ -119,18 +111,6 @@ pub fn json_string(value: &Value) -> String {
         Value::String(text) => text.clone(),
         other => serde_json::to_string(other).unwrap_or_else(|_| other.to_string()),
     }
-}
-
-/// Joins non-empty text fragments with a caller-provided separator.
-pub fn compact_text_blocks<'a>(
-    blocks: impl IntoIterator<Item = &'a str>,
-    separator: &str,
-) -> String {
-    blocks
-        .into_iter()
-        .filter(|part| !part.is_empty())
-        .collect::<Vec<_>>()
-        .join(separator)
 }
 
 /// Checks a request against declared target capabilities.

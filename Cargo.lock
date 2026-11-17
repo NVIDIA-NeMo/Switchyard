@@ -2536,7 +2536,6 @@ dependencies = [
  "jsonptr",
  "jsonschema",
  "opentelemetry",
- "opentelemetry_sdk",
  "parking_lot",
  "rand 0.10.2",
  "regex",
@@ -2734,16 +2733,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "switchyard-skill-distillation"
-version = "0.3.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]
