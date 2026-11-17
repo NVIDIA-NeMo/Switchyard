@@ -31,6 +31,8 @@ def source(tmp_path: Path) -> tuple[Path, Path, Path]:
     git(root, "init", "-b", "main")
     git(root, "config", "user.name", "Local Publication Test")
     git(root, "config", "user.email", "publication-test@example.invalid")
+    git(root, "config", "commit.gpgsign", "false")
+    git(root, "config", "tag.gpgsign", "false")
     files = {
         "pyproject.toml": '[project]\nversion = "0.4.0"\n',
         "Cargo.toml": '[workspace.package]\nversion = "0.4.0"\n',
