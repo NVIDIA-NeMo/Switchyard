@@ -19,6 +19,49 @@ use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
+fn chat_refusal_tracks_each_choice_and_preserves_finish_reasons() {
+    for finish_reason in ["stop", "length", "content_filter"] {
+        let source = WireFormat::OpenAiChat;
+        let mut state = StreamTranslationState::default();
+        for delta in [json!({"refusal": ""}), json!({"content": "Later text."})] {
+            drop(decode_stream_event(
+                &mut state,
+                source,
+                &json!({"choices": [{
+                    "index": 0, "delta": delta, "finish_reason": null,
+                }]}),
+            ));
+        }
+        let decoded = decode_stream_event(
+            &mut state,
+            source,
+            &json!({"choices": [
+                {"index": 1, "delta": {}, "finish_reason": "stop"},
+                {"index": 0, "delta": {}, "finish_reason": finish_reason},
+            ]}),
+        );
+        assert_eq!(
+            decoded,
+            vec![
+                LlmResponseChunk::MessageStop {
+                    reason: Some("stop".to_string())
+                },
+                LlmResponseChunk::MessageStop {
+                    reason: Some(
+                        if finish_reason == "stop" {
+                            "refusal"
+                        } else {
+                            finish_reason
+                        }
+                        .to_string()
+                    )
+                },
+            ]
+        );
+    }
+}
+
+#[test]
 fn fragmented_chat_tool_names_are_complete_in_cross_format_streams() -> TestResult {
     let engine = TranslationEngine::default();
     for target in [WireFormat::AnthropicMessages, WireFormat::OpenAiResponses] {
@@ -594,16 +637,18 @@ fn openai_chat_stream_event_translates_to_anthropic_message_events() -> TestResu
 fn refusal_stream_translates_to_anthropic() -> TestResult {
     let engine = TranslationEngine::default();
     let refusal = "I cannot help with that request.";
-    let chat_delta = json!({
-        "id": "chatcmpl-refusal",
-        "object": "chat.completion.chunk",
-        "model": "gpt-4o",
-        "choices": [{
-            "index": 0,
-            "delta": {"refusal": refusal},
-            "finish_reason": null
-        }]
-    });
+    let chat_delta = |text| {
+        json!({
+            "id": "chatcmpl-refusal",
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o",
+            "choices": [{
+                "index": 0,
+                "delta": {"refusal": text},
+                "finish_reason": null
+            }]
+        })
+    };
     let chat_terminal = json!({
         "id": "chatcmpl-refusal",
         "object": "chat.completion.chunk",
@@ -619,18 +664,28 @@ fn refusal_stream_translates_to_anthropic() -> TestResult {
     let refusal_done = json!({"type": "response.refusal.done", "item_id": "msg_refusal",
         "output_index": 0, "content_index": 0, "refusal": refusal});
 
-    for (case, source, input, expected_fragments) in [
+    for (case, source, input, expected_text) in [
         (
             "chat_deltas",
             WireFormat::OpenAiChat,
-            vec![chat_delta, chat_terminal],
-            vec![refusal],
+            vec![
+                chat_delta(""),
+                chat_delta("I cannot "),
+                chat_delta("help with that request."),
+                chat_terminal,
+            ],
+            vec![
+                Some(""),
+                Some("I cannot "),
+                Some("help with that request."),
+                None,
+            ],
         ),
         (
             "responses_snapshot_only",
             WireFormat::OpenAiResponses,
             vec![completed.clone()],
-            vec![refusal],
+            vec![Some(refusal)],
         ),
         (
             "responses_refusal_done_only",
@@ -639,7 +694,7 @@ fn refusal_stream_translates_to_anthropic() -> TestResult {
                 refusal_done.clone(),
                 json!({"type": "response.completed", "response": {}}),
             ],
-            vec![refusal],
+            vec![Some(refusal), None],
         ),
         (
             "responses_full_lifecycle",
@@ -663,15 +718,53 @@ fn refusal_stream_translates_to_anthropic() -> TestResult {
                 json!({"type": "response.output_item.done", "output_index": 0, "item": message}),
                 completed,
             ],
-            vec!["I cannot ", "help with that request."],
+            vec![
+                None,
+                None,
+                None,
+                Some("I cannot "),
+                Some("help with that request."),
+                None,
+                None,
+                None,
+                None,
+            ],
         ),
     ] {
         let target = WireFormat::AnthropicMessages;
         let mut decoder = StreamTranslationState::new(source, target);
         let mut encoder = StreamTranslationState::new(source, target);
         let mut events = Vec::new();
-        for event in input {
+        assert_eq!(input.len(), expected_text.len(), "{case}");
+        let expected_fragments: Vec<_> = expected_text.iter().copied().flatten().collect();
+        for (event_index, (event, text)) in input.into_iter().zip(expected_text).enumerate() {
+            let mut expected = Vec::new();
+            if let Some(text) = text {
+                expected.push(LlmResponseChunk::TextDelta {
+                    index: 0,
+                    text: text.to_string(),
+                });
+            }
+            if event["type"] == "response.completed"
+                || event["choices"][0]["finish_reason"] == "stop"
+            {
+                expected.push(LlmResponseChunk::MessageStop {
+                    reason: Some("refusal".to_string()),
+                });
+            }
             let decoded = engine.decode_stream_event(&mut decoder, source, event)?;
+            let text_and_stops: Vec<_> = decoded
+                .normalized()
+                .iter()
+                .filter(|chunk| {
+                    matches!(
+                        chunk,
+                        LlmResponseChunk::TextDelta { .. } | LlmResponseChunk::MessageStop { .. }
+                    )
+                })
+                .cloned()
+                .collect();
+            assert_eq!(text_and_stops, expected, "{case}, event {event_index}");
             events.extend(engine.encode_stream_event(&mut encoder, target, decoded)?);
         }
         events.extend(engine.finish_stream(&mut encoder, target)?);
@@ -807,8 +900,7 @@ fn anthropic_stream_usage_and_stop_translate_to_openai_chunks() -> TestResult {
     Ok(())
 }
 
-// Verifies streamed moderation stops stay distinguishable from normal turns in both
-// directions, and that a named refusal category survives re-encoding.
+// Streamed moderation stops retain their signal; refusal details become opaque IR text.
 #[test]
 fn content_filter_and_refusal_streams_translate_across_formats() -> TestResult {
     let engine = TranslationEngine::default();
@@ -840,7 +932,7 @@ fn content_filter_and_refusal_streams_translate_across_formats() -> TestResult {
         json!({"type": "refusal", "category": null, "explanation": null})
     );
 
-    // The distinction survives the other direction rather than being flattened.
+    // Refusal text is emitted as ordinary text, followed by an empty refusal marker.
     let mut state =
         StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::OpenAiChat);
     let delta = json!({
@@ -861,9 +953,15 @@ fn content_filter_and_refusal_streams_translate_across_formats() -> TestResult {
         WireFormat::OpenAiChat,
         &delta,
     )?;
-    assert_eq!(events[0]["choices"][0]["finish_reason"], "content_filter");
+    assert_eq!(events.len(), 3);
+    assert_eq!(
+        events[0]["choices"][0]["delta"]["content"],
+        "cyber: This request was declined because it could enable cyber harm."
+    );
+    assert_eq!(events[1]["choices"][0]["delta"]["refusal"], "");
+    assert_eq!(events[2]["choices"][0]["finish_reason"], "stop");
 
-    // Re-encoding a streamed refusal keeps the category the source named.
+    // Without preservation, refusal metadata carries no explanation; it is already text.
     let mut state =
         StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::AnthropicMessages);
     let mut events = engine.translate_event(
@@ -878,7 +976,14 @@ fn content_filter_and_refusal_streams_translate_across_formats() -> TestResult {
         .find(|event| event["type"] == "message_delta")
         .ok_or("missing Anthropic terminal delta")?;
     assert_eq!(terminal["delta"]["stop_reason"], "refusal");
-    assert_eq!(terminal["delta"]["stop_details"]["category"], "cyber");
+    assert_eq!(
+        terminal["delta"]["stop_details"],
+        json!({
+            "type": "refusal",
+            "category": null,
+            "explanation": null
+        })
+    );
     Ok(())
 }
 
