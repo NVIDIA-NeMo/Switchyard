@@ -6,7 +6,7 @@
 <a href=#6 id=6 data-nosnippet>6</a></span><span class="kw">use </span>std::sync::LazyLock;
 <a href=#7 id=7 data-nosnippet>7</a>
 <a href=#8 id=8 data-nosnippet>8</a><span class="kw">use </span>serde_json::Value;
-<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>switchyard_protocol::{AggLlmResponse, LlmRequest, ProviderExtensions};
+<a href=#9 id=9 data-nosnippet>9</a><span class="kw">use </span>switchyard_protocol::{AggLlmResponse, LlmRequest};
 <a href=#10 id=10 data-nosnippet>10</a><span class="kw">use </span>switchyard_translation::{<span class="prelude-ty">Result</span>, TranslationEngine, TranslationPolicy, WireFormat};
 <a href=#11 id=11 data-nosnippet>11</a>
 <a href=#12 id=12 data-nosnippet>12</a><span class="kw">use </span><span class="kw">crate</span>::metrics;
@@ -14,36 +14,15 @@
 <a href=#14 id=14 data-nosnippet>14</a><span class="kw">static </span>ENGINE: LazyLock&lt;TranslationEngine&gt; = LazyLock::new(TranslationEngine::default);
 <a href=#15 id=15 data-nosnippet>15</a><span class="kw">static </span>POLICY: LazyLock&lt;TranslationPolicy&gt; = LazyLock::new(TranslationPolicy::default);
 <a href=#16 id=16 data-nosnippet>16</a>
-<a href=#17 id=17 data-nosnippet>17</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>decode_request(format: WireFormat, body: <span class="kw-2">&amp;</span>Value) -&gt; <span class="prelude-ty">Result</span>&lt;LlmRequest&gt; {
-<a href=#18 id=18 data-nosnippet>18</a>    <span class="kw">let </span>decoded = ENGINE.decode_request(format, body, <span class="kw-2">&amp;</span>POLICY)<span class="question-mark">?</span>;
-<a href=#19 id=19 data-nosnippet>19</a>    metrics::record_translation_diagnostics(<span class="kw-2">&amp;</span>decoded.diagnostics, <span class="string">"request_decode"</span>, format);
-<a href=#20 id=20 data-nosnippet>20</a>    <span class="prelude-val">Ok</span>(decoded.request)
+<a href=#17 id=17 data-nosnippet>17</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>encode_request(request: <span class="kw-2">&amp;</span>LlmRequest, format: WireFormat) -&gt; <span class="prelude-ty">Result</span>&lt;Value&gt; {
+<a href=#18 id=18 data-nosnippet>18</a>    <span class="kw">let </span>encoded = ENGINE.encode_request(format, request, <span class="kw-2">&amp;</span>POLICY)<span class="question-mark">?</span>;
+<a href=#19 id=19 data-nosnippet>19</a>    metrics::record_translation_diagnostics(<span class="kw-2">&amp;</span>encoded.diagnostics, <span class="string">"request_encode"</span>, format);
+<a href=#20 id=20 data-nosnippet>20</a>    <span class="prelude-val">Ok</span>(encoded.body)
 <a href=#21 id=21 data-nosnippet>21</a>}
 <a href=#22 id=22 data-nosnippet>22</a>
-<a href=#23 id=23 data-nosnippet>23</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>encode_request(request: <span class="kw-2">&amp;</span>LlmRequest, format: WireFormat) -&gt; <span class="prelude-ty">Result</span>&lt;Value&gt; {
-<a href=#24 id=24 data-nosnippet>24</a>    <span class="kw">let </span>encoded = ENGINE.encode_request(format, request, <span class="kw-2">&amp;</span>POLICY)<span class="question-mark">?</span>;
-<a href=#25 id=25 data-nosnippet>25</a>    metrics::record_translation_diagnostics(<span class="kw-2">&amp;</span>encoded.diagnostics, <span class="string">"request_encode"</span>, format);
-<a href=#26 id=26 data-nosnippet>26</a>    <span class="prelude-val">Ok</span>(encoded.body)
+<a href=#23 id=23 data-nosnippet>23</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>decode_response(body: <span class="kw-2">&amp;</span>Value, format: WireFormat) -&gt; <span class="prelude-ty">Result</span>&lt;AggLlmResponse&gt; {
+<a href=#24 id=24 data-nosnippet>24</a>    <span class="kw">let </span>decoded = ENGINE.decode_response(format, body, <span class="kw-2">&amp;</span>POLICY)<span class="question-mark">?</span>;
+<a href=#25 id=25 data-nosnippet>25</a>    metrics::record_translation_diagnostics(<span class="kw-2">&amp;</span>decoded.diagnostics, <span class="string">"response_decode"</span>, format);
+<a href=#26 id=26 data-nosnippet>26</a>    <span class="prelude-val">Ok</span>(decoded.response)
 <a href=#27 id=27 data-nosnippet>27</a>}
-<a href=#28 id=28 data-nosnippet>28</a>
-<a href=#29 id=29 data-nosnippet>29</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>decode_response(body: <span class="kw-2">&amp;</span>Value, format: WireFormat) -&gt; <span class="prelude-ty">Result</span>&lt;AggLlmResponse&gt; {
-<a href=#30 id=30 data-nosnippet>30</a>    <span class="kw">let </span>decoded = ENGINE.decode_response(format, body, <span class="kw-2">&amp;</span>POLICY)<span class="question-mark">?</span>;
-<a href=#31 id=31 data-nosnippet>31</a>    metrics::record_translation_diagnostics(<span class="kw-2">&amp;</span>decoded.diagnostics, <span class="string">"response_decode"</span>, format);
-<a href=#32 id=32 data-nosnippet>32</a>    <span class="prelude-val">Ok</span>(decoded.response)
-<a href=#33 id=33 data-nosnippet>33</a>}
-<a href=#34 id=34 data-nosnippet>34</a>
-<a href=#35 id=35 data-nosnippet>35</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>encode_response(
-<a href=#36 id=36 data-nosnippet>36</a>    response: <span class="kw-2">&amp;</span>AggLlmResponse,
-<a href=#37 id=37 data-nosnippet>37</a>    format: WireFormat,
-<a href=#38 id=38 data-nosnippet>38</a>    served_model: <span class="prelude-ty">Option</span>&lt;<span class="kw-2">&amp;</span>str&gt;,
-<a href=#39 id=39 data-nosnippet>39</a>    request_extensions: <span class="kw-2">&amp;</span>ProviderExtensions,
-<a href=#40 id=40 data-nosnippet>40</a>) -&gt; <span class="prelude-ty">Result</span>&lt;Value&gt; {
-<a href=#41 id=41 data-nosnippet>41</a>    <span class="kw">let </span><span class="kw-2">mut </span>encoded =
-<a href=#42 id=42 data-nosnippet>42</a>        ENGINE.encode_response_with_extensions(format, response, request_extensions, <span class="kw-2">&amp;</span>POLICY)<span class="question-mark">?</span>;
-<a href=#43 id=43 data-nosnippet>43</a>    metrics::record_translation_diagnostics(<span class="kw-2">&amp;</span>encoded.diagnostics, <span class="string">"response_encode"</span>, format);
-<a href=#44 id=44 data-nosnippet>44</a>    <span class="kw">if let </span>(<span class="prelude-val">Some</span>(model), Value::Object(body)) = (served_model, <span class="kw-2">&amp;mut </span>encoded.body) {
-<a href=#45 id=45 data-nosnippet>45</a>        body.insert(<span class="string">"model"</span>.to_string(), Value::String(model.to_string()));
-<a href=#46 id=46 data-nosnippet>46</a>    }
-<a href=#47 id=47 data-nosnippet>47</a>    <span class="prelude-val">Ok</span>(encoded.body)
-<a href=#48 id=48 data-nosnippet>48</a>}
 </code></pre></div></section></main></body></html>

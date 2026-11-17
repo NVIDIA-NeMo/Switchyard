@@ -2009,8 +2009,8 @@
 <a href=#2009 id=2009 data-nosnippet>2009</a>                <span class="prelude-val">Ok</span>(config)
 <a href=#2010 id=2010 data-nosnippet>2010</a>            });
 <a href=#2011 id=2011 data-nosnippet>2011</a>            <span class="kw">let </span>[profile_0, profile_1] = profiles;
-<a href=#2012 id=2012 data-nosnippet>2012</a>            <span class="kw">let </span>algorithm = CompositeRouter::new_with_profiles(judge, profile_0<span class="question-mark">?</span>, profile_1<span class="question-mark">?</span>)
-<a href=#2013 id=2013 data-nosnippet>2013</a>                .map_err(|error| {
+<a href=#2012 id=2012 data-nosnippet>2012</a>            <span class="kw">let </span>algorithm =
+<a href=#2013 id=2013 data-nosnippet>2013</a>                CompositeRouter::new(judge, profile_0<span class="question-mark">?</span>, profile_1<span class="question-mark">?</span>).map_err(|error| {
 <a href=#2014 id=2014 data-nosnippet>2014</a>                    AlgorithmConfigError::with_source(
 <a href=#2015 id=2015 data-nosnippet>2015</a>                        <span class="macro">format!</span>(<span class="string">"composite route {route_name}: {error}"</span>),
 <a href=#2016 id=2016 data-nosnippet>2016</a>                        error,
