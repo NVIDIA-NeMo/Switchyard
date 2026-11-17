@@ -17,7 +17,6 @@ members = [
     "crates/switchyard-runner",
     "crates/switchyard-costs",
     "crates/switchyard-server",
-    "crates/switchyard-skill-distillation",
     "crates/switchyard-soak",
     "crates/switchyard-translation",
 ]

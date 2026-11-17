@@ -347,12 +347,6 @@ impl Backend {
         self.config().timeout
     }
 
-    /// Whether this backend speaks the Anthropic Messages wire format — the only
-    /// one with a `count_tokens` endpoint.
-    pub fn is_anthropic(&self) -> bool {
-        matches!(self, Backend::Anthropic(_))
-    }
-
     /// The upstream `/v1/messages/count_tokens` URL, derived from the same base
     /// URL join as [`url`](Self::url).
     pub fn count_tokens_url(&self) -> String {

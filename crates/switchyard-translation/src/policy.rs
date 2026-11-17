@@ -5,8 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::format::FormatId;
-
 /// Controls whether known lossy conversions are allowed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum LossyConversionPolicy {
@@ -49,14 +47,6 @@ pub struct TargetCapabilities {
     pub supports_code_execution: Option<bool>,
     pub supports_safety_settings: Option<bool>,
     pub openai_compatible: Option<bool>,
-}
-
-/// Provider-level profile that can be used to configure target capabilities.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ProviderProfile {
-    pub format: Option<FormatId>,
-    pub provider: Option<String>,
-    pub capabilities: TargetCapabilities,
 }
 
 /// End-to-end policy applied by request, response, and stream translation.

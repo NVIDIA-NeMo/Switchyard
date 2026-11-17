@@ -13,7 +13,6 @@ use crate::LlmResponseChunk;
 use crate::codecs::anthropic::AnthropicMessagesStreamCodec;
 use crate::codecs::openai_chat::OpenAiChatStreamCodec;
 use crate::codecs::responses::OpenAiResponsesStreamCodec;
-use crate::engine::{FormatRegistry, TranslationEngine};
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::Usage;
@@ -158,12 +157,6 @@ impl StreamTranslationState {
     }
 }
 
-/// Registry-backed streaming translator.
-#[derive(Default)]
-pub struct StreamTranslationEngine {
-    engine: TranslationEngine,
-}
-
 /// Codec contract for one provider streaming event format.
 pub trait StreamCodec: Send + Sync {
     /// Returns the stream format handled by this codec.
@@ -271,47 +264,6 @@ impl StreamCodecRegistry {
         self.codecs.get(&format).cloned().ok_or_else(|| {
             TranslationError::Other(format!("no stream codec registered for {format}"))
         })
-    }
-}
-
-impl StreamTranslationEngine {
-    /// Creates a streaming engine from an explicit codec registry.
-    pub fn new(registry: StreamCodecRegistry) -> Self {
-        Self {
-            engine: TranslationEngine::with_registries(FormatRegistry::with_builtins(), registry),
-        }
-    }
-
-    /// Translates one source provider event into target provider events.
-    pub fn translate_event(
-        &self,
-        state: &mut StreamTranslationState,
-        source: impl Into<FormatId>,
-        target: impl Into<FormatId>,
-        event: &Value,
-    ) -> Result<Vec<Value>> {
-        self.engine.translate_event(state, source, target, event)
-    }
-
-    /// Finishes target-provider stream emission after the source stream closes.
-    pub fn finish(
-        &self,
-        state: &mut StreamTranslationState,
-        target: impl Into<FormatId>,
-    ) -> Result<Vec<Value>> {
-        self.engine.finish_stream(state, target)
-    }
-
-    /// Convenience helper using built-in codecs and error events instead of `Result`.
-    pub fn translate_event_with_builtins(
-        state: &mut StreamTranslationState,
-        source: impl Into<FormatId>,
-        target: impl Into<FormatId>,
-        event: &Value,
-    ) -> Vec<Value> {
-        Self::default()
-            .translate_event(state, source, target, event)
-            .unwrap_or_else(|error| vec![json!({"error": {"message": error.to_string()}})])
     }
 }
 
