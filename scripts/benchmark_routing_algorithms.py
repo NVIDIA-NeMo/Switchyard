@@ -8,6 +8,7 @@ import csv
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1233,6 +1234,11 @@ def run_aiperf(
     concurrency: int | None = None,
 ) -> Path:
     """Run independent AIPerf repetitions using Rust-exported inputs-json datasets."""
+    if arm.api_key_env is not None:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", arm.api_key_env) is None:
+            raise RuntimeError("--direct-api-key-env has an invalid environment variable name")
+        if not os.environ.get(arm.api_key_env, "").strip():
+            raise RuntimeError("--direct-api-key-env must name a nonempty environment variable")
     artifact_root = output_dir / artifact_label
     effective_concurrency = concurrency or config.concurrency
     load_arguments: list[str] = []
@@ -1305,7 +1311,40 @@ def run_aiperf(
             *load_arguments,
         ]
         if arm.api_key_env is not None:
-            command.extend(("--api-key", f"${{{arm.api_key_env}}}"))
+            # AIPerf resolves environment references in config files, not CLI values.
+            auth_config = output_dir / f"{run_label}-auth.json"
+            auth_config.write_text(
+                json.dumps(
+                    {
+                        "random_seed": 42,
+                        "benchmark": {
+                            "endpoint": {"api_key": f"${{{arm.api_key_env}}}"},
+                            "datasets": [
+                                {
+                                    "name": "main",
+                                    "type": "file",
+                                    "path": str(input_path.resolve()),
+                                    "format": "inputs-json",
+                                    "entries": config.request_count,
+                                    "random_seed": 42,
+                                }
+                            ],
+                            "phases": [
+                                {
+                                    "name": "profiling",
+                                    "type": "concurrency",
+                                    "requests": config.request_count,
+                                    "concurrency": effective_concurrency,
+                                }
+                            ],
+                        },
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            command.extend(("--config", str(auth_config)))
         trial_root = (
             artifact_root / "profile_runs" / f"run_{trial:04d}"
             if config.profile_runs > 1
