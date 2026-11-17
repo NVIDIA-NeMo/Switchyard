@@ -138,7 +138,7 @@ impl LlmClientError {
     /// Some providers report these deterministic request failures as HTTP 500.
     /// They must not make a healthy backend unavailable to other requests.
     pub fn is_attachment_rejection(&self) -> bool {
-        let Self::UpstreamHttp { status, body } = self else {
+        let Self::UpstreamHttp { status, body, .. } = self else {
             return false;
         };
         if !matches!(status.as_u16(), 400 | 422 | 500) {

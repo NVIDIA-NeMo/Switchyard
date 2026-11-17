@@ -3020,6 +3020,7 @@ mod tests {
                 return Err(LlmClientError::UpstreamHttp {
                     status: self.status,
                     body: self.body.clone(),
+                    headers: Default::default(),
                 });
             }
             Ok(Response {

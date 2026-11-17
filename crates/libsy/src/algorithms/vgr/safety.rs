@@ -148,7 +148,7 @@ pub(super) fn fallback_eligible(error: &LibsyError) -> bool {
                 | LlmClientError::Transport { .. }
                 | LlmClientError::Timeout { .. }
                 | LlmClientError::TemporarilyUnavailable => true,
-            LlmClientError::UpstreamHttp { status, body } => {
+            LlmClientError::UpstreamHttp { status, body, .. } => {
                 if serde_json::from_str::<serde_json::Value>(body).is_ok_and(|value| {
                     value["error"]["code"].as_str() == Some("content_policy_violation")
                 }) {
