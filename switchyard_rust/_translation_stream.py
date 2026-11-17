@@ -43,12 +43,20 @@ class _TranslationStream:
     def __aiter__(self) -> "_TranslationStream":
         return self
 
+    async def _read_output(self) -> dict[str, Any]:
+        while True:
+            event: dict[str, Any] = await self._native.__anext__()
+            if not self._closed:
+                return event
+            # Closing cancels the input read. Discard any output flushed before
+            # its exception so the pending read observes cancellation or cleanup failure.
+
     async def __anext__(self) -> dict[str, Any]:
         if self._closed:
             raise StopAsyncIteration
         if self._next_future is not None:
             raise RuntimeError("translation stream already has a pending read")
-        pending: asyncio.Future[dict[str, Any]] = self._native.__anext__()
+        pending = asyncio.create_task(self._read_output())
         self._next_future = pending
         try:
             # Keep the Rust poll alive until input cancellation and cleanup have completed.

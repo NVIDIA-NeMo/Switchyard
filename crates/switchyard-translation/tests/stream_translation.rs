@@ -19,6 +19,97 @@ use common::{REASONING_MODEL, text_and_encrypted_reasoning_details};
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
 
 #[test]
+fn chat_refusal_fragments_are_immediate_and_track_each_choice() {
+    for finish_reason in ["stop", "length", "content_filter"] {
+        let source = WireFormat::OpenAiChat;
+        let mut state = StreamTranslationState::default();
+        for (field, text) in [
+            ("refusal", ""),
+            ("refusal", "I cannot "),
+            ("refusal", "help."),
+            ("content", " Later text."),
+        ] {
+            let decoded = decode_stream_event(
+                &mut state,
+                source,
+                &json!({"choices": [{
+                    "index": 0, "delta": {field: text}, "finish_reason": null,
+                }]}),
+            );
+            assert!(decoded.contains(&LlmResponseChunk::TextDelta {
+                index: 0,
+                text: text.to_string()
+            }));
+        }
+        let decoded = decode_stream_event(
+            &mut state,
+            source,
+            &json!({"choices": [
+                {"index": 1, "delta": {}, "finish_reason": "stop"},
+                {"index": 0, "delta": {}, "finish_reason": finish_reason},
+            ]}),
+        );
+        assert_eq!(
+            decoded,
+            vec![
+                LlmResponseChunk::MessageStop {
+                    reason: Some("stop".to_string())
+                },
+                LlmResponseChunk::MessageStop {
+                    reason: Some(
+                        if finish_reason == "stop" {
+                            "refusal"
+                        } else {
+                            finish_reason
+                        }
+                        .to_string()
+                    )
+                },
+            ]
+        );
+    }
+}
+
+#[test]
+fn responses_refusal_fragments_are_immediate_and_snapshots_do_not_repeat_them() {
+    let source = WireFormat::OpenAiResponses;
+    let mut state = StreamTranslationState::default();
+    for text in ["I cannot ", "help."] {
+        assert_eq!(
+            decode_stream_event(
+                &mut state,
+                source,
+                &json!({
+                    "type": "response.refusal.delta", "output_index": 0, "content_index": 0, "delta": text,
+                })
+            ),
+            vec![LlmResponseChunk::TextDelta {
+                index: 0,
+                text: text.to_string()
+            }]
+        );
+    }
+    assert!(decode_stream_event(&mut state, source, &json!({
+        "type": "response.refusal.done", "output_index": 0, "content_index": 0, "refusal": "I cannot help.",
+    })).is_empty());
+    let completed = decode_stream_event(
+        &mut state,
+        source,
+        &json!({
+            "type": "response.completed", "response": {"output": [{"type": "message", "content": [
+                {"type": "refusal", "refusal": "I cannot help."},
+            ]}]},
+        }),
+    );
+    assert_eq!(
+        completed,
+        vec![LlmResponseChunk::MessageStop {
+            reason: Some("refusal".to_string())
+        }]
+    );
+}
+
+#[test]
 fn fragmented_chat_tool_names_are_complete_in_cross_format_streams() -> TestResult {
     let engine = TranslationEngine::default();
     for target in [WireFormat::AnthropicMessages, WireFormat::OpenAiResponses] {
@@ -807,8 +898,7 @@ fn anthropic_stream_usage_and_stop_translate_to_openai_chunks() -> TestResult {
     Ok(())
 }
 
-// Verifies streamed moderation stops stay distinguishable from normal turns in both
-// directions, and that a named refusal category survives re-encoding.
+// Streamed moderation stops retain their signal; refusal details become opaque IR text.
 #[test]
 fn content_filter_and_refusal_streams_translate_across_formats() -> TestResult {
     let engine = TranslationEngine::default();
@@ -840,7 +930,7 @@ fn content_filter_and_refusal_streams_translate_across_formats() -> TestResult {
         json!({"type": "refusal", "category": null, "explanation": null})
     );
 
-    // The distinction survives the other direction rather than being flattened.
+    // Refusal text is emitted as ordinary text, followed by an empty refusal marker.
     let mut state =
         StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::OpenAiChat);
     let delta = json!({
@@ -861,9 +951,15 @@ fn content_filter_and_refusal_streams_translate_across_formats() -> TestResult {
         WireFormat::OpenAiChat,
         &delta,
     )?;
-    assert_eq!(events[0]["choices"][0]["finish_reason"], "content_filter");
+    assert_eq!(events.len(), 3);
+    assert_eq!(
+        events[0]["choices"][0]["delta"]["content"],
+        "cyber: This request was declined because it could enable cyber harm."
+    );
+    assert_eq!(events[1]["choices"][0]["delta"]["refusal"], "");
+    assert_eq!(events[2]["choices"][0]["finish_reason"], "stop");
 
-    // Re-encoding a streamed refusal keeps the category the source named.
+    // Without preservation, refusal metadata carries no explanation; it is already text.
     let mut state =
         StreamTranslationState::new(WireFormat::AnthropicMessages, WireFormat::AnthropicMessages);
     let mut events = engine.translate_event(
@@ -878,7 +974,14 @@ fn content_filter_and_refusal_streams_translate_across_formats() -> TestResult {
         .find(|event| event["type"] == "message_delta")
         .ok_or("missing Anthropic terminal delta")?;
     assert_eq!(terminal["delta"]["stop_reason"], "refusal");
-    assert_eq!(terminal["delta"]["stop_details"]["category"], "cyber");
+    assert_eq!(
+        terminal["delta"]["stop_details"],
+        json!({
+            "type": "refusal",
+            "category": null,
+            "explanation": null
+        })
+    );
     Ok(())
 }
 

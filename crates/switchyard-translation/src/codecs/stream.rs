@@ -42,9 +42,6 @@ pub struct StreamTranslationState {
     pub(crate) output_tokens_seen: u64,
     pub(crate) saw_backend_usage: bool,
     pub(crate) stop_reason: Option<String>,
-    /// Refusal metadata carried by the source, replayed instead of a synthesized
-    /// object so a named policy category and its explanation are not flattened away.
-    pub(crate) stop_details: Option<Value>,
     pub(crate) emitted_message_delta: bool,
 
     pub(crate) next_content_index: usize,
@@ -54,6 +51,9 @@ pub struct StreamTranslationState {
     pub(crate) tool_states: BTreeMap<usize, StreamToolState>,
     #[serde(default)]
     pub(crate) pending_chat_tool_names: BTreeMap<usize, String>,
+    /// Choices that decoded a refusal, including an empty refusal string.
+    #[serde(default)]
+    pub(crate) chat_refusal_choices: std::collections::BTreeSet<usize>,
     #[serde(default)]
     pub(crate) active_anthropic_tool: Option<usize>,
     #[serde(default)]
