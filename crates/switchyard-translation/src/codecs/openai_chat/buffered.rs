@@ -127,14 +127,6 @@ impl FormatCodec for OpenAiChatCodec {
                     }
                 }
                 if role == Role::Tool {
-                    let text = content
-                        .iter()
-                        .filter_map(|block| match block {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>()
-                        .join("\n");
                     let tool_call_id = message
                         .get("tool_call_id")
                         .and_then(Value::as_str)
@@ -144,7 +136,7 @@ impl FormatCodec for OpenAiChatCodec {
                         Role::User,
                         vec![ContentBlock::ToolResult(ToolResult {
                             tool_call_id,
-                            content: vec![ContentBlock::Text { text }],
+                            content,
                             is_error: message.get("is_error").and_then(Value::as_bool),
                         })],
                     ));
