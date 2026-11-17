@@ -305,8 +305,9 @@ provides a value, the Switchyard session ID remains unset.
 
 ## Routing Telemetry
 
-Relay sees one LLM lifecycle for the request made by the agent. Switchyard
-reports the routing work through Relay marks and metrics. Existing Relay
+Relay records one outer LLM lifecycle for the request made by the agent.
+Switchyard also reports internal client-call scopes, routing marks, and metrics.
+Existing Relay
 [subscribers](https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/subscribers#how-subscribers-relate-to-events)
 can receive these records, but each output format presents them differently.
 
@@ -314,10 +315,15 @@ can receive these records, but each output format presents them differently.
 
 | Output | What the current integration shows |
 | --- | --- |
-| ATIF | The request and response seen by the agent. Internal routing is not added as separate steps or included in `final_metrics`. Relay-managed ATIF files may retain the raw records under `extra.observed_events`. |
+| ATIF | Relay's trajectory projection. With Relay 0.10.1, internal Switchyard LLM scopes can become additional steps and contribute usage to `final_metrics`. The answer can appear in both an internal scope and the outer request. Relay-managed ATIF files may also retain raw records under `extra.observed_events`. |
 | OpenTelemetry traces, including OpenInference | Relay's outer LLM span, nested `libsy.client_call`, `libsy.upstream_attempt`, and `libsy.decision_client_call` duration scopes, plus eligible routing marks. |
 | OpenTelemetry metrics | Switchyard request, routing-call, latency, token, and failure measurements. Combine the reported routing usage with Relay's answer cost to estimate the observed routed cost. |
 | OTLP logs | Non-metric Switchyard marks that meet the configured severity threshold. |
+
+ATIF projection is controlled by the Relay host version. Do not treat
+`final_metrics` as answer-only usage or deduplicated provider consumption. Inspect
+the outer response usage and individual call scopes before calculating totals;
+repeated usage in an export does not imply additional provider requests or charges.
 
 The plugin captures existing Switchyard spans. Each routing or answer LLM
 call becomes a `libsy.client_call` scope. Physical HTTP attempts and retries
