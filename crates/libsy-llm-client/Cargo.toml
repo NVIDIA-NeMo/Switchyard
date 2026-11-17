@@ -24,7 +24,7 @@ reqwest.workspace = true
 async-trait.workspace = true
 futures.workspace = true
 futures-util.workspace = true
-opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
+opentelemetry = { workspace = true, features = ["metrics"] }
 parking_lot.workspace = true
 http.workspace = true
 httpdate.workspace = true
@@ -37,7 +37,7 @@ tracing-opentelemetry.workspace = true
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 # SDK + in-memory exporter to assert what the observability layer records.
-opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing", "trace"] }
+opentelemetry_sdk = { workspace = true, default-features = true, features = ["metrics", "testing", "trace"] }
 thiserror.workspace = true
 tracing-subscriber.workspace = true
-wiremock = "0.6"
+wiremock.workspace = true
