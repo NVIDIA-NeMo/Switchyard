@@ -82,8 +82,6 @@ impl StreamCodec for OpenAiResponsesStreamCodec {
         for chunk in normalized {
             drop(encode_responses_stream(state, chunk));
         }
-        // Replayed text has already been delivered; retain no pending delta.
-        drop(flush_responses_text(state));
         state.response_sequence_number = raw
             .get("sequence_number")
             .and_then(Value::as_u64)
@@ -187,7 +185,6 @@ fn decode_responses_stream(
             })
             .unwrap_or_default(),
         Some("response.refusal.done") => {
-            state.stop_reason = Some("refusal".to_string());
             let Some(text) = event.get("refusal").and_then(Value::as_str) else {
                 return Vec::new();
             };
@@ -199,17 +196,7 @@ fn decode_responses_stream(
                 .get("content_index")
                 .and_then(Value::as_u64)
                 .unwrap_or(0) as usize;
-            let decoded = state
-                .decoded_response_text
-                .entry(index)
-                .or_default()
-                .entry(content_index)
-                .or_default();
-            match snapshot_suffix(decoded, text) {
-                Ok(Some(text)) => vec![LlmResponseChunk::TextDelta { index, text }],
-                Ok(None) => Vec::new(),
-                Err(error) => vec![error],
-            }
+            decode_responses_refusal(state, index, content_index, text)
         }
         Some("response.reasoning_text.delta") | Some("response.reasoning_summary_text.delta") => {
             event
@@ -360,22 +347,26 @@ fn decode_responses_stream(
             });
             out
         }
-        Some("response.failed") => vec![LlmResponseChunk::StreamError {
-            message: event
-                .get("response")
-                .and_then(|response| response.get("error"))
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .unwrap_or("unknown Responses stream error")
-                .to_string(),
-        }],
-        Some("error") => vec![LlmResponseChunk::StreamError {
-            message: event
-                .get("message")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown Responses stream error")
-                .to_string(),
-        }],
+        Some("response.failed") => {
+            vec![LlmResponseChunk::StreamError {
+                message: event
+                    .get("response")
+                    .and_then(|response| response.get("error"))
+                    .and_then(|error| error.get("message"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown Responses stream error")
+                    .to_string(),
+            }]
+        }
+        Some("error") => {
+            vec![LlmResponseChunk::StreamError {
+                message: event
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown Responses stream error")
+                    .to_string(),
+            }]
+        }
         _ => Vec::new(),
     }
 }
@@ -394,23 +385,16 @@ fn encode_responses_stream(
             record_source_identity(state, id, model);
             ensure_responses_created(state)
         }
-        LlmResponseChunk::TextDelta { text, .. } => {
-            match state.pending_responses_text.replace(text) {
-                Some(previous) => encode_responses_text_delta(state, previous),
-                None => Vec::new(),
-            }
-        }
+        LlmResponseChunk::TextDelta { text, .. } => encode_responses_text_delta(state, text),
         LlmResponseChunk::ReasoningDelta { index, text } => {
-            let mut out = flush_responses_text(state);
-            out.extend(encode_responses_reasoning_delta(state, index, text));
-            out
+            encode_responses_reasoning_delta(state, index, text)
         }
         LlmResponseChunk::ReasoningDetailsDelta {
             index,
             details,
             text,
         } => {
-            let mut out = flush_responses_text(state);
+            let mut out = Vec::new();
             // Encrypted reasoning has no streamable text, but the item must still be emitted
             // so the client can replay it on the next turn.
             let data = encrypted_reasoning_data(&details);
@@ -461,43 +445,21 @@ fn encode_responses_stream(
             id,
             name,
             arguments_delta,
-        } => {
-            let mut out = flush_responses_text(state);
-            out.extend(encode_responses_tool_delta(
-                state,
-                index,
-                id,
-                name,
-                arguments_delta,
-            ));
-            out
-        }
+        } => encode_responses_tool_delta(state, index, id, name, arguments_delta),
         LlmResponseChunk::Usage(usage) => {
             state.usage = usage;
             state.saw_backend_usage = true;
             Vec::new()
         }
         LlmResponseChunk::MessageStop { reason } => {
-            let out = if reason.as_deref() == Some("refusal") {
-                // Streaming IR has no refusal block. This assumes the final text
-                // delta contains the entire refusal explanation.
-                if let Some(text) = state.pending_responses_text.take() {
-                    state.response_refusal = Some(text);
-                }
-                Vec::new()
-            } else {
-                flush_responses_text(state)
-            };
             state.stop_reason = reason.or_else(|| state.stop_reason.clone());
-            out
+            Vec::new()
         }
         LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
             // An in-band error is terminal: emit the error, then nothing further.
-            let mut out = flush_responses_text(state);
             state.finished = true; // finish() adds no success events
             state.errored = true; // the entry guard drops any later chunk
-            out.push(json!({"type": "error", "message": message}));
-            out
+            vec![json!({"type": "error", "message": message})]
         }
     }
 }
@@ -517,10 +479,9 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         ("response.completed", "completed")
     };
     let incomplete_details = is_truncated.then(|| json!({ "reason": "max_output_tokens" }));
-    let mut out = flush_responses_text(state);
-    out.extend(open_held_reasoning(state, None));
+    let mut out = open_held_reasoning(state, None);
     out.extend(ensure_responses_created(state));
-    if state.response_refusal.is_some() {
+    if state.stop_reason.as_deref() == Some("refusal") {
         out.extend(ensure_responses_message_started(state));
     }
     let mut content = Vec::new();
@@ -545,7 +506,9 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         }));
         content.push(json!({"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []}));
     }
-    if let Some(refusal) = &state.response_refusal {
+    if state.stop_reason.as_deref() == Some("refusal") {
+        // Text was already emitted; this empty part retains only the refusal signal.
+        let refusal = "";
         let output_index = state.response_text_output_index.unwrap_or(0);
         let item_id = responses_item_id(state, "msg", output_index);
         let content_index = content.len();
@@ -848,8 +811,13 @@ fn decode_responses_completed_item(
                 let text = match part.get("type").and_then(Value::as_str) {
                     Some("output_text") => part.get("text"),
                     Some("refusal") => {
-                        state.stop_reason = Some("refusal".to_string());
-                        part.get("refusal")
+                        if let Some(text) = part.get("refusal").and_then(Value::as_str) {
+                            out.extend(decode_responses_refusal(state, index, content_index, text));
+                            if matches!(out.last(), Some(LlmResponseChunk::DecodeError { .. })) {
+                                return out;
+                            }
+                        }
+                        continue;
                     }
                     _ => continue,
                 };
@@ -908,6 +876,26 @@ fn decode_responses_completed_item(
         }];
     }
     Vec::new()
+}
+
+fn decode_responses_refusal(
+    state: &mut StreamTranslationState,
+    index: usize,
+    content_index: usize,
+    text: &str,
+) -> Vec<LlmResponseChunk> {
+    state.stop_reason = Some("refusal".to_string());
+    let decoded = state
+        .decoded_response_text
+        .entry(index)
+        .or_default()
+        .entry(content_index)
+        .or_default();
+    match snapshot_suffix(decoded, text) {
+        Ok(Some(text)) => vec![LlmResponseChunk::TextDelta { index, text }],
+        Ok(None) => Vec::new(),
+        Err(error) => vec![error],
+    }
 }
 
 // A snapshot may extend streamed content, but cannot retract content already sent. A
@@ -986,13 +974,6 @@ fn add_sequence_numbers(state: &mut StreamTranslationState, mut events: Vec<Valu
         }
     }
     events
-}
-
-fn flush_responses_text(state: &mut StreamTranslationState) -> Vec<Value> {
-    match state.pending_responses_text.take() {
-        Some(text) => encode_responses_text_delta(state, text),
-        None => Vec::new(),
-    }
 }
 
 // Text and refusal parts share one assistant message output item.

@@ -368,15 +368,11 @@ fn buffered_refusals_survive_translation() -> TestResult {
         let anthropic = engine
             .encode_response(WireFormat::AnthropicMessages, &decoded, &policy)?
             .body;
-        assert_eq!(
-            anthropic["content"],
-            json!([{"type": "text", "text": refusal}]),
-            "{source:?} to Anthropic"
-        );
+        assert_eq!(anthropic["content"], json!([]), "{source:?} to Anthropic");
         assert_eq!(anthropic["stop_reason"], "refusal");
         assert_eq!(
             anthropic["stop_details"],
-            json!({"type": "refusal", "category": null, "explanation": null})
+            json!({"type": "refusal", "category": null, "explanation": refusal})
         );
     }
     Ok(())
@@ -1323,8 +1319,7 @@ fn failed_finish_reasons_return_upstream_failure() -> TestResult {
     Ok(())
 }
 
-// Verifies a moderation stop stays distinguishable from a normal turn in both
-// directions, and that a named refusal category survives re-encoding.
+// Moderation stops retain their signal; refusal details become opaque IR text.
 #[test]
 fn content_filter_and_refusal_translate_across_formats() -> TestResult {
     let engine = TranslationEngine::default();
@@ -1380,9 +1375,13 @@ fn content_filter_and_refusal_translate_across_formats() -> TestResult {
         )?
         .body;
     assert_eq!(output["choices"][0]["finish_reason"], "content_filter");
+    assert_eq!(output["choices"][0]["message"]["content"], "Partial answer");
+    assert_eq!(
+        output["choices"][0]["message"]["refusal"],
+        "cyber: This request was declined because it could enable cyber harm."
+    );
 
-    // Re-encoding a refusal keeps the category the source named instead of
-    // replacing it with the null form used for an unnamed refusal.
+    // Without preservation, the category prefix remains part of the explanation.
     let output = engine
         .translate_response(
             WireFormat::AnthropicMessages,
@@ -1395,7 +1394,15 @@ fn content_filter_and_refusal_translate_across_formats() -> TestResult {
         )?
         .body;
     assert_eq!(output["stop_reason"], "refusal");
-    assert_eq!(output["stop_details"]["category"], "cyber");
+    assert_eq!(output["content"], anthropic["content"]);
+    assert_eq!(
+        output["stop_details"],
+        json!({
+            "type": "refusal",
+            "category": null,
+            "explanation": "cyber: This request was declined because it could enable cyber harm."
+        })
+    );
     Ok(())
 }
 

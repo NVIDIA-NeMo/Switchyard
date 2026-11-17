@@ -62,19 +62,6 @@ impl StreamCodec for OpenAiChatStreamCodec {
         encode_openai_chat_stream(state, event)
     }
 
-    fn observe_replayed_event(
-        &self,
-        state: &mut StreamTranslationState,
-        _raw: &Value,
-        normalized: Vec<LlmResponseChunk>,
-    ) {
-        for chunk in normalized {
-            drop(encode_openai_chat_stream(state, chunk));
-        }
-        // Replayed text has already been delivered; retain no pending delta.
-        drop(flush_openai_chat_text(state));
-    }
-
     fn finish(&self, state: &mut StreamTranslationState) -> Vec<Value> {
         finish_openai_chat_stream(state)
     }
@@ -137,6 +124,7 @@ fn decode_openai_chat_stream(
         let Some(choice) = choice.as_object() else {
             continue;
         };
+        let choice_index = choice.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
         if let Some(delta) = choice.get("delta").and_then(Value::as_object) {
             if let Some(details) = delta
                 .get("reasoning_details")
@@ -174,14 +162,10 @@ fn decode_openai_chat_stream(
                     text: text.to_string(),
                 });
             }
-            if let Some(text) = delta.get("refusal").and_then(Value::as_str)
-                && !text.is_empty()
-            {
-                // Refusal deltas mark the whole message as a content-filter stop. This state
-                // persists across chunks so a later `finish_reason: "stop"` cannot overwrite it.
-                state.stop_reason = Some("content_filter".to_string());
+            if let Some(text) = delta.get("refusal").and_then(Value::as_str) {
+                state.chat_refusal_choices.insert(choice_index);
                 out.push(LlmResponseChunk::TextDelta {
-                    index: 0,
+                    index: choice_index,
                     text: text.to_string(),
                 });
             }
@@ -229,12 +213,13 @@ fn decode_openai_chat_stream(
                     arguments_delta: None,
                 });
             }
-            let reason =
-                if reason == "stop" && state.stop_reason.as_deref() == Some("content_filter") {
-                    "content_filter"
-                } else {
-                    reason
-                };
+            let saw_refusal = state.chat_refusal_choices.remove(&choice_index);
+            let reason = if saw_refusal && reason == "stop" {
+                "refusal"
+            } else {
+                reason
+            };
+            state.stop_reason = Some(reason.to_string());
             out.push(LlmResponseChunk::MessageStop {
                 reason: Some(reason.to_string()),
             });
@@ -273,25 +258,18 @@ fn encode_openai_chat_stream(
                 )]
             }
         }
-        LlmResponseChunk::TextDelta { text, .. } => match state.pending_chat_text.replace(text) {
-            Some(previous) => vec![openai_stream_chunk(
-                state,
-                json!({"content": previous}),
-                None,
-                None,
-            )],
-            None => Vec::new(),
-        },
-        LlmResponseChunk::ReasoningDelta { text, .. } => {
-            let mut out = flush_openai_chat_text(state);
-            out.push(openai_stream_chunk(
-                state,
-                json!({"reasoning_content": text}),
-                None,
-                None,
-            ));
-            out
-        }
+        LlmResponseChunk::TextDelta { text, .. } => vec![openai_stream_chunk(
+            state,
+            json!({"content": text}),
+            None,
+            None,
+        )],
+        LlmResponseChunk::ReasoningDelta { text, .. } => vec![openai_stream_chunk(
+            state,
+            json!({"reasoning_content": text}),
+            None,
+            None,
+        )],
         LlmResponseChunk::ReasoningDetailsDelta { details, text, .. } => {
             // Chat cannot replay Anthropic signature fragments or an encrypted item's
             // id announcement without its payload.
@@ -311,9 +289,7 @@ fn encode_openai_chat_stream(
             if !text.is_empty() && details_text.as_deref() != Some(text.as_str()) {
                 delta["reasoning"] = Value::String(text);
             }
-            let mut out = flush_openai_chat_text(state);
-            out.push(openai_stream_chunk(state, delta, None, None));
-            out
+            vec![openai_stream_chunk(state, delta, None, None)]
         }
         LlmResponseChunk::ToolCallDelta {
             index,
@@ -321,7 +297,6 @@ fn encode_openai_chat_stream(
             name,
             arguments_delta,
         } => {
-            let mut out = flush_openai_chat_text(state);
             let tool = state.tool_states.entry(index).or_default();
             // Repeated full names would be concatenated by Chat clients as new fragments.
             let name = name.filter(|name| tool.name.as_ref() != Some(name));
@@ -341,14 +316,13 @@ fn encode_openai_chat_stream(
                     chat_index
                 }
             };
-            out.push(openai_tool_call_chunk(
+            vec![openai_tool_call_chunk(
                 state,
                 chat_index,
                 id,
                 name,
                 arguments_delta,
-            ));
-            out
+            )]
         }
         LlmResponseChunk::Usage(usage) => {
             state.usage = usage;
@@ -363,21 +337,16 @@ fn encode_openai_chat_stream(
             if state.finished {
                 return Vec::new();
             }
-            let mut out = if reason.as_deref() == Some("refusal") {
-                // Streaming IR has no refusal block. This assumes the final text
-                // delta contains the entire refusal explanation.
-                match state.pending_chat_text.take() {
-                    Some(text) => vec![openai_stream_chunk(
-                        state,
-                        json!({"refusal": text}),
-                        None,
-                        None,
-                    )],
-                    None => Vec::new(),
-                }
-            } else {
-                flush_openai_chat_text(state)
-            };
+            let mut out = Vec::new();
+            if reason.as_deref() == Some("refusal") {
+                // Text was already emitted. Preserve the refusal signal without repeating it.
+                out.push(openai_stream_chunk(
+                    state,
+                    json!({"refusal": ""}),
+                    None,
+                    None,
+                ));
+            }
             state.finished = true;
             out.push(openai_stream_chunk(
                 state,
@@ -391,11 +360,9 @@ fn encode_openai_chat_stream(
         }
         LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
             // An in-band error is terminal: emit the error, then nothing further.
-            let mut out = flush_openai_chat_text(state);
             state.finished = true; // finish() adds no success events
             state.errored = true; // the entry guard drops any later chunk
-            out.push(json!({"error": {"message": message}}));
-            out
+            vec![json!({"error": {"message": message}})]
         }
     }
 }
@@ -405,29 +372,12 @@ fn finish_openai_chat_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     if state.finished || !state.saw_message_start {
         return Vec::new();
     }
-    let mut out = flush_openai_chat_text(state);
-    state.finished = true;
-    out.push(openai_stream_chunk(
+    encode_openai_chat_stream(
         state,
-        json!({}),
-        Some(openai_finish_reason(state.stop_reason.as_deref())),
-        state
-            .saw_backend_usage
-            .then(|| encode_openai_usage(&state.usage)),
-    ));
-    out
-}
-
-fn flush_openai_chat_text(state: &mut StreamTranslationState) -> Vec<Value> {
-    match state.pending_chat_text.take() {
-        Some(text) => vec![openai_stream_chunk(
-            state,
-            json!({"content": text}),
-            None,
-            None,
-        )],
-        None => Vec::new(),
-    }
+        LlmResponseChunk::MessageStop {
+            reason: state.stop_reason.clone(),
+        },
+    )
 }
 
 // Builds a single OpenAI Chat stream chunk payload.
@@ -513,10 +463,9 @@ fn openai_stream_id(state: &StreamTranslationState) -> String {
 // Maps provider stop reasons into OpenAI's finish-reason vocabulary.
 fn openai_finish_reason(reason: Option<&str>) -> String {
     match reason {
-        Some("end_turn") | Some("stop_sequence") | None => "stop".to_string(),
+        Some("end_turn" | "stop_sequence" | "refusal") | None => "stop".to_string(),
         Some("max_tokens") => "length".to_string(),
         Some("tool_use") => "tool_calls".to_string(),
-        Some("refusal") => "content_filter".to_string(),
         Some(other) => other.to_string(),
     }
 }

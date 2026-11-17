@@ -68,8 +68,6 @@ impl StreamCodec for AnthropicMessagesStreamCodec {
         for chunk in normalized {
             drop(encode_anthropic_stream(state, chunk));
         }
-        // Replayed text has already been delivered; retain no pending delta.
-        drop(flush_anthropic_text(state));
 
         match raw.get("type").and_then(Value::as_str) {
             // Anthropic carries the stop reason and usage in `message_delta`, but the separate
@@ -219,14 +217,10 @@ fn encode_anthropic_stream(
         }
         LlmResponseChunk::TextDelta { text, .. } => {
             state.output_tokens_seen += 1;
-            match state.pending_anthropic_text.replace(text) {
-                Some(previous) => encode_anthropic_text_delta(state, previous),
-                None => Vec::new(),
-            }
+            encode_anthropic_text_delta(state, text)
         }
         LlmResponseChunk::ReasoningDelta { text, .. } => {
-            let mut out = flush_anthropic_text(state);
-            out.extend(ensure_anthropic_reasoning_block(state));
+            let mut out = ensure_anthropic_reasoning_block(state);
             out.push(json!({
                 "type": "content_block_delta",
                 "index": state.reasoning_block_index.unwrap_or(0),
@@ -238,8 +232,7 @@ fn encode_anthropic_stream(
             if text.is_empty() {
                 return Vec::new();
             }
-            let mut out = flush_anthropic_text(state);
-            out.extend(ensure_anthropic_reasoning_block(state));
+            let mut out = ensure_anthropic_reasoning_block(state);
             out.push(json!({
                 "type": "content_block_delta",
                 "index": state.reasoning_block_index.unwrap_or(0),
@@ -252,17 +245,7 @@ fn encode_anthropic_stream(
             id,
             name,
             arguments_delta,
-        } => {
-            let mut out = flush_anthropic_text(state);
-            out.extend(encode_anthropic_tool_delta(
-                state,
-                index,
-                id,
-                name,
-                arguments_delta,
-            ));
-            out
-        }
+        } => encode_anthropic_tool_delta(state, index, id, name, arguments_delta),
         LlmResponseChunk::Usage(usage) => {
             state.usage = usage;
             state.saw_backend_usage = true;
@@ -270,31 +253,13 @@ fn encode_anthropic_stream(
         }
         LlmResponseChunk::MessageStop { reason } => {
             state.stop_reason = reason.or_else(|| state.stop_reason.clone());
-            if matches!(
-                state.stop_reason.as_deref(),
-                Some("refusal" | "content_filter")
-            ) {
-                // Streaming IR has no refusal block. This assumes the final text
-                // delta contains the entire refusal explanation.
-                if let Some(explanation) = state.pending_anthropic_text.take() {
-                    state.stop_details = Some(json!({
-                        "type": "refusal",
-                        "category": Value::Null,
-                        "explanation": explanation,
-                    }));
-                }
-                Vec::new()
-            } else {
-                flush_anthropic_text(state)
-            }
+            Vec::new()
         }
         LlmResponseChunk::StreamError { message } | LlmResponseChunk::DecodeError { message } => {
             // An in-band error is terminal: emit the error, then nothing further.
-            let mut out = flush_anthropic_text(state);
             state.finished = true; // finish() adds no success events
             state.errored = true; // the entry guard drops any later chunk
-            out.push(json!({"type": "error", "error": {"type": "api_error", "message": message}}));
-            out
+            vec![json!({"type": "error", "error": {"type": "api_error", "message": message}})]
         }
     }
 }
@@ -325,7 +290,6 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             },
         ));
     }
-    out.extend(flush_anthropic_text(state));
 
     if state.text_block_started {
         if let Some(index) = state.text_block_index {
@@ -372,16 +336,18 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     }
 
     if !state.emitted_message_delta {
+        let stop_reason = anthropic_stop_reason(state.stop_reason.as_deref());
+        let stop_details = anthropic_stop_details(&stop_reason);
+        let mut delta = json!({
+            "stop_reason": stop_reason,
+            "stop_sequence": Value::Null,
+        });
+        if !stop_details.is_null() {
+            delta["stop_details"] = stop_details;
+        }
         out.push(json!({
             "type": "message_delta",
-            "delta": {
-                "stop_reason": anthropic_stop_reason(state.stop_reason.as_deref()),
-                "stop_sequence": Value::Null,
-                "stop_details": anthropic_stop_details(
-                    state.stop_reason.as_deref(),
-                    state.stop_details.as_ref(),
-                ),
-            },
+            "delta": delta,
             "usage": anthropic_stream_usage(state),
         }));
         state.emitted_message_delta = true;
@@ -521,13 +487,6 @@ fn anthropic_signature_delta(index: usize, signature: &str) -> LlmResponseChunk 
         index,
         details: vec![json!({"type": "anthropic.signature_delta", "signature": signature})],
         text: String::new(),
-    }
-}
-
-fn flush_anthropic_text(state: &mut StreamTranslationState) -> Vec<Value> {
-    match state.pending_anthropic_text.take() {
-        Some(text) => encode_anthropic_text_delta(state, text),
-        None => Vec::new(),
     }
 }
 
@@ -794,16 +753,13 @@ fn anthropic_stop_reason(reason: Option<&str>) -> String {
 }
 
 // Emits the metadata object Anthropic pairs with a `refusal` stop reason.
-//
-// The encoder supplies an explanation from its held text delta when available.
-fn anthropic_stop_details(reason: Option<&str>, source: Option<&Value>) -> Value {
+// Streaming IR does not distinguish refusal text from ordinary text.
+fn anthropic_stop_details(reason: &str) -> Value {
     match reason {
-        Some("content_filter" | "refusal") => source.cloned().unwrap_or_else(|| {
-            json!({
-                "type": "refusal",
-                "category": Value::Null,
-                "explanation": Value::Null,
-            })
+        "refusal" => json!({
+            "type": "refusal",
+            "category": Value::Null,
+            "explanation": Value::Null,
         }),
         _ => Value::Null,
     }

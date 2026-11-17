@@ -42,14 +42,6 @@ pub struct StreamTranslationState {
     pub(crate) output_tokens_seen: u64,
     pub(crate) saw_backend_usage: bool,
     pub(crate) stop_reason: Option<String>,
-    /// Anthropic refusal metadata synthesized by the encoder from the final text delta.
-    pub(crate) stop_details: Option<Value>,
-    /// Held until the next content delta or stop identifies how Anthropic should emit it.
-    #[serde(default)]
-    pub(crate) pending_anthropic_text: Option<String>,
-    /// Held until the next content delta or stop identifies how Chat should emit it.
-    #[serde(default)]
-    pub(crate) pending_chat_text: Option<String>,
     pub(crate) emitted_message_delta: bool,
 
     pub(crate) next_content_index: usize,
@@ -59,6 +51,9 @@ pub struct StreamTranslationState {
     pub(crate) tool_states: BTreeMap<usize, StreamToolState>,
     #[serde(default)]
     pub(crate) pending_chat_tool_names: BTreeMap<usize, String>,
+    /// Choices that decoded a refusal, including an empty refusal string.
+    #[serde(default)]
+    pub(crate) chat_refusal_choices: std::collections::BTreeSet<usize>,
     #[serde(default)]
     pub(crate) active_anthropic_tool: Option<usize>,
     #[serde(default)]
@@ -77,17 +72,10 @@ pub struct StreamTranslationState {
     /// Text decoded from Responses, keyed by output index and then content index.
     #[serde(default)]
     pub(crate) decoded_response_text: BTreeMap<usize, BTreeMap<usize, String>>,
-
     pub(crate) response_created: bool,
     pub(crate) response_text_started: bool,
     pub(crate) response_text_output_index: Option<usize>,
     pub(crate) response_text: String,
-    /// Held until the next content delta or stop identifies how Responses should emit it.
-    #[serde(default)]
-    pub(crate) pending_responses_text: Option<String>,
-    /// Final text delta identified as a refusal by the stop reason.
-    #[serde(default)]
-    pub(crate) response_refusal: Option<String>,
     /// Reasoning items being ENCODED, keyed by source content index. A response can carry
     /// several reasoning items (GPT-5 emits one ahead of each tool call); each becomes its
     /// own output item so none of their encrypted payloads is lost.
