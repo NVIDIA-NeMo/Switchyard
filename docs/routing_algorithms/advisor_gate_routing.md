@@ -132,3 +132,5 @@ already frontier-class, benchmark
 [stage-router routing](stage_router_routing.md) first; reach for the advisor
 gate when the executor is markedly weaker than the best model you can call, or
 when you need a review trail rather than a model swap.
+
+To compare candidate values on your workload, see [Tuning](../tuning/index.md).

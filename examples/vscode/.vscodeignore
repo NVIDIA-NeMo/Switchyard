@@ -1,0 +1,5 @@
+.npmrc
+.gitignore
+package-lock.json
+test/**
+*.vsix

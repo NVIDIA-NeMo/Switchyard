@@ -4,10 +4,12 @@
 //! Buffered codec for OpenAI Chat Completions request and response JSON.
 
 use serde_json::{Map, Value, json};
+use switchyard_protocol::MAX_IR_TEMPERATURE;
 
+use super::MAX_TEMPERATURE;
 use crate::codecs::common::{
     first_nonempty_string, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
-    reasoning_text_from_details, text_from_blocks,
+    reasoning_text_from_details, scale_temperature, text_from_blocks,
 };
 use crate::codecs::openai_media::{
     ImagePayload, file_payload, file_source_text, image_payload, image_source_text,
@@ -28,7 +30,7 @@ use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,
     exact_preserved_request, exact_preserved_response, json_string, object, push_lossy,
-    reject_responses_builtin_tool_item, stable_id, string_value, validate_request_capabilities,
+    reject_responses_native_input_item, stable_id, string_value, validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Chat Completions payloads.
@@ -50,7 +52,10 @@ impl FormatCodec for OpenAiChatCodec {
                 .map(ToOwned::to_owned),
             stream: body.get("stream").and_then(Value::as_bool).unwrap_or(false),
             sampling: SamplingParams {
-                temperature: body.get("temperature").and_then(Value::as_f64),
+                temperature: body
+                    .get("temperature")
+                    .and_then(Value::as_f64)
+                    .map(|value| scale_temperature(value, MAX_TEMPERATURE, MAX_IR_TEMPERATURE)),
                 top_p: body.get("top_p").and_then(Value::as_f64),
                 top_k: None,
             },
@@ -135,25 +140,24 @@ impl FormatCodec for OpenAiChatCodec {
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_string();
-                    request.messages.push(Message {
-                        role: Role::User,
-                        content: vec![ContentBlock::ToolResult(ToolResult {
+                    request.messages.push(Message::new(
+                        Role::User,
+                        vec![ContentBlock::ToolResult(ToolResult {
                             tool_call_id,
                             content: vec![ContentBlock::Text { text }],
                             is_error: message.get("is_error").and_then(Value::as_bool),
                         })],
-                    });
+                    ));
                     continue;
                 }
-                match role {
-                    Role::System | Role::Developer => {
-                        request
-                            .instructions
-                            .push(InstructionBlock { role, content });
-                    }
-                    Role::User | Role::Assistant | Role::Tool => {
-                        request.messages.push(Message { role, content });
-                    }
+                // Leading system and developer messages are top-level instructions.
+                // Later ones stay in place as messages.
+                if matches!(role, Role::System | Role::Developer) && request.messages.is_empty() {
+                    request
+                        .instructions
+                        .push(InstructionBlock { role, content });
+                } else {
+                    request.messages.push(Message::new(role, content));
                 }
             }
         }
@@ -245,6 +249,7 @@ impl FormatCodec for OpenAiChatCodec {
             body.insert("max_completion_tokens".to_string(), json!(value));
         }
         if let Some(value) = request.sampling.temperature {
+            let value = scale_temperature(value, MAX_IR_TEMPERATURE, MAX_TEMPERATURE);
             body.insert("temperature".to_string(), json!(value));
         }
         if let Some(value) = request.sampling.top_p {
@@ -393,9 +398,41 @@ impl FormatCodec for OpenAiChatCodec {
             });
         }
         let output = response.first_output();
-        let content = output
-            .map(|output| text_from_blocks(&output.content, ""))
+        let mut content = String::new();
+        let mut refusal = None::<String>;
+        let mut url_citations = output
+            .map(|output| output.url_citations.clone())
             .unwrap_or_default();
+        let mut content_offset = 0;
+        if let Some(output) = output {
+            for block in &output.content {
+                match block {
+                    ContentBlock::Text { text } => {
+                        content.push_str(text);
+                        content_offset += text.chars().count();
+                    }
+                    ContentBlock::Refusal { text } => {
+                        refusal.get_or_insert_with(String::new).push_str(text);
+                        let refusal_len = text.chars().count();
+                        // IR offsets include refusal text; Chat content excludes it.
+                        for citation in &mut url_citations {
+                            citation.start_index -= refusal_len
+                                .min(citation.start_index.saturating_sub(content_offset));
+                            citation.end_index -=
+                                refusal_len.min(citation.end_index.saturating_sub(content_offset));
+                        }
+                        url_citations.retain(|citation| citation.start_index < citation.end_index);
+                    }
+                    ContentBlock::Unknown { raw, .. } => {
+                        if let Some(text) = raw.as_str() {
+                            content.push_str(text);
+                            content_offset += text.chars().count();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
         let tool_calls = output
             .map(|output| {
                 output
@@ -417,16 +454,18 @@ impl FormatCodec for OpenAiChatCodec {
             .unwrap_or_default();
         let mut message = json!({
             "role": "assistant",
-            "content": if content.is_empty() && !tool_calls.is_empty() {
+            "content": if content.is_empty() && (!tool_calls.is_empty() || refusal.is_some()) {
                 Value::Null
             } else {
                 Value::String(content)
             },
         });
-        if let Some(output) = output.filter(|output| !output.url_citations.is_empty()) {
+        if let Some(refusal) = refusal {
+            message["refusal"] = Value::String(refusal);
+        }
+        if !url_citations.is_empty() {
             message["annotations"] = Value::Array(
-                output
-                    .url_citations
+                url_citations
                     .iter()
                     .map(|citation| json!({"type": "url_citation", "url_citation": citation}))
                     .collect(),
@@ -899,10 +938,7 @@ fn push_pending_openai_message(
         return Ok(());
     }
 
-    let message = Message {
-        role,
-        content: std::mem::take(pending_content),
-    };
+    let message = Message::new(role, std::mem::take(pending_content));
     out.push(encode_message_without_tool_results_to_openai(
         &message,
         diagnostics,
@@ -918,9 +954,11 @@ fn encode_message_without_tool_results_to_openai(
     policy: &TranslationPolicy,
 ) -> Result<Value> {
     let role = match message.role {
+        Role::System => "system",
+        Role::Developer => "developer",
         Role::Assistant => "assistant",
         Role::Tool => "tool",
-        _ => "user",
+        Role::User => "user",
     };
     let tool_calls = message
         .content
@@ -1092,7 +1130,7 @@ pub(crate) fn encode_openai_content(
     if role != Role::User {
         for block in content {
             if let ContentBlock::Unknown { provider, raw } = block {
-                reject_responses_builtin_tool_item(provider, raw, WireFormat::OpenAiChat)?;
+                reject_responses_native_input_item(provider, raw, WireFormat::OpenAiChat)?;
             }
         }
         push_lossy(
@@ -1147,7 +1185,7 @@ pub(crate) fn encode_openai_content(
                 ));
             }
             ContentBlock::Unknown { provider, raw } => {
-                reject_responses_builtin_tool_item(provider, raw, WireFormat::OpenAiChat)?;
+                reject_responses_native_input_item(provider, raw, WireFormat::OpenAiChat)?;
                 push_lossy(
                     diagnostics,
                     policy,
@@ -1203,6 +1241,7 @@ fn media_source_text(source: &MediaSource) -> String {
 
 /// Encodes normalized tool definitions into OpenAI tool JSON.
 pub(crate) fn encode_openai_tools(tools: &[Tool]) -> Result<Value> {
+    let mut names = std::collections::HashSet::new();
     Ok(Value::Array(
         tools
             .iter()
@@ -1212,6 +1251,12 @@ pub(crate) fn encode_openai_tools(tools: &[Tool]) -> Result<Value> {
                         "MCP and provider tool encoding is not implemented".into(),
                     )
                 })?;
+                if !names.insert(tool.name.as_str()) {
+                    return Err(TranslationError::InvalidValue {
+                        path: "$.tools".to_string(),
+                        message: format!("duplicate tool name: {:?}", tool.name),
+                    });
+                }
                 let mut function = json!({
                     "name": tool.name,
                     "description": tool.description.clone().unwrap_or_default(),

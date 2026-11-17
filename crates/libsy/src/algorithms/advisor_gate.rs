@@ -381,18 +381,16 @@ impl AdvisorGate {
         review_tail: Option<&str>,
         trigger: &'static str,
     ) -> Result<ConsultOutcome> {
-        // The advisor reviews the FULL transcript: system/developer content is
-        // normalized out of `messages` into `instructions`, so prepend it back
-        // as leading messages (identical {role, content} shape) — the task
-        // constraints the verdict must check against usually live there.
+        // The advisor reviews the FULL transcript. Top-level system/developer
+        // content lives in `instructions`, so prepend it as leading messages
+        // (identical {role, content} shape). The task constraints the verdict
+        // must check against usually live there. Inline instruction messages
+        // stay in place.
         let transcript_messages: Vec<Message> = base
             .llm_request
             .instructions
             .iter()
-            .map(|block| Message {
-                role: block.role,
-                content: block.content.clone(),
-            })
+            .map(|block| Message::new(block.role, block.content.clone()))
             .chain(base.llm_request.messages.iter().cloned())
             .collect();
         let transcript = review_transcript(
@@ -408,12 +406,9 @@ impl AdvisorGate {
             Ok(advisor) => {
                 let advisor = advisor.clone();
                 let advisor_models = driver.models_for(&Category::Judge).to_vec();
+                // Fail-closed errors must reach the gate to refund the review budget.
                 match driver
-                    .call_model_with_error_recovery(
-                        consult_request,
-                        advisor_models,
-                        self.config.fail_open,
-                    )
+                    .call_model_with_error_recovery(consult_request, advisor_models, true)
                     .await
                 {
                     Ok(response) => {
@@ -445,7 +440,8 @@ impl AdvisorGate {
                     // context_length_exceeded and trigger compaction of a
                     // healthy conversation.
                     return Err(algorithm_error(format!(
-                        "advisor consult failed (fail_open = false): {error}"
+                        "advisor consult failed (fail_open = false): {}",
+                        safe_error_summary(&error)
                     )));
                 }
                 // An upstream error's Display can quote request content back,

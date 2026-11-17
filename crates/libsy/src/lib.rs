@@ -19,16 +19,15 @@ pub use error::{DriverError, LibsyError, Result};
 
 mod algorithms;
 pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
-pub use algorithms::composite::{CompositeJudgeConfig, CompositeRouter, CompositeRouterConfig};
+pub use algorithms::composite::{CompositeJudgeConfig, CompositeRouter};
 pub use algorithms::infra::InfraPolicy;
 pub use algorithms::llm_class::{
     CapabilityJudgeConfig, CustomClassifierConfig, CustomClassifierPolicy, DEFAULT_UNMATCHED_STEPS,
-    DecisionJudgeConfig, DirectClassifierConfig, LlmCapabilityConfig, LlmClassifierConfig,
-    LlmTaskClassifier, TaskClassifierConfig,
+    DecisionChoice, DecisionJudgeConfig, DirectClassifierConfig, LlmCapabilityConfig,
+    LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
 };
 pub use algorithms::noop::Noop;
 pub use algorithms::passthrough::Passthrough;
-pub use algorithms::plan_execute::{PlanExecute, PlanExecuteConfig};
 pub use algorithms::rand::{Random, RandomClassifier};
 pub use algorithms::stage::{LlmFallback, StageRouter, StageRouterConfig};
 pub use algorithms::subagent::{SubagentRouter, SubagentRouterConfig};

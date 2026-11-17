@@ -50,6 +50,9 @@ impl NativePlugin for SwitchyardPlugin {
         ctx: &mut PluginContext<'_>,
     ) -> nemo_relay_plugin::Result<()> {
         let config = parse_config(plugin_config)?;
+        let payload_limit = config
+            .capture_routing_payloads
+            .then_some(config.max_routing_payload_bytes);
         let priority = config.priority;
         let runtime = Arc::new(SwitchyardRuntime::new(config)?);
         let plugin_runtime = ctx.runtime();
@@ -59,7 +62,7 @@ impl NativePlugin for SwitchyardPlugin {
         });
         let span_runtime = Arc::clone(&runtime);
         let span_emit_event = Arc::clone(&emit_event);
-        let span_capture = SpanCapture::new(move |mut span| {
+        let span_capture = SpanCapture::new(payload_limit, move |mut span| {
             span.sanitize(span_runtime.redactor());
             span_emit_event(RoutingEvent::Span(span));
         });

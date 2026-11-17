@@ -1,0 +1,373 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+//! Trusted target requirements and bounded task retention.
+
+use std::collections::{BTreeSet, HashMap};
+
+use parking_lot::Mutex;
+use serde_json::Value;
+use switchyard_protocol::{LlmClientError, Request, WireFormat};
+
+const REQUIREMENTS_KEY: &str = "switchyard.internal.required_target_labels";
+const MAX_LABELS: usize = 64;
+const MAX_LABEL_BYTES: usize = 128;
+const MAX_REQUIREMENTS_BYTES: usize = MAX_LABELS * (MAX_LABEL_BYTES * 6 + 4) + 2;
+const MAX_TASK_ID_BYTES: usize = 512;
+const MAX_TASKS: usize = 4_096;
+const RESPONSES_STATE_FIELDS: [&str; 2] = ["previous_response_id", "conversation"];
+
+pub(crate) struct EligibilityPolicy {
+    require_explicit_requirements: bool,
+    tasks: Option<Mutex<HashMap<String, BTreeSet<String>>>>,
+}
+
+impl EligibilityPolicy {
+    pub(crate) fn new(require_explicit_requirements: bool, task_scope: bool) -> Self {
+        Self {
+            require_explicit_requirements,
+            tasks: task_scope.then(Mutex::default),
+        }
+    }
+
+    // Retain valid requirements before checking provider-held context for this turn.
+    pub(crate) fn admit(&self, request: &Request) -> Result<TargetRequirements, LlmClientError> {
+        let supplied = target_requirements(request)?;
+        if self.require_explicit_requirements && supplied.is_none() {
+            return Err(invalid("route requires explicit target requirements"));
+        }
+        let mut required_labels = supplied.unwrap_or_default();
+        if let Some(tasks) = &self.tasks {
+            let task_id = request
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.task_id.as_deref())
+                .filter(|id| !id.is_empty() && id.len() <= MAX_TASK_ID_BYTES && id.trim() == *id)
+                .ok_or_else(|| invalid("target eligibility needs a valid task id"))?;
+            // Validate and merge under one lock so concurrent turns cannot lose requirements.
+            let mut tasks = tasks.lock();
+            if let Some(retained) = tasks.get_mut(task_id) {
+                if retained.len() + required_labels.difference(retained).count() > MAX_LABELS {
+                    return Err(invalid("too many target requirement labels"));
+                }
+                retained.append(&mut required_labels);
+                required_labels.clone_from(retained);
+            } else if !required_labels.is_empty() {
+                if tasks.len() >= MAX_TASKS {
+                    return Err(invalid("target requirement task capacity exhausted"));
+                }
+                tasks.insert(task_id.to_owned(), required_labels.clone());
+            }
+        }
+        validate_request_context(request)?;
+        Ok(TargetRequirements { required_labels })
+    }
+}
+
+/// Adds trusted target requirements to an in-process request without removing earlier labels.
+/// An empty collection explicitly supplies no new requirements. The host owns classification and approvals.
+pub fn require_target_labels(
+    request: &mut Request,
+    labels: impl IntoIterator<Item = impl AsRef<str>>,
+) -> Result<(), LlmClientError> {
+    let mut required = target_requirements(request)?.unwrap_or_default();
+    for label in labels {
+        let label = label.as_ref();
+        validate_label(label)?;
+        required.insert(label.to_owned());
+        if required.len() > MAX_LABELS {
+            return Err(invalid("too many target requirement labels"));
+        }
+    }
+    let serialized = serde_json::to_string(&required)
+        .map_err(|_| invalid("invalid target requirement labels"))?;
+    request
+        .metadata
+        .get_or_insert_default()
+        .extra_metadata
+        .get_or_insert_default()
+        .insert(REQUIREMENTS_KEY.to_owned(), serialized);
+    Ok(())
+}
+
+pub(crate) fn has_target_requirements(request: &Request) -> bool {
+    request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.extra_metadata.as_ref())
+        .is_some_and(|metadata| metadata.contains_key(REQUIREMENTS_KEY))
+}
+
+pub(crate) fn validate_labels(labels: &BTreeSet<String>) -> Result<(), LlmClientError> {
+    if labels.len() > MAX_LABELS {
+        return Err(invalid("too many target requirement labels"));
+    }
+    labels.iter().try_for_each(|label| validate_label(label))
+}
+
+fn validate_label(label: &str) -> Result<(), LlmClientError> {
+    if label.is_empty() || label.len() > MAX_LABEL_BYTES || label.trim() != label {
+        return Err(invalid(
+            "target labels must be nonblank, trimmed, and at most 128 bytes",
+        ));
+    }
+    Ok(())
+}
+
+fn target_requirements(request: &Request) -> Result<Option<BTreeSet<String>>, LlmClientError> {
+    let Some(metadata) = request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.extra_metadata.as_ref())
+    else {
+        return Ok(None);
+    };
+    let labels: Option<BTreeSet<String>> = metadata
+        .get(REQUIREMENTS_KEY)
+        .map(|encoded| {
+            if encoded.len() > MAX_REQUIREMENTS_BYTES {
+                return Err(invalid("target requirement labels exceed the size limit"));
+            }
+            serde_json::from_str(encoded).map_err(|_| invalid("invalid target requirement labels"))
+        })
+        .transpose()?;
+    if let Some(labels) = &labels {
+        validate_labels(labels)?;
+    }
+    Ok(labels)
+}
+
+/// Effective target requirements after combining caller requirements and retained task state.
+pub(crate) struct TargetRequirements {
+    required_labels: BTreeSet<String>,
+}
+
+impl TargetRequirements {
+    /// Every returned label must be present on each target receiving the request.
+    pub(crate) fn required_labels(&self) -> &BTreeSet<String> {
+        &self.required_labels
+    }
+}
+
+fn invalid(message: &'static str) -> LlmClientError {
+    LlmClientError::InvalidRequest {
+        message: message.to_owned(),
+    }
+}
+
+// Provider-held history may contain data absent from the request being admitted.
+fn validate_request_context(request: &Request) -> Result<(), LlmClientError> {
+    let has_state = |body: &Value| {
+        RESPONSES_STATE_FIELDS
+            .iter()
+            .any(|field| body.get(*field).is_some_and(|value| !value.is_null()))
+    };
+    if RESPONSES_STATE_FIELDS.iter().any(|field| {
+        request
+            .llm_request
+            .extensions
+            .fields
+            .get(*field)
+            .is_some_and(|value| !value.is_null())
+    }) || request
+        .llm_request
+        .preservation
+        .requests
+        .iter()
+        .any(|(format, body)| {
+            format.as_str() == WireFormat::OpenAiResponses.as_str() && has_state(body)
+        })
+    {
+        return Err(invalid(
+            "eligibility routes do not support OpenAI Responses continuation state",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    fn task(id: &str, labels: &[&str]) -> Request {
+        let mut request = Request::default();
+        request.metadata.get_or_insert_default().task_id = Some(id.into());
+        require_target_labels(&mut request, labels).expect("trusted requirements");
+        request
+    }
+
+    fn labels(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(|label| (*label).to_owned()).collect()
+    }
+
+    fn metadata(request: &mut Request) -> &mut BTreeMap<String, String> {
+        request
+            .metadata
+            .get_or_insert_default()
+            .extra_metadata
+            .get_or_insert_default()
+    }
+
+    fn assert_labels(policy: &EligibilityPolicy, request: &Request, expected: &[&str]) {
+        assert_eq!(
+            policy.admit(request).unwrap().required_labels(),
+            &labels(expected)
+        );
+    }
+
+    #[test]
+    fn requirements_are_normalized_and_only_accumulate() {
+        let policy = EligibilityPolicy::new(false, false);
+        let mut request = task("one", &["customer_data", "private", "private"]);
+        require_target_labels(&mut request, ["approved"]).expect("additional requirement");
+        require_target_labels(&mut request, [] as [&str; 0]).expect("cannot clear requirements");
+        assert_labels(&policy, &request, &["approved", "customer_data", "private"]);
+        assert_labels(&policy, &task("one", &[]), &[]);
+    }
+
+    #[test]
+    fn invalid_requirements_do_not_replace_valid_requirements() {
+        let mut request = task("one", &["private"]);
+        for invalid_label in [
+            "",
+            " ",
+            " private",
+            "private ",
+            &"x".repeat(MAX_LABEL_BYTES + 1),
+        ] {
+            assert!(require_target_labels(&mut request, [invalid_label]).is_err());
+        }
+        assert_eq!(
+            target_requirements(&request).unwrap(),
+            Some(labels(&["private"]))
+        );
+        for encoded in ["null", "{}", "[1]", "[\"\"]", "["] {
+            metadata(&mut request).insert(REQUIREMENTS_KEY.into(), encoded.into());
+            assert!(has_target_requirements(&request));
+            assert!(
+                EligibilityPolicy::new(false, false)
+                    .admit(&request)
+                    .is_err()
+            );
+            assert!(require_target_labels(&mut request, ["private"]).is_err());
+        }
+    }
+
+    #[test]
+    fn required_labels_distinguish_missing_from_empty() {
+        let policy = EligibilityPolicy::new(true, false);
+        assert!(policy.admit(&Request::default()).is_err());
+        let decision = policy
+            .admit(&task("one", &[]))
+            .expect("explicit empty requirements");
+        assert!(decision.required_labels().is_empty());
+    }
+
+    #[test]
+    fn task_requirements_accumulate_without_affecting_other_tasks() {
+        let policy = EligibilityPolicy::new(false, true);
+        policy
+            .admit(&task("one", &["private"]))
+            .expect("first requirement");
+        let decision = policy
+            .admit(&task("one", &["customer_data"]))
+            .expect("union");
+        assert_eq!(
+            decision.required_labels(),
+            &labels(&["private", "customer_data"])
+        );
+        assert_labels(&policy, &task("one", &[]), &["private", "customer_data"]);
+        assert_labels(&policy, &task("two", &[]), &[]);
+        let mut absent = Request::default();
+        absent.metadata.get_or_insert_default().task_id = Some("one".into());
+        assert_labels(&policy, &absent, &["private", "customer_data"]);
+
+        let explicit = EligibilityPolicy::new(true, true);
+        assert_labels(&explicit, &task("one", &["private"]), &["private"]);
+        assert!(explicit.admit(&absent).is_err());
+        assert_labels(&explicit, &task("one", &[]), &["private"]);
+    }
+
+    // Invalid labels and task identities must not alter retained requirements.
+    #[test]
+    fn task_requirements_validate_signals_and_ids_before_retaining() {
+        let policy = EligibilityPolicy::new(false, true);
+        assert_labels(&policy, &task("one", &["private"]), &["private"]);
+        for encoded in ["null", "{}", "[1]", "[\"\"]", "["] {
+            let mut request = task("one", &[]);
+            metadata(&mut request).insert(REQUIREMENTS_KEY.into(), encoded.into());
+            assert!(policy.admit(&request).is_err());
+            assert_labels(&policy, &task("one", &[]), &["private"]);
+        }
+        assert!(policy.admit(&Request::default()).is_err());
+        for id in ["", " ", " one", "one ", &"x".repeat(MAX_TASK_ID_BYTES + 1)] {
+            assert!(policy.admit(&task(id, &["customer_data"])).is_err());
+        }
+        assert_eq!(policy.tasks.as_ref().unwrap().lock().len(), 1);
+        assert_labels(
+            &policy,
+            &task(&"x".repeat(MAX_TASK_ID_BYTES), &["private"]),
+            &["private"],
+        );
+    }
+
+    #[test]
+    fn rejected_provider_history_does_not_erase_valid_requirements() {
+        let policy = EligibilityPolicy::new(false, true);
+        for field in RESPONSES_STATE_FIELDS {
+            let mut request = task(field, &["private"]);
+            request
+                .llm_request
+                .extensions
+                .fields
+                .insert(field.into(), Value::String("hidden".into()));
+            assert!(policy.admit(&request).is_err());
+            assert_labels(&policy, &task(field, &[]), &["private"]);
+            let mut preserved = task(field, &["customer_data"]);
+            preserved.llm_request.preservation.requests.insert(
+                WireFormat::OpenAiResponses.as_str().into(),
+                serde_json::json!({field: "hidden"}),
+            );
+            assert!(policy.admit(&preserved).is_err());
+            assert_labels(&policy, &task(field, &[]), &["private", "customer_data"]);
+        }
+    }
+
+    #[test]
+    fn label_and_task_limits_reject_without_partially_retaining() {
+        let mut request = task("one", &["private"]);
+        assert!(
+            require_target_labels(&mut request, (0..MAX_LABELS).map(|index| index.to_string()))
+                .is_err()
+        );
+        assert_eq!(
+            target_requirements(&request).unwrap(),
+            Some(labels(&["private"]))
+        );
+        let policy = EligibilityPolicy::new(false, true);
+        let retained = (0..MAX_LABELS).map(|index| index.to_string()).collect();
+        policy.tasks.as_ref().unwrap().lock().extend(
+            (0..MAX_TASKS).map(|index| (index.to_string(), BTreeSet::from(["private".into()]))),
+        );
+        assert!(policy.admit(&task("new", &["private"])).is_err());
+        assert_labels(&policy, &task("new", &[]), &[]);
+        assert_eq!(policy.tasks.as_ref().unwrap().lock().len(), MAX_TASKS);
+        policy
+            .tasks
+            .as_ref()
+            .unwrap()
+            .lock()
+            .insert("0".into(), retained);
+        assert!(policy.admit(&task("0", &["customer_data"])).is_err());
+        assert_eq!(
+            policy
+                .admit(&task("0", &[]))
+                .unwrap()
+                .required_labels()
+                .len(),
+            MAX_LABELS
+        );
+    }
+}

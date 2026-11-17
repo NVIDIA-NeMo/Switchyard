@@ -22,6 +22,30 @@ impl StreamCodec for OpenAiChatStreamCodec {
         WireFormat::OpenAiChat.into()
     }
 
+    fn is_terminal_event(&self, event: &Value) -> bool {
+        event
+            .get("choices")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|choice| {
+                choice
+                    .get("finish_reason")
+                    .and_then(Value::as_str)
+                    .is_some()
+            })
+    }
+
+    fn sse_done_is_terminal(&self) -> bool {
+        true
+    }
+
+    fn stamp_streamed_response_model(&self, event: &mut Value, served_model: &str) {
+        if let Some(event) = event.as_object_mut() {
+            event.insert("model".to_string(), Value::String(served_model.to_string()));
+        }
+    }
+
     fn decode_event(
         &self,
         state: &mut StreamTranslationState,
@@ -100,6 +124,7 @@ fn decode_openai_chat_stream(
         let Some(choice) = choice.as_object() else {
             continue;
         };
+        let choice_index = choice.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
         if let Some(delta) = choice.get("delta").and_then(Value::as_object) {
             if let Some(details) = delta
                 .get("reasoning_details")
@@ -137,14 +162,10 @@ fn decode_openai_chat_stream(
                     text: text.to_string(),
                 });
             }
-            if let Some(text) = delta.get("refusal").and_then(Value::as_str)
-                && !text.is_empty()
-            {
-                // Refusal deltas mark the whole message as a content-filter stop. This state
-                // persists across chunks so a later `finish_reason: "stop"` cannot overwrite it.
-                state.stop_reason = Some("content_filter".to_string());
+            if let Some(text) = delta.get("refusal").and_then(Value::as_str) {
+                state.chat_refusal_choices.insert(choice_index);
                 out.push(LlmResponseChunk::TextDelta {
-                    index: 0,
+                    index: choice_index,
                     text: text.to_string(),
                 });
             }
@@ -192,12 +213,13 @@ fn decode_openai_chat_stream(
                     arguments_delta: None,
                 });
             }
-            let reason =
-                if reason == "stop" && state.stop_reason.as_deref() == Some("content_filter") {
-                    "content_filter"
-                } else {
-                    reason
-                };
+            let saw_refusal = state.chat_refusal_choices.remove(&choice_index);
+            let reason = if saw_refusal && reason == "stop" {
+                "refusal"
+            } else {
+                reason
+            };
+            state.stop_reason = Some(reason.to_string());
             out.push(LlmResponseChunk::MessageStop {
                 reason: Some(reason.to_string()),
             });
@@ -319,15 +341,26 @@ fn encode_openai_chat_stream(
             if state.finished {
                 return Vec::new();
             }
+            let mut out = Vec::new();
+            if reason.as_deref() == Some("refusal") {
+                // Text was already emitted. Preserve the refusal signal without repeating it.
+                out.push(openai_stream_chunk(
+                    state,
+                    json!({"refusal": ""}),
+                    None,
+                    None,
+                ));
+            }
             state.finished = true;
-            vec![openai_stream_chunk(
+            out.push(openai_stream_chunk(
                 state,
                 json!({}),
                 Some(openai_finish_reason(reason.as_deref())),
                 state
                     .saw_backend_usage
                     .then(|| encode_openai_usage(&state.usage)),
-            )]
+            ));
+            out
         }
         LlmResponseChunk::DecodeError { message } | LlmResponseChunk::StreamError { message } => {
             // An in-band error is terminal: emit the error, then nothing further.
@@ -343,15 +376,12 @@ fn finish_openai_chat_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     if state.finished || !state.saw_message_start {
         return Vec::new();
     }
-    state.finished = true;
-    vec![openai_stream_chunk(
+    encode_openai_chat_stream(
         state,
-        json!({}),
-        Some(openai_finish_reason(state.stop_reason.as_deref())),
-        state
-            .saw_backend_usage
-            .then(|| encode_openai_usage(&state.usage)),
-    )]
+        LlmResponseChunk::MessageStop {
+            reason: state.stop_reason.clone(),
+        },
+    )
 }
 
 // Builds a single OpenAI Chat stream chunk payload.
@@ -439,10 +469,40 @@ fn openai_finish_reason(reason: Option<&str>) -> String {
     match reason {
         Some("max_tokens") => "length".to_string(),
         Some("tool_use") => "tool_calls".to_string(),
-        Some("refusal") => "content_filter".to_string(),
+        Some("refusal") => "stop".to_string(),
+        // Already valid in OpenAI's vocabulary (e.g. from a Responses upstream).
+        Some(valid @ ("stop" | "length" | "tool_calls" | "content_filter" | "function_call")) => {
+            valid.to_string()
+        }
         // Reasons with no OpenAI equivalent (e.g. `pause_turn`,
         // `model_context_window_exceeded`) must not leak into `finish_reason`;
         // the buffered encoder reports them as `stop` too.
         _ => "stop".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recognizes_stream_completion() {
+        let codec = OpenAiChatStreamCodec;
+        assert!(codec.sse_done_is_terminal());
+        assert!(codec.is_terminal_event(&json!({"choices": [{"finish_reason": "stop"}]})));
+        assert!(!codec.is_terminal_event(&json!({"choices": [{"finish_reason": null}]})));
+    }
+
+    #[test]
+    fn openai_chat_replay_stamps_the_served_model_without_losing_extensions() {
+        let mut event = json!({
+            "choices": [{"delta": {"content": "Hello"}}],
+            "system_fingerprint": "fp_provider_specific",
+        });
+
+        OpenAiChatStreamCodec.stamp_streamed_response_model(&mut event, "served/model");
+
+        assert_eq!(event["model"], "served/model");
+        assert_eq!(event["system_fingerprint"], "fp_provider_specific");
     }
 }

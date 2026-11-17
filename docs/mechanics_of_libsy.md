@@ -230,7 +230,7 @@ shared interface is
 The algorithm applies its routing policy to the answer. The decision response is
 distinct from the final conversational answer.
 
-A decision request contains shared `context` and named questions. Each
+A decision request contains shared `input` and named questions. Each
 <a href="https://nvidia-nemo.github.io/Switchyard/rust/switchyard_protocol/decision/struct.DecisionQuestion.html"><code>question</code></a>
 declares its expected answer shape: Boolean, choice among options, or score on a
 rubric. The client's
@@ -246,7 +246,7 @@ request like this in `call.request`:
 ```rust
 let request = DecisionRequest {
     model: Some("Judge".into()),
-    context: serde_json::json!({"task": "Fix the failing tests."}),
+    input: serde_json::json!({"task": "Fix the failing tests."}),
     questions: BTreeMap::from([(
         "needs_capable".into(),
         DecisionQuestion {

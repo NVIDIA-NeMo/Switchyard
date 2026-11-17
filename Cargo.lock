@@ -1349,9 +1349,9 @@ dependencies = [
 
 [[package]]
 name = "nemo-relay-plugin"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb9225443357599ceb56134c1bcdae5c4845bdb7a8b03be2b5a60fd27cfca270"
+checksum = "e56be447b525b1af7f6be868e59e4ee14c66c1018755461cc65db25642c6f007"
 dependencies = [
  "futures",
  "nemo-relay-types",
@@ -1363,9 +1363,9 @@ dependencies = [
 
 [[package]]
 name = "nemo-relay-types"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc2c1819818ca76215d1a6955ae0269ebafb6904bf198f26f0dc443ae1c155ac"
+checksum = "8f520f781c702ea318f83c536827ef545cdc379b44146cb7266553dcf7fc35ab"
 dependencies = [
  "bitflags",
  "chrono",
@@ -2536,7 +2536,6 @@ dependencies = [
  "jsonptr",
  "jsonschema",
  "opentelemetry",
- "opentelemetry_sdk",
  "parking_lot",
  "rand 0.10.2",
  "regex",
@@ -2606,6 +2605,7 @@ name = "switchyard-node"
 version = "0.3.0"
 dependencies = [
  "futures",
+ "http",
  "napi",
  "napi-build",
  "napi-derive",
@@ -2614,7 +2614,9 @@ dependencies = [
  "serde_json",
  "switchyard-libsy",
  "switchyard-protocol",
+ "switchyard-runner",
  "switchyard-translation",
+ "tokio",
 ]
 
 [[package]]
@@ -2680,6 +2682,7 @@ version = "0.3.0"
 dependencies = [
  "async-trait",
  "futures-util",
+ "parking_lot",
  "prefill-router",
  "reqwest",
  "serde",
@@ -2730,16 +2733,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "switchyard-skill-distillation"
-version = "0.3.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]

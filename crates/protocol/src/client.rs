@@ -95,6 +95,10 @@ pub enum LlmClientError {
         status: http::StatusCode,
         /// Raw upstream error body.
         body: String,
+        /// Upstream HTTP response headers from the last attempt. Consumers such as
+        /// switchyard-server may forward an allowed subset to the downstream client.
+        /// Boxed to keep the error type small.
+        headers: Box<http::HeaderMap>,
     },
 
     /// The upstream returned a response the client could not decode.
@@ -159,6 +163,11 @@ impl RoutingFallbackReason {
 /// not serialize requests unless their transport requires it.
 #[async_trait]
 pub trait RoutedLlmClient: Send + Sync {
+    /// Resolves a routing key for telemetry. Direct model clients keep the key unchanged.
+    fn provider_model<'a>(&'a self, target: &'a ModelId) -> &'a ModelId {
+        target
+    }
+
     /// Make a request
     async fn call(&self, request: Request) -> Result<Response, LlmClientError>;
 }

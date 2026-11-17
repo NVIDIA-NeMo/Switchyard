@@ -1,0 +1,208 @@
+{
+  "benchmark": "DeepSWE v1.1",
+  "benchmark_revision": 1,
+  "tasks_per_repeat": 113,
+  "scoring": "Reward 1 counts as a pass. All 113 tasks remain in every denominator.",
+  "cost_basis": "Recorded model tokens at fixed base rates. Incomplete usage and per-request context tiers prevent a complete billed-cost claim.",
+  "rates_usd_per_million_tokens": {
+    "gpt-6-astra": {
+      "input": 10,
+      "cached_input": 1,
+      "cache_creation": 12.5,
+      "output": 50
+    },
+    "gpt-6-luna": {
+      "input": 0.1,
+      "cached_input": 0.01,
+      "cache_creation": 0.125,
+      "output": 0.5
+    }
+  },
+  "campaigns": [
+    {
+      "name": "Composite CF0/EF0.4",
+      "repeats": 3,
+      "passed": 240,
+      "attempts": 339,
+      "accuracy_percent": 70.79646017699115,
+      "mean_recorded_token_cost_usd": 269.994194735,
+      "runs": [
+        {
+          "run_id": "bmr_d04a102d53194beaae0b38c323",
+          "tasks": 113,
+          "passed": 79,
+          "recorded_token_cost_usd": 276.633197045,
+          "usage_by_model": {
+            "gpt-6-astra": {
+              "calls": 1992,
+              "prompt_tokens": 105554383,
+              "completion_tokens": 1734883,
+              "cached_tokens": 98884683,
+              "cache_creation_tokens": 6663724
+            },
+            "gpt-6-luna": {
+              "calls": 4825,
+              "prompt_tokens": 409398780,
+              "completion_tokens": 3968251,
+              "cached_tokens": 395724617,
+              "cache_creation_tokens": 13570643
+            }
+          },
+          "tasks_with_priced_usage": 113,
+          "selector_calls_included": 113,
+          "answer_calls_missing_usage": 2,
+          "initial_profile_split": {
+            "CF": 55,
+            "EF": 58
+          },
+          "runtime_errors": 0,
+          "recovered_stream_disconnects": 2
+        },
+        {
+          "run_id": "bmr_758ff230283840288fcd852460",
+          "tasks": 113,
+          "passed": 79,
+          "recorded_token_cost_usd": 236.390371345,
+          "usage_by_model": {
+            "gpt-6-astra": {
+              "calls": 1783,
+              "prompt_tokens": 82655166,
+              "completion_tokens": 1522243,
+              "cached_tokens": 76577516,
+              "cache_creation_tokens": 6072301
+            },
+            "gpt-6-luna": {
+              "calls": 4853,
+              "prompt_tokens": 417582002,
+              "completion_tokens": 4037439,
+              "cached_tokens": 404090897,
+              "cache_creation_tokens": 13388555
+            }
+          },
+          "tasks_with_priced_usage": 113,
+          "selector_calls_included": 113,
+          "answer_calls_missing_usage": 0,
+          "initial_profile_split": {
+            "EF": 52,
+            "CF": 61
+          },
+          "runtime_errors": 2,
+          "recovered_stream_disconnects": 0
+        },
+        {
+          "run_id": "bmr_31cafdd1d20941839e87d953cd",
+          "tasks": 113,
+          "passed": 82,
+          "recorded_token_cost_usd": 296.959015815,
+          "usage_by_model": {
+            "gpt-6-astra": {
+              "calls": 2082,
+              "prompt_tokens": 119407906,
+              "completion_tokens": 1822748,
+              "cached_tokens": 112515394,
+              "cache_creation_tokens": 6886266
+            },
+            "gpt-6-luna": {
+              "calls": 4475,
+              "prompt_tokens": 377823990,
+              "completion_tokens": 3790902,
+              "cached_tokens": 364830234,
+              "cache_creation_tokens": 12892315
+            }
+          },
+          "tasks_with_priced_usage": 113,
+          "selector_calls_included": 113,
+          "answer_calls_missing_usage": 0,
+          "initial_profile_split": {
+            "EF": 59,
+            "CF": 54
+          },
+          "runtime_errors": 0,
+          "recovered_stream_disconnects": 0
+        }
+      ]
+    },
+    {
+      "name": "GPT-6 Astra baseline",
+      "repeats": 3,
+      "passed": 243,
+      "attempts": 339,
+      "accuracy_percent": 71.68141592920354,
+      "mean_recorded_token_cost_usd": 362.185674,
+      "runs": [
+        {
+          "run_id": "bmr_d2123a3199d34856992f9d8d3e",
+          "tasks": 113,
+          "passed": 83,
+          "recorded_token_cost_usd": 356.7353245,
+          "usage_by_model": {
+            "gpt-6-astra": {
+              "calls": 4071,
+              "prompt_tokens": 170935373,
+              "cached_tokens": 164502447,
+              "cache_creation_tokens": 6420167,
+              "completion_tokens": 2237064
+            }
+          },
+          "tasks_with_priced_usage": 109,
+          "unmatched_routing_requests": 214
+        },
+        {
+          "run_id": "bmr_fa6ac56b867b46f4b64fdadcc3",
+          "tasks": 113,
+          "passed": 78,
+          "recorded_token_cost_usd": 366.437225,
+          "usage_by_model": {
+            "gpt-6-astra": {
+              "calls": 4076,
+              "prompt_tokens": 171696488,
+              "cached_tokens": 164867070,
+              "cache_creation_tokens": 6817190,
+              "completion_tokens": 2324660
+            }
+          },
+          "tasks_with_priced_usage": 111,
+          "unmatched_routing_requests": 182
+        },
+        {
+          "run_id": "bmr_54841b35c74b46c0a1849b3f23",
+          "tasks": 113,
+          "passed": 82,
+          "recorded_token_cost_usd": 363.3844725,
+          "usage_by_model": {
+            "gpt-6-astra": {
+              "calls": 4040,
+              "prompt_tokens": 172015485,
+              "cached_tokens": 165225160,
+              "cache_creation_tokens": 6778205,
+              "completion_tokens": 2266211
+            }
+          },
+          "tasks_with_priced_usage": 111,
+          "unmatched_routing_requests": 199
+        }
+      ]
+    }
+  ],
+  "comparison": {
+    "accuracy_delta_percentage_points": -0.8849557522123916,
+    "recorded_token_cost_reduction_percent": 25.454203709062217
+  },
+  "provenance": {
+    "composite_run_dates_utc": [
+      "2026-10-31",
+      "2026-11-01"
+    ],
+    "composite_switchyard_commit": "bdd7647b5d55be46b19764136128646edb08692e",
+    "composite_routing_config_sha256": "025ddd73945162602e1d4db86934b5208223e7e3e6c0fbeef24d1252ea881264",
+    "composite_source_report_sha256": "5cf5e3411176ece5820beab37283b260484d1421cb1ce1f6ba06eedac69a2bb2",
+    "baseline_source_report_sha256": "e47fc2ce598078ea204b55bd6ae072c13ee67046f0407e46bfd319aeec7b7fbf"
+  },
+  "limitations": [
+    "Composite has two interrupted answer calls with missing usage. Recorded selector tokens are included.",
+    "Baseline has priced usage for 109, 111, and 111 tasks. Unmatched requests in shared logs cannot all be attributed to these runs.",
+    "The comparison uses base token rates, including cache creation at 1.25 times input. Per-request long-context pricing is unverified.",
+    "These are historical runs, not a benchmark of the current PR commit.",
+    "Tuning and evaluation task overlap has not been independently verified. Three repeats do not establish statistical equivalence or generalization."
+  ]
+}

@@ -14,13 +14,13 @@ Both accept <a href="../../../rust/switchyard_protocol/decision/struct.DecisionR
 | Protocol field and type | Meaning | System One | OpenAI Decisions |
 |---|---|---|---|
 | <a href="../../../rust/switchyard_protocol/decision/struct.DecisionRequest.html#structfield.model"><code>DecisionRequest.model: Option&lt;ModelId&gt;</code></a> | Selected decision model. The HTTP adapters require it before sending. | `model` | `model` |
-| <a href="../../../rust/switchyard_protocol/decision/struct.DecisionRequest.html#structfield.context"><code>DecisionRequest.context: Value</code></a> | Shared conversation, application state, or other material to evaluate. | JSON-valued `state` | Text-valued `input`; structured values are serialized as JSON text |
+| <a href="../../../rust/switchyard_protocol/decision/struct.DecisionRequest.html#structfield.input"><code>DecisionRequest.input: Value</code></a> | Shared conversation, application state, or other material to evaluate. | JSON-valued `state` | Text-valued `input`; structured values are serialized as JSON text |
 | <a href="../../../rust/switchyard_protocol/decision/struct.DecisionRequest.html#structfield.questions"><code>DecisionRequest.questions: BTreeMap&lt;String, DecisionQuestion&gt;</code></a> | Independent questions keyed by stable IDs. | `questions` object, keyed by ID | `questions[]`, with each ID in `name` |
 | <a href="../../../rust/switchyard_protocol/decision/struct.DecisionQuestion.html#structfield.instructions"><code>DecisionQuestion.instructions: Value</code></a> | Instructions for one question. | JSON-valued `instructions` | Text-valued `instructions`; structured values become JSON text |
 | <a href="../../../rust/switchyard_protocol/decision/struct.DecisionQuestion.html#structfield.kind"><code>DecisionQuestion.kind: DecisionKind</code></a> | Expected Boolean, choice, or rubric-score answer. | Question `type` and `criteria` | Question `type`, with `choices` or `levels` where applicable |
 
 Question IDs identify the answers. Preserve them through conversion; an array
-position alone is not a replacement for an ID. Context is shared across the
+position alone is not a replacement for an ID. Input is shared across the
 request, while each question has its own instructions.
 
 ## Question kinds

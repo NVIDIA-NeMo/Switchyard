@@ -11,6 +11,7 @@ use http::HeaderMap;
 use http::header::{HeaderName, HeaderValue};
 use pyo3::exceptions::{PyBaseException, PyStopAsyncIteration, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::PyDict;
 use serde_json::Value;
 use switchyard_libsy::{
     Algorithm, CallDecision, CallModel, CapabilityJudgeConfig, ClassifierContractConfig,
@@ -25,7 +26,7 @@ use switchyard_protocol::{
     Category, DecisionResponse, LlmClientError, LlmResponse, LlmResponseStream,
     LlmResponseStreamEvent, Metadata, ModelId, Request, Response,
 };
-use switchyard_runner::AlgorithmFactory;
+use switchyard_runner::{AlgorithmFactory, require_target_labels};
 use tokio::sync::Mutex;
 
 use crate::errors::{ContextWindowExceededError, py_libsy_error};
@@ -329,27 +330,26 @@ impl PyLlmClassifierConfig {
 
 #[pymethods]
 impl PyTaskClassifierConfig {
-    /// Apply a cutoff to relative advantage or a custom candidate choice score.
+    /// Route capable when a decision model's choice probability exceeds a cutoff.
     #[staticmethod]
-    #[pyo3(signature = (*, cutoff, candidates, evidence, instructions=None, criteria=None))]
+    #[pyo3(signature = (*, cutoff=None, instructions=None, choices=None, apply_cutoff_to=None))]
     fn decision(
-        cutoff: f64,
-        candidates: BTreeMap<String, String>,
-        evidence: &Bound<'_, PyAny>,
-        instructions: Option<&Bound<'_, PyAny>>,
-        criteria: Option<&Bound<'_, PyAny>>,
+        cutoff: Option<f64>,
+        instructions: Option<String>,
+        choices: Option<&Bound<'_, PyAny>>,
+        apply_cutoff_to: Option<String>,
     ) -> PyResult<Self> {
+        let defaults = DecisionJudgeConfig::default();
         Ok(Self {
             inner: TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
                     cutoff,
-                    candidates: candidates
-                        .into_iter()
-                        .map(|(label, model)| (label, ModelId::from(model)))
-                        .collect(),
-                    evidence: from_python(evidence)?,
-                    instructions: instructions.map(from_python).transpose()?,
-                    criteria: criteria.map(from_python).transpose()?,
+                    instructions,
+                    choices: match choices {
+                        Some(choices) => from_python(choices)?,
+                        None => defaults.choices,
+                    },
+                    apply_cutoff_to: apply_cutoff_to.unwrap_or(defaults.apply_cutoff_to),
                 }),
                 ..TaskClassifierConfig::default()
             },
@@ -488,6 +488,19 @@ fn python_client_error(py: Python<'_>, error: PyErr, model: &ModelId) -> LlmClie
     }
 }
 
+// The thread-safe Future forwards cancellation to the read on its owning Python loop.
+struct PythonStreamRead(Py<PyAny>);
+
+impl Drop for PythonStreamRead {
+    fn drop(&mut self) {
+        Python::try_attach(|py| {
+            if let Err(error) = self.0.call_method0(py, "cancel") {
+                error.write_unraisable(py, Some(self.0.bind(py)));
+            }
+        });
+    }
+}
+
 fn python_response_stream(
     py: Python<'_>,
     stream: Py<PyAny>,
@@ -498,14 +511,31 @@ fn python_response_stream(
     let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
     let stream = futures::stream::unfold(Some((iterator, locals, model)), |state| async move {
         let (iterator, locals, model) = state?;
-        let next = Python::attach(|py| {
-            pyo3_async_runtimes::into_future_with_locals(
-                &locals,
-                iterator.bind(py).call_method0("__anext__")?,
-            )
+        let next = Python::attach(|py| -> PyResult<_> {
+            let asyncio = py.import("asyncio")?;
+            let coroutine = py
+                .import("switchyard_rust._libsy_async")?
+                .getattr("next_item")?
+                .call1((iterator.bind(py),))?;
+            let context = locals.context(py).call_method0("copy")?;
+            let task = context.call_method1(
+                "run",
+                (
+                    asyncio.getattr("run_coroutine_threadsafe")?,
+                    coroutine,
+                    locals.event_loop(py),
+                ),
+            )?;
+            let read = PythonStreamRead(task.unbind());
+            let kwargs = PyDict::new(py);
+            kwargs.set_item("loop", locals.event_loop(py))?;
+            let awaitable =
+                asyncio.call_method("wrap_future", (read.0.bind(py),), Some(&kwargs))?;
+            let next = pyo3_async_runtimes::into_future_with_locals(&locals, awaitable)?;
+            Ok((next, read))
         });
         match next {
-            Ok(next) => match next.await {
+            Ok((next, _read)) => match next.await {
                 Ok(item) => {
                     let event =
                         Python::attach(|py| from_python::<LlmResponseStreamEvent>(item.bind(py)))
@@ -893,6 +923,10 @@ impl PyRunStream {
             let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
             Arc::clone(algorithm).run_stream(request, models, State::default())
         };
+        Self::from_stream(stream)
+    }
+
+    fn from_stream(stream: StepStream) -> Self {
         Self {
             inner: Arc::new(Mutex::new(stream)),
         }
@@ -997,45 +1031,109 @@ impl PyAlgorithmFactory {
         algorithms
             .into_iter()
             .map(|(id, (algorithm, models))| {
-                Ok((
-                    id,
-                    Py::new(
-                        py,
-                        PyConfiguredAlgorithm {
-                            algorithm,
-                            models: Arc::new(models),
-                        },
-                    )?,
-                ))
+                let handle = PyConfiguredAlgorithm {
+                    inner: ConfiguredBackend::Bare {
+                        algorithm,
+                        models: Arc::new(models),
+                    },
+                };
+                Ok((id, Py::new(py, handle)?))
             })
             .collect()
     }
+
+    /// Build handles that check target requirements before yielding host-owned calls.
+    fn build_configured(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<BTreeMap<String, Py<PyConfiguredAlgorithm>>> {
+        let algorithms = py
+            .detach(|| self.inner.build_configured())
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        algorithms
+            .into_iter()
+            .map(|(id, algorithm)| {
+                let handle = PyConfiguredAlgorithm {
+                    inner: ConfiguredBackend::Governed(algorithm),
+                };
+                Ok((id, Py::new(py, handle)?))
+            })
+            .collect()
+    }
+}
+
+enum ConfiguredBackend {
+    Bare {
+        algorithm: Arc<dyn Algorithm>,
+        models: Arc<RuntimeModels>,
+    },
+    Governed(switchyard_runner::ConfiguredAlgorithm),
 }
 
 /// A reusable algorithm paired with its deployment's parent and subagent model groups.
 /// The host applies target prompts and provider settings when serving model calls.
 #[pyclass(name = "ConfiguredAlgorithm", module = "switchyard.libsy", frozen)]
 struct PyConfiguredAlgorithm {
-    algorithm: Arc<dyn Algorithm>,
-    models: Arc<RuntimeModels>,
+    inner: ConfiguredBackend,
 }
 
 #[pymethods]
 impl PyConfiguredAlgorithm {
+    /// All possible targets and their client/provider IDs, not the eligible pool for a request.
+    fn target_models<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let ConfiguredBackend::Governed(algorithm) = &self.inner else {
+            return Err(py_libsy_error(
+                "target model lookup requires AlgorithmFactory.build_configured()",
+            ));
+        };
+        let targets = PyDict::new(py);
+        for (name, target) in algorithm.target_models() {
+            let model = PyDict::new(py);
+            model.set_item("client", &target.client)?;
+            model.set_item("id", target.id.as_str())?;
+            targets.set_item(name.as_str(), model)?;
+        }
+        Ok(targets)
+    }
+
     /// Yield host-owned model and decision calls for a normalized request.
+    /// Omitted labels mean no assessment; an empty collection supplies no new requirements.
+    /// The host authorizes `task_id`, which overrides any task ID in `headers`.
     /// Libsy's per-run `State` is not carried forward, as in `Algorithm.run_stream`.
-    #[pyo3(signature = (request, *, headers=None))]
+    #[pyo3(signature = (request, *, headers=None, required_labels=None, task_id=None))]
     fn run_stream(
         &self,
+        py: Python<'_>,
         request: &Bound<'_, PyAny>,
         headers: Option<&Bound<'_, PyAny>>,
+        required_labels: Option<Vec<String>>,
+        task_id: Option<String>,
     ) -> PyResult<PyRunStream> {
         let headers = headers.map(from_python).transpose()?;
-        Ok(PyRunStream::new(
-            &self.algorithm,
-            request_from_python(request, headers)?,
-            Arc::clone(&self.models),
-        ))
+        let mut request = request_from_python(request, headers)?;
+        if let Some(task_id) = task_id {
+            request.metadata.get_or_insert_default().task_id = Some(task_id);
+        }
+        match &self.inner {
+            ConfiguredBackend::Bare { algorithm, models } => {
+                if required_labels.is_some() {
+                    return Err(py_libsy_error(
+                        "target requirements require AlgorithmFactory.build_configured()",
+                    ));
+                }
+                Ok(PyRunStream::new(algorithm, request, Arc::clone(models)))
+            }
+            ConfiguredBackend::Governed(algorithm) => {
+                if let Some(labels) = required_labels {
+                    require_target_labels(&mut request, labels).map_err(py_libsy_error)?;
+                }
+                let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
+                let stream = py
+                    .detach(|| algorithm.run_stream(request, State::default()))
+                    .map_err(py_libsy_error)?;
+                Ok(PyRunStream::from_stream(stream))
+            }
+        }
     }
 }
 

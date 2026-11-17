@@ -259,3 +259,4 @@ retained nor logged.
 - [LLM Classifier Routing](llm_classifier_routing.md): pick a tier up front
   instead of judging the run.
 - [Mechanics of Libsy](../mechanics_of_libsy.md): the execution model and host responsibilities.
+- [Tuning](../tuning/index.md): check your current route and compare candidate settings on your workload.
