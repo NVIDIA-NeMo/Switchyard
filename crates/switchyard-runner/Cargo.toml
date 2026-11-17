@@ -24,7 +24,7 @@ serde_json.workspace = true
 switchyard-protocol.workspace = true
 strum_macros.workspace = true
 thiserror.workspace = true
-toml = "1.1"
+toml.workspace = true
 tracing.workspace = true
 
 [target.'cfg(not(target_os = "wasi"))'.dependencies]
@@ -36,4 +36,4 @@ switchyard-llm-client.workspace = true
 async-trait.workspace = true
 futures-util.workspace = true
 tokio.workspace = true
-wiremock = "0.6"
+wiremock.workspace = true

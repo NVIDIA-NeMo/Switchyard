@@ -36,9 +36,16 @@ switchyard_rust/                  # Python facades over the PyO3 extension
 crates/
 ├── libsy/                         # Routing algorithms and driver
 ├── libsy-llm-client/              # Translated HTTP model calls
+├── prefill-router/                # Learned prefill routing (optional runner feature)
 ├── protocol/                      # Provider-neutral protocol types
+├── switchyard-costs/              # Token prices and cost totals
+├── switchyard-ffi/                # C interface for Go and WASM hosts
+├── switchyard-nemo-relay-plugin/  # NeMo Relay routing plugin
+├── switchyard-node/               # Node.js bindings
 ├── switchyard-py/                 # PyO3 bindings for libsy and the server
 ├── switchyard-server/             # Native HTTP server and TOML configuration
+├── switchyard-runner/             # TOML configuration and configured routing
+├── switchyard-soak/               # Load tester for a live server
 └── switchyard-translation/        # Request, response, and stream translation
 tests/                            # Python tests (no API keys required)
 docs/                             # User and architecture documentation
@@ -88,8 +95,8 @@ export OPENAI_API_KEY="sk-..."
 uv run pytest tests/your_e2e_test.py -v -x
 ```
 
-`secrets/secrets.template.json` shows the structure expected by
-`secrets/secrets.json` if you prefer a credential file over env vars.
+`examples/secrets.template.json` shows the structure of a credential file if
+you prefer one over env vars.
 
 ## Human-AI Development Convention
 
