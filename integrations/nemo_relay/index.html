@@ -2823,7 +2823,7 @@
 
 
 <h1 id="use-switchyard-with-nemo-relay">Use Switchyard with NeMo Relay<a class="headerlink" href="#use-switchyard-with-nemo-relay" title="Permanent link">&para;</a></h1>
-<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/27fa51f57d72fdabf41f38e59d96c35804aecc73/crates/switchyard-nemo-relay-plugin/README.md">Switchyard native plugin</a>
+<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8ebf600ea834ec9c3cd274f9459d859ac4a33593/crates/switchyard-nemo-relay-plugin/README.md">Switchyard native plugin</a>
 loads Switchyard into an existing
 <a href="https://docs.nvidia.com/nemo/relay/about-nemo-relay/overview">NeMo Relay runtime</a>
 deployment through Relay's
@@ -2872,7 +2872,7 @@ See the <a href="#upstream-error-compatibility">upstream error compatibility not
 using older Relay versions.</p>
 <p>Routing does not require Relay. You can instead run the
 <a href="../../operations/local_evaluation/">standalone server</a> or embed
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/27fa51f57d72fdabf41f38e59d96c35804aecc73/crates/libsy/README.md"><code>switchyard-libsy</code></a> directly.</p>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8ebf600ea834ec9c3cd274f9459d859ac4a33593/crates/libsy/README.md"><code>switchyard-libsy</code></a> directly.</p>
 <h3 id="measure-the-cost-of-routing">Measure the Cost of Routing<a class="headerlink" href="#measure-the-cost-of-routing" title="Permanent link">&para;</a></h3>
 <p>A routed request can spend tokens choosing a model and generating the answer.
 Some routes call a judge or classifier first. The selected model, or a fallback,
@@ -2975,11 +2975,11 @@ organization SSO/SAML authorization where required. An HTTP 404 can indicate
 missing access. A Switchyard release does not guarantee that a matching plugin
 bundle has been published.</p>
 <p>Follow the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/27fa51f57d72fdabf41f38e59d96c35804aecc73/crates/switchyard-nemo-relay-plugin/README.md#install-a-released-bundle">bundle installation steps</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8ebf600ea834ec9c3cd274f9459d859ac4a33593/crates/switchyard-nemo-relay-plugin/README.md#install-a-released-bundle">bundle installation steps</a>
 to download the archive and sidecars, verify the checksum, and extract the
 bundle. If a matching published bundle is unavailable or you need a custom
 build, follow
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/27fa51f57d72fdabf41f38e59d96c35804aecc73/crates/switchyard-nemo-relay-plugin/README.md#build-from-source">Build from source</a>.
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8ebf600ea834ec9c3cd274f9459d859ac4a33593/crates/switchyard-nemo-relay-plugin/README.md#build-from-source">Build from source</a>.
 Then register the manifest, configure the deployment and trust policy, enable
 the plugin, and restart Relay. Relay documents how to
 <a href="https://docs.nvidia.com/nemo/relay/configure-plugins/discoverable-plugins#add-and-enable-a-plugin">add and enable a discoverable plugin</a>
@@ -2989,7 +2989,7 @@ and how it
 <p class="admonition-title">Relay compatibility</p>
 <p>The plugin requires <code>relay = "&gt;=0.10.1, &lt;1.0.0"</code> and native plugin API <code>1</code>.
 The packaged
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/27fa51f57d72fdabf41f38e59d96c35804aecc73/crates/switchyard-nemo-relay-plugin/relay-plugin.toml"><code>relay-plugin.toml</code></a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8ebf600ea834ec9c3cd274f9459d859ac4a33593/crates/switchyard-nemo-relay-plugin/relay-plugin.toml"><code>relay-plugin.toml</code></a>
 is the source of truth.</p>
 </div>
 <p>Configure exactly one Switchyard deployment source: either
@@ -3034,7 +3034,7 @@ of its forwarding clients use the same scheme, host, and port, such as one LLM
 gateway; such a route serves Chat Completions and Responses callers.</p>
 <p>Support for provider-specific fields depends on the source and target formats.
 Test any fields that your application relies on before deploying a translated
-route. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/27fa51f57d72fdabf41f38e59d96c35804aecc73/crates/switchyard-nemo-relay-plugin/README.md#request-handling">native-plugin README</a>
+route. The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8ebf600ea834ec9c3cd274f9459d859ac4a33593/crates/switchyard-nemo-relay-plugin/README.md#request-handling">native-plugin README</a>
 describes the same format and credential rules.</p>
 <h3 id="header-forwarding">Header Forwarding<a class="headerlink" href="#header-forwarding" title="Permanent link">&para;</a></h3>
 <p>Caller headers are forwarded upstream except credentials and headers owned by
@@ -3093,8 +3093,9 @@ that keep per-session state, reuse a stable ID across turns. The plugin accepts
 <code>x-nemo-relay-session-id</code>; <code>x-switchyard-session-id</code> overrides it. If neither
 provides a value, the Switchyard session ID remains unset.</p>
 <h2 id="routing-telemetry">Routing Telemetry<a class="headerlink" href="#routing-telemetry" title="Permanent link">&para;</a></h2>
-<p>Relay sees one LLM lifecycle for the request made by the agent. Switchyard
-reports the routing work through Relay marks and metrics. Existing Relay
+<p>Relay records one outer LLM lifecycle for the request made by the agent.
+Switchyard also reports internal client-call scopes, routing marks, and metrics.
+Existing Relay
 <a href="https://docs.nvidia.com/nemo/relay/about-nemo-relay/concepts/subscribers#how-subscribers-relate-to-events">subscribers</a>
 can receive these records, but each output format presents them differently.</p>
 <h3 id="atif-and-opentelemetry-show-different-views">ATIF and OpenTelemetry Show Different Views<a class="headerlink" href="#atif-and-opentelemetry-show-different-views" title="Permanent link">&para;</a></h3>
@@ -3108,7 +3109,7 @@ can receive these records, but each output format presents them differently.</p>
 <tbody>
 <tr>
 <td>ATIF</td>
-<td>The request and response seen by the agent. Internal routing is not added as separate steps or included in <code>final_metrics</code>. Relay-managed ATIF files may retain the raw records under <code>extra.observed_events</code>.</td>
+<td>Relay's trajectory projection. With Relay 0.11.1, internal Switchyard LLM scopes can become additional steps and contribute usage to <code>final_metrics</code>. The answer can appear in both an internal scope and the outer request. Relay-managed ATIF files may also retain raw records under <code>extra.observed_events</code>.</td>
 </tr>
 <tr>
 <td>OpenTelemetry traces, including OpenInference</td>
@@ -3124,6 +3125,10 @@ can receive these records, but each output format presents them differently.</p>
 </tr>
 </tbody>
 </table>
+<p>ATIF projection is controlled by the Relay host version. Do not treat
+<code>final_metrics</code> as answer-only usage or deduplicated provider consumption. Inspect
+the outer response usage and individual call scopes before calculating totals;
+repeated usage in an export does not imply additional provider requests or charges.</p>
 <p>The plugin captures existing Switchyard spans. Each routing or answer LLM
 call becomes a <code>libsy.client_call</code> scope. Physical HTTP attempts and retries
 become <code>libsy.upstream_attempt</code> child scopes. Buffered calls close with the response;
