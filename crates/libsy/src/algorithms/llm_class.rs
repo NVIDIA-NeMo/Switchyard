@@ -290,8 +290,10 @@ impl JudgePolicy for TaskClassifierPolicy {
         verdict: Option<&Self::Verdict>,
         driver: &Driver,
     ) -> Result<Classification> {
-        // Judge output is untrusted. An absent, invalid, or inconsistent verdict is
-        // ambiguous so the surrounding router applies its configured fallback.
+        // Judge output is untrusted. An absent or invalid verdict is ambiguous so the
+        // surrounding router applies its configured fallback. A boundary label that
+        // disagrees with the rule label does not invalidate a verdict: routing uses the
+        // boundary the rule implies.
         let Some(verdict) = verdict.filter(|verdict| verdict.is_valid()) else {
             return Ok(Classification::Ambiguous(vec![]));
         };

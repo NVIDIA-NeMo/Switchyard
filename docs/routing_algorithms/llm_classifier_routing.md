@@ -80,7 +80,7 @@ greater than or equal to the applicable threshold. Otherwise it routes to
 - `unmatched` uses `base_threshold + unmatched_steps * threshold_step` (`unmatched_steps` defaults to `1`).
 - `unsupported` uses `base_threshold + 2 * threshold_step`.
 
-An invalid, inconsistent, or unparseable verdict routes to
+An invalid or unparseable verdict routes to
 `strong_target`. Raising either knob sends more traffic to the strong model.
 
 To stop waiting for a judge that accepts the request but never finishes its
