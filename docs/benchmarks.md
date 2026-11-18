@@ -43,4 +43,4 @@ has no published results.
 ## Run a benchmark
 
 - **Terminal-Bench 2.1:** [Setup](../benchmark/README.md#one-time-setup) · [Run](../benchmark/README.md#run-with-switchyard-routing)
-- **DeepSWE:** [Run with Pier](../benchmark/README.md#deepswe-v11)
+- **DeepSWE:** [Run locally with Harbor or Pier](../benchmark/README.md#deepswe-v11)

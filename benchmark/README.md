@@ -336,17 +336,94 @@ Only reuse the image when you know it already contains the current Rust `switchy
 
 ## DeepSWE v1.1
 
-DeepSWE uses Harbor's task format but its own runner, [Pier](https://github.com/datacurve-ai/pier)
-(required since v1.1 for the separate-verifier/collect-hook pattern). It is not part of
-`run-baseline.sh`.
-
-See [DeepSWE results](../docs/benchmarks.md#deepswe) for task completion and cost comparisons,
-and [DeepSWE v1.1 qualification settings](DEEPSWE_V11_QUALIFICATION.md) for the exact
-versions, timeouts, scoring rules, and routing profiles used for qualification.
+Run the public tasks locally with Docker Compose and either Harbor 0.26.0 or Pier 0.3.1.
+See the [published scores](../docs/benchmarks.md#deepswe) and their
+[qualification settings](DEEPSWE_V11_QUALIFICATION.md). From the Switchyard repo root,
+pin the dataset for either runner.
 
 ```bash
 git clone https://github.com/datacurve-ai/deep-swe benchmark/datasets/deep-swe
-uv tool install 'datacurve-pier>0.3.0'
+git -C benchmark/datasets/deep-swe checkout 0b9fabbb63b9104d678fe965e1632f2dd9eaa2ea
+task=benchmark/datasets/deep-swe/tasks/anko-default-function-arguments
+```
+
+### Local Harbor
+
+Use Docker Compose on a Linux kernel with `nft_fib_inet` support. On macOS this
+applies to the Docker VM. ARM hosts need amd64 emulation. On ARM, pull the
+task's `environment.docker_image` with `docker pull --platform linux/amd64` first.
+
+```bash
+uv venv --python 3.12 benchmark/.venv
+uv pip install --python benchmark/.venv/bin/python 'harbor==0.26.0'
+harbor_bin=benchmark/.venv/bin/harbor
+"$harbor_bin" run --env docker -p "$task" -a oracle -n 1
+```
+
+The oracle applies the reference solution. Expect reward 1 in the trial's
+`verifier/reward.json` (2/2 fail-to-pass and 119/119 pass-to-pass). Run it once
+while connected to cache the task image and Harbor's network images, then repeat
+offline. The oracle needs no model or API key.
+
+For Codex, use a Responses endpoint reachable from the agent container. On a Linux
+Docker host, start Switchyard in a second terminal with `OPENROUTER_API_KEY` set.
+Bind to the Docker bridge. Anyone who can reach this listener can use your upstream key.
+
+```bash
+bridge=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
+switchyard-server --config benchmark/server-configs/deepswe-single.toml \
+  --host "$bridge" --port 8080
+```
+
+In the Harbor terminal, use the route ID and bridge URL. For a direct run,
+substitute the provider's model ID, endpoint and API key.
+
+```bash
+bridge=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
+MODEL_BASE_URL="http://${bridge}:8080/v1"
+MODEL_ID=deepswe-single
+export OPENAI_API_KEY=unused
+"$harbor_bin" run --env docker -p "$task" -a codex -m "openai/${MODEL_ID}" \
+  --base-url "$MODEL_BASE_URL" --ak version=0.154.0 \
+  --ak web_search=disabled --effort max -n 1
+```
+
+Codex must commit its solution. The public task grades the diff from the base
+commit to `HEAD` in a fresh container. Uncommitted edits never reach the verifier.
+
+The agent can reach its inference endpoint. The verifier runs offline. For a
+closed-book run, block hosted web tools at the gateway too. For a fully offline
+run, stage Codex and point the route at a local model. The sample route uses OpenRouter.
+
+<details>
+<summary>Stage Codex for an offline run</summary>
+
+While connected, use npm and jq on the host to stage the Linux x64 binaries
+in a directory shared with Docker.
+
+```bash
+bundle_dir=$(mktemp -d "$PWD/benchmark/datasets/codex.XXXXXX")
+archive=$(npm pack --silent --pack-destination "$bundle_dir" '@openai/codex@0.154.0-linux-x64')
+tar -xzf "$bundle_dir/$archive" -C "$bundle_dir"
+dist="$bundle_dir/package/vendor/x86_64-unknown-linux-musl"
+mounts=$(jq -cn --arg d "$dist" '[
+  {type:"bind", source:($d+"/bin/codex"), target:"/usr/local/bin/codex", read_only:true},
+  {type:"bind", source:($d+"/codex-path/rg"), target:"/usr/local/bin/rg", read_only:true}
+]')
+```
+
+Add `--ak skip_install=true --mounts "$mounts"` to the Codex command above.
+Harbor mounts the binaries read-only in the agent container. The verifier uses
+the original task image.
+
+</details>
+
+### Local Pier
+
+To use [the dataset's runner](https://github.com/datacurve-ai/pier), install the pinned version.
+
+```bash
+uv tool install --python 3.12 --with 'harbor==0.23.0' 'datacurve-pier==0.3.1'
 ```
 
 Direct upstream:
