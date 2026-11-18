@@ -307,7 +307,7 @@ fn decode_responses_stream(
                 })
                 .unwrap_or_default()
         }
-        Some("response.completed") => {
+        Some("response.completed" | "response.incomplete") => {
             let mut out = Vec::new();
             // Some providers send output only in the final snapshot. Reconcile it with
             // decoded deltas before emitting the stop, without repeating streamed content.
@@ -331,29 +331,22 @@ fn decode_responses_stream(
             // use for such output; the stream must too, or stop-reason-driven tool loops
             // (Anthropic `tool_use`, Chat `tool_calls`) stop without running the tool.
             // Carries the Anthropic spelling because every encoder already maps it.
-            let reason = state
-                .stop_reason
-                .clone()
-                .or_else(|| state.decoded_tool_call.then(|| "tool_use".to_string()));
-            out.push(LlmResponseChunk::MessageStop { reason });
-            out
-        }
-        // Both reasons use a spelling every encoder already maps.
-        Some("response.incomplete") => {
-            let mut out = Vec::new();
-            decode_terminal_usage(state, event, &mut out);
-            let reason = match event
-                .get("response")
-                .and_then(|response| response.get("incomplete_details"))
-                .and_then(|details| details.get("reason"))
-                .and_then(Value::as_str)
-            {
-                Some("content_filter") => "content_filter",
-                _ => "max_tokens",
+            let reason = if event_type == Some("response.incomplete") {
+                let reason = match event
+                    .pointer("/response/incomplete_details/reason")
+                    .and_then(Value::as_str)
+                {
+                    Some("content_filter") => "content_filter",
+                    _ => "max_tokens",
+                };
+                Some(reason.to_string())
+            } else {
+                state
+                    .stop_reason
+                    .clone()
+                    .or_else(|| state.decoded_tool_call.then(|| "tool_use".to_string()))
             };
-            out.push(LlmResponseChunk::MessageStop {
-                reason: Some(reason.to_string()),
-            });
+            out.push(LlmResponseChunk::MessageStop { reason });
             out
         }
         Some("response.failed") => vec![LlmResponseChunk::StreamError {
