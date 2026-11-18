@@ -116,6 +116,12 @@ allow retrying saved forecasts without duplicating scores:
 uv run --frozen python scores.py --run-folder /path/to/completed-run
 ```
 
+## Cost dashboards
+
+[observability/](observability/README.md) runs local Langfuse and Grafana. It
+prices each forecast's token bands and charts predicted vs actual cost per
+model call, per task and by IR phase.
+
 ## Checks
 
 ```sh
