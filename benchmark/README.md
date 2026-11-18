@@ -336,9 +336,8 @@ Only reuse the image when you know it already contains the current Rust `switchy
 
 ## DeepSWE v1.1
 
-Run Codex on a DeepSWE task in Docker with Harbor. Codex sends its Responses requests
-to the local Switchyard server. The [`deepswe-single` route](server-configs/deepswe-single.toml)
-forwards them to OpenRouter.
+Run Codex on a DeepSWE task in Docker with Harbor and route its Responses requests
+through your local Switchyard server.
 
 From the Switchyard repo root, check out the dataset and select a task.
 
@@ -350,13 +349,16 @@ task=benchmark/datasets/deep-swe/tasks/anko-default-function-arguments
 
 ### Start Switchyard
 
-In a second terminal on the Linux Docker host, set `OPENROUTER_API_KEY`. From the
-repo root, install the server and bind it to the Docker bridge to limit access to your key.
+Use your strategy config or adapt the [single-model example](server-configs/deepswe-single.toml).
+Set the client's `base_url`, `format`, and `api_key_env` for your provider and the
+target's `id` for your model. In a second terminal on the Linux Docker host, export
+the configured key and bind the server to the Docker bridge to limit access to the route.
 
 ```bash
+config=benchmark/server-configs/deepswe-single.toml
 cargo install --locked --path crates/switchyard-server
 bridge=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
-switchyard-server --config benchmark/server-configs/deepswe-single.toml --host "$bridge" --port 8080
+switchyard-server --config "$config" --host "$bridge" --port 8080
 ```
 
 ### Run Codex through Switchyard with Harbor
@@ -364,7 +366,8 @@ switchyard-server --config benchmark/server-configs/deepswe-single.toml --host "
 Docker's Linux kernel needs `nft_fib_inet` support. On ARM, enable amd64 emulation
 and pull the task's `environment.docker_image` with `docker pull --platform linux/amd64`.
 
-In the first terminal, point Codex at the server's bridge URL and route ID.
+In the first terminal, point Codex at the bridge URL. Replace `deepswe-single`
+with your route ID if you selected a different config.
 
 ```bash
 uv venv --python 3.12 benchmark/.venv
@@ -375,8 +378,7 @@ OPENAI_API_KEY=unused benchmark/.venv/bin/harbor run --env docker -p "$task" -a 
   --ak version=0.154.0 --ak web_search=disabled --effort max
 ```
 
-For another Switchyard route, change the server config and use its route ID as
-`-m openai/<route-id>`. The [qualification settings](DEEPSWE_V11_QUALIFICATION.md)
+The [qualification settings](DEEPSWE_V11_QUALIFICATION.md)
 list the routing profiles used for the [published results](../docs/benchmarks.md#deepswe).
 For a direct baseline, substitute the provider's Responses URL, model ID and key.
 
