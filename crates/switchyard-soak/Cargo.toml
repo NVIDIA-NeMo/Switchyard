@@ -21,9 +21,9 @@ name = "switchyard-soak-mock"
 path = "examples/mock_server.rs"
 
 [dependencies]
-clap = { version = "4", features = ["derive"] }
+clap = { workspace = true, features = ["derive"] }
 futures-util.workspace = true
-humantime = "2.4"
+humantime.workspace = true
 parking_lot.workspace = true
 rand.workspace = true
 reqwest.workspace = true
@@ -32,6 +32,6 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-axum = "0.8"
-tempfile = "3"
+axum.workspace = true
+tempfile.workspace = true
 tokio.workspace = true

@@ -156,10 +156,13 @@ fn decode_responses_stream(
                 model: state.model.clone(),
             }]
         }
-        Some("response.output_text.delta") => event
+        Some("response.output_text.delta" | "response.refusal.delta") => event
             .get("delta")
             .and_then(Value::as_str)
             .map(|text| {
+                if event_type == Some("response.refusal.delta") {
+                    state.stop_reason = Some("refusal".to_string());
+                }
                 let index = event
                     .get("output_index")
                     .and_then(Value::as_u64)
@@ -181,6 +184,20 @@ fn decode_responses_stream(
                 }]
             })
             .unwrap_or_default(),
+        Some("response.refusal.done") => {
+            let Some(text) = event.get("refusal").and_then(Value::as_str) else {
+                return Vec::new();
+            };
+            let index = event
+                .get("output_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            let content_index = event
+                .get("content_index")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as usize;
+            decode_responses_refusal(state, index, content_index, text)
+        }
         Some("response.reasoning_text.delta") | Some("response.reasoning_summary_text.delta") => {
             event
                 .get("delta")
@@ -315,9 +332,19 @@ fn decode_responses_stream(
             // (Anthropic `tool_use`, Chat `tool_calls`) stop without running the tool.
             // Carries the Anthropic spelling because every encoder already maps it.
             let reason = if event_type == Some("response.incomplete") {
-                Some("max_tokens".to_string())
+                let reason = match event
+                    .pointer("/response/incomplete_details/reason")
+                    .and_then(Value::as_str)
+                {
+                    Some("content_filter") => "content_filter",
+                    _ => "max_tokens",
+                };
+                Some(reason.to_string())
             } else {
-                state.decoded_tool_call.then(|| "tool_use".to_string())
+                state
+                    .stop_reason
+                    .clone()
+                    .or_else(|| state.decoded_tool_call.then(|| "tool_use".to_string()))
             };
             out.push(LlmResponseChunk::MessageStop { reason });
             out
@@ -450,6 +477,10 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     let incomplete_details = is_truncated.then(|| json!({ "reason": "max_output_tokens" }));
     let mut out = open_held_reasoning(state, None);
     out.extend(ensure_responses_created(state));
+    if state.stop_reason.as_deref() == Some("refusal") {
+        out.extend(ensure_responses_message_started(state));
+    }
+    let mut content = Vec::new();
     if state.response_text_started
         && let Some(output_index) = state.response_text_output_index
     {
@@ -469,20 +500,62 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
             "content_index": 0,
             "part": {"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []},
         }));
+        content.push(json!({"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []}));
+    }
+    if state.stop_reason.as_deref() == Some("refusal") {
+        // Text was already emitted; this empty part retains only the refusal signal.
+        let refusal = "";
+        let output_index = state.response_text_output_index.unwrap_or(0);
+        let item_id = responses_item_id(state, "msg", output_index);
+        let content_index = content.len();
+        let part = json!({"type": "refusal", "refusal": refusal});
         out.push(json!({
-            "type": "response.output_item.done",
+            "type": "response.content_part.added",
+            "item_id": item_id,
             "output_index": output_index,
-            "item": {
-                "type": "message",
-                "id": item_id,
-                "role": "assistant",
-                "status": status,
-                "content": [{"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []}],
-            },
+            "content_index": content_index,
+            "part": {"type": "refusal", "refusal": ""},
         }));
+        out.push(json!({
+            "type": "response.refusal.delta",
+            "item_id": item_id,
+            "output_index": output_index,
+            "content_index": content_index,
+            "delta": refusal,
+        }));
+        out.push(json!({
+            "type": "response.refusal.done",
+            "item_id": item_id,
+            "output_index": output_index,
+            "content_index": content_index,
+            "refusal": refusal,
+        }));
+        out.push(json!({
+            "type": "response.content_part.done",
+            "item_id": item_id,
+            "output_index": output_index,
+            "content_index": content_index,
+            "part": part,
+        }));
+        content.push(part);
     }
 
     let mut final_items: Vec<(usize, Value)> = Vec::new();
+    if let Some(output_index) = state.response_text_output_index {
+        let item = json!({
+            "type": "message",
+            "id": responses_item_id(state, "msg", output_index),
+            "role": "assistant",
+            "status": status,
+            "content": content,
+        });
+        out.push(json!({
+            "type": "response.output_item.done",
+            "output_index": output_index,
+            "item": item,
+        }));
+        final_items.push((output_index, item));
+    }
     let mut reasoning_items: Vec<(usize, usize)> = state
         .response_reasoning
         .iter()
@@ -535,21 +608,6 @@ fn finish_responses_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         }));
         final_items.push((output_index, item));
     }
-    if state.response_text_started
-        && let Some(output_index) = state.response_text_output_index
-    {
-        final_items.push((
-            output_index,
-            json!({
-                "type": "message",
-                "id": responses_item_id(state, "msg", output_index),
-                "role": "assistant",
-                "status": status,
-                "content": [{"type": "output_text", "text": state.response_text, "annotations": [], "logprobs": []}],
-            }),
-        ));
-    }
-
     for tool in state.tool_states.values() {
         if !tool.started {
             continue;
@@ -746,10 +804,20 @@ fn decode_responses_completed_item(
         let mut out = Vec::new();
         if let Some(content) = item.get("content").and_then(Value::as_array) {
             for (content_index, part) in content.iter().enumerate() {
-                if part.get("type").and_then(Value::as_str) != Some("output_text") {
-                    continue;
-                }
-                if let Some(text) = part.get("text").and_then(Value::as_str) {
+                let text = match part.get("type").and_then(Value::as_str) {
+                    Some("output_text") => part.get("text"),
+                    Some("refusal") => {
+                        if let Some(text) = part.get("refusal").and_then(Value::as_str) {
+                            out.extend(decode_responses_refusal(state, index, content_index, text));
+                            if matches!(out.last(), Some(LlmResponseChunk::DecodeError { .. })) {
+                                return out;
+                            }
+                        }
+                        continue;
+                    }
+                    _ => continue,
+                };
+                if let Some(text) = text.and_then(Value::as_str) {
                     let decoded = state
                         .decoded_response_text
                         .entry(index)
@@ -804,6 +872,26 @@ fn decode_responses_completed_item(
         }];
     }
     Vec::new()
+}
+
+fn decode_responses_refusal(
+    state: &mut StreamTranslationState,
+    index: usize,
+    content_index: usize,
+    text: &str,
+) -> Vec<LlmResponseChunk> {
+    state.stop_reason = Some("refusal".to_string());
+    let decoded = state
+        .decoded_response_text
+        .entry(index)
+        .or_default()
+        .entry(content_index)
+        .or_default();
+    match snapshot_suffix(decoded, text) {
+        Ok(Some(text)) => vec![LlmResponseChunk::TextDelta { index, text }],
+        Ok(None) => Vec::new(),
+        Err(error) => vec![error],
+    }
 }
 
 // A snapshot may extend streamed content, but cannot retract content already sent. A
@@ -884,12 +972,11 @@ fn add_sequence_numbers(state: &mut StreamTranslationState, mut events: Vec<Valu
     events
 }
 
-// Accumulates assistant text and emits Responses text delta events.
-fn encode_responses_text_delta(state: &mut StreamTranslationState, text: String) -> Vec<Value> {
+// Text and refusal parts share one assistant message output item.
+fn ensure_responses_message_started(state: &mut StreamTranslationState) -> Vec<Value> {
     let mut out = open_held_reasoning(state, None);
     out.extend(ensure_responses_created(state));
-    if !state.response_text_started {
-        state.response_text_started = true;
+    if state.response_text_output_index.is_none() {
         let output_index = state.next_response_output_index;
         state.next_response_output_index += 1;
         state.response_text_output_index = Some(output_index);
@@ -904,6 +991,16 @@ fn encode_responses_text_delta(state: &mut StreamTranslationState, text: String)
                 "content": [],
             },
         }));
+    }
+    out
+}
+
+// Accumulates assistant text and emits Responses text delta events.
+fn encode_responses_text_delta(state: &mut StreamTranslationState, text: String) -> Vec<Value> {
+    let mut out = ensure_responses_message_started(state);
+    if !state.response_text_started {
+        state.response_text_started = true;
+        let output_index = state.response_text_output_index.unwrap_or(0);
         out.push(json!({
             "type": "response.content_part.added",
             "item_id": responses_item_id(state, "msg", output_index),

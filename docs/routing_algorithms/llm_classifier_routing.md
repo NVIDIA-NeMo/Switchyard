@@ -225,6 +225,12 @@ targets must also appear in `models.any`; one that does not is rejected when the
 configuration loads. `models.judge` supplies the judge call's own candidates in
 order and is not a completion destination.
 
+The native Rust host attempts only the first `models.judge` candidate. After
+that target's configured retries, a failure follows the route's `fail_open`
+policy; the host does not try the next judge. A custom host can implement ordered
+judge fallback when serving `CallModel`. This is separate from the answering-group
+fallback above. See the [native execution policy](../../crates/libsy-llm-client/README.md#headers--auth).
+
 `capable` and `efficient` are reserved names. Use them when you want a group to
 carry the tier meaning the stage and composite routers give it; otherwise any
 name works.
@@ -311,9 +317,22 @@ calls that follow:
 classify_trigger = "user_turn"
 ```
 
-Tool results are the agent continuing work the user already asked for, so they
-do not re-open the decision. A failed or unusable verdict keeps the current
-target. When no target has been selected yet, the next request is judged again.
+Tool results continue the current user turn and reuse its selected target.
+A new user message runs the judge again and applies the route's failure policy.
+`x-initiator` overrides message-based detection: `user` starts a new turn even
+for tool results; `agent` can reuse the prior target even for a user-role message.
+
+If a standalone `llm_classifier` route falls back after an unusable verdict or
+judge failure, the fallback replaces the previous selection and is retained for
+the new turn's continuations. This also applies when no target has been selected
+yet.
+
+For capability routes, the fallback is `strong_target`. With `fail_open = true`
+(the default), a judge client failure can therefore replace a previous
+`weak_target` selection. With `fail_open = false`, errors returned by the judge
+call stop the request. If a host delivers a judge stream that later fails while
+libsy reads it, the failure becomes an unusable verdict and can still select
+`strong_target`. Custom and direct routes use `default_target` when falling back.
 
 `new_session` judges once and reuses that target for the rest of the session,
 including `strong_target` when it was selected as the fallback for an unusable

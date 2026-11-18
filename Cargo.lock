@@ -1349,9 +1349,9 @@ dependencies = [
 
 [[package]]
 name = "nemo-relay-plugin"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb9225443357599ceb56134c1bcdae5c4845bdb7a8b03be2b5a60fd27cfca270"
+checksum = "e56be447b525b1af7f6be868e59e4ee14c66c1018755461cc65db25642c6f007"
 dependencies = [
  "futures",
  "nemo-relay-types",
@@ -1363,9 +1363,9 @@ dependencies = [
 
 [[package]]
 name = "nemo-relay-types"
-version = "0.10.0"
+version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc2c1819818ca76215d1a6955ae0269ebafb6904bf198f26f0dc443ae1c155ac"
+checksum = "8f520f781c702ea318f83c536827ef545cdc379b44146cb7266553dcf7fc35ab"
 dependencies = [
  "bitflags",
  "chrono",
@@ -2507,7 +2507,7 @@ dependencies = [
  "serde_json",
  "switchyard-protocol",
  "tempfile",
- "toml 0.9.12+spec-1.1.0",
+ "toml",
 ]
 
 [[package]]
@@ -2536,7 +2536,6 @@ dependencies = [
  "jsonptr",
  "jsonschema",
  "opentelemetry",
- "opentelemetry_sdk",
  "parking_lot",
  "rand 0.10.2",
  "regex",
@@ -2595,7 +2594,7 @@ dependencies = [
  "switchyard-translation",
  "tempfile",
  "tokio",
- "toml 1.1.3+spec-1.1.0",
+ "toml",
  "tracing",
  "tracing-subscriber",
  "wiremock",
@@ -2639,7 +2638,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
- "toml 1.1.3+spec-1.1.0",
+ "toml",
  "tonic",
  "tracing",
  "tracing-subscriber",
@@ -2694,7 +2693,7 @@ dependencies = [
  "switchyard-protocol",
  "thiserror 2.0.18",
  "tokio",
- "toml 1.1.3+spec-1.1.0",
+ "toml",
  "tracing",
  "wiremock",
 ]
@@ -2734,16 +2733,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "switchyard-skill-distillation"
-version = "0.3.0"
-dependencies = [
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
 ]
 
 [[package]]
@@ -2979,21 +2968,6 @@ dependencies = [
 
 [[package]]
 name = "toml"
-version = "0.9.12+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf92845e79fc2e2def6a5d828f0801e29a2f8acc037becc5ab08595c7d5e9863"
-dependencies = [
- "indexmap",
- "serde_core",
- "serde_spanned",
- "toml_datetime 0.7.5+spec-1.1.0",
- "toml_parser",
- "toml_writer",
- "winnow 0.7.15",
-]
-
-[[package]]
-name = "toml"
 version = "1.1.3+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "53c96ecdfa941c8fc4fcaed14f99ada8ebed502eef533015095a07e3301d4c3c"
@@ -3001,19 +2975,10 @@ dependencies = [
  "indexmap",
  "serde_core",
  "serde_spanned",
- "toml_datetime 1.1.1+spec-1.1.0",
+ "toml_datetime",
  "toml_parser",
  "toml_writer",
- "winnow 1.0.4",
-]
-
-[[package]]
-name = "toml_datetime"
-version = "0.7.5+spec-1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "92e1cfed4a3038bc5a127e35a2d360f145e1f4b971b551a2ba5fd7aedf7e1347"
-dependencies = [
- "serde_core",
+ "winnow",
 ]
 
 [[package]]
@@ -3031,7 +2996,7 @@ version = "1.1.2+spec-1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2abe9b86193656635d2411dc43050282ca48aa31c2451210f4202550afb7526"
 dependencies = [
- "winnow 1.0.4",
+ "winnow",
 ]
 
 [[package]]
@@ -3537,12 +3502,6 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
-
-[[package]]
-name = "winnow"
-version = "0.7.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df79d97927682d2fd8adb29682d1140b343be4ac0f08fd68b7765d9c059d3945"
 
 [[package]]
 name = "winnow"

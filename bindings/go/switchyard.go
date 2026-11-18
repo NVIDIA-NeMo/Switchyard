@@ -110,8 +110,10 @@ type Outcome struct {
 	SelectedModelIDs []string         `json:"selected_model_ids"`
 	Request          json.RawMessage  `json:"request"`
 	FallbackRequest  *json.RawMessage `json:"fallback_request"`
-	Response         *json.RawMessage `json:"response"`
-	Metadata         json.RawMessage  `json:"metadata"`
+	// CandidateRequests overrides Request and FallbackRequest by model ID.
+	CandidateRequests map[string]json.RawMessage `json:"candidate_requests"`
+	Response          *json.RawMessage           `json:"response"`
+	Metadata          json.RawMessage            `json:"metadata"`
 }
 
 // New constructs an algorithm from {"algorithm": AlgorithmSpec, "targets": {alias: modelID}}.

@@ -5,11 +5,12 @@
 
 pub mod common;
 
+use futures::{TryStreamExt, executor::block_on};
 use pretty_assertions::assert_eq;
-use serde_json::json;
+use serde_json::{Value, json};
 use switchyard_translation::{
     ContentBlock, PreservationPolicy, ProviderExtensions, StopReason, TranslationEngine,
-    TranslationPolicy, WireFormat,
+    TranslationPolicy, WireFormat, encode_stream,
 };
 
 use common::{
@@ -17,6 +18,44 @@ use common::{
 };
 
 type TestResult = std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+#[test]
+fn responses_tool_arguments_are_not_double_encoded() -> TestResult {
+    let engine = TranslationEngine::default();
+    let format = WireFormat::OpenAiResponses;
+    let policy = TranslationPolicy::default();
+    for (arguments, expected) in [
+        (json!(r#"{"city": "Paris"}"#), json!({"city": "Paris"})),
+        (json!("not JSON"), json!("not JSON")),
+        (json!({"city": "Paris"}), json!({"city": "Paris"})),
+    ] {
+        let body = json!({"output": [{"type": "function_call", "call_id": "call_1",
+            "name": "lookup", "arguments": arguments}]});
+        let response = engine.decode_response(format, &body, &policy)?.response;
+        assert_eq!(
+            engine.encode_response(format, &response, &policy)?.body,
+            body
+        );
+
+        let output = engine
+            .encode_response(format, &response, &normalized_policy())?
+            .body;
+        let arguments = output["output"][0]["arguments"]
+            .as_str()
+            .ok_or("missing arguments")?;
+        assert_eq!(serde_json::from_str::<Value>(arguments)?, expected);
+
+        let events =
+            block_on(encode_stream(response.into_stream(), format, None)?.try_collect::<Vec<_>>())?;
+        let arguments: String = events
+            .iter()
+            .filter(|event| event["type"] == "response.function_call_arguments.delta")
+            .filter_map(|event| event["delta"].as_str())
+            .collect();
+        assert_eq!(serde_json::from_str::<Value>(&arguments)?, expected);
+    }
+    Ok(())
+}
 
 #[test]
 fn responses_native_output_is_preserved_or_rejected() -> TestResult {
@@ -256,11 +295,12 @@ fn openai_chat_response_translates_to_anthropic_message() -> TestResult {
     Ok(())
 }
 
-// Verifies a Chat Completions refusal survives both neutral decoding and Anthropic encoding.
 #[test]
-fn openai_chat_refusal_decodes_and_translates_to_anthropic() -> TestResult {
+fn buffered_refusals_survive_translation() -> TestResult {
     let engine = TranslationEngine::default();
-    let body = json!({
+    let policy = normalized_policy();
+    let refusal = "I cannot help with that request.";
+    let chat = json!({
         "id": "chatcmpl-refusal",
         "model": "gpt-4o",
         "choices": [{
@@ -268,40 +308,73 @@ fn openai_chat_refusal_decodes_and_translates_to_anthropic() -> TestResult {
             "message": {
                 "role": "assistant",
                 "content": null,
-                "refusal": "I cannot help with that request."
+                "refusal": refusal
             },
             "finish_reason": "stop"
         }],
         "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
     });
-
-    let decoded =
-        engine.decode_response(WireFormat::OpenAiChat, &body, &TranslationPolicy::default())?;
-    let output = decoded.response.first_output().ok_or("missing output")?;
-    assert_eq!(
-        output.content,
-        vec![ContentBlock::Refusal {
-            text: "I cannot help with that request.".to_string()
+    let responses = json!({
+        "id": "resp_refusal",
+        "model": "gpt-4o",
+        "status": "completed",
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "refusal", "refusal": refusal}]
         }]
-    );
-    assert_eq!(output.stop_reason, Some(StopReason::ContentFilter));
+    });
 
-    let translated = engine
-        .encode_response(
-            WireFormat::AnthropicMessages,
-            &decoded.response,
-            &TranslationPolicy::default(),
-        )?
-        .body;
-    assert_eq!(
-        translated["content"],
-        json!([{"type": "text", "text": "I cannot help with that request."}])
-    );
-    assert_eq!(translated["stop_reason"], "refusal");
-    assert_eq!(
-        translated["stop_details"],
-        json!({"type": "refusal", "category": null, "explanation": null})
-    );
+    for (source, body) in [
+        (WireFormat::OpenAiChat, chat),
+        (WireFormat::OpenAiResponses, responses),
+    ] {
+        let decoded = engine.decode_response(source, &body, &policy)?.response;
+        let output = decoded.first_output().ok_or("missing output")?;
+        assert_eq!(
+            output.content,
+            vec![ContentBlock::Refusal {
+                text: refusal.to_string()
+            }],
+            "{source:?} decoded content"
+        );
+        assert_eq!(
+            output.stop_reason,
+            Some(StopReason::ContentFilter),
+            "{source:?} decoded stop reason"
+        );
+
+        let chat = engine
+            .encode_response(WireFormat::OpenAiChat, &decoded, &policy)?
+            .body;
+        assert_eq!(
+            chat["choices"][0]["message"],
+            json!({"role": "assistant", "content": null, "refusal": refusal}),
+            "{source:?} to Chat"
+        );
+        assert_eq!(chat["choices"][0]["finish_reason"], "content_filter");
+
+        let responses = engine
+            .encode_response(WireFormat::OpenAiResponses, &decoded, &policy)?
+            .body;
+        assert_eq!(
+            responses["output"][0]["content"],
+            json!([{"type": "refusal", "refusal": refusal}]),
+            "{source:?} to Responses"
+        );
+        assert_eq!(responses["status"], "completed");
+
+        let anthropic = engine
+            .encode_response(WireFormat::AnthropicMessages, &decoded, &policy)?
+            .body;
+        assert_eq!(anthropic["content"], json!([]), "{source:?} to Anthropic");
+        assert_eq!(anthropic["stop_reason"], "refusal");
+        assert_eq!(
+            anthropic["stop_details"],
+            json!({"type": "refusal", "category": null, "explanation": refusal})
+        );
+    }
     Ok(())
 }
 
@@ -868,6 +941,9 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
                 }, {
                     "id": "call_3", "type": "function",
                     "function": {"name": "exec", "arguments": "{\"input\":\"ls -la\"}"}
+                }, {
+                    "id": "call_4", "type": "function",
+                    "function": {"name": "docs__search", "arguments": "{}"}
                 }]
             },
             "finish_reason": "tool_calls"
@@ -893,7 +969,9 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
             {"type": "function_call", "call_id": "call_2", "name": "mcp__docs__search",
                 "arguments": "{\"query\": \"streaming\"}"},
             {"type": "function_call", "call_id": "call_3", "name": "exec",
-                "arguments": "{\"input\": \"ls -la\"}"}
+                "arguments": "{\"input\": \"ls -la\"}"},
+            {"type": "function_call", "call_id": "call_4", "name": "docs__search",
+                "arguments": "{}"}
         ])
     );
     assert_eq!(
@@ -914,6 +992,7 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
             "input": "Search and list files",
             "tools": [
                 {"type": "function", "name": "search", "parameters": {}},
+                {"type": "function", "name": "docs__search", "parameters": {}},
                 {"type": "namespace", "name": "mcp__docs", "tools": [
                     {"type": "function", "name": "search", "parameters": {}}
                 ]},
@@ -930,7 +1009,8 @@ fn openai_chat_response_with_tool_call_translates_to_responses_output_item() -> 
             "arguments": "{\"q\": \"rust\"}"},
         {"type": "function_call", "call_id": "call_2", "name": "search",
             "namespace": "mcp__docs", "arguments": "{\"query\": \"streaming\"}"},
-        {"type": "custom_tool_call", "call_id": "call_3", "name": "exec", "input": "ls -la"}
+        {"type": "custom_tool_call", "call_id": "call_3", "name": "exec", "input": "ls -la"},
+        {"type": "function_call", "call_id": "call_4", "name": "docs__search", "arguments": "{}"}
     ]);
     let anthropic = engine
         .translate_response(
@@ -1010,7 +1090,7 @@ fn openai_chat_response_with_text_and_tool_call_translates_both_to_responses() -
         "usage": {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7}
     });
 
-    let output = engine
+    let mut output = engine
         .translate_response(
             WireFormat::OpenAiChat,
             WireFormat::OpenAiResponses,
@@ -1023,6 +1103,22 @@ fn openai_chat_response_with_text_and_tool_call_translates_both_to_responses() -
     assert_eq!(output["output"][0]["content"][0]["text"], "Let me check.");
     assert_eq!(output["output"][1]["type"], "function_call");
     assert_eq!(output["output"][1]["call_id"], "call_1");
+
+    // Check text before the tool call, then reverse the items to check text after it.
+    for _ in 0..2 {
+        let decoded = engine
+            .decode_response(
+                WireFormat::OpenAiResponses,
+                &output,
+                &TranslationPolicy::default(),
+            )?
+            .response;
+        assert_eq!(decoded.outputs[0].stop_reason, Some(StopReason::ToolUse));
+        output["output"]
+            .as_array_mut()
+            .ok_or("output should be an array")?
+            .reverse();
+    }
     Ok(())
 }
 
@@ -1170,6 +1266,66 @@ fn incomplete_responses_source_survives_translation() -> TestResult {
     Ok(())
 }
 
+// Verifies an incomplete Responses source reports its reason to Chat and Anthropic
+// clients, including when the response has no output items.
+#[test]
+fn incomplete_responses_reason_reaches_chat_and_anthropic_clients() -> TestResult {
+    let engine = TranslationEngine::default();
+    let message = json!({
+        "type": "message",
+        "role": "assistant",
+        "status": "incomplete",
+        "content": [{"type": "output_text", "text": "Partial answer", "annotations": []}]
+    });
+    for (reason, output, finish_reason, stop_reason) in [
+        (
+            "content_filter",
+            json!([message]),
+            "content_filter",
+            "refusal",
+        ),
+        ("content_filter", json!([]), "content_filter", "refusal"),
+        ("max_output_tokens", json!([]), "length", "max_tokens"),
+    ] {
+        let body = json!({
+            "id": "resp_1",
+            "object": "response",
+            "model": "gpt-4o",
+            "status": "incomplete",
+            "incomplete_details": {"reason": reason},
+            "output": output,
+            "usage": {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14}
+        });
+        let chat = engine
+            .translate_response(
+                WireFormat::OpenAiResponses,
+                WireFormat::OpenAiChat,
+                &body,
+                &TranslationPolicy::default(),
+            )?
+            .body;
+        assert_eq!(
+            chat["choices"][0]["finish_reason"], finish_reason,
+            "{reason} with output {}",
+            body["output"]
+        );
+        let anthropic = engine
+            .translate_response(
+                WireFormat::OpenAiResponses,
+                WireFormat::AnthropicMessages,
+                &body,
+                &TranslationPolicy::default(),
+            )?
+            .body;
+        assert_eq!(
+            anthropic["stop_reason"], stop_reason,
+            "{reason} with output {}",
+            body["output"]
+        );
+    }
+    Ok(())
+}
+
 #[test]
 fn failed_responses_return_upstream_failure_with_provider_message() -> TestResult {
     let engine = TranslationEngine::default();
@@ -1223,8 +1379,7 @@ fn failed_finish_reasons_return_upstream_failure() -> TestResult {
     Ok(())
 }
 
-// Verifies a moderation stop stays distinguishable from a normal turn in both
-// directions, and that a named refusal category survives re-encoding.
+// Moderation stops retain their signal; refusal details become opaque IR text.
 #[test]
 fn content_filter_and_refusal_translate_across_formats() -> TestResult {
     let engine = TranslationEngine::default();
@@ -1280,9 +1435,13 @@ fn content_filter_and_refusal_translate_across_formats() -> TestResult {
         )?
         .body;
     assert_eq!(output["choices"][0]["finish_reason"], "content_filter");
+    assert_eq!(output["choices"][0]["message"]["content"], "Partial answer");
+    assert_eq!(
+        output["choices"][0]["message"]["refusal"],
+        "cyber: This request was declined because it could enable cyber harm."
+    );
 
-    // Re-encoding a refusal keeps the category the source named instead of
-    // replacing it with the null form used for an unnamed refusal.
+    // Without preservation, the category prefix remains part of the explanation.
     let output = engine
         .translate_response(
             WireFormat::AnthropicMessages,
@@ -1295,7 +1454,15 @@ fn content_filter_and_refusal_translate_across_formats() -> TestResult {
         )?
         .body;
     assert_eq!(output["stop_reason"], "refusal");
-    assert_eq!(output["stop_details"]["category"], "cyber");
+    assert_eq!(output["content"], anthropic["content"]);
+    assert_eq!(
+        output["stop_details"],
+        json!({
+            "type": "refusal",
+            "category": null,
+            "explanation": "cyber: This request was declined because it could enable cyber harm."
+        })
+    );
     Ok(())
 }
 

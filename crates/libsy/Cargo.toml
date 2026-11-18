@@ -26,8 +26,8 @@ http.workspace = true
 jsonschema.workspace = true
 jsonptr.workspace = true
 # Metrics-only OTel API: instruments record through the host-installed global
-# meter provider. Pinned to the 0.32 line used across the workspace.
-opentelemetry = { version = "0.32", default-features = false, features = ["metrics"] }
+# meter provider.
+opentelemetry = { workspace = true, features = ["metrics"] }
 parking_lot.workspace = true
 rand.workspace = true
 regex.workspace = true
@@ -47,8 +47,6 @@ tokio.workspace = true
 tokio = { version = "1", features = ["rt", "sync", "macros", "time"] }
 
 [dev-dependencies]
-# SDK + in-memory exporter to assert what the observability layer records.
-opentelemetry_sdk = { version = "0.32", features = ["metrics", "testing", "trace"] }
 tokio.workspace = true
 tracing-subscriber.workspace = true
 http.workspace = true
