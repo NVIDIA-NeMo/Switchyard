@@ -336,7 +336,11 @@ Only reuse the image when you know it already contains the current Rust `switchy
 
 ## DeepSWE v1.1
 
-Run Harbor or Pier locally with Docker Compose. From the repo root, check out the pinned dataset.
+Run Codex on a DeepSWE task in Docker with Harbor. Codex sends its Responses requests
+to the local Switchyard server. The [`deepswe-single` route](server-configs/deepswe-single.toml)
+forwards them to OpenRouter.
+
+From the Switchyard repo root, check out the dataset and select a task.
 
 ```bash
 git clone https://github.com/datacurve-ai/deep-swe benchmark/datasets/deep-swe
@@ -344,45 +348,52 @@ git -C benchmark/datasets/deep-swe checkout 0b9fabbb63b9104d678fe965e1632f2dd9ea
 task=benchmark/datasets/deep-swe/tasks/anko-default-function-arguments
 ```
 
-For routed runs, install the server with `cargo install --locked --path crates/switchyard-server`.
-See [published results](../docs/benchmarks.md#deepswe) and [qualification settings](DEEPSWE_V11_QUALIFICATION.md).
+### Start Switchyard
 
-### Local Harbor
-
-Docker's Linux kernel needs `nft_fib_inet` support. On ARM, enable amd64 emulation
-and pull the task's `environment.docker_image` with `docker pull --platform linux/amd64`.
+In a second terminal on the Linux Docker host, set `OPENROUTER_API_KEY`. From the
+repo root, install the server and bind it to the Docker bridge to limit access to your key.
 
 ```bash
-uv venv --python 3.12 benchmark/.venv
-uv pip install --python benchmark/.venv/bin/python 'harbor==0.26.0'
-benchmark/.venv/bin/harbor run --env docker -p "$task" -a oracle
-```
-
-The oracle needs no API key. Expect reward 1 in `verifier/reward.json`.
-Run it once while connected to cache the images for offline use.
-
-To route Codex through Switchyard, set `OPENROUTER_API_KEY` in a second terminal
-on the Linux Docker host. Bind the server to the bridge to limit access to your key.
-
-```bash
+cargo install --locked --path crates/switchyard-server
 bridge=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
 switchyard-server --config benchmark/server-configs/deepswe-single.toml --host "$bridge" --port 8080
 ```
 
-Run Codex from the Harbor terminal.
+### Run Codex through Switchyard with Harbor
+
+Docker's Linux kernel needs `nft_fib_inet` support. On ARM, enable amd64 emulation
+and pull the task's `environment.docker_image` with `docker pull --platform linux/amd64`.
+
+In the first terminal, point Codex at the server's bridge URL and route ID.
 
 ```bash
+uv venv --python 3.12 benchmark/.venv
+uv pip install --python benchmark/.venv/bin/python 'harbor==0.26.0'
 bridge=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
 OPENAI_API_KEY=unused benchmark/.venv/bin/harbor run --env docker -p "$task" -a codex \
   -m openai/deepswe-single --base-url "http://$bridge:8080/v1" \
   --ak version=0.154.0 --ak web_search=disabled --effort max
 ```
 
-For a direct run, use the provider's Responses URL, model ID and key. For closed-book
-runs, also block hosted web tools at the gateway. Fully offline runs need a local model.
+For another Switchyard route, change the server config and use its route ID as
+`-m openai/<route-id>`. The [qualification settings](DEEPSWE_V11_QUALIFICATION.md)
+list the routing profiles used for the [published results](../docs/benchmarks.md#deepswe).
+For a direct baseline, substitute the provider's Responses URL, model ID and key.
+
+For closed-book runs, also block hosted web tools at the gateway. To run fully
+offline, configure Switchyard to use a local model and stage the dependencies below.
 
 <details>
-<summary>Stage Codex before disconnecting</summary>
+<summary>Offline setup</summary>
+
+While connected, run the oracle once to cache the Docker images. It uses the
+reference solution and needs no API key. Expect reward 1 in `verifier/reward.json`.
+
+```bash
+benchmark/.venv/bin/harbor run --env docker -p "$task" -a oracle
+```
+
+Stage the Codex binaries on the Docker host.
 
 ```bash
 bundle_dir=$(mktemp -d "$PWD/benchmark/datasets/codex.XXXXXX")
@@ -399,37 +410,20 @@ Add `--ak skip_install=true --mounts "$mounts"` to the Codex command.
 
 </details>
 
-### Local Pier
+### Use Pier with the same route
 
-Install [Pier](https://github.com/datacurve-ai/pier) and run the same task directly.
+For [Pier](https://github.com/datacurve-ai/pier) 0.3.1, start Switchyard with
+`--port 443` in the [server command above](#start-switchyard). Pier's proxy allows
+ports 80 and 443. Binding port 443 on Linux may require `CAP_NET_BIND_SERVICE`.
 
 ```bash
 uv tool install --python 3.12 --with 'harbor==0.23.0' 'datacurve-pier==0.3.1'
-export OPENAI_API_KEY="..."
-pier run -p "$task" --agent mini-swe-agent --model openai/gpt-5.5
-```
-
-For routing, start the server from the [Harbor example](#local-harbor) with
-`--port 443`. Pier's proxy allows ports 80 and 443. Binding port 443 on Linux
-may require `CAP_NET_BIND_SERVICE`. Use the Docker bridge address on Linux or
-`host.docker.internal` for a server reachable on the Docker Desktop host.
-
-```bash
 bridge=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
 pier run -p "$task" --agent codex --model openai/deepswe-single \
   --ae OPENAI_BASE_URL="http://$bridge:443/v1" --ae OPENAI_API_KEY=unused
 ```
 
-To use another route, change the server config and Pier's model ID together.
-
-- [Advisor](routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) uses `openai/switchyard` with max effort on both models.
-- [Stage](routing-profiles/deepswe-v11-stage-router-luna-sol.toml) uses `openai/gpt-5.6-luna`.
-
-The [qualification settings](DEEPSWE_V11_QUALIFICATION.md#historical-planexecute-configuration)
-link the archived Plan/Execute config. For new runs, use [Plan/Execute with Stage](../docs/routing_algorithms/stage_router_routing.md#plan-and-execute).
-
-For the full corpus, set `-p benchmark/datasets/deep-swe/tasks`. To sample one
-task from that directory, add `--n-tasks 1 --sample-seed 0`. Results go to `jobs/<job-name>/`.
+For the full corpus, replace `"$task"` with `benchmark/datasets/deep-swe/tasks`.
 
 ## Troubleshooting
 
