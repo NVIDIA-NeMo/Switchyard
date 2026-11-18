@@ -16,21 +16,18 @@ preinstalled Codex 0.154.0 bundle.
   client default.
 - The [October 6 repaired profile](harbor-profiles/deepswe-v11-harbor-0.13.2-20261006.yaml) selects the
   task's cached pnpm version, enables IPv6 loopback, runs Vitest browser tests
-  in CI mode and explicitly disables Codex web search. Its matching hosted
-  oracle passed all 113 tasks. Use this revision for new comparisons.
+  in CI mode and disables Codex web search. Its matching hosted oracle passed all 113 tasks.
 
-Both profiles restore the workspace and cached tools. Their exit hook captures
-committed and uncommitted changes with a temporary Git index. An empty capture in
-the clean verifier preserves the submitted patch. The
-[local Harbor recipe](README.md#local-harbor) uses the public task's collect hook,
-which grades only changes committed to `HEAD`.
+The hosted profiles capture committed and uncommitted edits with a temporary Git
+index. An empty capture preserves the last nonempty patch, even if the agent has
+since reverted its edits. The [local recipe](README.md#deepswe-v11) grades only
+changes committed to `HEAD`.
 
-The snapshots use portable job names, model IDs and an endpoint variable. Set
-`agents[0].model_name` and `OPENAI_BASE_URL` to the provider model and endpoint
-for a direct baseline, or the route ID and Switchyard endpoint for a routed run.
-Set the reasoning effort for the experiment. The hosted runtime supplies the
-task, image and cluster variables. Allow inference traffic, deny public egress
-and enforce the hosted web-tool restriction at the gateway for closed-book runs.
+Set `agents[0].model_name`, `OPENAI_BASE_URL` and reasoning effort for each run.
+Use the provider model and endpoint for direct runs, or the route ID and Switchyard
+endpoint for routed runs. The hosted runtime supplies the task, image and cluster
+variables. For closed-book runs, allow only inference traffic and block hosted
+web tools at the gateway.
 
 ## Shared settings
 

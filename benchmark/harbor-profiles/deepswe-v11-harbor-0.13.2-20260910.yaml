@@ -128,7 +128,7 @@ environment:
         fi
         rm -f "$index_file" 2>/dev/null
         [ -f "$tmp" ] || : > "$tmp"
-        # Preserve the submitted patch when the clean verifier captures an empty diff.
+        # The hosted profile retains the last nonempty patch.
         if [ -s "$tmp" ] || [ ! -s /logs/artifacts/model.patch ]
         then
           mv -f "$tmp" /logs/artifacts/model.patch 2>/dev/null

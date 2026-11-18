@@ -336,13 +336,9 @@ Only reuse the image when you know it already contains the current Rust `switchy
 
 ## DeepSWE v1.1
 
-The public dataset runs locally with stock Harbor 0.26.0 or with Pier 0.3.1.
-Both collect the agent's committed changes and grade the patch in a fresh container.
-The [published results](../docs/benchmarks.md#deepswe) used Harbor 0.13.2 with a
-hosted verifier. See the [qualification settings](DEEPSWE_V11_QUALIFICATION.md) for
-the September baseline profile, October verifier repairs, timeouts and scoring rules.
-
-Start from the Switchyard repo root and pin the public dataset for either local runner.
+Run the public tasks with Harbor 0.26.0 or Pier 0.3.1. The [published scores](../docs/benchmarks.md#deepswe)
+used [hosted Harbor 0.13.2 profiles](DEEPSWE_V11_QUALIFICATION.md#hosted-harbor-profiles).
+From the Switchyard repo root, pin the dataset for either local runner.
 
 ```bash
 git clone https://github.com/datacurve-ai/deep-swe benchmark/datasets/deep-swe
@@ -352,9 +348,9 @@ task=benchmark/datasets/deep-swe/tasks/anko-default-function-arguments
 
 ### Local Harbor
 
-Use a separate Python environment and a Linux Docker engine with Compose and
-`nft_fib_inet` support. On macOS the Docker VM's kernel must support it.
-Harbor checks this before starting the task.
+Use Docker Compose on a Linux kernel with `nft_fib_inet` support. On macOS this
+applies to the Docker VM. ARM hosts need amd64 emulation. On ARM, pull the
+task's `environment.docker_image` with `docker pull --platform linux/amd64` first.
 
 ```bash
 uv venv --python 3.12 benchmark/.venv
@@ -363,44 +359,46 @@ harbor_bin=benchmark/.venv/bin/harbor
 "$harbor_bin" run -p "$task" -a oracle -n 1
 ```
 
-The oracle applies the reference solution without a model or API key. For this task,
-expect `verifier/reward.json` under the trial directory to report reward 1, with 2/2
-fail-to-pass and 119/119 pass-to-pass tests. Run it once while connected to cache
-the task image and Harbor's network sidecar and kernel probe. The same command then
-works without internet. On an ARM host, enable amd64 emulation and pull the task's
-`environment.docker_image` with `docker pull --platform linux/amd64` first.
+The oracle applies the reference solution. Expect reward 1 in the trial's
+`verifier/reward.json` (2/2 fail-to-pass and 119/119 pass-to-pass). Run it once
+while connected to cache the task image and Harbor's network images, then repeat
+offline. The oracle needs no model or API key.
 
-For a model run, point Codex at a Responses endpoint reachable from the container.
-For example, with `OPENROUTER_API_KEY` set, start the single-model route in another terminal.
+For Codex, use a Responses endpoint reachable from the agent container. On a Linux
+Docker host, start Switchyard in a second terminal with `OPENROUTER_API_KEY` set.
+Bind to the Docker bridge. Anyone who can reach this listener can use your upstream key.
 
 ```bash
+bridge=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
 switchyard-server --config benchmark/server-configs/deepswe-single.toml \
-  --host 0.0.0.0 --port 8080
+  --host "$bridge" --port 8080
 ```
 
-Set `MODEL_BASE_URL` to the server URL as seen by Docker, such as
-`http://172.17.0.1:8080/v1` on a Linux host using the default Docker bridge.
-Set `MODEL_ID=deepswe-single` and export `OPENAI_API_KEY=unused` for this example.
-For a direct baseline, use the provider endpoint, model ID and API key.
+In the Harbor terminal, use the route ID and bridge URL. For a direct run,
+substitute the provider's model ID, endpoint and API key.
 
 ```bash
+bridge=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
+MODEL_BASE_URL="http://${bridge}:8080/v1"
+MODEL_ID=deepswe-single
+export OPENAI_API_KEY=unused
 "$harbor_bin" run -p "$task" -a codex -m "openai/${MODEL_ID}" \
   --base-url "$MODEL_BASE_URL" --ak version=0.154.0 \
   --ak web_search=disabled --effort max -n 1
 ```
 
-The task declares `no-network` for the agent and verifier. Harbor grants the agent
-access to the configured inference endpoint.
-A strict closed-book run also needs the gateway to reject provider-hosted web tools.
-For a fully disconnected run, use a local model or point Switchyard at a local upstream.
-The example config above calls OpenRouter. Stage Codex first so agent setup can
-skip the download.
+Codex must commit its solution. The public task grades the diff from the base
+commit to `HEAD` in a fresh container. Uncommitted edits never reach the verifier.
+
+The agent can reach its inference endpoint. The verifier runs offline. For a
+closed-book run, block hosted web tools at the gateway too. For a fully offline
+run, stage Codex and point the route at a local model. The sample route uses OpenRouter.
 
 <details>
 <summary>Stage Codex for an offline run</summary>
 
-With npm on the host, unpack the Linux x64 release for the public task images
-into a directory shared with Docker. Run this step while connected.
+While connected, use npm and jq on the host to stage the Linux x64 binaries
+in a directory shared with Docker.
 
 ```bash
 bundle_dir=$(mktemp -d "$PWD/benchmark/datasets/codex.XXXXXX")
