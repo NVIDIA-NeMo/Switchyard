@@ -1,0 +1,16 @@
+schema_version = 1
+
+[llm_clients.upstream]
+format = "openai_chat"
+base_url = "http://localhost:8000/v1"
+api_key_env = "UPSTREAM_API_KEY"
+max_retries = 2
+
+[targets.actor]
+id = "your-model-id"
+llm_client = "upstream"
+
+[routes.agent]
+id = "your-model-id"
+type = "passthrough"
+target = "actor"
