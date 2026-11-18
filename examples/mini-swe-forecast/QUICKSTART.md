@@ -59,8 +59,8 @@ Use **Bash** in each terminal: the environment helper uses `BASH_SOURCE`.
 ./observability/up.sh
 ```
 
-This creates `observability/.env` if absent, downloads the pinned Langfuse
-compose file, starts Langfuse and Grafana, and installs the Opus price entry
+This creates `observability/.env` if absent, generates the Grafana dashboard,
+downloads the pinned Langfuse compose file, starts Langfuse and Grafana, and installs the Opus price entry
 and dashboard. It needs free ports 3000, 3001 and the backing-service ports.
 If another local stack owns those ports, use that stack or stop it separately.
 Do not start a second stack over an existing demo.
@@ -172,8 +172,7 @@ for ingestion. An agent status of `Submitted` is not a SWE-bench verifier pass.
   billing fields remain unchanged.
 
 To stop, interrupt the agent, enricher and Switchyard in their terminals, then
-run `./observability/down.sh`. This preserves stored dashboard data; avoid
-`-v` or `clear_runs.sh` unless you intend to delete it.
+run `./observability/down.sh`. This preserves stored dashboard data; adding
+`-v` deletes it.
 
-For field definitions see [README.md](README.md). For dashboard implementation
-details see [observability/README.md](observability/README.md).
+For field definitions and the file map see [README.md](README.md).

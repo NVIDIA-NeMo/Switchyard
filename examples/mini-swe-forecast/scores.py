@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
@@ -65,18 +64,6 @@ class ScoreClient:
             result = json.load(response)
         return {"trace_id": record["trace_id"], "submitted_scores": len(rows), "response": result}
 
-    def find_forecast_span(self, trace_id):
-        query = urlencode({"traceId": trace_id, "name": "lightgbm.forecast", "limit": 100})
-        with urlopen(
-            Request(self.url + "/api/public/v2/observations?" + query, headers=self.headers),
-            timeout=10,
-        ) as r:
-            rows = json.load(r)["data"]
-        matches = [r for r in rows if r["traceId"] == trace_id and r["name"] == "lightgbm.forecast"]
-        if len(matches) != 1:
-            raise ValueError("Expected one forecast observation for this trace")
-        return matches[0]["id"]
-
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -86,8 +73,6 @@ def main():
     receipts = []
     for line in (args.run_folder / "forecasts.jsonl").read_text().splitlines():
         record = json.loads(line)
-        if not record.get("forecast_span_id"):
-            record["forecast_span_id"] = client.find_forecast_span(record["trace_id"])
         receipts.append(client.send(record))
     (args.run_folder / "score-export-receipt.json").write_text(
         json.dumps(receipts, indent=2) + "\n"

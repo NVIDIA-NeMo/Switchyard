@@ -9,7 +9,8 @@ Polls Langfuse's ClickHouse for new `lightgbm.forecast` and `agent.call` spans a
   * numeric scores (timestamped as they arrive):
       pred_next_call_cost_low / _mid / _high, pred_remaining_task_cost, pred_total_task_cost,
       pred_remaining_calls, actual_call_cost, actual_cost_so_far, next_call_in_band
-Cache writes are not predicted yet (treated as 0): predicted uncached input is priced at the input rate.
+Cache-write predictions add the premium over the uncached-input price.
+Bundles without that head use zero cache writes.
 """
 
 import base64

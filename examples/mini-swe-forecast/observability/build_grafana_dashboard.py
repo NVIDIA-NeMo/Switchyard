@@ -4,6 +4,7 @@
 """Generates grafana/dashboards/per-call.json (Grafana reads Langfuse's ClickHouse directly)."""
 
 import json
+from pathlib import Path
 
 DS = {"type": "grafana-clickhouse-datasource", "uid": "lfch"}
 
@@ -524,5 +525,7 @@ d = {
     "panels": panels,
     "tags": ["switchyard"],
 }
-json.dump(d, open("grafana/dashboards/per-call.json", "w"), indent=1)
+output = Path(__file__).parent / "grafana/dashboards/per-call.json"
+output.parent.mkdir(parents=True, exist_ok=True)
+output.write_text(json.dumps(d, indent=1))
 print("panels:", len(panels))

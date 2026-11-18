@@ -101,7 +101,7 @@ def run(reference, repo, research_root, base_url, output, steps, checkpoint):
         "mini_version": "2.4.5",
         "replay_gap_revision": PIN,
         "switchyard_base_url": base_url,
-        "forecasting_enabled": checkpoint is not None,
+        "forecasting_enabled": True,
         "state": "starting_container",
         "started_unix": time.time(),
         "completed_model_calls": 0,
@@ -117,13 +117,10 @@ def run(reference, repo, research_root, base_url, output, steps, checkpoint):
     agent = None
     observer = None
     try:
-        if checkpoint is not None:
-            from backend import ResearchBackend
-            from telemetry import ForecastObserver
+        from backend import ResearchBackend
+        from telemetry import ForecastObserver
 
-            observer = ForecastObserver(
-                ResearchBackend(research_root, checkpoint), config, task, output
-            )
+        observer = ForecastObserver(ResearchBackend(research_root, checkpoint), config, task, output)
 
         class ObservedAgent(BranchableAgent):
             def step(self):
@@ -135,7 +132,7 @@ def run(reference, repo, research_root, base_url, output, steps, checkpoint):
                     < self.config.wall_time_limit_seconds
                     <= int(time.time() - self._start_time)
                 )
-                if observer is None or limited:
+                if limited:
                     return super().step()
                 with observer.call(self, self.n_calls + 1) as headers:
                     kwargs = self.model.config.model_kwargs
@@ -154,7 +151,7 @@ def run(reference, repo, research_root, base_url, output, steps, checkpoint):
         agent.replay_metadata = {
             "instance_id": task,
             "arm": "switchyard_forecast_demo",
-            "forecasting_enabled": observer is not None,
+            "forecasting_enabled": True,
         }
 
         def before_step(agent, step):
