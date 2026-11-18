@@ -6,6 +6,8 @@ request, response, and streaming formats.
 The crate translates through provider-neutral LLM types from `switchyard-protocol` and does not
 depend on provider SDKs, HTTP servers, Python, or FFI bindings.
 
+This is a translation tool, not a validation tool. It assumes each request or response conforms to its source API’s schema. Unless explicitly documented, the library makes no guarantees about how malformed payloads are handled.
+
 ## Translate a request
 
 ```rust
