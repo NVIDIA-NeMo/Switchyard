@@ -6,29 +6,6 @@ Routing configurations:
 - The [historical Plan/Execute configuration](#historical-planexecute-configuration) uses Sol as the planner and Luna as the executor.
 - [Stage router: Luna efficient tier with Sol capable tier](routing-profiles/deepswe-v11-stage-router-luna-sol.toml)
 
-## Hosted Harbor profiles
-
-Both snapshots use Harbor 0.13.2 on Kubernetes with prepared task images and a
-preinstalled Codex 0.154.0 bundle.
-
-- The [September 10 baseline profile](harbor-profiles/deepswe-v11-harbor-0.13.2-20260910.yaml) records
-  the Sol direct baseline setup. Its Codex config leaves hosted web search at the
-  client default.
-- The [October 6 repaired profile](harbor-profiles/deepswe-v11-harbor-0.13.2-20261006.yaml) selects the
-  task's cached pnpm version, enables IPv6 loopback, runs Vitest browser tests
-  in CI mode and disables Codex web search. Its matching hosted oracle passed all 113 tasks.
-
-The hosted profiles capture committed and uncommitted edits with a temporary Git
-index. An empty capture preserves the last nonempty patch, even if the agent has
-since reverted its edits. The [local recipe](README.md#deepswe-v11) grades only
-changes committed to `HEAD`.
-
-Set `agents[0].model_name`, `OPENAI_BASE_URL` and reasoning effort for each run.
-Use the provider model and endpoint for direct runs, or the route ID and Switchyard
-endpoint for routed runs. The hosted runtime supplies the task, image and cluster
-variables. For closed-book runs, allow only inference traffic and block hosted
-web tools at the gateway.
-
 ## Shared settings
 
 | Setting | Value |
@@ -39,7 +16,6 @@ web tools at the gateway.
 | Protocol | OpenAI Responses |
 | Network | Closed book with public network access denied |
 | Agent budget | 3 hours |
-| Timeout multiplier | 2.0 |
 | Command timeout | 10,800 seconds |
 | Sandbox timeout | 8,400 seconds |
 | Lifecycle timeout | 21,600 seconds |

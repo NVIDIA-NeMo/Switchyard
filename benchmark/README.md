@@ -336,9 +336,10 @@ Only reuse the image when you know it already contains the current Rust `switchy
 
 ## DeepSWE v1.1
 
-Run the public tasks with Harbor 0.26.0 or Pier 0.3.1. The [published scores](../docs/benchmarks.md#deepswe)
-used [hosted Harbor 0.13.2 profiles](DEEPSWE_V11_QUALIFICATION.md#hosted-harbor-profiles).
-From the Switchyard repo root, pin the dataset for either local runner.
+Run the public tasks locally with Docker Compose and either Harbor 0.26.0 or Pier 0.3.1.
+See the [published scores](../docs/benchmarks.md#deepswe) and their
+[qualification settings](DEEPSWE_V11_QUALIFICATION.md). From the Switchyard repo root,
+pin the dataset for either runner.
 
 ```bash
 git clone https://github.com/datacurve-ai/deep-swe benchmark/datasets/deep-swe
@@ -356,7 +357,7 @@ task's `environment.docker_image` with `docker pull --platform linux/amd64` firs
 uv venv --python 3.12 benchmark/.venv
 uv pip install --python benchmark/.venv/bin/python 'harbor==0.26.0'
 harbor_bin=benchmark/.venv/bin/harbor
-"$harbor_bin" run -p "$task" -a oracle -n 1
+"$harbor_bin" run --env docker -p "$task" -a oracle -n 1
 ```
 
 The oracle applies the reference solution. Expect reward 1 in the trial's
@@ -382,7 +383,7 @@ bridge=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gatewa
 MODEL_BASE_URL="http://${bridge}:8080/v1"
 MODEL_ID=deepswe-single
 export OPENAI_API_KEY=unused
-"$harbor_bin" run -p "$task" -a codex -m "openai/${MODEL_ID}" \
+"$harbor_bin" run --env docker -p "$task" -a codex -m "openai/${MODEL_ID}" \
   --base-url "$MODEL_BASE_URL" --ak version=0.154.0 \
   --ak web_search=disabled --effort max -n 1
 ```
