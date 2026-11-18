@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"fn":["http_outcome_label","http_status_code_label","initialize","record_translation_diagnostics"]};
