@@ -1,0 +1,176 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+job_name: deepswe-v11-codex
+jobs_dir: jobs
+n_attempts: 1
+n_concurrent_trials: 1
+timeout_multiplier: 2.0
+retry:
+  max_retries: 2
+  include_exceptions:
+    - EnvironmentStartTimeoutError
+    - SandboxCreationError
+    - SandboxExecutionError
+    - SandboxNotFoundError
+    - SandboxTimeoutError
+    - DownloadVerifierDirError
+    - AddTestsDirError
+tasks:
+  - path: ${TASK_PATH}
+agents:
+  - env:
+      HOME: /tmp/agent-home
+      PATH: /tmp/agent-home/.pnpm-pinned/bin:/installed-agent/bin:/tmp/agent-home/.local/bin:/opt/venv/bin:/root/go/bin:/usr/local/go/bin:/root/.cargo/bin:/usr/local/cargo/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      BASH_ENV: /tmp/deepswe-preartifacts.sh
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      CODEX_OPENAI_COMPATIBLE_PROVIDER: '1'
+      # The hosted adapter places this value inside a quoted TOML wire_api field.
+      CODEX_OPENAI_COMPATIBLE_WIRE_API: |-
+        responses"
+        request_max_retries = 40
+        stream_max_retries = 40
+        stream_idle_timeout_ms = 300000
+        #
+    kwargs:
+      version: 0.154.0
+      reasoning_effort: max
+    model_name: openai/switchyard
+    import_path: harbor.agents.installed.preinstalled_codex:PreinstalledCodex
+environment:
+  env:
+    HOME: /tmp/agent-home
+    USER: oracle
+    GOCACHE: /tmp/gocache
+    LOGNAME: oracle
+    COREPACK_HOME: /root/.cache/node/corepack
+    GIT_CONFIG_COUNT: '3'
+    GIT_CONFIG_KEY_0: safe.directory
+    GIT_CONFIG_KEY_1: user.name
+    GIT_CONFIG_KEY_2: user.email
+    GIT_CONFIG_VALUE_0: '*'
+    GIT_CONFIG_VALUE_1: scaled-evals-oracle
+    GIT_CONFIG_VALUE_2: oracle@scaled-evals.local
+  delete: true
+  kwargs:
+    image: ${TASK_IMAGE}
+    context: ${SANDBOX_CONTEXT}
+    timeout: 8400
+    volumes:
+      - name: data-dir
+        empty_dir: {}
+      - name: varlog-dir
+        empty_dir: {}
+    fs_group: 65534
+    namespace: ${SANDBOX_NAMESPACE}
+    resources:
+      limits:
+        cpu: '4'
+        memory: 8Gi
+      requests:
+        cpu: '2'
+        memory: 4Gi
+    verify_ssl: ${VERIFY_SSL}
+    run_as_user: 65534
+    working_dir: /app
+    run_as_group: 65534
+    setup_command: |
+      mkdir -p /tmp/agent-home/.config/pnpm /tmp/agent-home/.pnpm-pinned/bin && printf 'manage-package-manager-versions=false\n' > /tmp/agent-home/.config/pnpm/rc
+      pin=$(
+        cd /opt/task-repo 2>/dev/null || cd /app
+        node -p "((require('./package.json').packageManager||'').match(/^pnpm@([^+]+)/)||[])[1]||''" 2>/dev/null
+      ) || pin=""
+      for d in /root/.local/share/pnpm/.tools/pnpm/"$pin" /root/.local/share/pnpm/.tools/pnpm/"$pin"_tmp_*
+      do
+        if [ -n "$pin" ] && [ -x "$d/bin/pnpm" ]
+        then
+          ln -sf "$d/bin/pnpm" "$d/bin/pnpx" /tmp/agent-home/.pnpm-pinned/bin/
+          break
+        fi
+      done
+      set -eu
+      mkdir -p /logs/artifacts /logs/verifier /tmp/agent-home
+      if [ -d /opt/task-repo ]
+      then
+        cp -r /opt/task-repo/. /app/
+      fi
+      if [ -d /opt/task-tmp ]
+      then
+        cp -r /opt/task-tmp/. /tmp/ 2>/dev/null || true
+      fi
+      if [ -d /root/go ] && [ ! -e /tmp/agent-home/go ]
+      then
+        mkdir -p /tmp/agent-home/go/bin
+        ln -s /root/go/bin/* /tmp/agent-home/go/bin/ 2>/dev/null || true
+        if [ -d /root/go/pkg ] && [ ! -e /tmp/agent-home/go/pkg ]
+        then
+          ln -s /root/go/pkg /tmp/agent-home/go/pkg || true
+        fi
+      fi
+      for d in .rustup .cargo .bun
+      do
+        if [ -d "/root/$d" ] && [ ! -e "/tmp/agent-home/$d" ]
+        then
+          ln -s "/root/$d" "/tmp/agent-home/$d" || true
+        fi
+      done
+      if [ -d /root/.cache/ms-playwright ] && [ ! -e /tmp/agent-home/.cache/ms-playwright ]
+      then
+        mkdir -p /tmp/agent-home/.cache
+        ln -s /root/.cache/ms-playwright /tmp/agent-home/.cache/ms-playwright || true
+      fi
+      if [ -d /opt/gocache ] && [ ! -e /tmp/gocache ]
+      then
+        cp -r /opt/gocache /tmp/gocache 2>/dev/null || true
+      fi
+      git -C /app -c safe.directory=/app rev-parse HEAD > /tmp/deepswe-base-commit
+      test -s /tmp/deepswe-base-commit
+      cat > /tmp/deepswe-preartifacts.sh <<'DEEPSWE_PREARTIFACTS'
+      deepswe_capture_model_patch() {
+        set +e
+        base=$(cat /tmp/deepswe-base-commit 2>/dev/null)
+        mkdir -p /logs/artifacts
+        tmp="/logs/artifacts/.model.patch.$$"
+        index_file=$(mktemp /tmp/deepswe-index.XXXXXX 2>/dev/null)
+        rm -f "$index_file" 2>/dev/null
+        if [ -n "$base" ] && [ -n "$index_file" ]
+        then
+          GIT_INDEX_FILE="$index_file" git -C /app -c safe.directory=/app read-tree HEAD 2>/dev/null &&
+            GIT_INDEX_FILE="$index_file" git -C /app -c safe.directory=/app add -A -- . 2>/dev/null &&
+            GIT_INDEX_FILE="$index_file" git -C /app -c safe.directory=/app diff --cached --binary "$base" -- > "$tmp" 2>/dev/null
+        fi
+        rm -f "$index_file" 2>/dev/null
+        [ -f "$tmp" ] || : > "$tmp"
+        # Preserve the submitted patch when the clean verifier captures an empty diff.
+        if [ -s "$tmp" ] || [ ! -s /logs/artifacts/model.patch ]
+        then
+          mv -f "$tmp" /logs/artifacts/model.patch 2>/dev/null
+        else
+          rm -f "$tmp" 2>/dev/null
+        fi
+        echo "[deepswe-preartifacts] captured $(wc -c < /logs/artifacts/model.patch 2>/dev/null) bytes at $(date -u +%FT%TZ)" >> /logs/artifacts/preartifacts.log 2>/dev/null
+      }
+      trap deepswe_capture_model_patch EXIT
+      DEEPSWE_PREARTIFACTS
+      test -s /tmp/deepswe-preartifacts.sh
+      printf 'if [ -d /app/node_modules/@vitest/browser ]\nthen\n  export CI=true\nfi\n' > /tmp/deepswe-verifier-env.sh
+      mkdir -p /tmp/codex-home
+      printf 'web_search = "disabled"\n' > /tmp/codex-home/config.toml
+    volume_mounts:
+      - name: data-dir
+        mount_path: /data
+      - name: varlog-dir
+        mount_path: /var/log
+    command_timeout: 10800
+    kubeconfig_path: ${HOME}/.kube/config
+    image_pull_policy: Always
+    lifecycle_timeout: 21600
+    image_pull_secrets: ${TASK_IMAGE_PULL_SECRET}
+    enable_ipv6_loopback: true
+  import_path: sandbox_k8s.harbor:K8sSandboxEnvironment
+verifier:
+  env:
+    PATH: /tmp/agent-home/.pnpm-pinned/bin:/opt/venv/bin:/tmp/agent-home/go/bin:/root/go/bin:/usr/local/go/bin:/root/.cargo/bin:/usr/local/cargo/bin:/root/.local/bin:/root/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    BASH_ENV: /tmp/deepswe-verifier-env.sh
+  import_path: harbor.verifier.verifier:Verifier

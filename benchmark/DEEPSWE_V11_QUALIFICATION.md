@@ -6,6 +6,32 @@ Routing configurations:
 - The [historical Plan/Execute configuration](#historical-planexecute-configuration) uses Sol as the planner and Luna as the executor.
 - [Stage router: Luna efficient tier with Sol capable tier](routing-profiles/deepswe-v11-stage-router-luna-sol.toml)
 
+## Hosted Harbor profiles
+
+Both snapshots use Harbor 0.13.2 on Kubernetes with prepared task images and a
+preinstalled Codex 0.154.0 bundle.
+
+- The [September 10 baseline profile](harbor-profiles/deepswe-v11-harbor-0.13.2-20260910.yaml) records
+  the Sol direct baseline setup. Its Codex config leaves hosted web search at the
+  client default.
+- The [October 6 repaired profile](harbor-profiles/deepswe-v11-harbor-0.13.2-20261006.yaml) selects the
+  task's cached pnpm version, enables IPv6 loopback, runs Vitest browser tests
+  in CI mode and explicitly disables Codex web search. Its matching hosted
+  oracle passed all 113 tasks. Use this revision for new comparisons.
+
+Both profiles restore the workspace and cached tools. Their exit hook captures
+committed and uncommitted changes with a temporary Git index. An empty capture in
+the clean verifier preserves the submitted patch. The
+[local Harbor recipe](README.md#local-harbor) uses the public task's collect hook,
+which grades only changes committed to `HEAD`.
+
+The snapshots use portable job names, model IDs and an endpoint variable. Set
+`agents[0].model_name` and `OPENAI_BASE_URL` to the provider model and endpoint
+for a direct baseline, or the route ID and Switchyard endpoint for a routed run.
+Set the reasoning effort for the experiment. The hosted runtime supplies the
+task, image and cluster variables. Allow inference traffic, deny public egress
+and enforce the hosted web-tool restriction at the gateway for closed-book runs.
+
 ## Shared settings
 
 | Setting | Value |
@@ -16,6 +42,7 @@ Routing configurations:
 | Protocol | OpenAI Responses |
 | Network | Closed book with public network access denied |
 | Agent budget | 3 hours |
+| Timeout multiplier | 2.0 |
 | Command timeout | 10,800 seconds |
 | Sandbox timeout | 8,400 seconds |
 | Lifecycle timeout | 21,600 seconds |
