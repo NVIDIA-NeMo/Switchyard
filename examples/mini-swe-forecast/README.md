@@ -1,5 +1,7 @@
 # mini-swe-agent forecasts through OpenTelemetry
 
+**Start here: [Quickstart — run the agent with forecasts and dashboards](QUICKSTART.md).**
+
 Run mini-swe-agent through Switchyard and observe a LightGBM forecast before
 each model call. The forecast uses the observed execution history and its IR
 snapshot. It predicts next-call token bands, remaining model calls and, on the

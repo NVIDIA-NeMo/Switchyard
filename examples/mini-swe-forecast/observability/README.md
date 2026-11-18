@@ -1,5 +1,7 @@
 # Predicted vs actual cost dashboards
 
+For checkpoint setup and the full launch sequence, follow the [quickstart](../QUICKSTART.md).
+
 Local Langfuse and Grafana dashboards for this example. They price each
 forecast's token bands and show predicted beside actual cost, live, per model
 call and per task.
