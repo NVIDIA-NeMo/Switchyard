@@ -336,10 +336,7 @@ Only reuse the image when you know it already contains the current Rust `switchy
 
 ## DeepSWE v1.1
 
-Run the public tasks locally with Docker Compose and either Harbor 0.26.0 or Pier 0.3.1.
-See the [published scores](../docs/benchmarks.md#deepswe) and their
-[qualification settings](DEEPSWE_V11_QUALIFICATION.md). From the Switchyard repo root,
-pin the dataset for either runner.
+Run Harbor or Pier locally with Docker Compose. From the repo root, check out the pinned dataset.
 
 ```bash
 git clone https://github.com/datacurve-ai/deep-swe benchmark/datasets/deep-swe
@@ -347,59 +344,45 @@ git -C benchmark/datasets/deep-swe checkout 0b9fabbb63b9104d678fe965e1632f2dd9ea
 task=benchmark/datasets/deep-swe/tasks/anko-default-function-arguments
 ```
 
+For routed runs, install the server with `cargo install --locked --path crates/switchyard-server`.
+See [published results](../docs/benchmarks.md#deepswe) and [qualification settings](DEEPSWE_V11_QUALIFICATION.md).
+
 ### Local Harbor
 
-Use Docker Compose on a Linux kernel with `nft_fib_inet` support. On macOS this
-applies to the Docker VM. ARM hosts need amd64 emulation. On ARM, pull the
-task's `environment.docker_image` with `docker pull --platform linux/amd64` first.
+Docker's Linux kernel needs `nft_fib_inet` support. On ARM, enable amd64 emulation
+and pull the task's `environment.docker_image` with `docker pull --platform linux/amd64`.
 
 ```bash
 uv venv --python 3.12 benchmark/.venv
 uv pip install --python benchmark/.venv/bin/python 'harbor==0.26.0'
-harbor_bin=benchmark/.venv/bin/harbor
-"$harbor_bin" run --env docker -p "$task" -a oracle -n 1
+benchmark/.venv/bin/harbor run --env docker -p "$task" -a oracle
 ```
 
-The oracle applies the reference solution. Expect reward 1 in the trial's
-`verifier/reward.json` (2/2 fail-to-pass and 119/119 pass-to-pass). Run it once
-while connected to cache the task image and Harbor's network images, then repeat
-offline. The oracle needs no model or API key.
+The oracle needs no API key. Expect reward 1 in `verifier/reward.json`.
+Run it once while connected to cache the images for offline use.
 
-For Codex, use a Responses endpoint reachable from the agent container. On a Linux
-Docker host, start Switchyard in a second terminal with `OPENROUTER_API_KEY` set.
-Bind to the Docker bridge. Anyone who can reach this listener can use your upstream key.
+To route Codex through Switchyard, set `OPENROUTER_API_KEY` in a second terminal
+on the Linux Docker host. Bind the server to the bridge to limit access to your key.
 
 ```bash
 bridge=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
-switchyard-server --config benchmark/server-configs/deepswe-single.toml \
-  --host "$bridge" --port 8080
+switchyard-server --config benchmark/server-configs/deepswe-single.toml --host "$bridge" --port 8080
 ```
 
-In the Harbor terminal, use the route ID and bridge URL. For a direct run,
-substitute the provider's model ID, endpoint and API key.
+Run Codex from the Harbor terminal.
 
 ```bash
 bridge=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
-MODEL_BASE_URL="http://${bridge}:8080/v1"
-MODEL_ID=deepswe-single
-export OPENAI_API_KEY=unused
-"$harbor_bin" run --env docker -p "$task" -a codex -m "openai/${MODEL_ID}" \
-  --base-url "$MODEL_BASE_URL" --ak version=0.154.0 \
-  --ak web_search=disabled --effort max -n 1
+OPENAI_API_KEY=unused benchmark/.venv/bin/harbor run --env docker -p "$task" -a codex \
+  -m openai/deepswe-single --base-url "http://$bridge:8080/v1" \
+  --ak version=0.154.0 --ak web_search=disabled --effort max
 ```
 
-Codex must commit its solution. The public task grades the diff from the base
-commit to `HEAD` in a fresh container. Uncommitted edits never reach the verifier.
-
-The agent can reach its inference endpoint. The verifier runs offline. For a
-closed-book run, block hosted web tools at the gateway too. For a fully offline
-run, stage Codex and point the route at a local model. The sample route uses OpenRouter.
+For a direct run, use the provider's Responses URL, model ID and key. For closed-book
+runs, also block hosted web tools at the gateway. Fully offline runs need a local model.
 
 <details>
-<summary>Stage Codex for an offline run</summary>
-
-While connected, use npm and jq on the host to stage the Linux x64 binaries
-in a directory shared with Docker.
+<summary>Stage Codex before disconnecting</summary>
 
 ```bash
 bundle_dir=$(mktemp -d "$PWD/benchmark/datasets/codex.XXXXXX")
@@ -412,94 +395,41 @@ mounts=$(jq -cn --arg d "$dist" '[
 ]')
 ```
 
-Add `--ak skip_install=true --mounts "$mounts"` to the Codex command above.
-Harbor mounts the binaries read-only in the agent container. The verifier uses
-the original task image.
+Add `--ak skip_install=true --mounts "$mounts"` to the Codex command.
 
 </details>
 
 ### Local Pier
 
-To use [the dataset's runner](https://github.com/datacurve-ai/pier), install the pinned version.
+Install [Pier](https://github.com/datacurve-ai/pier) and run the same task directly.
 
 ```bash
 uv tool install --python 3.12 --with 'harbor==0.23.0' 'datacurve-pier==0.3.1'
-```
-
-Direct upstream:
-
-```bash
 export OPENAI_API_KEY="..."
-pier run -p benchmark/datasets/deep-swe/tasks --agent mini-swe-agent --model openai/gpt-5.5
+pier run -p "$task" --agent mini-swe-agent --model openai/gpt-5.5
 ```
 
-Switchyard routing: start the server, then point the agent's OpenAI client at it through `--ae`.
-Pier's Docker environment routes all agent traffic through a policy proxy whose `Safe_ports` ACL
-only allows ports 80/443, so bind Switchyard to 443:
+For routing, start the server from the [Harbor example](#local-harbor) with
+`--port 443`. Pier's proxy allows ports 80 and 443. Binding port 443 on Linux
+may require `CAP_NET_BIND_SERVICE`. Use the Docker bridge address on Linux or
+`host.docker.internal` for a server reachable on the Docker Desktop host.
 
 ```bash
-switchyard-server --config benchmark/server-configs/deepswe-single.toml \
-  --host 0.0.0.0 --port 443
-
-pier run -p benchmark/datasets/deep-swe/tasks --agent mini-swe-agent \
-  --model openai/deepswe-single \
-  --ae OPENAI_BASE_URL=http://host.docker.internal:443/v1 \
-  --ae OPENAI_API_KEY=unused
+bridge=$(docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}')
+pier run -p "$task" --agent codex --model openai/deepswe-single \
+  --ae OPENAI_BASE_URL="http://$bridge:443/v1" --ae OPENAI_API_KEY=unused
 ```
 
-`--agent codex` reads the same `OPENAI_BASE_URL`/`OPENAI_API_KEY` pair through `--ae`:
+To use another route, change the server config and Pier's model ID together.
 
-```bash
-pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
-  --model openai/deepswe-single \
-  --ae OPENAI_BASE_URL=http://host.docker.internal:443/v1 \
-  --ae OPENAI_API_KEY=unused
-```
+- [Advisor](routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml) uses `openai/switchyard` with max effort on both models.
+- [Stage](routing-profiles/deepswe-v11-stage-router-luna-sol.toml) uses `openai/gpt-5.6-luna`.
 
-`host.docker.internal` requires Docker Desktop; on Linux, pass the host's Docker-bridge address
-instead. Binding port 443 needs elevated privileges on most Linux hosts (`sudo`, or
-`setcap 'cap_net_bind_service=+ep'` on the binary).
+The [qualification settings](DEEPSWE_V11_QUALIFICATION.md#historical-planexecute-configuration)
+link the archived Plan/Execute config. For new runs, use [Plan/Execute with Stage](../docs/routing_algorithms/stage_router_routing.md#plan-and-execute).
 
-Run the Advisor profile. It sets reasoning effort to `max` on both models:
-
-```bash
-export OPENROUTER_API_KEY="..."
-switchyard-server --config benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml \
-  --host 0.0.0.0 --port 443
-
-pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
-  --model openai/switchyard \
-  --ae OPENAI_BASE_URL=http://host.docker.internal:443/v1 \
-  --ae OPENAI_API_KEY=unused
-```
-
-The historical Plan/Execute result used the removed standalone implementation.
-See [qualification settings](DEEPSWE_V11_QUALIFICATION.md) for its archived
-configuration. For new runs, use the
-[Plan/Execute configuration for Stage](../docs/routing_algorithms/stage_router_routing.md#plan-and-execute).
-
-Run the Stage profile. Its public route ID is `gpt-5.6-luna`:
-
-```bash
-export OPENROUTER_API_KEY="..."
-switchyard-server \
-  --config benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml \
-  --host 0.0.0.0 --port 443
-
-pier run -p benchmark/datasets/deep-swe/tasks --agent codex \
-  --model openai/gpt-5.6-luna \
-  --ae OPENAI_BASE_URL=http://host.docker.internal:443/v1 \
-  --ae OPENAI_API_KEY=unused
-```
-
-Smoke subset:
-
-```bash
-pier run -p benchmark/datasets/deep-swe/tasks --agent mini-swe-agent \
-  --model openai/gpt-5.5 --n-tasks 1 --sample-seed 0
-```
-
-Results land under `jobs/<job-name>/`, per Pier's own layout.
+For the full corpus, set `-p benchmark/datasets/deep-swe/tasks`. To sample one
+task from that directory, add `--n-tasks 1 --sample-seed 0`. Results go to `jobs/<job-name>/`.
 
 ## Troubleshooting
 
