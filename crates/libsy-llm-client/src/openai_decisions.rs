@@ -82,6 +82,7 @@ impl RoutedDecisionClient for OpenAiDecisionClient {
             });
         }
         crate::payload_capture::record("response", || String::from_utf8_lossy(&body));
+        tracing::trace!(body = %String::from_utf8_lossy(&body), "OpenAI Decisions decision response");
         let response: WireResponse =
             serde_json::from_slice(&body).map_err(|source| LlmClientError::InvalidResponse {
                 source: Box::new(source),
