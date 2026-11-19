@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use futures::{StreamExt, stream::BoxStream};
 use pyo3::create_exception;
@@ -14,6 +14,7 @@ use switchyard_protocol::{LlmClientError, LlmResponseStreamEvent, LlmStreamError
 use switchyard_translation::{
     AggLlmResponse, LlmRequest, ProviderExtensions, TranslationEngine,
     TranslationError as CoreTranslationError, TranslationOutput, TranslationPolicy,
+    remap_reasoning_effort,
 };
 
 use tokio::sync::Mutex;
@@ -136,6 +137,19 @@ impl PyTranslationEngine {
                 .translate_request(source, target, &body, &self.default_policy)
         });
         translation_output(py, output)
+    }
+
+    /// Copy a provider body, replacing its reasoning effort if it appears in the map.
+    fn remap_reasoning_effort(
+        &self,
+        py: Python<'_>,
+        format: &str,
+        body: &Bound<'_, PyDict>,
+        effort_map: BTreeMap<String, String>,
+    ) -> PyResult<Py<PyAny>> {
+        let mut body = Value::Object(from_python(body.as_any())?);
+        remap_reasoning_effort(&mut body, format, &effort_map);
+        to_python(py, &body)
     }
 
     /// Translate a complete response, optionally restoring tool details from request extensions.

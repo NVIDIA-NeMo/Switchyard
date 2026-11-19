@@ -20,7 +20,7 @@ use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, Metadata,
     ModelId, Request, Response, RoutedLlmClient,
 };
-use switchyard_translation::{TranslationError, WireFormat, decode_stream};
+use switchyard_translation::{TranslationError, WireFormat, decode_stream, remap_reasoning_effort};
 use tokio::time::Instant;
 use tracing::Instrument;
 
@@ -64,6 +64,7 @@ pub struct ModelConfig {
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
     responses_reasoning: crate::ResponsesReasoningPolicy,
+    reasoning_effort_map: BTreeMap<String, String>,
 }
 
 impl ModelConfig {
@@ -79,6 +80,7 @@ impl ModelConfig {
             default_backend,
             other_backends,
             responses_reasoning: crate::ResponsesReasoningPolicy::default(),
+            reasoning_effort_map: BTreeMap::new(),
         }
     }
 
@@ -86,6 +88,13 @@ impl ModelConfig {
     #[must_use]
     pub fn with_responses_reasoning(mut self, policy: crate::ResponsesReasoningPolicy) -> Self {
         self.responses_reasoning = policy;
+        self
+    }
+
+    /// Remaps matching caller efforts for this target. A backend's fixed effort takes precedence.
+    #[must_use]
+    pub fn with_reasoning_effort_map(mut self, effort_map: BTreeMap<String, String>) -> Self {
+        self.reasoning_effort_map = effort_map;
         self
     }
 
@@ -363,6 +372,17 @@ impl TranslatingLlmClient {
             strip_unsigned_thinking_blocks(&mut body);
         }
         omit_configured_body_fields(&mut body, backend.omit_body_fields());
+        let target_config = self.configs_by_target.get(target_name);
+        if matches!(endpoint, UpstreamEndpoint::Completion)
+            && backend.reasoning_effort().is_none()
+            && let Some(config) = target_config
+        {
+            remap_reasoning_effort(
+                &mut body,
+                wire_format.as_str(),
+                &config.reasoning_effort_map,
+            );
+        }
         merge_extra_body(&mut body, backend.extra_body());
         if matches!(backend, Backend::OpenAiResponses(_)) {
             let outbound_model_id = body
@@ -370,8 +390,7 @@ impl TranslatingLlmClient {
                 .and_then(Value::as_str)
                 .unwrap_or(provider_model_id)
                 .to_owned();
-            self.configs_by_target
-                .get(target_name)
+            target_config
                 .map(|config| config.responses_reasoning)
                 .unwrap_or_default()
                 .normalize(&mut body, backend.base_url(), &outbound_model_id);
@@ -2427,6 +2446,61 @@ mod tests {
                 Some(&ModelId::from("gpt")),
             )
             .await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reasoning_effort_map_only_rewrites_matching_effort_for_the_selected_target()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "1", "model": "gpt",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+                "usage": {}
+            })))
+            .expect(4)
+            .mount(&server)
+            .await;
+        let backend = Backend::OpenAiChat(config(&format!("{}/v1", server.uri())));
+        let models = [
+            ModelConfig::new("mapped", backend.clone(), None)
+                .with_provider_model("gpt")
+                .with_reasoning_effort_map(BTreeMap::from([("minimal".into(), "low".into())])),
+            ModelConfig::new("unmapped", backend, None).with_provider_model("gpt"),
+        ];
+        let client = TranslatingLlmClient::new(&models)?;
+        let cases = [
+            ("mapped", Some("minimal"), Some("low")),
+            ("mapped", Some("high"), Some("high")),
+            ("mapped", None, None),
+            ("unmapped", Some("minimal"), Some("minimal")),
+        ];
+        for (target, effort, _) in cases {
+            let mut body = json!({
+                "model": "client-facing",
+                "messages": [{"role": "user", "content": "hi"}]
+            });
+            if let Some(effort) = effort {
+                body["reasoning_effort"] = json!(effort);
+            }
+            client
+                .call_rewrite_model(
+                    wire_request(body, None, WireFormat::OpenAiChat)?,
+                    Some(&ModelId::from(target)),
+                )
+                .await?;
+        }
+        let calls = server.received_requests().await.ok_or("missing requests")?;
+        for (call, (_, _, expected)) in calls.iter().zip(cases) {
+            let body: Value = serde_json::from_slice(&call.body)?;
+            assert_eq!(body["model"], "gpt");
+            assert_eq!(
+                body.get("reasoning_effort"),
+                expected.map(Value::from).as_ref()
+            );
+        }
         Ok(())
     }
 

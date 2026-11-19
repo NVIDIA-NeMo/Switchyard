@@ -32,7 +32,7 @@ pub use format::*;
 pub use helpers::*;
 pub use llm::*;
 pub use policy::*;
-pub use request_edit::{append_note, prepend_system_prompt};
+pub use request_edit::{append_note, prepend_system_prompt, remap_reasoning_effort};
 pub use stream::*;
 pub use util::{
     PRESERVATION_METADATA_KEY, normalize_anthropic_tool_use_ids, prepare_request_for_target,

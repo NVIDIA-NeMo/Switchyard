@@ -14,7 +14,7 @@
     body = result["body"]
     diagnostics = result["diagnostics"]
 
-All methods accept a WireFormat member or its string value for each format.
+Methods accept format names as strings or WireFormat members.
 Bodies and IR values must be dictionaries containing JSON-compatible values.
 Buffered translate and encode results have "body" and "diagnostics" keys. decode_request
 returns "request" and "diagnostics" keys; decode_response returns "response" and
@@ -23,9 +23,21 @@ Warning, or Error), code, message, source, target, and path; the last three fiel
 may be None. The default policy allows lossy conversions with diagnostics.
 
 Incorrect top-level argument types raise TypeError. Malformed IR dictionaries raise
-ValueError during deserialization. Unknown formats and translation
-failures raise TranslationError, whose kind and details attributes
+ValueError during deserialization. Translation calls raise TranslationError for
+unknown formats and conversion failures. The kind and details attributes
 identify the failure. str(error) provides a human-readable message.
+
+After choosing an upstream model, call remap_reasoning_effort with the outgoing
+body and that model's map of requested efforts to upstream values.
+
+    outgoing = engine.remap_reasoning_effort(
+        "gemini_generate_content", gemini_body, {"MINIMAL": "LOW"}
+    )
+
+The method returns a new body dictionary. Map keys are case-sensitive. An omitted
+or unmapped effort stays as supplied. The method accepts openai_chat, openai_responses,
+anthropic_messages, and gemini_generate_content. Other formats return a copy of the
+body as supplied. Gemini support here covers just the thinkingLevel request edit.
 
 To restore Responses tool namespaces and custom tool calls, pass the original
 decoded request's extensions when translating the response::

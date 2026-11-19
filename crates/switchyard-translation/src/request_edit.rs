@@ -1,10 +1,38 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Request edits update normalized content and preserved provider bodies together.
+//! Edits to normalized requests and provider request bodies.
+
+use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
 use switchyard_protocol::{ContentBlock, InstructionBlock, LlmRequest, Message, Role, WireFormat};
+
+/// Rewrites a caller-supplied reasoning effort using the selected target's map.
+///
+/// Apply this to the outgoing provider body after translation. Supported formats
+/// are `openai_chat`, `openai_responses`, `anthropic_messages`, and
+/// `gemini_generate_content`. Unknown formats, absent efforts, and efforts with
+/// no matching key leave the body unchanged. Keys are case-sensitive.
+pub fn remap_reasoning_effort(
+    body: &mut Value,
+    format: &str,
+    effort_map: &BTreeMap<String, String>,
+) {
+    let pointer = match format {
+        "openai_chat" => "/reasoning_effort",
+        "openai_responses" => "/reasoning/effort",
+        "anthropic_messages" => "/output_config/effort",
+        "gemini_generate_content" => "/generationConfig/thinkingConfig/thinkingLevel",
+        _ => return,
+    };
+    let Some(effort) = body.pointer_mut(pointer) else {
+        return;
+    };
+    if let Some(mapped) = effort.as_str().and_then(|effort| effort_map.get(effort)) {
+        *effort = Value::String(mapped.clone());
+    }
+}
 
 /// This function appends temporary guidance and updates preserved provider bodies.
 /// It removes bodies it cannot edit so encoding rebuilds them from the updated request.
