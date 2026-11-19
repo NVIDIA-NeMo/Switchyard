@@ -1111,7 +1111,7 @@
 <a href=#1111 id=1111 data-nosnippet>1111</a>    </span><span class="kw">fn </span>prepare_completion_request(<span class="kw-2">&amp;</span><span class="self">self</span>, <span class="kw-2">mut </span>request: Request, target: <span class="kw-2">&amp;</span>ModelId) -&gt; Request {
 <a href=#1112 id=1112 data-nosnippet>1112</a>        prepare_request_for_target(<span class="kw-2">&amp;mut </span>request.llm_request, target);
 <a href=#1113 id=1113 data-nosnippet>1113</a>        <span class="kw">if let </span><span class="prelude-val">Some</span>(prompt) = <span class="self">self</span>.inner.target_prompts.get(target) {
-<a href=#1114 id=1114 data-nosnippet>1114</a>            prepend_system_prompt(<span class="kw-2">&amp;mut </span>request, prompt);
+<a href=#1114 id=1114 data-nosnippet>1114</a>            prepend_system_prompt(<span class="kw-2">&amp;mut </span>request.llm_request, prompt);
 <a href=#1115 id=1115 data-nosnippet>1115</a>        }
 <a href=#1116 id=1116 data-nosnippet>1116</a>        request
 <a href=#1117 id=1117 data-nosnippet>1117</a>    }
@@ -1122,7 +1122,7 @@
 <a href=#1122 id=1122 data-nosnippet>1122</a>        <span class="kw">if </span><span class="self">self</span>.inner.routing_answer_target.as_ref() == <span class="prelude-val">Some</span>(target)
 <a href=#1123 id=1123 data-nosnippet>1123</a>            &amp;&amp; <span class="kw">let </span><span class="prelude-val">Some</span>(prompt) = <span class="self">self</span>.inner.target_prompts.get(target)
 <a href=#1124 id=1124 data-nosnippet>1124</a>        {
-<a href=#1125 id=1125 data-nosnippet>1125</a>            prepend_system_prompt(<span class="kw-2">&amp;mut </span>request, prompt);
+<a href=#1125 id=1125 data-nosnippet>1125</a>            prepend_system_prompt(<span class="kw-2">&amp;mut </span>request.llm_request, prompt);
 <a href=#1126 id=1126 data-nosnippet>1126</a>        }
 <a href=#1127 id=1127 data-nosnippet>1127</a>        request
 <a href=#1128 id=1128 data-nosnippet>1128</a>    }

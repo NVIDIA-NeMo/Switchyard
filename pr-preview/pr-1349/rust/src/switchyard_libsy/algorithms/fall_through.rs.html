@@ -177,12 +177,12 @@
 <a href=#177 id=177 data-nosnippet>177</a>                        <span class="kw">let </span><span class="kw-2">mut </span>request = outcome.request.clone();
 <a href=#178 id=178 data-nosnippet>178</a>                        request.llm_request.model = <span class="prelude-val">Some</span>(target.to_string());
 <a href=#179 id=179 data-nosnippet>179</a>                        <span class="kw">if let </span><span class="prelude-val">Some</span>(prompt) = prompts.get(target) {
-<a href=#180 id=180 data-nosnippet>180</a>                            prepend_system_prompt(<span class="kw-2">&amp;mut </span>request, prompt);
+<a href=#180 id=180 data-nosnippet>180</a>                            prepend_system_prompt(<span class="kw-2">&amp;mut </span>request.llm_request, prompt);
 <a href=#181 id=181 data-nosnippet>181</a>                        }
 <a href=#182 id=182 data-nosnippet>182</a>                        outcome.candidate_requests.insert(target.clone(), request);
 <a href=#183 id=183 data-nosnippet>183</a>                    }
 <a href=#184 id=184 data-nosnippet>184</a>                    <span class="kw">if let </span><span class="prelude-val">Some</span>(prompt) = prompts.get(<span class="kw-2">&amp;</span>outcome.selected_model_ids[<span class="number">0</span>]) {
-<a href=#185 id=185 data-nosnippet>185</a>                        prepend_system_prompt(<span class="kw-2">&amp;mut </span>outcome.request, prompt);
+<a href=#185 id=185 data-nosnippet>185</a>                        prepend_system_prompt(<span class="kw-2">&amp;mut </span>outcome.request.llm_request, prompt);
 <a href=#186 id=186 data-nosnippet>186</a>                    }
 <a href=#187 id=187 data-nosnippet>187</a>                }
 <a href=#188 id=188 data-nosnippet>188</a>                <span class="prelude-val">Ok</span>(outcome)
@@ -519,7 +519,7 @@
 <a href=#519 id=519 data-nosnippet>519</a>        </span><span class="kw">impl </span>Processor <span class="kw">for </span>Noting {
 <a href=#520 id=520 data-nosnippet>520</a>            <span class="kw">async fn </span>process(<span class="kw-2">&amp;</span><span class="self">self</span>, _state: <span class="kw-2">&amp;mut </span>State, event: Event&lt;<span class="lifetime">'_</span>&gt;) -&gt; <span class="prelude-ty">Result</span>&lt;()&gt; {
 <a href=#521 id=521 data-nosnippet>521</a>                <span class="kw">if let </span>Event::Decision { request, .. } = event {
-<a href=#522 id=522 data-nosnippet>522</a>                    prompts::append_note(request, NOTE);
+<a href=#522 id=522 data-nosnippet>522</a>                    prompts::append_note(<span class="kw-2">&amp;mut </span>request.llm_request, NOTE);
 <a href=#523 id=523 data-nosnippet>523</a>                }
 <a href=#524 id=524 data-nosnippet>524</a>                <span class="prelude-val">Ok</span>(())
 <a href=#525 id=525 data-nosnippet>525</a>            }
