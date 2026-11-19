@@ -6,10 +6,7 @@
 use serde_json::{Map, Value};
 
 use crate::error::{Result, TranslationError};
-use crate::llm::{ContentBlock, LlmRequest, Tool, ToolChoice};
-
-// Internal provenance survives mutations that invalidate exact request replay.
-pub(crate) const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
+use crate::llm::{ANTHROPIC_REQUEST_KEY, ContentBlock, LlmRequest, Tool, ToolChoice};
 
 /// Scales temperature between ranges with a minimum of zero.
 pub(crate) fn scale_temperature(temperature: f64, source_max: f64, target_max: f64) -> f64 {

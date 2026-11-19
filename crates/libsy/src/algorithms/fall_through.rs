@@ -177,12 +177,12 @@ impl FallThrough {
                         let mut request = outcome.request.clone();
                         request.llm_request.model = Some(target.to_string());
                         if let Some(prompt) = prompts.get(target) {
-                            prepend_system_prompt(&mut request, prompt);
+                            prepend_system_prompt(&mut request.llm_request, prompt);
                         }
                         outcome.candidate_requests.insert(target.clone(), request);
                     }
                     if let Some(prompt) = prompts.get(&outcome.selected_model_ids[0]) {
-                        prepend_system_prompt(&mut outcome.request, prompt);
+                        prepend_system_prompt(&mut outcome.request.llm_request, prompt);
                     }
                 }
                 Ok(outcome)
@@ -519,7 +519,7 @@ mod tests {
         impl Processor for Noting {
             async fn process(&self, _state: &mut State, event: Event<'_>) -> Result<()> {
                 if let Event::Decision { request, .. } = event {
-                    prompts::append_note(request, NOTE);
+                    prompts::append_note(&mut request.llm_request, NOTE);
                 }
                 Ok(())
             }

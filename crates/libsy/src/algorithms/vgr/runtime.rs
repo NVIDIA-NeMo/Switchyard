@@ -402,7 +402,7 @@ impl VgrClassifier {
         set_flag(state, EFFICIENT_SERVED_KEY, false);
         let note = handoff_note(unverified_final);
         if !(self.config.compact_handoff && super::compaction::compact(request, state, &note)) {
-            append_note(request, &note);
+            append_note(&mut request.llm_request, &note);
         }
     }
 

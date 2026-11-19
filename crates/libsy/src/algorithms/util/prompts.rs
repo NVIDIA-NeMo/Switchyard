@@ -4,13 +4,14 @@
 //! Router guidance edits requests and keeps preserved provider bodies in sync.
 
 use serde_json::{Map, Value, json};
-use switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role, WireFormat};
+use switchyard_protocol::{
+    ANTHROPIC_REQUEST_KEY, ContentBlock, InstructionBlock, LlmRequest, Message, Role, WireFormat,
+};
 
-/// This helper prepends a system prompt and updates supported preserved provider bodies.
+/// Prepends a system prompt and updates supported preserved provider bodies.
 /// It removes bodies it cannot edit so encoding rebuilds them from the updated request.
 /// Call it once per candidate on a request that has not already received a target prompt.
-pub fn prepend_system_prompt(request: &mut Request, prompt: &str) {
-    let request = &mut request.llm_request;
+pub fn prepend_system_prompt(request: &mut LlmRequest, prompt: &str) {
     request.instructions.insert(
         0,
         InstructionBlock {
@@ -24,19 +25,20 @@ pub fn prepend_system_prompt(request: &mut Request, prompt: &str) {
         let Some(body) = body.as_object_mut() else {
             return false;
         };
-        match format.as_str() {
-            "openai_chat" => prepend_openai_chat_system(body, prompt),
-            "openai_responses" => prepend_text_field(body, "instructions", prompt),
-            "anthropic_messages" => {
-                body.remove("switchyard_anthropic_request");
-                prepend_anthropic_system(body, prompt)
-            }
-            _ => false,
+        let format = format.as_str();
+        if format == WireFormat::OpenAiChat.as_str() {
+            prepend_openai_chat_system(body, prompt)
+        } else if format == WireFormat::OpenAiResponses.as_str() {
+            prepend_text_field(body, "instructions", prompt)
+        } else if format == WireFormat::AnthropicMessages.as_str() {
+            body.remove(ANTHROPIC_REQUEST_KEY);
+            prepend_anthropic_system(body, prompt)
+        } else {
+            false
         }
     });
 }
 
-// This helper inserts a system message while keeping the existing Chat messages intact.
 fn prepend_openai_chat_system(body: &mut Map<String, Value>, prompt: &str) -> bool {
     let message = json!({"role": "system", "content": prompt});
     match body.get_mut("messages") {
@@ -64,7 +66,6 @@ fn prepend_text_field(body: &mut Map<String, Value>, key: &str, prompt: &str) ->
     true
 }
 
-// This helper retains existing Anthropic system blocks when it prepends a prompt.
 fn prepend_anthropic_system(body: &mut Map<String, Value>, prompt: &str) -> bool {
     if let Some(Value::Array(blocks)) = body.get_mut("system") {
         blocks.insert(0, json!({"type":"text","text":prompt}));
@@ -74,10 +75,9 @@ fn prepend_anthropic_system(body: &mut Map<String, Value>, prompt: &str) -> bool
     }
 }
 
-/// This helper appends temporary guidance and updates preserved provider bodies.
+/// Appends temporary guidance and updates preserved provider bodies.
 /// It removes bodies it cannot edit so encoding rebuilds them from the updated request.
-pub(crate) fn append_note(request: &mut Request, note: &str) {
-    let request = &mut request.llm_request;
+pub(crate) fn append_note(request: &mut LlmRequest, note: &str) {
     // A separate message preserves the caller's final message boundary for OpenAI caching.
     request.messages.push(Message::text(Role::User, note));
     request.temporary_note_count += 1;
@@ -85,10 +85,15 @@ pub(crate) fn append_note(request: &mut Request, note: &str) {
         let Some(body) = body.as_object_mut() else {
             return false;
         };
-        let (key, content_type) = match format.as_str() {
-            "openai_chat" | "anthropic_messages" => ("messages", "text"),
-            "openai_responses" => ("input", "input_text"),
-            _ => return false,
+        let format = format.as_str();
+        let (key, content_type) = if format == WireFormat::OpenAiChat.as_str()
+            || format == WireFormat::AnthropicMessages.as_str()
+        {
+            ("messages", "text")
+        } else if format == WireFormat::OpenAiResponses.as_str() {
+            ("input", "input_text")
+        } else {
+            return false;
         };
         // Responses also accepts a string as a single user input.
         if key == "input"
@@ -103,7 +108,7 @@ pub(crate) fn append_note(request: &mut Request, note: &str) {
         let Some(messages) = body.get_mut(key).and_then(Value::as_array_mut) else {
             return false;
         };
-        if format.as_str() == WireFormat::AnthropicMessages.as_str()
+        if format == WireFormat::AnthropicMessages.as_str()
             && let Some(last) = messages.last_mut()
             && last.get("role").and_then(Value::as_str) == Some("user")
         {
@@ -126,11 +131,11 @@ pub(crate) fn append_note(request: &mut Request, note: &str) {
     });
 }
 
-/// This helper clears preserved bodies and the note count after other conversation edits.
+/// Clears preserved bodies and the note count after other conversation edits.
 /// Subsequent encoding uses the edited request instead of replaying stale provider bodies.
-pub(crate) fn drop_exact_replay(request: &mut Request) {
-    request.llm_request.preservation.requests.clear();
-    request.llm_request.temporary_note_count = 0;
+pub(crate) fn drop_exact_replay(request: &mut LlmRequest) {
+    request.preservation.requests.clear();
+    request.temporary_note_count = 0;
 }
 
 #[cfg(test)]
@@ -180,14 +185,9 @@ mod tests {
             ),
         ];
         for (format, original) in fixtures {
-            let mut request = Request {
-                llm_request: engine.decode_request(format, &original, &policy)?.request,
-                ..Default::default()
-            };
+            let mut request = engine.decode_request(format, &original, &policy)?.request;
             append_note(&mut request, "Reassess the failure.");
-            let encoded = engine
-                .encode_request(format, &request.llm_request, &policy)?
-                .body;
+            let encoded = engine.encode_request(format, &request, &policy)?.body;
             let mut expected = original.clone();
             match format {
                 WireFormat::OpenAiChat => expected["messages"].as_array_mut().ok_or("messages")?.push(json!({"role":"user","content":[{"type":"text","text":"Reassess the failure."}]})),
@@ -196,9 +196,7 @@ mod tests {
             }
             assert_eq!(encoded, expected, "{format}: only the note may change");
             prepend_system_prompt(&mut request, "Use the capable tier.");
-            let edited = engine
-                .encode_request(format, &request.llm_request, &policy)?
-                .body;
+            let edited = engine.encode_request(format, &request, &policy)?.body;
             // The system prompt edit must retain the earlier note and all conversation and tool items.
             let key = if format == WireFormat::OpenAiResponses {
                 "input"
@@ -240,15 +238,10 @@ mod tests {
                 "input",
             ),
         ] {
-            let mut request = Request {
-                llm_request: engine.decode_request(format, &body, &policy)?.request,
-                ..Default::default()
-            };
+            let mut request = engine.decode_request(format, &body, &policy)?.request;
             append_note(&mut request, "note one");
             append_note(&mut request, "note two");
-            let encoded = engine
-                .encode_request(format, &request.llm_request, &policy)?
-                .body;
+            let encoded = engine.encode_request(format, &request, &policy)?.body;
             let items = encoded[key].as_array().ok_or("items")?;
             if body[key].is_array() {
                 let original = body[key].as_array().ok_or("original")?;
@@ -266,31 +259,25 @@ mod tests {
         let engine = TranslationEngine::default();
         let policy = TranslationPolicy::default();
         let source = json!({"model":"m","messages":[{"role":"user","content":"original task"}]});
-        let mut request = Request {
-            llm_request: engine
-                .decode_request(WireFormat::OpenAiChat, &source, &policy)?
-                .request,
-            ..Default::default()
-        };
+        let mut request = engine
+            .decode_request(WireFormat::OpenAiChat, &source, &policy)?
+            .request;
         request
-            .llm_request
             .preservation
             .requests
             .insert("custom".into(), json!({"messages":"unsupported"}));
-        request.llm_request.preservation.requests.insert(
+        request.preservation.requests.insert(
             WireFormat::OpenAiChat.into(),
             json!({"model":"m","messages":"unsupported"}),
         );
         append_note(&mut request, "reassess the failure");
-        assert!(request.llm_request.preservation.requests.is_empty());
+        assert!(request.preservation.requests.is_empty());
         for target in [
             WireFormat::OpenAiChat,
             WireFormat::OpenAiResponses,
             WireFormat::AnthropicMessages,
         ] {
-            let body = engine
-                .encode_request(target, &request.llm_request, &policy)?
-                .body;
+            let body = engine.encode_request(target, &request, &policy)?.body;
             let decoded = engine.decode_request(target, &body, &policy)?.request;
             let text: Vec<_> = decoded
                 .messages

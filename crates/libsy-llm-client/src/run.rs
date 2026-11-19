@@ -1111,7 +1111,7 @@ impl ClientRouter {
     fn prepare_completion_request(&self, mut request: Request, target: &ModelId) -> Request {
         prepare_request_for_target(&mut request.llm_request, target);
         if let Some(prompt) = self.inner.target_prompts.get(target) {
-            prepend_system_prompt(&mut request, prompt);
+            prepend_system_prompt(&mut request.llm_request, prompt);
         }
         request
     }
@@ -1122,7 +1122,7 @@ impl ClientRouter {
         if self.inner.routing_answer_target.as_ref() == Some(target)
             && let Some(prompt) = self.inner.target_prompts.get(target)
         {
-            prepend_system_prompt(&mut request, prompt);
+            prepend_system_prompt(&mut request.llm_request, prompt);
         }
         request
     }
