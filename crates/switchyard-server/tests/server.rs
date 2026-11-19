@@ -6800,3 +6800,104 @@ bounded_efficient = false
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn vgr_anthropic_pdfs_reach_responses_cloud_with_a_filename() -> TestResult {
+    let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let upstream = Router::new()
+        .route("/v1/chat/completions", post(|State(calls): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<Value>| async move {
+            calls.lock().await.push(body);
+            (StatusCode::BAD_REQUEST, Json(json!({"error": {"message": "unsupported content[].type"}})))
+        }))
+        .route("/v1/responses", post(|State(calls): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<Value>| async move {
+            calls.lock().await.push(body.clone());
+            let file = &body["input"][0]["content"][1];
+            if file["filename"] != "document.pdf" {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": {"message": "PDF file_data requires a PDF filename"}}))).into_response();
+            }
+            assert_eq!(file["type"], "input_file");
+            assert_eq!(file["file_data"], "data:application/pdf;base64,JVBERi0xLjQK");
+            let response = responses_body("resp_pdf", "cloud", "$482.17");
+            if body["stream"] == true {
+                let mut created = response.clone();
+                created["status"] = json!("in_progress");
+                created["output"] = json!([]);
+                let events = [
+                    json!({"type": "response.created", "response": created}),
+                    json!({"type": "response.output_text.delta", "output_index": 0, "delta": "$482.17"}),
+                    json!({"type": "response.completed", "response": response}),
+                ];
+                return Sse::new(futures_util::stream::iter(events.into_iter().map(|event| {
+                    Ok::<Event, Infallible>(Event::default().event(event["type"].as_str().unwrap_or_default()).data(event.to_string()))
+                }))).into_response();
+            }
+            Json(response).into_response()
+        }))
+        .with_state(calls.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}/v1", listener.local_addr()?);
+    let task = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let upstream = MockUpstream {
+        base_url,
+        calls: calls.clone(),
+        task,
+    };
+    let base_url = &upstream.base_url;
+    for enabled in [false, true] {
+        for stream in [false, true] {
+            calls.lock().await.clear();
+            let app = build_switchyard_router(load_test_config(&format!(
+                r#"
+schema_version = 1
+[llm_clients.local]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 0
+[llm_clients.cloud]
+format = "openai_responses"
+base_url = "{base_url}"
+max_retries = 0
+[targets]
+efficient = {{ id = "efficient", llm_client = "local" }}
+capable = {{ id = "cloud", llm_client = "cloud" }}
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+efficient_target = "efficient"
+capable_target = "capable"
+mode = "evaluate"
+efficient_supports_attachments = {enabled}
+"#
+            ))?);
+            let response = send(&app, "POST", "/v1/messages", Some(json!({
+                "model": "switchyard/vgr", "max_tokens": 64, "stream": stream,
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "What is the total due?"},
+                    {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQK"}}
+                ]}]
+            }))).await?;
+            assert_eq!(
+                response.status,
+                StatusCode::OK,
+                "enabled={enabled}, stream={stream}: {}",
+                response.text()?
+            );
+            assert!(response.text()?.contains("$482.17"));
+            let models: Vec<_> = calls
+                .lock()
+                .await
+                .iter()
+                .map(|call| call["model"].as_str().unwrap().to_owned())
+                .collect();
+            assert_eq!(
+                models,
+                if enabled {
+                    vec!["efficient", "cloud"]
+                } else {
+                    vec!["cloud"]
+                }
+            );
+        }
+    }
+    Ok(())
+}
