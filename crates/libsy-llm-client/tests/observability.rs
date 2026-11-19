@@ -1627,6 +1627,95 @@ impl RoutedLlmClient for HostErrorClient {
     }
 }
 
+// A provider's context-window message can quote the request back.
+struct ContextWindowClient {
+    stream: bool,
+}
+
+#[async_trait]
+impl RoutedLlmClient for ContextWindowClient {
+    async fn call(&self, request: Request) -> Result<Response, LlmClientError> {
+        let error = LlmClientError::ContextWindowExceeded {
+            model: request.model_id().unwrap_or_default(),
+            message: LEAKED_CONTENT.to_string(),
+        };
+        if !self.stream {
+            return Err(error);
+        }
+        Ok(Response {
+            llm_response: LlmResponse::Stream(futures::stream::iter([Err(error)]).boxed()),
+            metadata: None,
+            upstream_headers: http::HeaderMap::new(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn context_window_message_is_redacted_from_the_client_call_span() {
+    let _guard = serialize_test().lock().await;
+    let (store, _, _, _, _) = telemetry();
+    const MODEL: &str = "obs-context-window-model";
+    let result = run(
+        algo("obs-context-window-algo", MODEL),
+        Arc::new(ContextWindowClient { stream: false }),
+        request_with_metadata("obs-context-window-session", "obs-context-window-corr"),
+    )
+    .await;
+    // The caller still gets the complete typed error.
+    assert!(matches!(
+        result,
+        Err(LibsyError::ClientCall {
+            source: LlmClientError::ContextWindowExceeded { message, .. },
+            ..
+        }) if message == LEAKED_CONTENT
+    ));
+
+    let spans = store.spans();
+    let client_span = find_span(&spans, "libsy.client_call", "selected_model", MODEL);
+    assert_eq!(
+        client_span.fields.get("error.type").map(String::as_str),
+        Some("context_window_exceeded")
+    );
+    let error = client_span
+        .fields
+        .get("error")
+        .map(String::as_str)
+        .unwrap_or("");
+    assert!(error.contains("context window exceeded"), "{client_span:?}");
+    assert!(
+        !format!("{client_span:?}").contains(LEAKED_CONTENT),
+        "{client_span:?}"
+    );
+}
+
+#[tokio::test]
+async fn streamed_context_window_message_is_redacted_from_the_client_call_span() {
+    let _guard = serialize_test().lock().await;
+    let (_, _, _, exporter, _) = telemetry();
+    const MODEL: &str = "routing-context-window-stream";
+    let mut request = request_with_metadata(MODEL, MODEL);
+    request.llm_request.stream = true;
+    assert!(
+        run(
+            Arc::new(RoutingCallAlgo {
+                name: MODEL.into(),
+                target: MODEL.into()
+            }),
+            Arc::new(ContextWindowClient { stream: true }),
+            request,
+        )
+        .await
+        .is_err()
+    );
+    let call = find_otel_span(exporter, &format!("chat {MODEL}"), MODEL);
+    let attributes = format!("{:?}", call.attributes);
+    assert!(
+        attributes.contains("context_window_exceeded"),
+        "{attributes}"
+    );
+    assert!(!attributes.contains(LEAKED_CONTENT), "{attributes}");
+}
+
 #[tokio::test]
 async fn streamed_usage_updates_the_client_call_span() -> switchyard_libsy::Result<()> {
     let _guard = serialize_test().lock().await;

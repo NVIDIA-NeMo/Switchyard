@@ -78,6 +78,16 @@ pub(crate) fn observe_client_call(result: Result<Response>) -> Result<Response> 
                     ),
                 ),
                 LibsyError::ClientCall {
+                    target,
+                    source: LlmClientError::ContextWindowExceeded { .. },
+                } => record_client_error(
+                    &span,
+                    &error_type,
+                    &format_args!(
+                        "client call to target {target:?} failed: context window exceeded"
+                    ),
+                ),
+                LibsyError::ClientCall {
                     source: LlmClientError::Host { .. },
                     ..
                 } => record_host_error(&span),
@@ -300,6 +310,11 @@ impl ClientStreamObserver {
                         &self.span,
                         &error_type,
                         &format_args!("upstream HTTP {}", status.as_u16()),
+                    ),
+                    LlmClientError::ContextWindowExceeded { model, .. } => record_client_error(
+                        &self.span,
+                        &error_type,
+                        &format_args!("context window exceeded for model {model}"),
                     ),
                     _ => record_client_error(&self.span, &error_type, error),
                 }
