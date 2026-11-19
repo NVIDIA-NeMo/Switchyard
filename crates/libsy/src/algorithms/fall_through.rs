@@ -27,6 +27,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::algorithms::util::prompts::prepend_system_prompt;
 use crate::core::algorithm::{self, Algorithm, AnswerSummary, Driver};
 use crate::core::classifier::{Classifier, Score};
 use crate::core::processor::{Event, Processor};
@@ -176,18 +177,12 @@ impl FallThrough {
                         let mut request = outcome.request.clone();
                         request.llm_request.model = Some(target.to_string());
                         if let Some(prompt) = prompts.get(target) {
-                            switchyard_translation::prepend_system_prompt(
-                                &mut request.llm_request,
-                                prompt,
-                            );
+                            prepend_system_prompt(&mut request, prompt);
                         }
                         outcome.candidate_requests.insert(target.clone(), request);
                     }
                     if let Some(prompt) = prompts.get(&outcome.selected_model_ids[0]) {
-                        switchyard_translation::prepend_system_prompt(
-                            &mut outcome.request.llm_request,
-                            prompt,
-                        );
+                        prepend_system_prompt(&mut outcome.request, prompt);
                     }
                 }
                 Ok(outcome)

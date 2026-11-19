@@ -1,13 +1,129 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Router guidance uses the shared request edits so preserved provider content stays intact.
+//! Router guidance edits requests and keeps preserved provider bodies in sync.
 
-use switchyard_protocol::Request;
+use serde_json::{Map, Value, json};
+use switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role, WireFormat};
+
+/// This helper prepends a system prompt and updates supported preserved provider bodies.
+/// It removes bodies it cannot edit so encoding rebuilds them from the updated request.
+/// Call it once per candidate on a request that has not already received a target prompt.
+pub fn prepend_system_prompt(request: &mut Request, prompt: &str) {
+    let request = &mut request.llm_request;
+    request.instructions.insert(
+        0,
+        InstructionBlock {
+            role: Role::System,
+            content: vec![ContentBlock::Text {
+                text: prompt.to_string(),
+            }],
+        },
+    );
+    request.preservation.requests.retain(|format, body| {
+        let Some(body) = body.as_object_mut() else {
+            return false;
+        };
+        match format.as_str() {
+            "openai_chat" => prepend_openai_chat_system(body, prompt),
+            "openai_responses" => prepend_text_field(body, "instructions", prompt),
+            "anthropic_messages" => {
+                body.remove("switchyard_anthropic_request");
+                prepend_anthropic_system(body, prompt)
+            }
+            _ => false,
+        }
+    });
+}
+
+// This helper inserts a system message while keeping the existing Chat messages intact.
+fn prepend_openai_chat_system(body: &mut Map<String, Value>, prompt: &str) -> bool {
+    let message = json!({"role": "system", "content": prompt});
+    match body.get_mut("messages") {
+        None | Some(Value::Null) => {
+            body.insert("messages".to_string(), Value::Array(vec![message]));
+        }
+        Some(Value::Array(messages)) => messages.insert(0, message),
+        Some(_) => return false,
+    }
+    true
+}
+
+// Preserved Responses instructions and Anthropic system prompts can be strings, missing, or null.
+fn prepend_text_field(body: &mut Map<String, Value>, key: &str, prompt: &str) -> bool {
+    match body.get_mut(key) {
+        None | Some(Value::Null) => {
+            body.insert(key.to_string(), Value::String(prompt.to_string()));
+        }
+        Some(Value::String(text)) if text.is_empty() => {
+            *text = prompt.to_string();
+        }
+        Some(Value::String(text)) => text.insert_str(0, &format!("{prompt}\n\n")),
+        Some(_) => return false,
+    }
+    true
+}
+
+// This helper retains existing Anthropic system blocks when it prepends a prompt.
+fn prepend_anthropic_system(body: &mut Map<String, Value>, prompt: &str) -> bool {
+    if let Some(Value::Array(blocks)) = body.get_mut("system") {
+        blocks.insert(0, json!({"type":"text","text":prompt}));
+        true
+    } else {
+        prepend_text_field(body, "system", prompt)
+    }
+}
 
 /// This helper appends temporary guidance and updates preserved provider bodies.
-pub fn append_note(request: &mut Request, note: &str) {
-    switchyard_translation::append_note(&mut request.llm_request, note);
+/// It removes bodies it cannot edit so encoding rebuilds them from the updated request.
+pub(crate) fn append_note(request: &mut Request, note: &str) {
+    let request = &mut request.llm_request;
+    // A separate message preserves the caller's final message boundary for OpenAI caching.
+    request.messages.push(Message::text(Role::User, note));
+    request.temporary_note_count += 1;
+    request.preservation.requests.retain(|format, body| {
+        let Some(body) = body.as_object_mut() else {
+            return false;
+        };
+        let (key, content_type) = match format.as_str() {
+            "openai_chat" | "anthropic_messages" => ("messages", "text"),
+            "openai_responses" => ("input", "input_text"),
+            _ => return false,
+        };
+        // Responses also accepts a string as a single user input.
+        if key == "input"
+            && let Some(Value::String(text)) = body.get_mut(key)
+        {
+            let original = std::mem::take(text);
+            body.insert(key.into(), json!([{"role":"user", "content":original}]));
+        }
+        if key == "input" && body.get(key).is_none_or(Value::is_null) {
+            body.insert(key.into(), Value::Array(Vec::new()));
+        }
+        let Some(messages) = body.get_mut(key).and_then(Value::as_array_mut) else {
+            return false;
+        };
+        if format.as_str() == WireFormat::AnthropicMessages.as_str()
+            && let Some(last) = messages.last_mut()
+            && last.get("role").and_then(Value::as_str) == Some("user")
+        {
+            // Anthropic guidance follows existing content, including any tool result.
+            match last.get_mut("content") {
+                Some(Value::String(text)) => {
+                    let original = std::mem::take(text);
+                    last["content"] = json!([
+                        {"type":"text", "text":original},
+                        {"type":"text", "text":note}
+                    ]);
+                }
+                Some(Value::Array(blocks)) => blocks.push(json!({"type":"text", "text":note})),
+                _ => return false,
+            }
+        } else {
+            messages.push(json!({"role":"user", "content":[{"type":content_type,"text":note}]}));
+        }
+        true
+    });
 }
 
 /// This helper clears preserved bodies and the note count after other conversation edits.
@@ -79,10 +195,7 @@ mod tests {
                 WireFormat::AnthropicMessages => expected["messages"][1]["content"].as_array_mut().ok_or("content")?.push(json!({"type":"text","text":"Reassess the failure."})),
             }
             assert_eq!(encoded, expected, "{format}: only the note may change");
-            switchyard_translation::prepend_system_prompt(
-                &mut request.llm_request,
-                "Use the capable tier.",
-            );
+            prepend_system_prompt(&mut request, "Use the capable tier.");
             let edited = engine
                 .encode_request(format, &request.llm_request, &policy)?
                 .body;
