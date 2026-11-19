@@ -3034,7 +3034,7 @@ mod tests {
         }
     }
 
-    async fn check_vgr_media_rejections(fail_efficient: bool) -> Result<()> {
+    async fn check_vgr_media_rejections(fail_efficient: bool, has_attachment: bool) -> Result<()> {
         use switchyard_libsy::{ACTIVE_APPROVAL, ServingMode, Vgr, VgrConfig};
         use switchyard_protocol::{ContentBlock, ImageSource};
         for (status, body, succeeds) in [
@@ -3058,7 +3058,21 @@ mod tests {
                 r#"{"error":{"code":"content_policy_violation"}}"#,
                 false,
             ),
-            (StatusCode::BAD_REQUEST, "invalid sampling parameter", false),
+            (
+                StatusCode::BAD_REQUEST,
+                "injected failure",
+                fail_efficient && has_attachment,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"message":"injected failure"}}"#,
+                fail_efficient && has_attachment,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                "invalid sampling parameter",
+                fail_efficient && has_attachment,
+            ),
         ] {
             let mut config = VgrConfig::new("efficient".into(), "capable".into());
             config.mode = ServingMode::Active {
@@ -3074,20 +3088,18 @@ mod tests {
                 calls: Mutex::new(Vec::new()),
             });
             let mut input = request();
-            input.llm_request.messages = vec![Message::new(
-                Role::User,
-                vec![
-                    ContentBlock::Text {
-                        text: "What color?".into(),
+            let mut content = vec![ContentBlock::Text {
+                text: "What color?".into(),
+            }];
+            if has_attachment {
+                content.push(ContentBlock::Image {
+                    source: ImageSource::Url {
+                        url: "https://example.test/red.bmp".into(),
+                        detail: None,
                     },
-                    ContentBlock::Image {
-                        source: ImageSource::Url {
-                            url: "https://example.test/red.bmp".into(),
-                            detail: None,
-                        },
-                    },
-                ],
-            )];
+                });
+            }
+            input.llm_request.messages = vec![Message::new(Role::User, content)];
             let result = run(
                 Arc::new(Vgr::new(config)?),
                 ClientRouter::single(client.clone()),
@@ -3132,13 +3144,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn efficient_media_rejections_escalate_without_hiding_other_bad_requests() -> Result<()> {
-        check_vgr_media_rejections(true).await
+    async fn efficient_attachment_bad_requests_escalate_without_bypassing_policy() -> Result<()> {
+        check_vgr_media_rejections(true, true).await
     }
 
     #[tokio::test]
     async fn capable_media_rejections_allow_vgr_stand_in_without_hiding_other_bad_requests()
     -> Result<()> {
-        check_vgr_media_rejections(false).await
+        check_vgr_media_rejections(false, true).await
+    }
+
+    #[tokio::test]
+    async fn efficient_text_bad_requests_remain_terminal() -> Result<()> {
+        check_vgr_media_rejections(true, false).await
     }
 }

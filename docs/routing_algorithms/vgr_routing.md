@@ -221,6 +221,11 @@ calls receive the original attachments in conversation order alongside the judge
 text. Image-only requests are judged with their attachments even without a text
 question.
 
+An efficient-tier HTTP 400 on an attachment request escalates even when the error
+body does not identify a media problem. Explicit content-policy denials remain
+terminal. Generic HTTP 400 errors on text-only requests or from the capable tier
+keep their existing handling.
+
 ## Serving modes
 
 - `off` skips candidate generation and serves the capable tier. This is the default.

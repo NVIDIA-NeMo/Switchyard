@@ -207,7 +207,7 @@ impl Classifier for VgrClassifier {
                 if endpoint_failure(&error) {
                     trial.failure();
                 }
-                if !fallback_eligible(&error) {
+                if !fallback_eligible(&error, !text::attachments(request).is_empty()) {
                     return Err(error);
                 }
                 return Ok(self.escalate(
