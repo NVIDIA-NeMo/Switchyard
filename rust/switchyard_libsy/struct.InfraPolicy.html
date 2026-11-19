@@ -11,7 +11,7 @@
     &amp;self,
     outcome: &amp;mut <a class="struct" href="struct.RoutingOutcome.html" title="struct switchyard_libsy::RoutingOutcome">RoutingOutcome</a>,
     models: &amp;<a class="struct" href="struct.RuntimeModels.html" title="struct switchyard_libsy::RuntimeModels">RuntimeModels</a>,
-    signals: &amp;InfraSignals,
+    signals: &amp;<a class="type" href="../switchyard_protocol/infra/type.InfraSignals.html" title="type switchyard_protocol::infra::InfraSignals">InfraSignals</a>,
 ) -&gt; <a class="type" href="type.Result.html" title="type switchyard_libsy::Result">Result</a>&lt;<a class="primitive" href="https://doc.rust-lang.org/1.99.1/std/primitive.bool.html">bool</a>&gt;</h4></section></summary><div class="docblock"><p>Adjust a decision-only task result. Returns true only when the model changes.</p>
 <p>Hosts must serialize this check with their local in-flight increment, then decrement
 when the response ends or is cancelled. Worker selection remains in the serving layer.</p>

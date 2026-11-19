@@ -805,7 +805,7 @@
 <a href=#805 id=805 data-nosnippet>805</a><span class="doccomment">/// Parses stringified tool-call arguments when possible.
 <a href=#806 id=806 data-nosnippet>806</a></span><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>parse_arguments(value: <span class="kw-2">&amp;</span>Value) -&gt; Value {
 <a href=#807 id=807 data-nosnippet>807</a>    <span class="kw">match </span>value {
-<a href=#808 id=808 data-nosnippet>808</a>        Value::String(text) =&gt; serde_json::from_str(text).unwrap_or_else(|<span class="kw">_</span>| <span class="macro">json!</span>({<span class="string">"raw"</span>: text})),
+<a href=#808 id=808 data-nosnippet>808</a>        Value::String(text) =&gt; serde_json::from_str(text).unwrap_or_else(|<span class="kw">_</span>| value.clone()),
 <a href=#809 id=809 data-nosnippet>809</a>        other =&gt; other.clone(),
 <a href=#810 id=810 data-nosnippet>810</a>    }
 <a href=#811 id=811 data-nosnippet>811</a>}
