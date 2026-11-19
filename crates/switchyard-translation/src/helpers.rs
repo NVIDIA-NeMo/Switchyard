@@ -43,46 +43,6 @@ pub fn decode_aggregated_response(body: &Value, wire_format: WireFormat) -> Resu
         .response)
 }
 
-/// Encodes a buffered aggregate into `wire_format`'s JSON body, stamping
-/// `served_model` over the encoded id so the caller sees which model answered.
-/// Passing `None` leaves the id the upstream reported.
-pub fn encode_aggregated_response(
-    agg: &AggLlmResponse,
-    wire_format: WireFormat,
-    served_model: Option<&str>,
-) -> Result<Value> {
-    encode_aggregated_response_with_extensions(
-        agg,
-        wire_format,
-        served_model,
-        &switchyard_protocol::ProviderExtensions::default(),
-    )
-}
-
-/// Encodes an aggregated response, honouring request extensions.
-///
-/// Identical to [`encode_aggregated_response`] except that Codex tool
-/// namespaces recorded on the request are restored on the encoded body.
-pub fn encode_aggregated_response_with_extensions(
-    agg: &AggLlmResponse,
-    wire_format: WireFormat,
-    served_model: Option<&str>,
-    request_extensions: &switchyard_protocol::ProviderExtensions,
-) -> Result<Value> {
-    let mut body = DEFAULT_TRANSLATION_ENGINE
-        .encode_response_with_extensions(
-            wire_format,
-            agg,
-            request_extensions,
-            &DEFAULT_TRANSLATION_POLICY,
-        )?
-        .body;
-    if let (Some(model), Value::Object(object)) = (served_model, &mut body) {
-        object.insert("model".to_string(), Value::String(model.to_string()));
-    }
-    Ok(body)
-}
-
 /// Encodes a stream of IR chunks into a stream of target-format wire events.
 ///
 /// `served_model` is exposed as the response model (via the stream state's
@@ -145,8 +105,7 @@ mod tests {
     };
 
     use super::{
-        decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
-        encode_request, encode_stream,
+        decode_aggregated_response, decode_request, decode_stream, encode_request, encode_stream,
     };
     use crate::{LlmResponseStream, LlmStreamError, WireFormat};
 
@@ -191,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregated_response_round_trips_and_stamps_the_served_model() -> Result<(), BoxError> {
+    fn aggregated_response_decodes_from_openai_chat() -> Result<(), BoxError> {
         let body = json!({
             "id": "1",
             "model": "upstream",
@@ -204,12 +163,6 @@ mod tests {
         });
         let agg = decode_aggregated_response(&body, WireFormat::OpenAiChat)?;
         assert_eq!(completion_text(&agg), "Hi there");
-
-        // `served_model` overrides the id the upstream reported.
-        let encoded =
-            encode_aggregated_response(&agg, WireFormat::OpenAiChat, Some("served/model"))?;
-        assert_eq!(encoded["model"], "served/model");
-        assert_eq!(encoded["choices"][0]["message"]["content"], "Hi there");
         Ok(())
     }
 

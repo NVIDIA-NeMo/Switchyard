@@ -68,6 +68,7 @@ pub struct HttpBackendConfig {
     /// Provider-owned headers are rejected so a static value cannot replace
     /// configured or forwarded auth. Names and values must be valid HTTP header bytes;
     /// header names are case-insensitive.
+    /// Configured values replace caller values for the same header name.
     pub extra_headers: BTreeMap<String, String>,
     /// Default top-level request fields, applied only when the request omits the key.
     pub extra_body: BTreeMap<String, Value>,
@@ -344,12 +345,6 @@ impl Backend {
     /// Deadline for all attempts and the complete response; `None` leaves the wait unbounded.
     pub fn timeout(&self) -> Option<Duration> {
         self.config().timeout
-    }
-
-    /// Whether this backend speaks the Anthropic Messages wire format — the only
-    /// one with a `count_tokens` endpoint.
-    pub fn is_anthropic(&self) -> bool {
-        matches!(self, Backend::Anthropic(_))
     }
 
     /// The upstream `/v1/messages/count_tokens` URL, derived from the same base

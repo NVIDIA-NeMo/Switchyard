@@ -45,9 +45,10 @@ Evaluate the complete agent, model pool, and routing configuration against your 
 
 | Gateway | Start here | Deployment and limits |
 | --- | --- | --- |
-| **OpenRouter** | [Use Switchyard through OpenRouter](https://openrouter.ai/docs/guides/routing/routers/switchyard-router) | Hosted by OpenRouter. Set `model` to `nvidia/switchyard` in API requests. |
+| **Agent Router** | [Agent Router](https://github.com/tetratelabs/built-on-envoy/blob/main/extensions/switchyard/README.md) | Open-source and self-hosted. It provides an OpenAI-compatible API and runs on Envoy. |
 | **LiteLLM** | [Run the Switchyard routing-plugin example](examples/litellm/README.md#quick-start-with-the-local-proxy) | Experimental and checkout-only. The example pins LiteLLM 1.102.0 and supports Stage routing based on request history, plus Random routing. It cannot service intermediate model calls required by classifier or escalation algorithms. |
 | **NeMo Relay** | [Build and configure the native plugin](crates/switchyard-nemo-relay-plugin/README.md#build-from-source) | Requires Relay `>=0.10.0, <1.0.0`. The source-build path requires a Rust toolchain and Python 3. |
+| **OpenRouter** | [Use Switchyard through OpenRouter](https://openrouter.ai/docs/guides/routing/routers/switchyard-router) | Hosted by OpenRouter. Set `model` to `nvidia/switchyard` in API requests. |
 
 Relay 0.8.x and 0.9.0 can lose upstream error status and details when the plugin
 is enabled, even for models outside its routes. Review the
@@ -152,6 +153,9 @@ releases. Pin the version you integrate.
 ## What’s new
 
 Features and integrations recently merged into `main`.
+
+- **2026-11-12 · Route Copilot Chat in VS Code**\
+  Pair a capable and an efficient model, and let Auto routing pick one for each request in Copilot Chat. [Setup guide →](examples/vscode/README.md)
 
 - **2026-10-16 · Route between Sonnet and Opus in Claude Code**\
   Use your Claude login for automatic routing on Linux x86_64 and see the selected model in the status line. [Setup guide →](examples/claude/README.md)

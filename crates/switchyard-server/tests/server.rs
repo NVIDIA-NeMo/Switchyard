@@ -137,6 +137,30 @@ async fn upstream_chat(
         )
             .into_response();
     }
+    if prompt == "upstream-error-headers" {
+        let mut response = (
+            StatusCode::TOO_MANY_REQUESTS,
+            [
+                ("retry-after", "7"),
+                ("retry-after-ms", "7000"),
+                ("x-should-retry", "true"),
+                ("x-request-id", "req-err-1"),
+                ("connection", "keep-alive, X-Upstream-Hop"),
+                ("x-upstream-hop", "remove"),
+                ("set-cookie", "a=b"),
+                ("x-switchyard-session-id", "spoofed"),
+                ("x-model-router-selected-model", "model/upstream-echo"),
+            ],
+            Json(json!({"error": {"message": "slow down", "code": "rate_limit_exceeded"}})),
+        )
+            .into_response();
+        for value in ["trace-1", "trace-2"] {
+            response
+                .headers_mut()
+                .append("x-upstream-trace", HeaderValue::from_static(value));
+        }
+        return response;
+    }
     if prompt == "auth-fail" {
         return (
             StatusCode::UNAUTHORIZED,
@@ -611,7 +635,7 @@ async fn upstream_buffered_responses(
         "model/invalid-error" => response["error"] = json!("invalid error details"),
         "model/invalid-code" => response["error"]["code"] = json!(42),
         "model/empty-code" => response["error"]["code"] = json!(""),
-        "model/fallback" | "model/efficient" => {
+        "model/fallback" | "model/efficient" | "openai/gpt-5" => {
             response["status"] = json!("completed");
             response["error"] = Value::Null;
             response["output"] = json!([{
@@ -3086,6 +3110,94 @@ capable_system_prompt = "Inspect the task and plan before modifying files."
     Ok(())
 }
 
+#[tokio::test]
+async fn stage_shell_patch_handoff_waits_for_edit_and_holds_executor() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.local]
+format = "openai_chat"
+base_url = "{}"
+[targets]
+planner = {{ id = "model/shell-planner", llm_client = "local" }}
+executor = {{ id = "model/shell-executor", llm_client = "local" }}
+[routes.stage]
+id = "shell-stage"
+type = "stage_router"
+capable_target = "planner"
+efficient_target = "executor"
+picker = "capable_first"
+confidence_threshold = 0.0
+recent_turn_window = 3
+capable_hold_turns = 0
+efficient_hold_turns = -1
+"#,
+        upstream.base_url,
+    ))?);
+    let mut messages = vec![json!({"role": "user", "content": "implement the task"})];
+    for (index, (command, expected)) in [
+        (
+            "printf 'worker dispatch locations\n'; rg worker src 2>/dev/null",
+            "model/shell-planner",
+        ),
+        ("apply_patch < fix.diff", "model/shell-executor"),
+        // Three reads move the edit outside the recent window, so the final
+        // executor selection must come from the hold rather than the edit signal.
+        ("rg worker src", "model/shell-executor"),
+        ("cat src/main.rs", "model/shell-executor"),
+        ("git diff", "model/shell-executor"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let call_id = format!("shell-{index}");
+        messages.push(json!({
+            "type": "function_call", "call_id": call_id,
+            "name": "exec_command", "arguments": json!({"cmd": command}).to_string()
+        }));
+        messages.push(json!({"type": "function_call_output", "call_id": call_id, "output": "ok"}));
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/responses",
+            Some(json!({"model": "shell-stage", "input": messages, "stream": false})),
+            &[("x-switchyard-session-id", "shell-patch-session")],
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(
+            response
+                .headers
+                .get("x-model-router-selected-model")
+                .and_then(|value| value.to_str().ok()),
+            Some(expected),
+        );
+    }
+    assert_eq!(
+        upstream.models().await,
+        [
+            "model/shell-planner",
+            "model/shell-executor",
+            "model/shell-executor",
+            "model/shell-executor",
+            "model/shell-executor",
+        ]
+    );
+    let stats = send(&app, "GET", "/v1/stats", None).await?.json()?;
+    assert_eq!(stats["classifier"]["total_requests"], 0);
+    assert_eq!(
+        stats["algorithm_stats"]["stage_router"]["routing_decisions"]["dimensions"]["targets"]["model/shell-executor"],
+        1
+    );
+    assert_eq!(
+        stats["algorithm_stats"]["stage_router"]["routing_decisions"]["efficient_hold"]["targets"]
+            ["model/shell-executor"],
+        3
+    );
+    Ok(())
+}
+
 // Composite TOML must pass custom stage semantics through to the nested stage router.
 #[tokio::test]
 async fn composite_router_uses_configured_tool_semantics() -> TestResult {
@@ -4414,7 +4526,20 @@ async fn disabled_route_capabilities_reject_requests_before_calling_upstream() -
         (
             "/v1/chat/completions",
             "tool_calling",
-            json!({"messages": [{"role": "user", "content": "hello"}], "tools": [{"type": "function", "function": {"name": "exec_command", "parameters": {"type": "object"}}}]}),
+            json!({"messages": [{"role": "user", "content": "hello"}], "tools": [{"type": "function", "function": {"name": "exec_command", "parameters": {"type": "object"}}}], "tool_choice": "none", "parallel_tool_calls": false}),
+        ),
+        (
+            "/v1/chat/completions",
+            "tool_calling",
+            json!({"messages": [{"role": "user", "content": "hello"}], "function_call": {"name": "exec_command", "type": "none"}}),
+        ),
+        (
+            "/v1/chat/completions",
+            "tool_calling",
+            json!({"messages": [
+                {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "exec_command", "arguments": "{}"}}]},
+                {"role": "tool", "tool_call_id": "call_1", "content": "done"}
+            ], "tool_choice": "none"}),
         ),
         (
             "/v1/messages",
@@ -4451,6 +4576,37 @@ async fn disabled_route_capabilities_reject_requests_before_calling_upstream() -
     }
     assert!(upstream.calls.lock().await.is_empty());
 
+    for (endpoint, mut body) in [
+        (
+            "/v1/chat/completions",
+            json!({"messages": [{"role": "system", "content": "Keep the caller's instructions."}, {"role": "user", "content": "hello"}], "tool_choice": "none", "parallel_tool_calls": false}),
+        ),
+        (
+            "/v1/chat/completions",
+            json!({"messages": [{"role": "system", "content": "Keep the caller's instructions."}, {"role": "user", "content": "hello"}], "function_call": "none"}),
+        ),
+        (
+            "/v1/responses",
+            json!({"instructions": "Keep the caller's instructions.", "input": "hello", "tool_choice": "none", "parallel_tool_calls": false}),
+        ),
+        (
+            "/v1/messages",
+            json!({"system": "Keep the caller's instructions.", "messages": [{"role": "user", "content": "hello"}], "tool_choice": {"type": "none"}}),
+        ),
+    ] {
+        body["model"] = json!("restricted");
+        let response = send(&app, "POST", endpoint, Some(body)).await?;
+        assert_eq!(response.status, StatusCode::OK, "{endpoint}");
+    }
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 4);
+    assert!(
+        calls
+            .iter()
+            .all(|call| call["model"] == "model/efficient" && call.get("tools").is_none())
+    );
+    drop(calls);
+
     let body = json!({
         "model": "restricted", "instructions": "Keep the caller's instructions.", "input": "hello"
     });
@@ -4467,13 +4623,13 @@ async fn disabled_route_capabilities_reject_requests_before_calling_upstream() -
         assert_eq!(response.status, StatusCode::OK);
     }
     let calls = upstream.calls.lock().await;
-    assert_eq!(calls.len(), 3);
+    assert_eq!(calls.len(), 7);
     assert!(
         calls
             .iter()
             .all(|call| has_system_prompt(call, "Keep the caller's instructions."))
     );
-    for call in &calls[1..] {
+    for call in &calls[5..] {
         assert_eq!(call["reasoning_effort"], "high");
         assert_eq!(call["tools"][0]["function"]["name"], "exec_command");
         assert!(call["messages"].as_array().is_some_and(|messages| {
@@ -6296,8 +6452,95 @@ async fn upstream_headers_forward_on_streaming_responses() -> TestResult {
     Ok(())
 }
 
-// Mirrors the GLM baseline: passthrough to a Responses target with a reasoning effort
-// default, called by Codex with `store: false`.
+/// An upstream HTTP error carries the same allowed upstream headers as a success,
+/// on every inbound wire format, for buffered and streaming requests.
+#[tokio::test]
+async fn upstream_headers_forward_on_error_responses() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    // Switchyard sleeps for `retry-after` between its own retries, so it makes one attempt.
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.mock]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 0
+failure_cooldown_ms = 0
+fallback_on_rate_limit = false
+[targets]
+only = {{ id = "model/a", llm_client = "mock" }}
+[routes.test]
+id = "{ROUTE_MODEL}"
+type = "random"
+targets = ["only"]
+"#,
+        base_url = upstream.base_url,
+    ))?);
+    for stream in [false, true] {
+        for (path, body) in [
+            (
+                "/v1/chat/completions",
+                json!({
+                    "model": ROUTE_MODEL, "stream": stream,
+                    "messages": [{"role": "user", "content": "upstream-error-headers"}]
+                }),
+            ),
+            (
+                "/v1/responses",
+                json!({"model": ROUTE_MODEL, "stream": stream, "input": "upstream-error-headers"}),
+            ),
+            (
+                "/v1/messages",
+                json!({
+                    "model": ROUTE_MODEL, "stream": stream, "max_tokens": 64,
+                    "messages": [{"role": "user", "content": "upstream-error-headers"}]
+                }),
+            ),
+        ] {
+            let case = format!("{path}, stream={stream}");
+            let response = send(&app, "POST", path, Some(body)).await?;
+            assert_eq!(response.status, StatusCode::TOO_MANY_REQUESTS, "{case}");
+            // An empty list means the header must be absent.
+            let expected: [(&str, &[&str]); 11] = [
+                ("retry-after", &["7"]),
+                ("retry-after-ms", &["7000"]),
+                ("x-should-retry", &["true"]),
+                ("x-request-id", &["req-err-1"]),
+                ("x-upstream-trace", &["trace-1", "trace-2"]),
+                ("connection", &[]),
+                ("x-upstream-hop", &[]),
+                ("set-cookie", &[]),
+                ("x-switchyard-session-id", &[]),
+                ("x-model-router-selected-model", &[]),
+                // The body is still Switchyard's own error JSON.
+                ("content-type", &["application/json"]),
+            ];
+            for (name, values) in expected {
+                let actual: Vec<_> = response.headers.get_all(name).iter().collect();
+                assert_eq!(actual, values, "{case}: {name}");
+            }
+            let json = response.json()?;
+            assert_eq!(json["error"]["message"], "slow down", "{case}");
+            assert_eq!(json["type"] == "error", path == "/v1/messages", "{case}");
+        }
+    }
+
+    // An upstream error without these headers adds none.
+    let response = send(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "fail"}]
+        })),
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::IM_A_TEAPOT);
+    assert!(!response.headers.contains_key("retry-after"));
+    Ok(())
+}
+
 #[tokio::test]
 async fn configured_responses_reasoning_policy_reaches_upstream() -> TestResult {
     let upstream = MockUpstream::start().await?;
@@ -6307,13 +6550,15 @@ async fn configured_responses_reasoning_policy_reaches_upstream() -> TestResult 
         json!({"type": "reasoning", "id": "rs_2", "summary": [], "encrypted_content": "opaque"});
     let mut kept_foreign = foreign.clone();
     kept_foreign["content"] = json!([]);
-    for (setting, expected_reasoning) in [
-        ("", vec![plaintext.clone()]),
+    for (provider_model_id, setting, expected_reasoning) in [
+        ("openai/gpt-5", "", vec![kept_foreign.clone()]),
+        ("model/efficient", "", vec![plaintext.clone()]),
         (
+            "model/efficient",
             "responses_reasoning = \"preserve_encrypted\"",
             vec![kept_foreign],
         ),
-        ("responses_reasoning = \"drop\"", vec![]),
+        ("model/efficient", "responses_reasoning = \"drop\"", vec![]),
     ] {
         let config = format!(
             r#"
@@ -6322,14 +6567,14 @@ schema_version = 1
 format = "openai_responses"
 base_url = "{base_url}"
 {setting}
-[targets.glm]
-id = "model/efficient"
+[targets.primary]
+id = "{provider_model_id}"
 llm_client = "upstream"
 extra_body = {{ reasoning = {{ effort = "high" }} }}
 [routes.switchyard]
 id = "switchyard"
 type = "passthrough"
-target = "glm"
+target = "primary"
 "#
         );
         let app = build_switchyard_router(load_test_config(&config)?);
@@ -6356,7 +6601,11 @@ target = "glm"
             .filter(|item| item["type"] == "reasoning")
             .cloned()
             .collect();
-        assert_eq!(reasoning, expected_reasoning, "{setting}");
+        assert_eq!(body["model"], json!(provider_model_id));
+        assert_eq!(
+            reasoning, expected_reasoning,
+            "{provider_model_id}, {setting}"
+        );
         assert_eq!(body["reasoning"], json!({"effort": "high"}));
     }
     Ok(())
@@ -6423,6 +6672,13 @@ seed = 17
             if is_terminal {
                 assert_eq!(response.status, StatusCode::TOO_MANY_REQUESTS);
                 assert_eq!(response.json()?["error"]["code"], "usage_limit");
+                assert_eq!(
+                    response
+                        .headers
+                        .get("retry-after")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("0")
+                );
             } else {
                 assert_eq!(response.status, StatusCode::OK);
                 expected_calls.push("model/fallback");
@@ -6485,6 +6741,62 @@ task_typing = false
                 "{limit}, {configured}"
             );
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_image_requests_stay_on_the_efficient_tier_when_configured() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    for (configured, served) in [
+        ("", "model/vgr-capable"),
+        (
+            "efficient_supports_attachments = true",
+            "model/vgr-efficient",
+        ),
+    ] {
+        let app = build_switchyard_router(load_test_config(&format!(
+            r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{}"
+[targets]
+efficient = {{ id = "model/vgr-efficient", llm_client = "primary" }}
+capable = {{ id = "model/vgr-capable", llm_client = "primary" }}
+judge = {{ id = "model/vgr-judge", llm_client = "primary" }}
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+efficient_target = "efficient"
+capable_target = "capable"
+judge_target = "judge"
+mode = "evaluate"
+task_typing = false
+bounded_efficient = false
+{configured}
+"#,
+            upstream.base_url
+        ))?);
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": "switchyard/vgr",
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "answer the question"},
+                    {"type": "image_url", "image_url": {"url": "https://example.test/image.png"}}
+                ]}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+        assert_eq!(
+            response.headers.get("x-model-router-selected-model"),
+            Some(&HeaderValue::from_str(served)?),
+            "{configured}"
+        );
     }
     Ok(())
 }

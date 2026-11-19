@@ -190,9 +190,12 @@ headers take precedence. Hosts that omit reporting retain message-shape detectio
 
 ## Verification and capable-tier outages
 
-Policy version `1.2` allows the default verification branch to accept a clean
+Policy version `1.3` allows the default verification branch to accept a clean
 efficient attempt when the capable judge approves both the evidence and the
 answer. A negative or unavailable evidence verdict skips the answer check.
+
+After a failed tool result, chat steps escalate without verification, and steps
+typed as chat escalate before any efficient attempt.
 
 Typed factual answers are verified on the answer itself, including
 later user turns without tool work. A readout of at least 0.9 can serve the
@@ -207,6 +210,12 @@ In `active` mode, an unavailable capable tier can fall back to an unverified eff
 answer. That call receives the original request without the capable handoff note.
 Fallback is disabled by the kill switch, an open efficient circuit breaker, or an
 image request the efficient tier cannot serve.
+
+By default the efficient tier does not serve requests that contain images. Set
+`efficient_supports_attachments = true` on the VGR route to let it attempt requests
+with attachments. This setting permits attempts; it does not guarantee that the
+efficient model understands every attachment format. The judge reads only the
+surrounding text.
 
 ## Serving modes
 

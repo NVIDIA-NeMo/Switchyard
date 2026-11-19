@@ -155,6 +155,40 @@ fn custom_whole_streams_use_registered_codecs_and_outlive_the_engine() -> TestRe
     Ok(())
 }
 
+// A custom codec can report completion before it sends its last event.
+#[test]
+fn custom_stream_keeps_events_after_terminal_json() -> TestResult {
+    let mut registry = StreamCodecRegistry::new();
+    registry.register(CustomStreamCodec);
+    let engine = TranslationEngine::with_registries(FormatRegistry::new(), registry);
+    let raw = [
+        json!({"kind": "done"}),
+        json!({"kind": "delta", "text": "trailing"}),
+    ];
+    let bytes = stream::iter(
+        raw.clone()
+            .map(|event| Ok(format!("data: {event}\n\n").into_bytes())),
+    );
+    let events = block_on(
+        engine
+            .decode_stream("custom_stream", bytes)?
+            .try_collect::<Vec<_>>(),
+    )?;
+
+    assert_eq!(events.len(), 2);
+    for (event, expected) in events.iter().zip(raw) {
+        assert_eq!(event.preservation().unwrap().raw(), &expected);
+    }
+    assert_eq!(
+        events[1].normalized(),
+        &[LlmResponseChunk::TextDelta {
+            index: 0,
+            text: "trailing".into(),
+        }]
+    );
+    Ok(())
+}
+
 #[test]
 fn custom_stream_completion_uses_the_codec_rules() -> TestResult {
     let mut registry = StreamCodecRegistry::new();
