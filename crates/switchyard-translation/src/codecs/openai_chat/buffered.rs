@@ -43,6 +43,19 @@ impl FormatCodec for OpenAiChatCodec {
 
     fn decode_request(&self, body: &Value, policy: &TranslationPolicy) -> Result<DecodedRequest> {
         let body = object(body, "$")?;
+        if let Some(n) = body.get("n") {
+            let n = n.as_u64().ok_or_else(|| TranslationError::InvalidValue {
+                path: "$.n".to_string(),
+                message: "expected a non-negative integer".to_string(),
+            })?;
+            if n > 1 {
+                return Err(TranslationError::InvalidValue {
+                    path: "$.n".to_string(),
+                    message: "multiple OpenAI Chat choices are not supported; set `n` to 1"
+                        .to_string(),
+                });
+            }
+        }
         let mut diagnostics = Vec::new();
         let mut request = LlmRequest {
             model: body
