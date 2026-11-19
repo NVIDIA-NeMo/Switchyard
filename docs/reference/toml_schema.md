@@ -190,10 +190,11 @@ such clients.
 | `extra_body` | No | `{}` | Values merged into the upstream request when the request does not already set that key. |
 | `omit_body_fields` | No | `[]` | Top-level fields removed from every request body that Switchyard sends to this target. Switchyard removes them after it translates the request to the LLM client's `format`, so use that format's field names, for example `reasoning_effort` on `openai_chat` or `reasoning` on `openai_responses`. Switchyard applies `extra_body` and `reasoning_effort` after the removal, so either can set a removed field again. |
 | `reasoning_effort` | No | unset | Reasoning effort forced on every request to this target, replacing the value the caller sent (`reasoning.effort` on `openai_responses`, `reasoning_effort` on `openai_chat`, `output_config.effort` on `anthropic_messages`, which accepts `low`, `medium`, `high`, `xhigh`, or `max`). Use it to run one target at a different effort than the client asked for, for example a strong tier at `max` behind a client that sends `high`. |
+| `reasoning_format` | No | unset | Field that holds earlier assistant reasoning in the Chat request sent to this target: `"openai"` for `reasoning`, `"deepseek"` for `reasoning_content`. Switchyard moves the reasoning to this field, including on requests it forwards unchanged, and sends only one of the two. If an assistant message has no reasoning in either field, Switchyard uses the text from its `reasoning_details`. Use it when a model rejects reasoning sent back under a different name than it produced. Only valid on `openai_chat` clients. Unset keeps the field Switchyard would otherwise send. |
 
 Switchyard routes on target names, so several targets may share one `id`. Each target keeps its
-own `llm_client`, `system_prompt`, `extra_body`, `omit_body_fields`, and `reasoning_effort`. For
-example, one route can run the same model at two efforts:
+own `llm_client`, `system_prompt`, `extra_body`, `omit_body_fields`, `reasoning_effort`, and
+`reasoning_format`. For example, one route can run the same model at two efforts:
 
 ```toml
 [targets.capable]

@@ -15,6 +15,7 @@ use futures_util::{StreamExt, stream};
 use http::StatusCode;
 use reqwest::RequestBuilder;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, RETRY_AFTER};
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, Metadata,
@@ -56,6 +57,20 @@ const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(250);
 const MAX_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 
+/// The OpenAI Chat field a target expects assistant reasoning under.
+///
+/// Some OpenAI-compatible models only accept earlier reasoning under the field name
+/// they produced it with, so a target can pin the spelling instead of taking
+/// whatever the encoder or the caller used.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningFormat {
+    /// The `reasoning` field.
+    OpenAi,
+    /// The `reasoning_content` field.
+    Deepseek,
+}
+
 /// A named target's provider model and backends.
 #[derive(Clone, Debug)]
 pub struct ModelConfig {
@@ -64,6 +79,7 @@ pub struct ModelConfig {
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
     responses_reasoning: crate::ResponsesReasoningPolicy,
+    reasoning_format: Option<ReasoningFormat>,
 }
 
 impl ModelConfig {
@@ -79,7 +95,17 @@ impl ModelConfig {
             default_backend,
             other_backends,
             responses_reasoning: crate::ResponsesReasoningPolicy::default(),
+            reasoning_format: None,
         }
+    }
+
+    /// Pins the OpenAI Chat field this target expects assistant reasoning under. After
+    /// encoding, assistant reasoning moves to that field and the other spelling is
+    /// removed. Unset leaves the encoded request unchanged.
+    #[must_use]
+    pub fn with_reasoning_format(mut self, reasoning_format: ReasoningFormat) -> Self {
+        self.reasoning_format = Some(reasoning_format);
+        self
     }
 
     /// Sets how Responses reasoning items are replayed to this target.
@@ -155,6 +181,18 @@ impl TranslatingLlmClient {
         // Pre-populate so concurrent calls update only atomics and keep map access lock-free.
         let mut unavailable_until = HashMap::new();
         for config in model_configs {
+            if config.reasoning_format.is_some()
+                && !std::iter::once(&config.default_backend)
+                    .chain(config.other_backends.iter().flatten())
+                    .any(|backend| matches!(backend, Backend::OpenAiChat(_)))
+            {
+                return Err(LlmClientError::Configuration {
+                    message: format!(
+                        "model {} reasoning_format requires an OpenAI Chat backend",
+                        config.target_name
+                    ),
+                });
+            }
             for backend in std::iter::once(&config.default_backend)
                 .chain(config.other_backends.iter().flatten())
             {
@@ -404,6 +442,14 @@ impl TranslatingLlmClient {
         }
         if matches!(backend, Backend::OpenAiChat(_)) {
             ensure_openai_stream_usage(&mut body);
+            // The target's field wins over the caller's spelling, and the two are never sent together.
+            if let Some(reasoning_format) = self
+                .configs_by_target
+                .get(target_name)
+                .and_then(|config| config.reasoning_format)
+            {
+                apply_reasoning_format(&mut body, reasoning_format);
+            }
         }
         let streaming = endpoint.allows_streaming()
             && body.get("stream").and_then(Value::as_bool).unwrap_or(false);
@@ -1342,6 +1388,57 @@ fn apply_reasoning_effort(body: &mut Value, backend: &Backend) {
     }
 }
 
+// Moves assistant reasoning to the Chat field the target expects and removes the other
+// spelling. If a message carries both, the target field's value wins. When neither plain
+// field is set, the text in `reasoning_details` is used, since a target that reads only
+// the plain field ignores the details. Messages from other roles are left alone.
+fn apply_reasoning_format(body: &mut Value, reasoning_format: ReasoningFormat) {
+    let (target_field, other_field) = match reasoning_format {
+        ReasoningFormat::OpenAi => ("reasoning", "reasoning_content"),
+        ReasoningFormat::Deepseek => ("reasoning_content", "reasoning"),
+    };
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for message in messages {
+        let Some(message) = message.as_object_mut() else {
+            continue;
+        };
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let other = message.remove(other_field).filter(has_reasoning_value);
+        if message.get(target_field).is_some_and(has_reasoning_value) {
+            continue;
+        }
+        if let Some(value) = other.or_else(|| reasoning_details_text(message)) {
+            message.insert(target_field.to_owned(), value);
+        }
+    }
+}
+
+// A null or empty plain field is a placeholder, not reasoning.
+fn has_reasoning_value(value: &Value) -> bool {
+    !value.is_null() && value.as_str() != Some("")
+}
+
+// Joins the text of a message's `reasoning_details`, or `None` when it has none.
+fn reasoning_details_text(message: &Map<String, Value>) -> Option<Value> {
+    let text = message
+        .get("reasoning_details")?
+        .as_array()?
+        .iter()
+        .filter_map(|detail| {
+            ["text", "summary"]
+                .into_iter()
+                .filter_map(|key| detail.get(key).and_then(Value::as_str))
+                .find(|text| !text.is_empty())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    (!text.is_empty()).then_some(Value::String(text))
+}
+
 // Replaces only `effort` inside `key`, keeping fields the caller set next to it (`summary` or
 // `format`, for example). A non-object value there is malformed and is replaced whole.
 fn set_nested_effort(object: &mut serde_json::Map<String, Value>, key: &str, effort: &str) {
@@ -1763,6 +1860,17 @@ mod tests {
         let mut backend = config(base_url);
         backend.reasoning_effort = Some(effort.to_string());
         vec![ModelConfig::new("gpt", Backend::OpenAiChat(backend), None)]
+    }
+
+    fn chat_map_with_reasoning_format(
+        base_url: &str,
+        reasoning_format: Option<ReasoningFormat>,
+    ) -> Vec<ModelConfig> {
+        let model = ModelConfig::new("gpt", Backend::OpenAiChat(config(base_url)), None);
+        vec![match reasoning_format {
+            Some(format) => model.with_reasoning_format(format),
+            None => model,
+        }]
     }
 
     fn responses_map_with_effort(base_url: &str, effort: &str) -> Vec<ModelConfig> {
@@ -4220,6 +4328,251 @@ mod tests {
                 empty_reasoning
             ])
         );
+        Ok(())
+    }
+
+    // Sends `body` (a request in `format`) to a Chat target and returns the upstream body.
+    // With `rebuild`, the preserved source body is dropped so the request is encoded from
+    // the normalized fields, as it is after routing mutates or translates a request.
+    async fn upstream_chat_body(
+        reasoning_format: Option<ReasoningFormat>,
+        body: Value,
+        format: WireFormat,
+        rebuild: bool,
+    ) -> std::result::Result<Value, Box<dyn Error + Sync + Send + 'static>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(chat_success_response())
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = TranslatingLlmClient::new(&chat_map_with_reasoning_format(
+            &format!("{}/v1", server.uri()),
+            reasoning_format,
+        ))?;
+        let mut request = wire_request(body, None, format)?;
+        if rebuild {
+            request.llm_request.preservation.requests.clear();
+        }
+        client
+            .call_rewrite_model(request, Some(&ModelId::from("gpt")))
+            .await?;
+        let received = server
+            .received_requests()
+            .await
+            .ok_or("request recording should be enabled")?;
+        Ok(serde_json::from_slice(
+            &received
+                .first()
+                .ok_or("expected one upstream request")?
+                .body,
+        )?)
+    }
+
+    // The Chat history a caller replays: one assistant turn with reasoning under `field`.
+    fn chat_history_with_reasoning(field: &str) -> Value {
+        json!({
+            "model": "client-facing",
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "Visible answer", (field): "Historical reasoning"},
+                {"role": "user", "content": "go on"},
+            ],
+        })
+    }
+
+    // The bug: a rebuilt Chat request always spells reasoning `reasoning`, even when the
+    // caller sent `reasoning_content` and the model needs it back under that name.
+    #[tokio::test]
+    async fn rebuilt_chat_history_without_a_reasoning_format_uses_reasoning()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        let upstream = upstream_chat_body(
+            None,
+            chat_history_with_reasoning("reasoning_content"),
+            WireFormat::OpenAiChat,
+            true,
+        )
+        .await?;
+        assert_eq!(upstream["messages"][1]["reasoning"], "Historical reasoning");
+        assert!(upstream["messages"][1].get("reasoning_content").is_none());
+        Ok(())
+    }
+
+    // A target's format decides the spelling for rebuilt requests and for untouched
+    // same-format requests, whichever spelling the caller used.
+    #[tokio::test]
+    async fn reasoning_format_pins_the_chat_history_field()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for (format, target_field, other_field) in [
+            (ReasoningFormat::Deepseek, "reasoning_content", "reasoning"),
+            (ReasoningFormat::OpenAi, "reasoning", "reasoning_content"),
+        ] {
+            for sent_field in ["reasoning", "reasoning_content"] {
+                for rebuild in [false, true] {
+                    let upstream = upstream_chat_body(
+                        Some(format),
+                        chat_history_with_reasoning(sent_field),
+                        WireFormat::OpenAiChat,
+                        rebuild,
+                    )
+                    .await?;
+                    let assistant = &upstream["messages"][1];
+                    assert_eq!(
+                        assistant[target_field], "Historical reasoning",
+                        "{format:?} sent {sent_field} rebuild={rebuild}: {upstream}"
+                    );
+                    assert!(
+                        assistant.get(other_field).is_none(),
+                        "{format:?} sent {sent_field} rebuild={rebuild}: {upstream}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    // Translating from another wire format ends in the same target-chosen field.
+    #[tokio::test]
+    async fn reasoning_format_applies_to_translated_history()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        for (wire_format, body) in [
+            (
+                WireFormat::OpenAiResponses,
+                json!({"model": "client-facing", "input": [
+                    {"role": "user", "content": "hi"},
+                    {"type": "reasoning", "summary": [{"type": "summary_text", "text": "Historical reasoning"}]},
+                    {"role": "assistant", "content": "Visible answer"},
+                    {"role": "user", "content": "go on"},
+                ]}),
+            ),
+            (
+                WireFormat::AnthropicMessages,
+                json!({"model": "client-facing", "max_tokens": 32, "messages": [
+                    {"role": "user", "content": "hi"},
+                    {"role": "assistant", "content": [
+                        {"type": "thinking", "thinking": "Historical reasoning"},
+                        {"type": "text", "text": "Visible answer"},
+                    ]},
+                    {"role": "user", "content": "go on"},
+                ]}),
+            ),
+        ] {
+            let upstream =
+                upstream_chat_body(Some(ReasoningFormat::Deepseek), body, wire_format, false)
+                    .await?;
+            let reasoning: Vec<_> = upstream["messages"]
+                .as_array()
+                .ok_or("missing messages")?
+                .iter()
+                .filter(|message| message["role"] == "assistant")
+                .collect();
+            assert!(!reasoning.is_empty(), "{wire_format:?}: {upstream}");
+            assert!(
+                reasoning
+                    .iter()
+                    .any(|message| message["reasoning_content"] == "Historical reasoning"),
+                "{wire_format:?}: {upstream}"
+            );
+            assert!(
+                reasoning
+                    .iter()
+                    .all(|message| message.get("reasoning").is_none()),
+                "{wire_format:?}: {upstream}"
+            );
+        }
+        Ok(())
+    }
+
+    // Unset leaves the encoded request as it was, and the target setting only touches
+    // assistant messages.
+    #[test]
+    fn reasoning_format_only_rewrites_assistant_messages() {
+        let untouched = json!([
+            {"role": "user", "reasoning": "user extension", "reasoning_content": "keep"},
+            {"role": "system", "reasoning_content": "system extension"},
+            {"role": "tool", "reasoning": "tool extension"},
+            {"reasoning_content": "unknown role"},
+        ]);
+        for format in [ReasoningFormat::OpenAi, ReasoningFormat::Deepseek] {
+            let mut body = json!({"messages": untouched.clone()});
+            apply_reasoning_format(&mut body, format);
+            assert_eq!(body["messages"], untouched);
+        }
+    }
+
+    // One spelling is sent, never both. A set target field wins over a conflicting one,
+    // null and empty placeholders are ignored, and `reasoning_details` text fills in when neither
+    // plain field has text, including on a tool-call turn.
+    #[test]
+    fn reasoning_format_sends_one_field() {
+        let details = json!([
+            {"type": "reasoning.text", "text": "first"},
+            {"type": "reasoning.summary", "summary": "second"},
+            {"type": "reasoning.encrypted", "data": "opaque"},
+        ]);
+        for (format, target_field, other_field) in [
+            (ReasoningFormat::Deepseek, "reasoning_content", "reasoning"),
+            (ReasoningFormat::OpenAi, "reasoning", "reasoning_content"),
+        ] {
+            for (message, expected) in [
+                (
+                    json!({"role": "assistant", (target_field): "target", (other_field): "other"}),
+                    Some("target"),
+                ),
+                (
+                    json!({"role": "assistant", (target_field): null, (other_field): "other"}),
+                    Some("other"),
+                ),
+                (
+                    json!({"role": "assistant", (target_field): "", "reasoning_details": details}),
+                    Some("first\nsecond"),
+                ),
+                (
+                    json!({"role": "assistant", (other_field): null, "content": null,
+                           "tool_calls": [], "reasoning_details": details}),
+                    Some("first\nsecond"),
+                ),
+                (
+                    json!({"role": "assistant", "content": "no reasoning"}),
+                    None,
+                ),
+            ] {
+                let mut body = json!({"messages": [message.clone()]});
+                apply_reasoning_format(&mut body, format);
+                let result = &body["messages"][0];
+                assert!(result.get(other_field).is_none(), "{message}: {result}");
+                match expected {
+                    Some(text) => assert_eq!(result[target_field], text, "{message}"),
+                    None => assert_eq!(result.get(target_field), message.get(target_field)),
+                }
+            }
+        }
+    }
+
+    // The setting only means something for a target with a Chat backend.
+    #[test]
+    fn reasoning_format_requires_a_chat_backend() -> std::result::Result<(), Box<dyn Error>> {
+        let anthropic = ModelConfig::new(
+            "claude",
+            Backend::Anthropic(config("https://example.com")),
+            None,
+        );
+        TranslatingLlmClient::new(std::slice::from_ref(&anthropic))?;
+        let error = TranslatingLlmClient::new(&[anthropic
+            .clone()
+            .with_reasoning_format(ReasoningFormat::Deepseek)])
+        .err()
+        .ok_or("a non-Chat target should reject reasoning_format")?;
+        assert!(matches!(error, LlmClientError::Configuration { .. }));
+
+        let with_chat_fallback = ModelConfig::new(
+            "claude",
+            Backend::Anthropic(config("https://example.com")),
+            Some(vec![Backend::OpenAiChat(config("https://example.com"))]),
+        )
+        .with_reasoning_format(ReasoningFormat::Deepseek);
+        TranslatingLlmClient::new(&[with_chat_fallback])?;
         Ok(())
     }
 
