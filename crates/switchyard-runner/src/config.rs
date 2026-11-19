@@ -16,7 +16,8 @@ use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    OpenAiDecisionClient, ResponsesReasoningPolicy, SystemOneClient, TranslatingLlmClient,
+    OpenAiDecisionClient, ReasoningFormat, ResponsesReasoningPolicy, SystemOneClient,
+    TranslatingLlmClient,
 };
 use switchyard_protocol::{
     LlmClientError, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat,
@@ -677,6 +678,7 @@ impl DeploymentConfig {
             base_url: client.base_url.as_str().to_string(),
             extra_body: target.extra_body.clone(),
             reasoning_effort: target.reasoning_effort.clone(),
+            reasoning_format: target.reasoning_format,
         })
     }
 
@@ -1139,21 +1141,30 @@ impl DeploymentConfig {
                     )));
                 }
             }
-            model_configs.push(
-                ModelConfig::new(
-                    target_name.as_str(),
-                    build_backend(
-                        &target.llm_client,
-                        client_config,
-                        &target.extra_body,
-                        &target.omit_body_fields,
-                        target.reasoning_effort.clone(),
-                    )?,
-                    None,
-                )
-                .with_responses_reasoning(client_config.responses_reasoning.unwrap_or_default())
-                .with_provider_model(target.id.clone()),
-            );
+            if target.reasoning_format.is_some()
+                && !matches!(client_config.format, ClientFormat::OpenAiChat)
+            {
+                return Err(RunnerError::configuration(format!(
+                    "target {target_name} reasoning_format is only valid for openai_chat clients"
+                )));
+            }
+            let mut model_config = ModelConfig::new(
+                target_name.as_str(),
+                build_backend(
+                    &target.llm_client,
+                    client_config,
+                    &target.extra_body,
+                    &target.omit_body_fields,
+                    target.reasoning_effort.clone(),
+                )?,
+                None,
+            )
+            .with_responses_reasoning(client_config.responses_reasoning.unwrap_or_default())
+            .with_provider_model(target.id.clone());
+            if let Some(reasoning_format) = target.reasoning_format {
+                model_config = model_config.with_reasoning_format(reasoning_format);
+            }
+            model_configs.push(model_config);
         }
 
         let mut clients = BTreeMap::new();
@@ -1571,6 +1582,9 @@ struct TargetConfig {
     system_prompt: Option<String>,
     /// Reasoning effort forced on every request to this target, replacing the caller's value.
     reasoning_effort: Option<String>,
+    /// Chat field the target expects assistant reasoning under: `openai` for `reasoning`,
+    /// `deepseek` for `reasoning_content`. Only valid on `openai_chat` clients.
+    reasoning_format: Option<ReasoningFormat>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -3067,6 +3081,40 @@ classify_trigger"#,
             error_message(&minimal).contains("is not an anthropic_messages effort"),
             "{}",
             error_message(&minimal)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_target_reasoning_format_is_only_valid_on_chat_clients() -> RunnerResult<()> {
+        let chat = "[targets.classifier]\nid = \"classifier/model\"\nllm_client = \"primary\"";
+        let strong = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
+        let weak = "[targets.weak]\nid = \"weak/model\"\nllm_client = \"anthropic\"";
+        assert!(VALID_CONFIG.contains(chat) && VALID_CONFIG.contains(strong));
+        assert!(VALID_CONFIG.contains(weak));
+
+        for format in ["openai", "deepseek"] {
+            let config =
+                VALID_CONFIG.replace(chat, &format!("{chat}\nreasoning_format = \"{format}\""));
+            runner_from_toml(&config)?;
+        }
+        for target in [strong, weak] {
+            let config = VALID_CONFIG.replace(
+                target,
+                &format!("{target}\nreasoning_format = \"deepseek\""),
+            );
+            assert!(
+                error_message(&config)
+                    .contains("reasoning_format is only valid for openai_chat clients"),
+                "{}",
+                error_message(&config)
+            );
+        }
+        let unknown = VALID_CONFIG.replace(chat, &format!("{chat}\nreasoning_format = \"gpt\""));
+        assert!(
+            error_message(&unknown).contains("unknown variant"),
+            "{}",
+            error_message(&unknown)
         );
         Ok(())
     }

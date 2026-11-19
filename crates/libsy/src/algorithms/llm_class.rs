@@ -214,6 +214,7 @@ impl TaskInput {
         // reasoning-only turn, and an Anthropic judge rejects a message whose text
         // block is empty.
         for message in &mut messages {
+            message.chat_reasoning = None;
             message.content.retain(|block| match block {
                 ContentBlock::Reasoning { .. } => false,
                 ContentBlock::Text { text } => !text.is_empty(),
@@ -1573,19 +1574,13 @@ mod tests {
             ..DecisionJudgeConfig::default()
         };
         let mut request = classify_session_request();
-        request.llm_request.messages.push(Message::new(
-            Role::Assistant,
-            vec![
-                ContentBlock::Reasoning {
-                    text: "private reasoning".into(),
-                    signature: None,
-                    details: vec![],
-                },
-                ContentBlock::Text {
-                    text: "visible progress".into(),
-                },
-            ],
-        ));
+        let history = switchyard_translation::decode_request(
+            switchyard_protocol::WireFormat::OpenAiChat,
+            &json!({"messages": [{"role": "assistant", "content": "visible progress",
+                "reasoning": "private reasoning", "reasoning_content": "private alternate"}]}),
+        )
+        .expect("valid Chat history");
+        request.llm_request.messages.extend(history.messages);
         request
             .llm_request
             .messages

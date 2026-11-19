@@ -54,6 +54,30 @@ pub struct Message {
     /// OpenAI Responses assistant message `phase`, such as `commentary` or `final_answer`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phase: Option<String>,
+    /// Chat plaintext spelling or values not represented by the normalized reasoning block.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_reasoning: Option<ChatReasoningSource>,
+}
+
+/// Source data needed to replay a Chat assistant turn. Plain `reasoning` needs no marker.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChatReasoningSource {
+    /// The normalized plaintext came from `reasoning_content`.
+    ReasoningContent,
+    /// The source also supplied plaintext that normalization did not select.
+    Aliases(Box<ChatReasoningAliases>),
+}
+
+/// Plaintext alternatives are valid only while the decoded reasoning block is unchanged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ChatReasoningAliases {
+    /// The reasoning block produced by the Chat decoder.
+    pub normalized: ContentBlock,
+    /// Nonempty source `reasoning` text, if supplied.
+    pub reasoning: Option<String>,
+    /// Nonempty source `reasoning_content` text, if supplied.
+    pub reasoning_content: Option<String>,
 }
 
 impl Message {
@@ -63,6 +87,7 @@ impl Message {
             role,
             content,
             phase: None,
+            chat_reasoning: None,
         }
     }
 

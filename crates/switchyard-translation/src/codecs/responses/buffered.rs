@@ -572,6 +572,7 @@ fn decode_responses_input(
                             Message {
                                 role,
                                 content,
+                                chat_reasoning: None,
                                 phase: if role == Role::Assistant {
                                     item.get("phase").and_then(Value::as_str).map(str::to_owned)
                                 } else {

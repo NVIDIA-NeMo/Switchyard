@@ -856,6 +856,7 @@ fn random_state_with_retries(
                     base_url: base_url.to_string(),
                     extra_body: BTreeMap::new(),
                     reasoning_effort: None,
+                    reasoning_format: None,
                 })
                 .collect();
             Ok((
@@ -2188,6 +2189,7 @@ base_threshold = 0.5
     let response = response.json()?;
     assert_eq!(response["fallbacks"].as_array().map(Vec::len), Some(1));
     for target in [&response["selected"], &response["fallbacks"][0]] {
+        assert!(target.get("reasoning_format").is_none());
         assert_eq!(
             target["llm_client"]["base_url"],
             "https://example.test/v1?api_version=2026"
@@ -2429,10 +2431,12 @@ system_prompt = "judge target prompt"
 [targets.quality]
 id = "model/strong"
 llm_client = "model_provider"
+reasoning_format = "openai"
 
 [targets.economy]
 id = "model/weak"
 llm_client = "model_provider"
+reasoning_format = "deepseek"
 extra_body = {{ service_tier = "priority" }}
 system_prompt = "economy answer prompt"
 
@@ -2489,6 +2493,7 @@ escalation = {{ confirmations = 1 }}
                     "base_url": model_upstream.base_url,
                 },
                 "extra_body": {"service_tier": "priority"},
+                "reasoning_format": "deepseek",
             },
             "fallbacks": [{
                 "target": "quality",
@@ -2498,6 +2503,7 @@ escalation = {{ confirmations = 1 }}
                     "base_url": model_upstream.base_url,
                 },
                 "extra_body": {},
+                "reasoning_format": "openai",
             }],
             "metadata": {
                 "algorithm": "llm_task_classifier",
