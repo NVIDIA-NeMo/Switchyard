@@ -13,7 +13,6 @@ use crate::LlmResponseChunk;
 use crate::codecs::anthropic::AnthropicMessagesStreamCodec;
 use crate::codecs::openai_chat::OpenAiChatStreamCodec;
 use crate::codecs::responses::OpenAiResponsesStreamCodec;
-use crate::engine::{FormatRegistry, TranslationEngine};
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::Usage;
@@ -42,9 +41,6 @@ pub struct StreamTranslationState {
     pub(crate) output_tokens_seen: u64,
     pub(crate) saw_backend_usage: bool,
     pub(crate) stop_reason: Option<String>,
-    /// Refusal metadata carried by the source, replayed instead of a synthesized
-    /// object so a named policy category and its explanation are not flattened away.
-    pub(crate) stop_details: Option<Value>,
     pub(crate) emitted_message_delta: bool,
 
     pub(crate) next_content_index: usize,
@@ -54,6 +50,9 @@ pub struct StreamTranslationState {
     pub(crate) tool_states: BTreeMap<usize, StreamToolState>,
     #[serde(default)]
     pub(crate) pending_chat_tool_names: BTreeMap<usize, String>,
+    /// Choices that decoded a refusal, including an empty refusal string.
+    #[serde(default)]
+    pub(crate) chat_refusal_choices: std::collections::BTreeSet<usize>,
     #[serde(default)]
     pub(crate) active_anthropic_tool: Option<usize>,
     #[serde(default)]
@@ -156,12 +155,6 @@ impl StreamTranslationState {
             ..Self::default()
         }
     }
-}
-
-/// Registry-backed streaming translator.
-#[derive(Default)]
-pub struct StreamTranslationEngine {
-    engine: TranslationEngine,
 }
 
 /// Codec contract for one provider streaming event format.
@@ -271,47 +264,6 @@ impl StreamCodecRegistry {
         self.codecs.get(&format).cloned().ok_or_else(|| {
             TranslationError::Other(format!("no stream codec registered for {format}"))
         })
-    }
-}
-
-impl StreamTranslationEngine {
-    /// Creates a streaming engine from an explicit codec registry.
-    pub fn new(registry: StreamCodecRegistry) -> Self {
-        Self {
-            engine: TranslationEngine::with_registries(FormatRegistry::with_builtins(), registry),
-        }
-    }
-
-    /// Translates one source provider event into target provider events.
-    pub fn translate_event(
-        &self,
-        state: &mut StreamTranslationState,
-        source: impl Into<FormatId>,
-        target: impl Into<FormatId>,
-        event: &Value,
-    ) -> Result<Vec<Value>> {
-        self.engine.translate_event(state, source, target, event)
-    }
-
-    /// Finishes target-provider stream emission after the source stream closes.
-    pub fn finish(
-        &self,
-        state: &mut StreamTranslationState,
-        target: impl Into<FormatId>,
-    ) -> Result<Vec<Value>> {
-        self.engine.finish_stream(state, target)
-    }
-
-    /// Convenience helper using built-in codecs and error events instead of `Result`.
-    pub fn translate_event_with_builtins(
-        state: &mut StreamTranslationState,
-        source: impl Into<FormatId>,
-        target: impl Into<FormatId>,
-        event: &Value,
-    ) -> Vec<Value> {
-        Self::default()
-            .translate_event(state, source, target, event)
-            .unwrap_or_else(|error| vec![json!({"error": {"message": error.to_string()}})])
     }
 }
 

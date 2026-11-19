@@ -112,7 +112,7 @@ impl NativeComposite {
             ));
         }
         // The judge's efficient tier selects profile 0 and its capable tier profile 1.
-        let router = CompositeRouter::new_with_profiles(
+        let router = CompositeRouter::new(
             CompositeJudgeConfig::Capability(TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
                     cutoff: classifier.cutoff,

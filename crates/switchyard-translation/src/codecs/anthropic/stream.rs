@@ -5,6 +5,7 @@
 
 use serde_json::{Map, Value, json};
 
+use super::buffered::decode_anthropic_refusal;
 use crate::LlmResponseChunk;
 use crate::codecs::stream::{
     StreamCodec, StreamTranslationState, record_source_identity,
@@ -147,13 +148,17 @@ fn decode_anthropic_stream(
             {
                 // Remember the provider stop reason: Anthropic delivers it here, on
                 // `message_delta`, while the terminal `message_stop` carries none of its own.
+                if stop_reason == "refusal" && state.stop_reason.as_deref() != Some("refusal") {
+                    out.push(LlmResponseChunk::TextDelta {
+                        index: 0,
+                        text: decode_anthropic_refusal(
+                            object
+                                .get("delta")
+                                .and_then(|delta| delta.get("stop_details")),
+                        ),
+                    });
+                }
                 state.stop_reason = Some(stop_reason.to_string());
-                state.stop_details = object
-                    .get("delta")
-                    .and_then(Value::as_object)
-                    .and_then(|delta| delta.get("stop_details"))
-                    .filter(|details| !details.is_null())
-                    .cloned();
                 out.push(LlmResponseChunk::MessageStop {
                     reason: Some(stop_reason.to_string()),
                 });
@@ -322,7 +327,12 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
         state.active_anthropic_tool = None;
     }
 
-    if !state.emitted_content_block {
+    if !state.emitted_content_block
+        && !matches!(
+            state.stop_reason.as_deref(),
+            Some("refusal" | "content_filter")
+        )
+    {
         out.push(json!({
             "type": "content_block_start",
             "index": 0,
@@ -332,16 +342,18 @@ fn finish_anthropic_stream(state: &mut StreamTranslationState) -> Vec<Value> {
     }
 
     if !state.emitted_message_delta {
+        let stop_reason = anthropic_stop_reason(state.stop_reason.as_deref());
+        let stop_details = anthropic_stop_details(&stop_reason);
+        let mut delta = json!({
+            "stop_reason": stop_reason,
+            "stop_sequence": Value::Null,
+        });
+        if !stop_details.is_null() {
+            delta["stop_details"] = stop_details;
+        }
         out.push(json!({
             "type": "message_delta",
-            "delta": {
-                "stop_reason": anthropic_stop_reason(state.stop_reason.as_deref()),
-                "stop_sequence": Value::Null,
-                "stop_details": anthropic_stop_details(
-                    state.stop_reason.as_deref(),
-                    state.stop_details.as_ref(),
-                ),
-            },
+            "delta": delta,
             "usage": anthropic_stream_usage(state),
         }));
         state.emitted_message_delta = true;
@@ -737,19 +749,13 @@ fn anthropic_stop_reason(reason: Option<&str>) -> String {
 }
 
 // Emits the metadata object Anthropic pairs with a `refusal` stop reason.
-//
-// A source that already reported `stop_details` carries the named policy category and
-// its explanation, so replay that object verbatim. Only a refusal synthesized from a
-// provider that reports no category falls back to the null form, which Anthropic
-// documents as the normal value for a refusal that maps to no named category.
-fn anthropic_stop_details(reason: Option<&str>, source: Option<&Value>) -> Value {
+// Streaming IR does not distinguish refusal text from ordinary text.
+fn anthropic_stop_details(reason: &str) -> Value {
     match reason {
-        Some("content_filter" | "refusal") => source.cloned().unwrap_or_else(|| {
-            json!({
-                "type": "refusal",
-                "category": Value::Null,
-                "explanation": Value::Null,
-            })
+        "refusal" => json!({
+            "type": "refusal",
+            "category": Value::Null,
+            "explanation": Value::Null,
         }),
         _ => Value::Null,
     }

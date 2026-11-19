@@ -154,7 +154,7 @@ impl Classifier for VgrClassifier {
             Some("turn_verification_latched")
         } else if turn_budget_spent {
             Some("efficient_turn_budget")
-        } else if !self.config.efficient_supports_images && request_has_image(request) {
+        } else if !self.config.efficient_supports_attachments && request_has_image(request) {
             Some("efficient_image_unsupported")
         } else if text::newest_prompt_is_blank(request) {
             Some("empty_prompt")
@@ -171,6 +171,23 @@ impl Classifier for VgrClassifier {
         let Some(trial) = self.breaker.attempt() else {
             return Ok(self.escalate(driver, "breaker_open", None, request, state, None));
         };
+        let typed = if text::ToolRecord::from_request(request).errors > 0 {
+            let context = RequestContext {
+                driver,
+                request,
+                started,
+            };
+            Some(self.type_task(&context).await)
+        } else {
+            None
+        };
+        if typed == Some(Some(TaskType::Chat)) {
+            let reason = "chat_after_tool_error";
+            return Ok(self.escalate(driver, reason, Some(Branch::Chat), request, state, None));
+        }
+        if self.config.bounded_efficient && self.remaining(started).is_none() {
+            return Ok(self.escalate(driver, "efficient_timed_out", None, request, state, None));
+        }
         let attempted = self
             .within_budget(started, async {
                 let response = driver
@@ -255,8 +272,16 @@ impl Classifier for VgrClassifier {
         }
 
         let attempt = rungs::response_text(&buffered.agg).unwrap_or_default();
-        let task_type = self.type_task(&context).await;
-        let caps = derive_capabilities(request, &attempt, task_type);
+        let task_type = match typed {
+            Some(task_type) => task_type,
+            None => self.type_task(&context).await,
+        };
+        let caps = derive_capabilities(
+            request,
+            &attempt,
+            task_type,
+            self.config.efficient_supports_attachments,
+        );
         let signals = self.gather(&context, &caps).await;
         let route = decide::decide(&caps, &signals, self.config.confirmed_min_clean_tail());
         if route == Route::Capable {
@@ -310,7 +335,7 @@ impl VgrClassifier {
                 .as_ref()
                 .is_some_and(|switch| switch.is_engaged())
             && !self.breaker.is_open()
-            && (self.config.efficient_supports_images || !request_has_image(request))
+            && (self.config.efficient_supports_attachments || !request_has_image(request))
     }
 
     fn escalate(
@@ -377,7 +402,7 @@ impl VgrClassifier {
         set_flag(state, EFFICIENT_SERVED_KEY, false);
         let note = handoff_note(unverified_final);
         if !(self.config.compact_handoff && super::compaction::compact(request, state, &note)) {
-            append_note(request, &note);
+            append_note(&mut request.llm_request, &note);
         }
     }
 
@@ -446,7 +471,10 @@ impl VgrClassifier {
         let run = (branch == Branch::Agentic).then(|| decide::agentic_run(caps, confirmed));
         let (Some(judged), false) = (
             caps.transcript.as_deref(),
-            branch == Branch::Unknown || run == Some(AgenticRun::Vetoed),
+            branch == Branch::Unknown
+                || run == Some(AgenticRun::Vetoed)
+                || (matches!(branch, Branch::Chat | Branch::DefaultVerified)
+                    && caps.tools.is_some_and(|tools| tools.errors > 0)),
         ) else {
             return signals;
         };

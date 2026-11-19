@@ -183,12 +183,14 @@ Each per-trial directory under `baselines/<ts>/<task-id>/` ships:
 | `agent/sessions/*.jsonl` | Structured tool-call stream (Claude Code only). |
 | `run_manifest.json` | Hostname, harbor SHA, agent kwargs, env, output cap, reasoning effort, dataset digest. The reproducibility record. |
 
-Aggregate scores for a whole run:
+For run-level results, use the `outcomes.harbor_result_json` path in
+the launcher's `run_manifest.json`. After Harbor exits, check
+`outcomes.harbor_rc` and `outcomes.harbor_result_json_status` to confirm
+whether the results were written.
 
-```bash
-uv run craft-taskgen-status \
-  --state baselines/<timestamp>/state.json
-```
+For task-generation progress, use the positional `craft-taskgen-status`
+command in [Monitoring a generation run](running-a-batch.md#monitoring).
+It reads the generation pipeline's `state.json`.
 
 Deep-dive a single failed trial:
 

@@ -12,7 +12,7 @@ You need Rust 1.96.1+ with Cargo and a native build toolchain. See [installation
 cargo new switchyard-demo
 cd switchyard-demo
 # Keep libsy and its protocol types on the same API revision.
-cargo add switchyard-libsy switchyard-protocol --git https://github.com/NVIDIA-NeMo/Switchyard.git --rev 5415db205c1f4db7e079731e7bf33a6609c67c8e
+cargo add switchyard-libsy switchyard-protocol --git https://github.com/NVIDIA-NeMo/Switchyard.git --rev ef958a9a8099bb0493b3d42862273e09eced0f52
 # futures reads the step stream; Tokio runs the asynchronous routing tasks.
 cargo add futures@0.3
 cargo add tokio@1 --features macros,rt
@@ -139,7 +139,7 @@ Add the dependencies:
 
 ```bash
 # Translation converts neutral protocol types to and from provider JSON.
-cargo add switchyard-translation --git https://github.com/NVIDIA-NeMo/Switchyard.git --rev 5415db205c1f4db7e079731e7bf33a6609c67c8e
+cargo add switchyard-translation --git https://github.com/NVIDIA-NeMo/Switchyard.git --rev ef958a9a8099bb0493b3d42862273e09eced0f52
 # reqwest handles HTTPS and JSON; serde_json represents the provider's reply.
 cargo add reqwest@0.13 --no-default-features --features json,rustls
 cargo add serde_json@1

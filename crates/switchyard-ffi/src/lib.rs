@@ -412,7 +412,7 @@ pub unsafe extern "C" fn sy_encode_request(
         let out = unsafe { out_json.as_mut() }.ok_or("missing request output")?;
         *out = std::ptr::null_mut();
         let mut input: EncodeInput = unsafe { parse_json_input(input_json) }?;
-        switchyard_translation::prepare_request_for_target(&mut input.request, &input.model, None);
+        switchyard_translation::prepare_request_for_target(&mut input.request, &input.model);
         *out = encode_json(&switchyard_translation::encode_request(
             &input.request,
             input.format,

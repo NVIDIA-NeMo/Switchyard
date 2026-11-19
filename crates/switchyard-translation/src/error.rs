@@ -28,9 +28,6 @@ pub enum TranslationError {
     #[error("lossy conversion rejected: {0}")]
     LossyConversion(String),
 
-    #[error("unknown field rejected at {path}")]
-    UnknownField { path: String },
-
     #[error("invalid value at {path}: {message}")]
     InvalidValue { path: String, message: String },
 
@@ -51,7 +48,6 @@ impl TranslationError {
             Self::InvalidType { .. } => "InvalidType",
             Self::UnsupportedTranslation { .. } => "UnsupportedTranslation",
             Self::LossyConversion(_) => "LossyConversion",
-            Self::UnknownField { .. } => "UnknownField",
             Self::InvalidValue { .. } => "InvalidValue",
             Self::UpstreamFailure { .. } => "UpstreamFailure",
             Self::Other(_) => "Other",

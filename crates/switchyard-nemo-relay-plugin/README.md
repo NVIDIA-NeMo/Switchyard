@@ -10,13 +10,14 @@ algorithm construction, retry policy, and route validation.
 
 ## Install
 
-The plugin uses `nemo-relay-plugin` 0.10.0 and requires NeMo Relay
-`>=0.10.0, <1.0.0`. Relay 0.10 changes the native callback layout, so older
-hosts cannot load this build. The manifest's native plugin API label stays `1`.
+The plugin uses `nemo-relay-plugin` 0.10.1 and requires NeMo Relay
+`>=0.10.1, <1.0.0`. Relay 0.10 changed the native callback layout; 0.10.1 adds
+the HTTP-error status handling used by this build. The manifest's native plugin
+API label stays `1`.
 
 Relay 0.8.x and 0.9.0 can lose upstream error status and details when this native
 plugin is enabled, including for models outside its configured routes. This is
-a known issue on those older hosts. This build requires Relay 0.10 or later.
+a known issue on those older hosts. This build requires Relay 0.10.1 or later.
 See the [upstream error compatibility note](../../docs/integrations/nemo_relay.md#upstream-error-compatibility).
 
 ### Install a released bundle
@@ -231,11 +232,12 @@ marks. Call marks distinguish routing from answer calls; decisions distinguish
 selected from served models. Token metrics cover both call roles, while Relay
 retains ownership of the outer LLM lifecycle.
 
-The plugin also captures the existing `libsy.client_call` and
-`libsy.upstream_attempt` spans for each routed request. It replays completed
+The plugin also captures the existing `libsy.client_call`,
+`libsy.upstream_attempt`, and `libsy.decision_client_call` spans for each routed
+request. It replays completed
 spans beneath Relay's outer LLM scope with their original timestamps. The
 projection contains allowlisted routing metadata by default. To inspect the
-final classifier/judge request and buffered response, enable
+final classifier/judge or typed decision request and buffered response, enable
 [routing payload capture](../../docs/integrations/nemo_relay.md#inspect-classifier-and-judge-payloads)
 in the plugin configuration. Capture uses Relay's existing exporters and writes
 no payload files inside the plugin. It is disabled by default and omits bodies

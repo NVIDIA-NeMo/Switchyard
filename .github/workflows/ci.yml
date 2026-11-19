@@ -152,6 +152,7 @@ jobs:
           cache-dependency-path: |
             bindings/typescript/package-lock.json
             examples/pi/package-lock.json
+            examples/vscode/package-lock.json
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-bin: false
@@ -163,6 +164,8 @@ jobs:
       - run: npm --prefix examples/pi ci
       - run: npm --prefix examples/pi run typecheck
       - run: npm --prefix examples/pi test
+      - run: npm --prefix examples/vscode ci --omit=dev
+      - run: npm --prefix examples/vscode test
 
   typecheck:
     name: Typecheck (mypy)
