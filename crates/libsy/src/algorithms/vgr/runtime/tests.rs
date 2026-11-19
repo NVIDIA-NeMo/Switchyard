@@ -1438,6 +1438,9 @@ async fn attachment_verifiers_receive_the_evidence_even_without_user_text() -> R
             }),
         ],
     ] {
+        let expects_typing = content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Text { text } if !text.trim().is_empty()));
         let route = route(|config| {
             config.efficient_supports_attachments = true;
             config.task_typing = true;
@@ -1463,7 +1466,7 @@ async fn attachment_verifiers_receive_the_evidence_even_without_user_text() -> R
                             "{target} did not receive the image"
                         );
                         let n = seen.fetch_add(1, Ordering::Relaxed);
-                        return Ok(if n == 0 {
+                        return Ok(if expects_typing && n == 0 {
                             reply("answer")
                         } else {
                             scored(0.99)
@@ -1475,7 +1478,10 @@ async fn attachment_verifiers_receive_the_evidence_even_without_user_text() -> R
         )
         .await?;
         assert_eq!(selected.as_str(), "efficient");
-        assert!(checks.load(Ordering::Relaxed) >= 2);
+        assert_eq!(
+            checks.load(Ordering::Relaxed),
+            if expects_typing { 2 } else { 1 }
+        );
     }
     let pdf = ContentBlock::File {
         source: FileSource::FileData {

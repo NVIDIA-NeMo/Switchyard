@@ -3158,4 +3158,106 @@ mod tests {
     async fn efficient_text_bad_requests_remain_terminal() -> Result<()> {
         check_vgr_media_rejections(true, false).await
     }
+    #[tokio::test]
+    async fn failed_efficient_attachment_is_not_retried_after_capable_rejection() -> Result<()> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use switchyard_libsy::{ACTIVE_APPROVAL, ServingMode, Vgr, VgrConfig};
+        use switchyard_protocol::{ContentBlock, ImageSource, Metadata};
+        struct Client {
+            reject_efficient: AtomicBool,
+            calls: Mutex<Vec<ModelId>>,
+        }
+        #[async_trait]
+        impl RoutedLlmClient for Client {
+            async fn call(
+                &self,
+                request: Request,
+            ) -> std::result::Result<Response, LlmClientError> {
+                let target = request.model_id().unwrap();
+                self.calls.lock().push(target.clone());
+                if target == "capable"
+                    || (target == "efficient" && self.reject_efficient.load(Ordering::Relaxed))
+                {
+                    return Err(LlmClientError::UpstreamHttp {
+                        status: if target == "efficient" {
+                            StatusCode::INTERNAL_SERVER_ERROR
+                        } else {
+                            StatusCode::BAD_REQUEST
+                        },
+                        body: if target == "efficient" {
+                            "cannot make GET request"
+                        } else {
+                            "invalid image"
+                        }
+                        .into(),
+                        headers: Default::default(),
+                    });
+                }
+                Ok(Response {
+                    llm_response: LlmResponse::Agg(switchyard_protocol::text_response(
+                        Some(target.to_string()),
+                        if target == "judge" { "no" } else { "Red" },
+                    )),
+                    metadata: None,
+                    upstream_headers: Default::default(),
+                })
+            }
+        }
+        let mut config = VgrConfig::new("efficient".into(), "capable".into());
+        config.mode = ServingMode::Active {
+            approval: ACTIVE_APPROVAL.into(),
+        };
+        config.task_typing = false;
+        config.efficient_supports_attachments = true;
+        config.targets.judge = Some("judge".into());
+        let algorithm: Arc<dyn Algorithm> = Arc::new(Vgr::new(config)?);
+        let client = Arc::new(Client {
+            reject_efficient: AtomicBool::new(true),
+            calls: Mutex::new(Vec::new()),
+        });
+        let mut input = request();
+        input.metadata = Some(Metadata {
+            session_id: Some("media-recovery".into()),
+            ..Default::default()
+        });
+        input.llm_request.messages[0]
+            .content
+            .push(ContentBlock::Image {
+                source: ImageSource::Url {
+                    url: "https://example.invalid/image.png".into(),
+                    detail: None,
+                },
+            });
+        let result = run(
+            algorithm.clone(),
+            ClientRouter::single(client.clone()),
+            input.clone(),
+            to_category_map(&["efficient", "capable"]),
+            None,
+        )
+        .await;
+        assert!(matches!(result, Err(LibsyError::ClientCall {
+            target, source: LlmClientError::UpstreamHttp { status: StatusCode::BAD_REQUEST, .. },
+        }) if target == "capable"));
+        assert_eq!(
+            *client.calls.lock(),
+            vec![ModelId::new("efficient"), ModelId::new("capable")]
+        );
+        client.reject_efficient.store(false, Ordering::Relaxed);
+        client.calls.lock().clear();
+        run(
+            algorithm,
+            ClientRouter::single(client.clone()),
+            input,
+            to_category_map(&["efficient", "capable"]),
+            None,
+        )
+        .await?;
+        let calls = client.calls.lock();
+        assert_eq!(
+            calls.iter().filter(|m| m.as_str() == "efficient").count(),
+            2
+        );
+        Ok(())
+    }
 }

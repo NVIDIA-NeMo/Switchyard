@@ -204,6 +204,7 @@ impl Classifier for VgrClassifier {
                 buffered
             }
             Some(Err(error)) => {
+                driver.record_model_failure(efficient.clone());
                 if endpoint_failure(&error) {
                     trial.failure();
                 }
@@ -220,6 +221,7 @@ impl Classifier for VgrClassifier {
                 ));
             }
             None => {
+                driver.record_model_failure(efficient.clone());
                 trial.failure();
                 return Ok(self.escalate(
                     driver,
@@ -453,6 +455,24 @@ impl VgrClassifier {
     /// Types the request; abstains, selecting the default regime, on any failure.
     async fn type_task(&self, context: &RequestContext<'_>) -> Option<TaskType> {
         if !self.config.task_typing {
+            return None;
+        }
+        // Without a textual task, keep the default verification regime.
+        if context
+            .request
+            .llm_request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == switchyard_protocol::Role::User)
+            .is_some_and(|message| {
+                message.content.iter().all(|block| match block {
+                    ContentBlock::Text { text } => text.trim().is_empty(),
+                    ContentBlock::Image { .. } => true,
+                    _ => false,
+                })
+            })
+        {
             return None;
         }
         let (turns, _) = text::turns(context.request);

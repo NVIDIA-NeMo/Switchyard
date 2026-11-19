@@ -85,14 +85,15 @@ impl Algorithm for Vgr {
             .classifier
             .efficient_may_stand_in(&request)
             .then(|| request.clone());
-        let mut outcome = self.route.execute(driver, request).await?;
+        let mut outcome = self.route.execute(driver.clone(), request).await?;
         // Efficient answers are already buffered and have no fallback.
         outcome.selected_model_ids.truncate(1);
         let config = &self.classifier.config;
         if let Some(arrived) = arrived
             && outcome.response.is_none()
             && outcome.selected_model_ids.first() == Some(&config.targets.capable)
-            // The efficient tier may have failed while this request was routed.
+            // A failed generation must not be retried after the capable tier also rejects it.
+            && !driver.model_failed(&config.targets.efficient)
             && self.classifier.efficient_may_stand_in(&arrived)
         {
             outcome
