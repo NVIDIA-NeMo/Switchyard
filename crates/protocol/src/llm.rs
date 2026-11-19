@@ -492,6 +492,12 @@ pub struct ReasoningParams {
     pub raw: Option<Value>,
 }
 
+/// Request extension key that marks a request decoded from an Anthropic Messages body.
+///
+/// Codecs skip this key when they copy unknown provider fields, so callers cannot set it.
+/// Prompt edits remove it from preserved Anthropic bodies for the same reason.
+pub const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
+
 /// Provider-specific fields that do not have first-class conversation fields.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

@@ -604,7 +604,7 @@ impl StageClassifier {
             return;
         };
         if let Some(note) = config.note_for(tier, source) {
-            prompts::append_note(request, note);
+            prompts::append_note(&mut request.llm_request, note);
         }
     }
 

@@ -280,21 +280,13 @@ pub fn exact_preserved_response(
         .flatten()
 }
 
-/// Applies a selected target model and optionally prepends its system prompt.
+/// Applies a selected target model.
 ///
-/// Preserved built-in bodies are updated in their native format when possible so exact replay
-/// keeps caller fields that are not represented in the normalized request.
-/// Call this once per candidate using a request that has not already received a target prompt.
-pub fn prepare_request_for_target(
-    request: &mut LlmRequest,
-    target: &ModelId,
-    prompt: Option<&str>,
-) {
+/// Preserved built-in bodies get the new model so exact replay keeps caller fields that are not
+/// represented in the normalized request. Other preserved bodies are removed.
+pub fn prepare_request_for_target(request: &mut LlmRequest, target: &ModelId) {
     let target = target.to_string();
     request.model = Some(target.clone());
-    if let Some(prompt) = prompt {
-        crate::prepend_system_prompt(request, prompt);
-    }
     request.preservation.requests.retain(|format, body| {
         if ![
             WireFormat::OpenAiChat.as_str(),

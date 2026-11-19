@@ -367,7 +367,7 @@ impl AdvisorGate {
         // Mandatory after any message mutation: codecs otherwise replay the
         // preserved pre-surgery body verbatim and the feedback never reaches
         // the executor.
-        crate::algorithms::util::prompts::drop_exact_replay(&mut redo);
+        crate::algorithms::util::prompts::drop_exact_replay(&mut redo.llm_request);
         RoutingOutcome::route_to(executor.clone(), executor_fallbacks.to_vec(), redo)
     }
 

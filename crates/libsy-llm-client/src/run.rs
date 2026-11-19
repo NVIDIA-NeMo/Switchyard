@@ -28,7 +28,7 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 use switchyard_libsy::{
     Algorithm, AnswerSummary, Call, CallDecision, LibsyError, OutcomeMetadata, Result,
-    RoutingOutcome, RuntimeModels, drive,
+    RoutingOutcome, RuntimeModels, drive, prepend_system_prompt,
 };
 use switchyard_protocol::{
     AggLlmResponse, LlmClientError, LlmResponse, LlmResponseChunk, LlmResponseStream, Message,
@@ -1109,19 +1109,21 @@ impl ClientRouter {
 
     /// Prepare a completion candidate with its configured target prompt.
     fn prepare_completion_request(&self, mut request: Request, target: &ModelId) -> Request {
-        let prompt = self.inner.target_prompts.get(target).map(String::as_str);
-        prepare_request_for_target(&mut request.llm_request, target, prompt);
+        prepare_request_for_target(&mut request.llm_request, target);
+        if let Some(prompt) = self.inner.target_prompts.get(target) {
+            prepend_system_prompt(&mut request.llm_request, prompt);
+        }
         request
     }
 
     /// Prepare a routing call, adding a target prompt only when it generates a candidate answer.
     fn prepare_routing_request(&self, mut request: Request, target: &ModelId) -> Request {
-        let prompt = if self.inner.routing_answer_target.as_ref() == Some(target) {
-            self.inner.target_prompts.get(target).map(String::as_str)
-        } else {
-            None
-        };
-        prepare_request_for_target(&mut request.llm_request, target, prompt);
+        prepare_request_for_target(&mut request.llm_request, target);
+        if self.inner.routing_answer_target.as_ref() == Some(target)
+            && let Some(prompt) = self.inner.target_prompts.get(target)
+        {
+            prepend_system_prompt(&mut request.llm_request, prompt);
+        }
         request
     }
 }
