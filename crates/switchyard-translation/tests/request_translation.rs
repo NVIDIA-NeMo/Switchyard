@@ -594,7 +594,7 @@ fn openai_target_prompt_preserves_native_request_fields() -> TestResult {
                 "modalities": ["text", "audio"],
                 "audio": {"voice": "alloy", "format": "wav"},
                 "web_search_options": {"search_context_size": "high"},
-                "n": 2,
+                "n": 1,
                 "logit_bias": {"42": -1},
                 "frequency_penalty": 0.2,
                 "presence_penalty": 0.3,
@@ -4133,6 +4133,32 @@ fn json_contains_content_type(value: &Value, expected: &str) -> bool {
             .any(|child| json_contains_content_type(child, expected)),
         _ => false,
     }
+}
+
+#[test]
+fn openai_chat_request_rejects_multi_choice() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let mut body = json!({
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hello"}],
+    });
+    engine.decode_request(WireFormat::OpenAiChat, &body, &policy)?;
+    body["n"] = json!(1);
+    engine.decode_request(WireFormat::OpenAiChat, &body, &policy)?;
+
+    for n in [json!(2), json!("1")] {
+        body["n"] = n;
+        assert!(
+            matches!(
+                engine.decode_request(WireFormat::OpenAiChat, &body, &policy),
+                Err(TranslationError::InvalidValue { path, .. }) if path == "$.n"
+            ),
+            "expected InvalidValue for n={}",
+            body["n"]
+        );
+    }
+    Ok(())
 }
 
 // Malformed provider fields must fail before normalization can change their meaning.
