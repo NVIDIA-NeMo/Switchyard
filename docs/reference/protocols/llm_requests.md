@@ -78,7 +78,7 @@ providers apply their own defaults and accepted ranges.
 | <a href="../../../rust/switchyard_protocol/llm/struct.ReasoningParams.html#structfield.effort"><code>ReasoningParams.effort: Option&lt;String&gt;</code></a> | Requested reasoning effort. | `output_config.effort` | `reasoning.effort` | `reasoning_effort` |
 | <a href="../../../rust/switchyard_protocol/llm/struct.ReasoningParams.html#structfield.raw"><code>ReasoningParams.raw: Option&lt;Value&gt;</code></a> | Provider-specific reasoning configuration. | `thinking` controls | `reasoning` object | No standard equivalent for the whole object |
 
-**Anthopic Sampling Parameters:** Switchyard omits `temperature`, `top_p`, and `top_k` parameters
+**Anthropic sampling parameters:** Switchyard omits `temperature`, `top_p`, and `top_k` parameters
 when rebuilding Anthropic requests. Exact preserved Anthropic requests retain these fields.
 Under API version `2023-06-01`, models released after Claude Opus 4.6 accept only
 `1.0` for `temperature` and values from `0.99` through `1.0` for `top_p`.
