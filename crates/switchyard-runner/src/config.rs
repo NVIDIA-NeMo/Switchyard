@@ -1124,6 +1124,11 @@ impl DeploymentConfig {
                     RunnerError::configuration("validated llm client was not initialized")
                 })?;
             if let Some(effort) = &target.reasoning_effort {
+                if !target.reasoning_effort_map.is_empty() {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name} cannot set both reasoning_effort and reasoning_effort_map"
+                    )));
+                }
                 if effort.trim().is_empty() {
                     return Err(RunnerError::configuration(format!(
                         "target {target_name} reasoning_effort must not be empty"
@@ -1135,6 +1140,21 @@ impl DeploymentConfig {
                 {
                     return Err(RunnerError::configuration(format!(
                         "target {target_name} reasoning_effort {effort:?} is not an anthropic_messages effort; use one of {}",
+                        ANTHROPIC_EFFORTS.join(", ")
+                    )));
+                }
+            }
+            for (requested, mapped) in &target.reasoning_effort_map {
+                if requested.trim().is_empty() || mapped.trim().is_empty() {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name} reasoning_effort_map keys and values must not be empty"
+                    )));
+                }
+                if matches!(client_config.format, ClientFormat::AnthropicMessages)
+                    && !ANTHROPIC_EFFORTS.contains(&mapped.as_str())
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "target {target_name} reasoning_effort_map value {mapped:?} is not an anthropic_messages effort. Use one of {}",
                         ANTHROPIC_EFFORTS.join(", ")
                     )));
                 }
@@ -1151,6 +1171,7 @@ impl DeploymentConfig {
                     )?,
                     None,
                 )
+                .with_reasoning_effort_map(target.reasoning_effort_map.clone())
                 .with_responses_reasoning(client_config.responses_reasoning.unwrap_or_default())
                 .with_provider_model(target.id.clone()),
             );
@@ -1571,6 +1592,8 @@ struct TargetConfig {
     system_prompt: Option<String>,
     /// Reasoning effort forced on every request to this target, replacing the caller's value.
     reasoning_effort: Option<String>,
+    #[serde(default)]
+    reasoning_effort_map: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -3068,6 +3091,32 @@ classify_trigger"#,
             "{}",
             error_message(&minimal)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn target_reasoning_effort_map_checks_the_mapped_value() -> RunnerResult<()> {
+        let weak = "[targets.weak]\nid = \"weak/model\"\nllm_client = \"anthropic\"";
+        let config = |setting| VALID_CONFIG.replace(weak, &format!("{weak}\n{setting}"));
+        runner_from_toml(&config(r#"reasoning_effort_map = { minimal = "low" }"#))?;
+
+        for (setting, expected) in [
+            (
+                "reasoning_effort_map = { minimal = \"low\" }\nreasoning_effort = \"high\"",
+                "cannot set both reasoning_effort and reasoning_effort_map",
+            ),
+            (
+                r#"reasoning_effort_map = { minimal = "" }"#,
+                "reasoning_effort_map keys and values must not be empty",
+            ),
+            (
+                r#"reasoning_effort_map = { low = "minimal" }"#,
+                "reasoning_effort_map value \"minimal\" is not an anthropic_messages effort",
+            ),
+        ] {
+            let message = error_message(&config(setting));
+            assert!(message.contains(expected), "{message}");
+        }
         Ok(())
     }
 

@@ -277,8 +277,9 @@ Record it with every result. Three rules apply:
 - On `anthropic_messages`, the target's `reasoning_effort` writes
   `output_config.effort`, replacing the value the caller sent. Switchyard accepts
   `low`, `medium`, `high`, `xhigh`, and `max` for this format. Choose an effort
-  supported by the upstream provider and model. When the target leaves
-  `reasoning_effort` unset, the caller's effort is passed through.
+  supported by the upstream provider and model. Use
+  [`reasoning_effort_map`](../reference/toml_schema.md#targetsname) to change only
+  specific caller values.
 - One route can use multiple target names with the same provider model ID and
   `llm_client` at different efforts. Each target keeps its own `reasoning_effort`,
   `extra_body`, and `omit_body_fields`. See the

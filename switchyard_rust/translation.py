@@ -71,6 +71,12 @@ if TYPE_CHECKING:
             """Return a dictionary with body and diagnostics entries."""
             ...
 
+        def remap_reasoning_effort(
+            self, format: WireFormat | str, body: dict[str, Any], effort_map: dict[str, str]
+        ) -> dict[str, Any]:
+            """Return a copy of the body with the selected target's effort map applied."""
+            ...
+
         def translate_response(
             self,
             source: WireFormat | str,

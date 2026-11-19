@@ -30,6 +30,33 @@ def test_translate_request() -> None:
 
 
 @pytest.mark.parametrize(
+    "effort,expected_effort", [("MINIMAL", "LOW"), ("HIGH", "HIGH"), (None, None)]
+)
+def test_remap_gemini_reasoning_effort(effort: str | None, expected_effort: str | None) -> None:
+    thinking: dict[str, bool | str] = {"includeThoughts": True}
+    expected_thinking: dict[str, bool | str] = {"includeThoughts": True}
+    if effort is not None:
+        thinking["thinkingLevel"] = effort
+    if expected_effort is not None:
+        expected_thinking["thinkingLevel"] = expected_effort
+    contents = [{"role": "user", "parts": [{"text": "Hello"}]}]
+    body = {
+        "contents": contents,
+        "generationConfig": {"thinkingConfig": thinking, "maxOutputTokens": 64},
+    }
+
+    result = TranslationEngine().remap_reasoning_effort(
+        "gemini_generate_content", body, {"MINIMAL": "LOW"}
+    )
+
+    assert result == {
+        "contents": contents,
+        "generationConfig": {"thinkingConfig": expected_thinking, "maxOutputTokens": 64},
+    }
+    assert thinking.get("thinkingLevel") == effort
+
+
+@pytest.mark.parametrize(
     "kwargs",
     [
         pytest.param({}, id="omitted"),
