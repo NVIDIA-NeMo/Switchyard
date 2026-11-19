@@ -61,10 +61,50 @@ pub(super) fn content_text(content: &[ContentBlock]) -> (String, bool) {
             ContentBlock::ToolCall(_)
             | ContentBlock::ToolResult(_)
             | ContentBlock::Reasoning { .. } => {}
+            ContentBlock::Image { .. } => {
+                parts.push("[image attachment]");
+                unsupported = true;
+            }
+            ContentBlock::File { .. } => {
+                parts.push("[file attachment]");
+                unsupported = true;
+            }
+            ContentBlock::Audio { .. } => {
+                parts.push("[audio attachment]");
+                unsupported = true;
+            }
+            ContentBlock::Video { .. } => {
+                parts.push("[video attachment]");
+                unsupported = true;
+            }
             _ => unsupported = true,
         }
     }
     (parts.join("\n"), unsupported)
+}
+
+/// Attachments in conversation order, including nested tool results.
+pub(super) fn attachments(request: &Request) -> Vec<&ContentBlock> {
+    fn collect<'a>(content: &'a [ContentBlock], blocks: &mut Vec<&'a ContentBlock>) {
+        for block in content {
+            match block {
+                ContentBlock::Image { .. }
+                | ContentBlock::File { .. }
+                | ContentBlock::Audio { .. }
+                | ContentBlock::Video { .. } => blocks.push(block),
+                ContentBlock::ToolResult(result) => collect(&result.content, blocks),
+                _ => {}
+            }
+        }
+    }
+    let mut blocks = Vec::new();
+    for instruction in &request.llm_request.instructions {
+        collect(&instruction.content, &mut blocks);
+    }
+    for message in &request.llm_request.messages {
+        collect(&message.content, &mut blocks);
+    }
+    blocks
 }
 
 pub(super) fn turns(request: &Request) -> (Vec<Turn>, bool) {

@@ -857,6 +857,9 @@ impl AttemptFailure {
 }
 
 fn is_transient_failure(error: &LlmClientError) -> bool {
+    if error.is_attachment_rejection() {
+        return false;
+    }
     match error {
         LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
         LlmClientError::UpstreamHttp { status, .. } => {
@@ -4257,6 +4260,59 @@ mod tests {
                 Some(&ModelId::from("gpt")),
             )
             .await?;
+        Ok(())
+    }
+    #[tokio::test]
+    async fn bad_media_does_not_retry_or_cool_down_the_backend()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        use switchyard_protocol::{ContentBlock, ImageSource};
+        for retries in [0, 2] {
+            let server = MockServer::start().await;
+            let calls = Arc::new(AtomicUsize::new(0));
+            let seen = calls.clone();
+            Mock::given(method("POST"))
+                .respond_with(move |request: &wiremock::Request| {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    if String::from_utf8_lossy(&request.body).contains("image_url") {
+                        ResponseTemplate::new(500).set_body_json(json!({"error": {
+                            "message": "cannot make GET request to image URL", "type": "server_error"
+                        }}))
+                    } else { chat_success_response() }
+                }).mount(&server).await;
+            let backend = HttpBackendConfig {
+                failure_cooldown: Duration::from_secs(60),
+                ..config_with_retries(&format!("{}/v1", server.uri()), retries)
+            };
+            let client = TranslatingLlmClient::new(&[ModelConfig::new(
+                "gpt",
+                Backend::OpenAiChat(backend),
+                None,
+            )])?;
+            let mut broken = request_for(Some("gpt"), false);
+            broken.llm_request.messages[0]
+                .content
+                .push(ContentBlock::Image {
+                    source: ImageSource::Url {
+                        url: "https://example.invalid/missing.png".into(),
+                        detail: None,
+                    },
+                });
+            assert!(matches!(
+                client.call_rewrite_model(broken, None).await,
+                Err(LlmClientError::UpstreamHttp {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    ..
+                })
+            ));
+            let response = client
+                .call_rewrite_model(request_for(Some("gpt"), false), None)
+                .await?;
+            assert_eq!(
+                completion_text(&response.llm_response.into_agg().await?),
+                "recovered"
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+        }
         Ok(())
     }
 }

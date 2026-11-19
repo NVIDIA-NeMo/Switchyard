@@ -1413,3 +1413,235 @@ async fn a_step_that_cannot_commit_over_a_tool_error_skips_local_checks() -> Res
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn attachment_verifiers_receive_the_evidence_even_without_user_text() -> Result<()> {
+    use switchyard_protocol::{FileSource, ImageSource, ToolResult};
+    let image = ContentBlock::Image {
+        source: ImageSource::Url {
+            url: "https://example.test/invoice.png".into(),
+            detail: None,
+        },
+    };
+    for content in [
+        vec![
+            ContentBlock::Text {
+                text: "What is the total?".into(),
+            },
+            image.clone(),
+        ],
+        vec![image.clone()],
+        vec![ContentBlock::Text { text: "   ".into() }, image.clone()],
+        vec![
+            ContentBlock::Text {
+                text: "Read the screenshot".into(),
+            },
+            ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "shot".into(),
+                content: vec![image.clone()],
+                is_error: None,
+            }),
+        ],
+    ] {
+        let expects_typing = content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Text { text } if !text.trim().is_empty()));
+        let route = route(|config| {
+            config.efficient_supports_attachments = true;
+            config.task_typing = true;
+        })?;
+        let evidence = image.clone();
+        let checks = Arc::new(AtomicUsize::new(0));
+        let seen = checks.clone();
+        let (selected, _) = test_drive_with_models(
+            route,
+            request(vec![Message::new(Role::User, content)]),
+            category_models(Category::Any, &["efficient", "capable"]),
+            move |target: ModelId, request: Request| {
+                let evidence = evidence.clone();
+                let seen = seen.clone();
+                async move {
+                    if matches!(target.as_str(), "judge" | "capable-judge") {
+                        assert!(
+                            request
+                                .llm_request
+                                .messages
+                                .iter()
+                                .any(|m| m.content.contains(&evidence)),
+                            "{target} did not receive the image"
+                        );
+                        let n = seen.fetch_add(1, Ordering::Relaxed);
+                        return Ok(if expects_typing && n == 0 {
+                            reply("answer")
+                        } else {
+                            scored(0.99)
+                        });
+                    }
+                    Ok(reply("$482.17"))
+                }
+            },
+        )
+        .await?;
+        assert_eq!(selected.as_str(), "efficient");
+        assert_eq!(
+            checks.load(Ordering::Relaxed),
+            if expects_typing { 2 } else { 1 }
+        );
+    }
+    let pdf = ContentBlock::File {
+        source: FileSource::FileData {
+            data: "data:application/pdf;base64,cGRm".into(),
+            filename: Some("invoice.pdf".into()),
+        },
+    };
+    let route = route(|_| {})?;
+    let (selected, _) = test_drive_with_models(
+        route,
+        request(vec![Message::new(
+            Role::User,
+            vec![
+                ContentBlock::Text {
+                    text: "Read the PDF".into(),
+                },
+                pdf,
+            ],
+        )]),
+        category_models(Category::Any, &["efficient", "capable"]),
+        |target: ModelId, _| async move {
+            assert_eq!(
+                target.as_str(),
+                "capable",
+                "attachments disabled must skip efficient"
+            );
+            Ok(reply("$482.17"))
+        },
+    )
+    .await?;
+    assert_eq!(selected.as_str(), "capable");
+    Ok(())
+}
+
+#[tokio::test]
+async fn every_verification_rung_receives_the_attachment() -> Result<()> {
+    let image = ContentBlock::Image {
+        source: switchyard_protocol::ImageSource::Url {
+            url: "https://example.test/invoice.png".into(),
+            detail: None,
+        },
+    };
+    let route = route(|config| config.efficient_supports_attachments = true)?;
+    let checks = Arc::new(AtomicUsize::new(0));
+    let observed = checks.clone();
+    let evidence = image.clone();
+    let (selected, _) = test_drive_with_models(
+        route,
+        request(vec![Message::new(
+            Role::User,
+            vec![
+                ContentBlock::Text {
+                    text: "Read the invoice".into(),
+                },
+                image,
+            ],
+        )]),
+        category_models(Category::Any, &["efficient", "capable"]),
+        move |target: ModelId, request: Request| {
+            let observed = observed.clone();
+            let evidence = evidence.clone();
+            async move {
+                if target.as_str().contains("judge") {
+                    assert!(
+                        request
+                            .llm_request
+                            .messages
+                            .iter()
+                            .any(|m| m.content.contains(&evidence))
+                    );
+                    observed.fetch_add(1, Ordering::Relaxed);
+                    return Ok(if target.as_str() == "judge" {
+                        scored(0.01)
+                    } else {
+                        reply("no")
+                    });
+                }
+                Ok(reply("$482.17"))
+            }
+        },
+    )
+    .await?;
+    assert_eq!(selected.as_str(), "capable");
+    // Confidence, deliberation, scored verdict, and capable confirmation.
+    assert_eq!(checks.load(Ordering::Relaxed), 4);
+    Ok(())
+}
+
+#[tokio::test]
+async fn disabled_attachments_skip_all_media_and_prevent_efficient_stand_in() -> Result<()> {
+    use switchyard_protocol::{FileSource, ImageSource, MediaSource, ToolResult};
+    for block in [
+        ContentBlock::Image {
+            source: ImageSource::Url {
+                url: "https://example.test/a.png".into(),
+                detail: None,
+            },
+        },
+        ContentBlock::File {
+            source: FileSource::FileId("pdf".into()),
+        },
+        ContentBlock::Audio {
+            source: MediaSource::Url {
+                url: "https://example.test/a.wav".into(),
+                media_type: None,
+            },
+        },
+        ContentBlock::Video {
+            source: MediaSource::Url {
+                url: "https://example.test/a.mp4".into(),
+                media_type: None,
+            },
+        },
+    ] {
+        for nested in [false, true] {
+            let block = if nested {
+                ContentBlock::ToolResult(ToolResult {
+                    tool_call_id: "media".into(),
+                    content: vec![block.clone()],
+                    is_error: None,
+                })
+            } else {
+                block.clone()
+            };
+            let route = route(|_| {})?;
+            let mut input = request(vec![Message::new(
+                Role::User,
+                vec![
+                    ContentBlock::Text {
+                        text: "Read the attachment".into(),
+                    },
+                    block,
+                ],
+            )]);
+            input
+                .llm_request
+                .instructions
+                .push(switchyard_protocol::InstructionBlock {
+                    role: Role::System,
+                    content: vec![ContentBlock::Text {
+                        text: "Read carefully".into(),
+                    }],
+                });
+            let outcome = crate::core::testing::test_drive_with_state(
+                route,
+                input,
+                category_models(Category::Any, &["efficient", "capable"]),
+                State::default(),
+                |_target: ModelId, _request: Request| async {
+                    panic!("no efficient or verifier calls expected")
+                },
+            )
+            .await?;
+            assert_eq!(outcome.selected_model_ids, vec![ModelId::new("capable")]);
+        }
+    }
+    Ok(())
+}

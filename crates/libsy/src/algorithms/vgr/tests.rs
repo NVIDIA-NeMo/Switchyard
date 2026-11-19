@@ -486,3 +486,20 @@ mod decide {
         assert_eq!(decide(&answer, &signals, None), Route::Efficient);
     }
 }
+
+#[test]
+fn supported_image_only_request_has_an_attempt_to_verify() {
+    let input = request(vec![Message::new(
+        Role::User,
+        vec![ContentBlock::Image {
+            source: switchyard_protocol::ImageSource::Url {
+                url: "https://example.test/invoice.png".into(),
+                detail: None,
+            },
+        }],
+    )]);
+    assert_eq!(
+        derive_capabilities(&input, "$482.17", None, true).branch,
+        Branch::DefaultVerified
+    );
+}
