@@ -537,8 +537,8 @@ impl TranslationEngine {
             futures::pin_mut!(lines);
             while let Some(line) = lines.next().await {
                 let line = line.map_err(llm_client_error_from_io)?;
-                // A blank line (allowing a bare CR for CRLF streams) ends the frame.
-                if line.trim_end().is_empty() {
+                // Only an empty line ends the frame; whitespace can be a field name.
+                if line.is_empty() {
                     let parsed = sse::parse_json_sse_frame(&frame, marker)
                         .map_err(|error| LlmClientError::ResponseTranslation(error.to_string()))?;
                     frame.clear();
