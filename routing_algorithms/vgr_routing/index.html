@@ -2646,7 +2646,7 @@ entry and leave the route's <code>context_window</code> unset. Switchyard then r
 service's <code>/props</code> response and advertises a positive context capacity when
 available. Missing or invalid properties leave the capacity unknown; routing
 continues normally. Discovery does not configure the service or load a model.</p>
-<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/6cdeee27f33eae330b15d1d0865dfd3b9db70b3b/examples/vgr-local-servers.toml">the local-server example</a>
+<p>See <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/171d613bf0fef059b175e6b7772fdba0841dc7b1/examples/vgr-local-servers.toml">the local-server example</a>
 for an active llama.cpp configuration and commented Ollama/vLLM alternatives.
 For Ollama and vLLM, set <code>context_window</code> to match the running service; automatic
 discovery for those servers is not implemented.</p>
@@ -2705,7 +2705,7 @@ Client and upstream HTTP timeouts still apply. Configure those timeouts in the
 harness and Switchyard client for long-running decisions. Configured durations
 must remain positive even when these VGR limits are disabled.</p>
 <h2 id="hermes-auxiliary-routing">Hermes auxiliary routing<a class="headerlink" href="#hermes-auxiliary-routing" title="Permanent link">&para;</a></h2>
-<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/6cdeee27f33eae330b15d1d0865dfd3b9db70b3b/examples/vgr-local-servers.toml">local-server example</a> exposes
+<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/171d613bf0fef059b175e6b7772fdba0841dc7b1/examples/vgr-local-servers.toml">local-server example</a> exposes
 <code>switchyard/only-efficient</code> through the existing passthrough router. Hermes can
 use it for titles and approval checks, independently of the conversation's VGR
 route. Configure Hermes against the same Switchyard server:</p>
@@ -2775,12 +2775,22 @@ branches can use a separate scored verdict after efficient deliberation.</p>
 <p>In <code>active</code> mode, an unavailable capable tier can fall back to an unverified efficient
 answer. That call receives the original request without the capable handoff note.
 Fallback is disabled by the kill switch, an open efficient circuit breaker, or an
-image request the efficient tier cannot serve.</p>
-<p>By default the efficient tier does not serve requests that contain images. Set
+attachment request the efficient tier cannot serve. A failed efficient generation
+is not retried as a stand-in during the same request.</p>
+<p>By default the efficient tier does not serve requests that contain image, file,
+audio, or video attachments, including attachments in tool results. Set
 <code>efficient_supports_attachments = true</code> on the VGR route to let it attempt requests
 with attachments. This setting permits attempts; it does not guarantee that the
-efficient model understands every attachment format. The judge reads only the
-surrounding text.</p>
+efficient model understands every attachment format. All configured judges must
+also support the attachment formats: typing, confidence, deliberation, and verdict
+calls receive the original attachments in conversation order alongside the judged
+text. Image-only requests are judged with their attachments even without a text
+question. Image-only prompts skip task typing and use the default verification
+regime; the evidence checks still run.</p>
+<p>An efficient-tier HTTP 400 on an attachment request escalates even when the error
+body does not identify a media problem. Explicit content-policy denials remain
+terminal. Generic HTTP 400 errors on text-only requests or from the capable tier
+keep their existing handling.</p>
 <h2 id="serving-modes">Serving modes<a class="headerlink" href="#serving-modes" title="Permanent link">&para;</a></h2>
 <ul>
 <li><code>off</code> skips candidate generation and serves the capable tier. This is the default.</li>
