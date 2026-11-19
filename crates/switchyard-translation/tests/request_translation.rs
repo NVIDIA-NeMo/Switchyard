@@ -3750,25 +3750,30 @@ fn openai_tool_strictness_is_preserved_for_anthropic() -> TestResult {
     Ok(())
 }
 
-// Verifies Anthropic defaults and the policy for discarded non-default temperatures.
 #[test]
 fn openai_request_to_anthropic_parameters() -> TestResult {
     let engine = TranslationEngine::default();
-    let body = json!({
-        "model": "gpt-5",
-        "messages": [{"role": "user", "content": "hi"}]
-    });
-
-    for (temperature, is_lossy) in [
-        (None, false),
-        (Some(1.0), true),
-        (Some(0.5), true),
-        (Some(2.0), false),
-    ] {
-        let mut body = body.clone();
-        if let Some(temperature) = temperature {
-            body["temperature"] = json!(temperature);
-        }
+    let cases: &[(_, _, &[&str])] = &[
+        (json!({}), None, &[]),
+        (json!({"temperature": 1.0}), None, &["temperature"]),
+        (json!({"temperature": 0.5}), None, &["temperature"]),
+        (json!({"temperature": 2.0}), None, &[]),
+        (json!({"top_p": 1.0}), None, &[]),
+        (json!({"top_p": 0.99}), None, &["top_p"]),
+        (json!({"top_p": 0.0}), None, &["top_p"]),
+        (json!({}), Some(0), &["top_k"]),
+        (json!({}), Some(40), &["top_k"]),
+        (json!({"top_p": 0.9}), Some(40), &["top_p", "top_k"]),
+    ];
+    for (sampling, top_k, lossy_fields) in cases {
+        let mut body = sampling.clone();
+        body["model"] = json!("gpt-5");
+        body["messages"] = json!([{"role": "user", "content": "hi"}]);
+        let mut request = engine
+            .decode_request(WireFormat::OpenAiChat, &body, &normalized_policy())?
+            .request;
+        // OpenAI Chat has no top_k field. Set it directly on the decoded request.
+        request.sampling.top_k = *top_k;
         for lossy_conversion_policy in [
             LossyConversionPolicy::AllowWithDiagnostics,
             LossyConversionPolicy::Reject,
@@ -3777,26 +3782,30 @@ fn openai_request_to_anthropic_parameters() -> TestResult {
                 lossy_conversion_policy,
                 ..normalized_policy()
             };
-            let result = engine.translate_request(
-                WireFormat::OpenAiChat,
-                WireFormat::AnthropicMessages,
-                &body,
-                &policy,
-            );
-            if is_lossy && lossy_conversion_policy == LossyConversionPolicy::Reject {
+            let result = engine.encode_request(WireFormat::AnthropicMessages, &request, &policy);
+            if !lossy_fields.is_empty() && lossy_conversion_policy == LossyConversionPolicy::Reject
+            {
                 assert!(
                     matches!(result, Err(TranslationError::LossyConversion(message))
-                    if message.contains("temperature"))
+                    if lossy_fields.iter().any(|field| message.contains(field)))
                 );
                 continue;
             }
             let output = result?;
             assert_eq!(output.body["max_tokens"], 64_000);
-            assert!(output.body.get("temperature").is_none());
-            assert_eq!(output.diagnostics.len(), usize::from(is_lossy));
-            if is_lossy {
-                assert_eq!(output.diagnostics[0].code, "lossy_conversion");
-                assert!(output.diagnostics[0].message.contains("temperature"));
+            for field in ["temperature", "top_p", "top_k"] {
+                assert!(output.body.get(field).is_none(), "unexpected {field}");
+            }
+            assert_eq!(output.diagnostics.len(), lossy_fields.len());
+            for field in *lossy_fields {
+                assert!(
+                    output
+                        .diagnostics
+                        .iter()
+                        .any(|diagnostic| diagnostic.code == "lossy_conversion"
+                            && diagnostic.message.contains(field)),
+                    "missing diagnostic for {field}"
+                );
             }
         }
     }
