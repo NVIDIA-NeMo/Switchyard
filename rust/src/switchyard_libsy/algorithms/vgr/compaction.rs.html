@@ -125,7 +125,7 @@
 <a href=#125 id=125 data-nosnippet>125</a>        text: summary.to_string(),
 <a href=#126 id=126 data-nosnippet>126</a>    });
 <a href=#127 id=127 data-nosnippet>127</a>    messages.drain(head..cut);
-<a href=#128 id=128 data-nosnippet>128</a>    drop_exact_replay(request);
+<a href=#128 id=128 data-nosnippet>128</a>    drop_exact_replay(<span class="kw-2">&amp;mut </span>request.llm_request);
 <a href=#129 id=129 data-nosnippet>129</a>}
 <a href=#130 id=130 data-nosnippet>130</a>
 <a href=#131 id=131 data-nosnippet>131</a><span class="kw">fn </span>is_task_message(message: <span class="kw-2">&amp;</span>Message) -&gt; bool {
