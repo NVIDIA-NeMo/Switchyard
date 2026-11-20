@@ -26,7 +26,7 @@ pub mod error;
 pub mod metrics;
 mod observability;
 mod observation;
-mod observed_translation;
+pub mod observed_translation;
 mod openai_decisions;
 mod payload_capture;
 mod responses_reasoning;

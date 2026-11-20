@@ -23,6 +23,7 @@ pub use switchyard_protocol::stream::{
 };
 pub use switchyard_protocol::{format, llm};
 
+pub use codex_namespaces::flatten_codex_namespaces_for_provider;
 pub use compaction::normalize_compaction;
 pub use diagnostic::*;
 pub use engine::*;
