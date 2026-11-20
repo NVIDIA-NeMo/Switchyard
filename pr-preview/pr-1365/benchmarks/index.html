@@ -2562,28 +2562,22 @@
 reasoning effort. Accuracy counts every task, including execution errors.
 Savings compare estimated solver costs per full run with Astra alone, excluding
 judges and infrastructure.</p>
-<p><img alt="DeepSWE accuracy versus estimated solver cost savings relative to Astra alone." src="../assets/deepswe-astra-luna-cost-accuracy.svg" /></p>
+<p><img alt="DeepSWE accuracy versus cost savings relative to Astra only, from higher savings on the left to zero on the right." src="../assets/deepswe-astra-luna-cost-accuracy.svg" /></p>
 <table>
 <thead>
 <tr>
 <th>Strategy</th>
 <th style="text-align: right;">Tasks solved across 3 runs</th>
 <th style="text-align: right;">Accuracy</th>
-<th style="text-align: right;">Solver cost savings vs. Astra</th>
+<th style="text-align: right;">Cost Savings vs. Astra Only</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Astra only</td>
-<td style="text-align: right;">245/339</td>
-<td style="text-align: right;">72.27%</td>
-<td style="text-align: right;">0%</td>
-</tr>
-<tr>
-<td>Stage</td>
-<td style="text-align: right;">247/339</td>
-<td style="text-align: right;">72.86%</td>
-<td style="text-align: right;">22.55%</td>
+<td>Luna only</td>
+<td style="text-align: right;">212/339</td>
+<td style="text-align: right;">62.54%</td>
+<td style="text-align: right;">≈96.4%</td>
 </tr>
 <tr>
 <td>Plan/Execute via Stage</td>
@@ -2592,10 +2586,16 @@ judges and infrastructure.</p>
 <td style="text-align: right;">Up to 82.1%</td>
 </tr>
 <tr>
-<td>Luna only</td>
-<td style="text-align: right;">212/339</td>
-<td style="text-align: right;">62.54%</td>
-<td style="text-align: right;">≈96.4%</td>
+<td>Stage</td>
+<td style="text-align: right;">247/339</td>
+<td style="text-align: right;">72.86%</td>
+<td style="text-align: right;">22.55%</td>
+</tr>
+<tr>
+<td>Astra only</td>
+<td style="text-align: right;">245/339</td>
+<td style="text-align: right;">72.27%</td>
+<td style="text-align: right;">0%</td>
 </tr>
 </tbody>
 </table>
@@ -2608,28 +2608,22 @@ usage data, so its estimated savings are at most 82.1% compared with Astra.</p>
 <p>These results use the same Codex version, max reasoning effort, and three-run
 scoring as DeepSWE. Stage started on Astra and solved 218 of 372 task
 attempts. The 18 execution errors count as failures.</p>
-<p><img alt="SWE-Atlas accuracy versus estimated solver cost savings relative to Astra alone." src="../assets/swe-atlas-astra-luna-cost-accuracy.svg" /></p>
+<p><img alt="SWE-Atlas accuracy versus cost savings relative to Astra only, from higher savings on the left to zero on the right." src="../assets/swe-atlas-astra-luna-cost-accuracy.svg" /></p>
 <table>
 <thead>
 <tr>
 <th>Strategy</th>
 <th style="text-align: right;">Tasks solved across 3 runs</th>
 <th style="text-align: right;">Accuracy</th>
-<th style="text-align: right;">Solver cost savings vs. Astra</th>
+<th style="text-align: right;">Cost Savings vs. Astra Only</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td>Astra only</td>
-<td style="text-align: right;">223/372</td>
-<td style="text-align: right;">59.95%</td>
-<td style="text-align: right;">0%</td>
-</tr>
-<tr>
-<td>Stage</td>
-<td style="text-align: right;">218/372</td>
-<td style="text-align: right;">58.60%</td>
-<td style="text-align: right;">≈9.2%</td>
+<td>Luna only</td>
+<td style="text-align: right;">131/372</td>
+<td style="text-align: right;">35.22%</td>
+<td style="text-align: right;">≈98.4%</td>
 </tr>
 <tr>
 <td>Plan/Execute via Stage</td>
@@ -2638,10 +2632,16 @@ attempts. The 18 execution errors count as failures.</p>
 <td style="text-align: right;">≈73.8%</td>
 </tr>
 <tr>
-<td>Luna only</td>
-<td style="text-align: right;">131/372</td>
-<td style="text-align: right;">35.22%</td>
-<td style="text-align: right;">≈98.4%</td>
+<td>Stage</td>
+<td style="text-align: right;">218/372</td>
+<td style="text-align: right;">58.60%</td>
+<td style="text-align: right;">≈9.2%</td>
+</tr>
+<tr>
+<td>Astra only</td>
+<td style="text-align: right;">223/372</td>
+<td style="text-align: right;">59.95%</td>
+<td style="text-align: right;">0%</td>
 </tr>
 </tbody>
 </table>
@@ -2665,19 +2665,19 @@ attempts. The 18 execution errors count as failures.</p>
 <td>Plan/Execute (standalone, removed)</td>
 <td style="text-align: right;">60.8%</td>
 <td style="text-align: right;">$180.51</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c6b786fd30a7c8c069d9abe4a47584e4e38943ad/benchmark/DEEPSWE_V11_QUALIFICATION.md#historical-planexecute-configuration">Historical config</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8da9d71efe8c8945ac3f44bd7f45a659b7d75cf2/benchmark/DEEPSWE_V11_QUALIFICATION.md#historical-planexecute-configuration">Historical config</a></td>
 </tr>
 <tr>
 <td>Advisor</td>
 <td style="text-align: right;">57.5%</td>
 <td style="text-align: right;">$208.00</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c6b786fd30a7c8c069d9abe4a47584e4e38943ad/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">TOML</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8da9d71efe8c8945ac3f44bd7f45a659b7d75cf2/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">TOML</a></td>
 </tr>
 <tr>
 <td>Stage</td>
 <td style="text-align: right;">61.36%</td>
 <td style="text-align: right;">$466.28</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c6b786fd30a7c8c069d9abe4a47584e4e38943ad/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">TOML</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8da9d71efe8c8945ac3f44bd7f45a659b7d75cf2/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">TOML</a></td>
 </tr>
 <tr>
 <td>Sol only</td>
@@ -2693,15 +2693,15 @@ attempts. The 18 execution errors count as failures.</p>
 </tr>
 </tbody>
 </table>
-<p>Luna: one run; others: three-run means. <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c6b786fd30a7c8c069d9abe4a47584e4e38943ad/benchmark/DEEPSWE_V11_QUALIFICATION.md">Evaluation settings</a>.</p>
+<p>Luna: one run; others: three-run means. <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8da9d71efe8c8945ac3f44bd7f45a659b7d75cf2/benchmark/DEEPSWE_V11_QUALIFICATION.md">Evaluation settings</a>.</p>
 <p>The Plan/Execute result used the removed standalone implementation. Its archived
 config requires an older Switchyard version. The <a href="#deepswe-v11">GPT-6 results above</a>
 use the current Plan/Execute configuration for Stage.</p>
 <h2 id="run-a-benchmark">Run a benchmark<a class="headerlink" href="#run-a-benchmark" title="Permanent link">&para;</a></h2>
 <p>The linked OpenRouter configs use <code>OPENROUTER_API_KEY</code>.</p>
 <ul>
-<li><strong>Terminal-Bench 2.1:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c6b786fd30a7c8c069d9abe4a47584e4e38943ad/benchmark/README.md#one-time-setup">Setup</a> · <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c6b786fd30a7c8c069d9abe4a47584e4e38943ad/benchmark/README.md#run-with-switchyard-routing">Run</a></li>
-<li><strong>DeepSWE:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c6b786fd30a7c8c069d9abe4a47584e4e38943ad/benchmark/README.md#deepswe-v11">Run Codex through Switchyard locally</a></li>
+<li><strong>Terminal-Bench 2.1:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8da9d71efe8c8945ac3f44bd7f45a659b7d75cf2/benchmark/README.md#one-time-setup">Setup</a> · <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8da9d71efe8c8945ac3f44bd7f45a659b7d75cf2/benchmark/README.md#run-with-switchyard-routing">Run</a></li>
+<li><strong>DeepSWE:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8da9d71efe8c8945ac3f44bd7f45a659b7d75cf2/benchmark/README.md#deepswe-v11">Run Codex through Switchyard locally</a></li>
 </ul>
 
 
