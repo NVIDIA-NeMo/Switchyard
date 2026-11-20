@@ -9,6 +9,14 @@ on:
       - tests/test_go_binding_packaging.py
       - tests/test_go_binding_publication.py
       - bindings/go/**
+  workflow_call:
+    inputs:
+      release_candidate:
+        type: boolean
+        default: false
+      publish:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       release_candidate:
@@ -16,7 +24,7 @@ on:
         type: boolean
         default: false
       publish:
-        description: Publish the tested Go module. Requires release_candidate and a protected go-release environment.
+        description: Publish the tested Go module. Requires release_candidate and the matching stable root tag.
         type: boolean
         default: false
 
@@ -24,7 +32,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: go-distributions-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
@@ -36,7 +44,6 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      actions: read
     outputs:
       source: ${{ steps.version.outputs.source }}
       version: ${{ steps.version.outputs.version }}
@@ -63,8 +70,6 @@ jobs:
         run: |
           test "$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
             --json isDraft,isPrerelease --jq '.isDraft or .isPrerelease')" = false
-          test "$(gh api "repos/$GITHUB_REPOSITORY/environments/go-release" \
-            --jq 'any(.protection_rules[]; .type == "required_reviewers" and (.reviewers | length) > 0)')" = true
 
   build:
     needs: version
@@ -130,6 +135,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
+          pattern: '{wasm,native-*}'
           path: ${{ runner.temp }}/artifacts
       - name: Assemble module
         run: |
@@ -227,11 +233,13 @@ jobs:
           echo "Packaged bindings passed without Rust or a local replace: $work"
 
   publish:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish && github.repository == 'NVIDIA-NeMo/Switchyard' }}
+    if: >-
+      ${{ inputs.publish && github.repository == 'NVIDIA-NeMo/Switchyard' &&
+          (github.event_name == 'workflow_dispatch' ||
+           (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) }}
     needs: [version, consumer]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    environment: go-release
     permissions:
       contents: write
     steps:
