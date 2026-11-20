@@ -27,11 +27,11 @@
   <circle cx="518.71" cy="206.81" r="3.78" fill="#76b900" stroke="white" stroke-width="1.1"/>
   <circle cx="205.91" cy="270.59" r="3.78" fill="#76b900" stroke="white" stroke-width="1.1"/>
   <circle cx="86.35" cy="342.13" r="3.78" fill="#f3b700" stroke="white" stroke-width="1.1"/>
-  <text x="570.3" y="181.84" font-size="10.8" fill="#20271f" font-weight="700">Astra only</text>
-  <text x="570.3" y="193.4" font-size="9.1" fill="#546052">59.95% accuracy</text>
-  <text x="525.71" y="209.62" font-size="10.8" fill="#20271f" font-weight="700">Stage</text>
-  <text x="525.71" y="221.18" font-size="9.1" fill="#546052">58.6% accuracy</text>
-  <text x="525.71" y="232.18" font-size="9.1" fill="#546052">9.2% savings</text>
+  <text x="570.3" y="201.84" font-size="10.8" fill="#20271f" font-weight="700">Astra only</text>
+  <text x="570.3" y="213.4" font-size="9.1" fill="#546052">59.95% accuracy</text>
+  <text x="477.72" y="209.62" font-size="10.8" fill="#20271f" font-weight="700">Stage</text>
+  <text x="477.72" y="221.18" font-size="9.1" fill="#546052">58.6% accuracy</text>
+  <text x="477.72" y="232.18" font-size="9.1" fill="#546052">9.2% savings</text>
   <text x="212.91" y="273.39" font-size="10.8" fill="#20271f" font-weight="700">Plan/Execute via Stage</text>
   <text x="212.91" y="284.95" font-size="9.1" fill="#546052">47.6% accuracy</text>
   <text x="212.91" y="295.95" font-size="9.1" fill="#546052">73.8% savings</text>
