@@ -28,7 +28,7 @@ provider continuation IDs alone can hide that evidence. Scope session IDs to
 the tenant and conversation. Reuse algorithm instances when they retain session
 decisions, and decide how your host handles concurrent turns and multiple
 processes. State behavior is algorithm-specific; see [Composite sessions](../routing_algorithms/composite_routing.md#sessions)
-and the [Plan/Execute history requirement](../routing_algorithms/plan_execute_routing.md#responses-api-history-requirement).
+and the [Plan/Execute history requirement](../routing_algorithms/stage_router_routing.md#plan-and-execute).
 
 **Observe the complete run.** Include judge calls and final model work in your
 host's observations. Configure telemetry collection in your application and
