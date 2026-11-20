@@ -535,8 +535,17 @@ impl TranslationEngine {
         let mut saw_error = false;
         let stream = Box::pin(try_stream! {
             futures::pin_mut!(lines);
+            let mut first_line = true;
             while let Some(line) = lines.next().await {
                 let line = line.map_err(llm_client_error_from_io)?;
+                // SSE permits one optional BOM at the start of the stream.
+                // https://html.spec.whatwg.org/multipage/server-sent-events.html#parsing-an-event-stream
+                let line = if first_line {
+                    first_line = false;
+                    line.strip_prefix(sse::UTF8_BOM).unwrap_or(&line)
+                } else {
+                    &line
+                };
                 // A blank line (allowing a bare CR for CRLF streams) ends the frame.
                 if line.trim_end().is_empty() {
                     let parsed = sse::parse_json_sse_frame(&frame, marker)
@@ -567,7 +576,7 @@ impl TranslationEngine {
                         }
                     }
                 } else {
-                    frame.push_str(&line);
+                    frame.push_str(line);
                     frame.push('\n');
                 }
             }
