@@ -27,6 +27,34 @@ log field, a log line, or a `--dry-run` message.
 | The routing log does not say why a model was chosen | A routing-log record | The log records the served model and token counts only. | Use the decision counts in `/v1/stats`. For overrides, the `stage router override` log line also names the reason. See [Decision sources](../routing_algorithms/stage_router_routing.md#decision-sources). |
 | Sub-agent requests ignore the `subagents` policy | The log line `this route has sub-agent routing but the calling harness does not send sub-agent identity`. It fires only for Claude Code versions known to lack child identity. For other harnesses, check whether delegated requests carry a session ID and an agent ID. | The harness sends no sub-agent identity, so delegated requests follow the parent route. | [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md). |
 
+## Alert on judge fail-open
+
+With `fail_open = true`, a judge failure can still produce a successful response
+from the answering model. HTTP error alerts alone will miss these fallbacks.
+Scrape `/metrics` and monitor `switchyard_classifier_fail_open_total`, labeled
+by `judge_model` and `reason`.
+
+For example, load this [Prometheus alerting rule](https://prometheus.io/docs/prometheus/latest/configuration/alerting_rules/)
+through your Prometheus `rule_files` configuration:
+
+```yaml
+groups:
+  - name: switchyard
+    rules:
+      - alert: SwitchyardClassifierFailing
+        expr: rate(switchyard_classifier_fail_open_total[5m]) > 0
+        for: 10m
+        annotations:
+          summary: "Switchyard judge {{ $labels.judge_model }} is failing open"
+          description: "Reason: {{ $labels.reason }}. Check the judge provider and server warnings."
+```
+
+This example alerts on a positive fallback rate sustained for ten minutes.
+Adjust the threshold and duration to your traffic and alerting policy, and
+scope the metric selector to the Switchyard deployment you monitor. The warning
+`judge verdict unavailable; routing without one` identifies the failing judge
+and reason in the server log.
+
 ## Silent misconfigurations
 
 These load and pass `--dry-run`. Most answer every request with HTTP 200; the
