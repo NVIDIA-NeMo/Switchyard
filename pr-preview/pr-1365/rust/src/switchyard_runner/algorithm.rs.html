@@ -1931,7 +1931,7 @@
 <a href=#1931 id=1931 data-nosnippet>1931</a>        } =&gt; {
 <a href=#1932 id=1932 data-nosnippet>1932</a>            <span class="kw">if </span><span class="macro">matches!</span>(picker, PickerMode::CapableFirst) {
 <a href=#1933 id=1933 data-nosnippet>1933</a>                <span class="macro">tracing::warn!</span>(
-<a href=#1934 id=1934 data-nosnippet>1934</a>                    <span class="string">"stage_router route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
+<a href=#1934 id=1934 data-nosnippet>1934</a>                    <span class="string">"stage_router route {route_name} uses the experimental \"capable_first\" picker. Use \"efficient_first\" by default or calibrate confidence_threshold for your model pair and workload."
 <a href=#1935 id=1935 data-nosnippet>1935</a>                </span>);
 <a href=#1936 id=1936 data-nosnippet>1936</a>            }
 <a href=#1937 id=1937 data-nosnippet>1937</a>            warn_identical_tiers(route_name, capable_target, efficient_target);
