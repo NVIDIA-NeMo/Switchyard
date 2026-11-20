@@ -127,7 +127,7 @@ Both pickers read the same signals; only the default tier differs.
 
 !!! warning "`capable_first` is experimental"
 
-    The [SWE-Atlas results](../benchmarks.md#swe-atlas) report accuracy and cost
+    The [SWE-Atlas-QnA results](../benchmarks.md#swe-atlas-qna) report accuracy and cost
     savings for `capable_first`. It has no calibrated threshold. The server logs a
     warning at startup when a route selects it. Use `efficient_first` unless you
     are running your own calibration. See

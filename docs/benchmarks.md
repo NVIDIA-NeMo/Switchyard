@@ -1,6 +1,6 @@
 # Benchmarks
 
-[DeepSWE v1.1](#deepswe-v11) · [SWE-Atlas](#swe-atlas) · [Earlier benchmarks](#earlier-benchmarks) · [Run a benchmark](#run-a-benchmark)
+[DeepSWE v1.1](#deepswe-v11) · [SWE-Atlas-QnA](#swe-atlas-qna) · [Earlier benchmarks](#earlier-benchmarks) · [Run a benchmark](#run-a-benchmark)
 
 ## DeepSWE v1.1
 
@@ -24,15 +24,17 @@ Stage started on Luna and could switch to Astra after tool errors or when
 Codex compacted context. [Plan/Execute via Stage](routing_algorithms/stage_router_routing.md#plan-and-execute)
 used Astra to plan and Luna to execute.
 
-## SWE-Atlas
+<a id="swe-atlas"></a>
 
-**GPT-6 Astra and GPT-6 Luna · SWE-Atlas Q&A, AA variant · 124 tasks per run**
+## SWE-Atlas-QnA
+
+**GPT-6 Astra and GPT-6 Luna · Artificial Analysis (AA) variant · 124 tasks per run**
 
 These results use the same Codex version, max reasoning effort, and three-run
 scoring as DeepSWE. Stage started on Astra and solved 218 of 372 task
 attempts. The 18 execution errors count as failures.
 
-![SWE-Atlas accuracy versus cost savings relative to Astra only, from higher savings on the left to zero on the right.](assets/swe-atlas-astra-luna-cost-accuracy.svg)
+![SWE-Atlas-QnA accuracy versus cost savings relative to Astra only, from higher savings on the left to zero on the right.](assets/swe-atlas-astra-luna-cost-accuracy.svg)
 
 | Strategy | Tasks solved across 3 runs | Accuracy | Cost Savings vs. Astra Only |
 | --- | ---: | ---: | ---: |
