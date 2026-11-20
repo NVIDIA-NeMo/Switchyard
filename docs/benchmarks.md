@@ -11,9 +11,9 @@ reasoning effort. Accuracy counts every task, including execution errors.
 Savings compare estimated solver costs per full run with Astra alone, excluding
 judges and infrastructure.
 
-![DeepSWE accuracy versus estimated solver cost as a percentage of Astra-only cost, with savings labeled at each point.](assets/deepswe-astra-luna-cost-accuracy.svg)
+![DeepSWE accuracy versus cost savings relative to Astra only, from higher savings on the left to zero on the right.](assets/deepswe-astra-luna-cost-accuracy.svg)
 
-| Strategy | Tasks solved across 3 runs | Accuracy | Solver cost savings vs. Astra |
+| Strategy | Tasks solved across 3 runs | Accuracy | Cost Savings vs. Astra Only |
 | --- | ---: | ---: | ---: |
 | Luna only | 212/339 | 62.54% | ≈96.4% |
 | Plan/Execute via Stage | 235/339 | 69.32% | Up to 82.1% |
@@ -33,9 +33,9 @@ These results use the same Codex version, max reasoning effort, and three-run
 scoring as DeepSWE. Stage started on Astra and solved 218 of 372 task
 attempts. The 18 execution errors count as failures.
 
-![SWE-Atlas accuracy versus estimated solver cost as a percentage of Astra-only cost, with savings labeled at each point.](assets/swe-atlas-astra-luna-cost-accuracy.svg)
+![SWE-Atlas accuracy versus cost savings relative to Astra only, from higher savings on the left to zero on the right.](assets/swe-atlas-astra-luna-cost-accuracy.svg)
 
-| Strategy | Tasks solved across 3 runs | Accuracy | Solver cost savings vs. Astra |
+| Strategy | Tasks solved across 3 runs | Accuracy | Cost Savings vs. Astra Only |
 | --- | ---: | ---: | ---: |
 | Luna only | 131/372 | 35.22% | ≈98.4% |
 | Plan/Execute via Stage | 177/372 | 47.58% | ≈73.8% |
