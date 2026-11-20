@@ -8,6 +8,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Chat reasoning field** - A target on an `openai_chat` client can set
+  `reasoning_format = "openai"` or `"deepseek"`. Switchyard then sends earlier assistant
+  reasoning under `reasoning` or `reasoning_content`, never both, so models that only
+  accept the field name they produced keep working after routing or translation.
 - **Host aborts** - The C ABI accepts an `abort` reply, and the Go binding adds
   `Abort(err)` to stop routing when the host refuses a model or decision call,
   even if the algorithm recovers from ordinary call failures.
