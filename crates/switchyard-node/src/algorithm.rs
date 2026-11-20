@@ -187,7 +187,11 @@ impl NativeConfiguredAlgorithm {
         let mut request = Request {
             llm_request,
             raw_request: None,
-            metadata: headers.map(|headers| Metadata::from_headers(&headers)),
+            metadata: headers.map(|headers| {
+                let mut metadata = Metadata::from_headers(&headers);
+                metadata.http_headers = Some(headers);
+                metadata
+            }),
         };
         if let Some(task_id) = options.task_id {
             request.metadata.get_or_insert_default().task_id = Some(task_id);
