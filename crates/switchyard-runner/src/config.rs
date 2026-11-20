@@ -4,34 +4,40 @@
 //! Version-1 TOML deployment loading for the shared runner.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::fs;
-use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+#[cfg(not(target_os = "wasi"))]
+use std::{fs, path::Path, time::Duration};
 
 use libsy::{Algorithm, RuntimeModels};
+#[cfg(not(target_os = "wasi"))]
 use parking_lot::Mutex;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
+#[cfg(not(target_os = "wasi"))]
 use switchyard_llm_client::{
     AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
     OpenAiDecisionClient, ResponsesReasoningPolicy, SystemOneClient, TranslatingLlmClient,
 };
-use switchyard_protocol::{
-    LlmClientError, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat,
-};
+use switchyard_protocol::{LlmClientError, ModelId};
+#[cfg(not(target_os = "wasi"))]
+use switchyard_protocol::{RoutedDecisionClient, RoutedLlmClient, WireFormat};
 
 use crate::algorithm_factory::AlgorithmAndModels;
 use crate::eligibility::{EligibilityPolicy, validate_labels};
+#[cfg(not(target_os = "wasi"))]
 use crate::route::ExecutionLane;
+#[cfg(not(target_os = "wasi"))]
 use crate::runner::ModelPropertiesProbe;
+#[cfg(not(target_os = "wasi"))]
 use crate::{
-    AlgorithmFactory, AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget,
-    ModelCapabilities, Route, Runner, RunnerError,
+    AlgorithmFactory, AuxiliaryTarget, CallerAuthKind, DecisionTarget, ModelCapabilities, Route,
+    Runner,
 };
+use crate::{AlgorithmSpec, RunnerError};
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+#[cfg(not(target_os = "wasi"))]
 const MAX_CONFIGURED_RETRIES: u32 = 10;
 
 /// This function returns a deployment's declared credential variable names without reading their values.
@@ -121,6 +127,7 @@ pub fn route_targets(source: &str) -> Result<Vec<RouteTargets>, RunnerError> {
 
 type RunnerResult<T> = Result<T, RunnerError>;
 
+#[cfg(not(target_os = "wasi"))]
 pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
     let path = path.as_ref();
     let source = fs::read_to_string(path).map_err(|error| {
@@ -137,12 +144,14 @@ pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
     })
 }
 
+#[cfg(not(target_os = "wasi"))]
 pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
     AlgorithmFactory::from_toml(source)?.config.build()
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
 pub(crate) struct DeploymentConfig {
     schema_version: u32,
     fallback_client: Option<String>,
@@ -157,6 +166,7 @@ pub(crate) struct DeploymentConfig {
 }
 
 #[derive(Debug)]
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
 pub(crate) struct RouteConfig {
     pub(crate) id: ModelId,
     context_window: Option<u32>,
@@ -195,6 +205,7 @@ enum RequirementScope {
     Task,
 }
 
+#[cfg(not(target_os = "wasi"))]
 struct TargetPromptPolicy {
     prompts: HashMap<ModelId, String>,
     routing_answer_target: Option<ModelId>,
@@ -208,6 +219,7 @@ struct ResolvedLlmTarget<'a> {
 
 type LaneTargets<'a> = BTreeMap<&'a str, ResolvedLlmTarget<'a>>;
 type TargetOverrides<'a> = BTreeMap<&'a str, &'a str>;
+#[cfg(not(target_os = "wasi"))]
 type LaneDecisions<'a> = BTreeMap<&'a str, ResolvedDecisionTarget<'a>>;
 
 // Replacements bind logical names once; mappings never chain.
@@ -267,6 +279,7 @@ pub(crate) type TargetBindings = Vec<(String, String)>;
 pub(crate) const MAX_ELIGIBLE_LANES: usize = 128;
 
 // Cache by resolved targets, so equivalent requirements reuse algorithm-owned state.
+#[cfg(not(target_os = "wasi"))]
 pub(crate) struct EligibleLanes {
     deployment: Arc<DeploymentConfig>,
     route_name: String,
@@ -275,6 +288,7 @@ pub(crate) struct EligibleLanes {
     lanes: Mutex<BTreeMap<TargetBindings, Arc<ExecutionLane>>>,
 }
 
+#[cfg(not(target_os = "wasi"))]
 impl EligibleLanes {
     pub(crate) fn select(
         &self,
@@ -336,6 +350,7 @@ struct DecisionTargetMapping<'a> {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(not(target_os = "wasi"))]
 struct ResolvedDecisionTarget<'a> {
     model: &'a ModelId,
     client: &'a Arc<dyn RoutedDecisionClient>,
@@ -390,6 +405,7 @@ where
 }
 
 impl RouteConfig {
+    #[cfg(not(target_os = "wasi"))]
     fn capabilities(&self) -> ModelCapabilities {
         ModelCapabilities {
             context_window: self.context_window,
@@ -667,6 +683,7 @@ impl DeploymentConfig {
             .collect()
     }
 
+    #[cfg(not(target_os = "wasi"))]
     fn decision_target(&self, name: &str) -> Option<DecisionTarget> {
         let target = self.targets.get(name)?;
         let client = self.llm_clients.get(&target.llm_client)?;
@@ -833,6 +850,7 @@ impl DeploymentConfig {
         Ok(())
     }
 
+    #[cfg(not(target_os = "wasi"))]
     fn build(self: Arc<Self>) -> RunnerResult<Runner> {
         self.validate()?;
         self.validate_target_approvals()?;
@@ -1000,6 +1018,7 @@ impl DeploymentConfig {
             .collect()
     }
 
+    #[cfg(not(target_os = "wasi"))]
     fn resolve_decision_targets<'a>(
         &'a self,
         route_name: &str,
@@ -1034,6 +1053,7 @@ impl DeploymentConfig {
             .collect()
     }
 
+    #[cfg(not(target_os = "wasi"))]
     fn build_lane(
         &self,
         route_name: &str,
@@ -1078,6 +1098,7 @@ impl DeploymentConfig {
         ))
     }
 
+    #[cfg(not(target_os = "wasi"))]
     fn build_clients(
         &self,
         provider_api_keys: &mut Vec<String>,
@@ -1168,6 +1189,7 @@ impl DeploymentConfig {
         Ok(clients)
     }
 
+    #[cfg(not(target_os = "wasi"))]
     fn build_decision_clients(
         &self,
         provider_api_keys: &mut Vec<String>,
@@ -1224,6 +1246,7 @@ impl DeploymentConfig {
     /// Builds the client router for one route. The second value is the caller credential family
     /// that the route's forwarding clients need, or `None` when no client forwards the caller's
     /// credential. A request through the other family's APIs fails before any upstream call.
+    #[cfg(not(target_os = "wasi"))]
     fn build_route_clients(
         &self,
         route_name: &str,
@@ -1319,6 +1342,7 @@ impl DeploymentConfig {
     }
 
     /// Builds the effective prompt policy for this route's completion targets.
+    #[cfg(not(target_os = "wasi"))]
     fn build_route_target_prompts(
         &self,
         route_name: &str,
@@ -1361,6 +1385,7 @@ impl DeploymentConfig {
         Ok(policy)
     }
 
+    #[cfg(not(target_os = "wasi"))]
     fn fallback_base_url(&self) -> RunnerResult<Option<String>> {
         let Some(name) = &self.fallback_client else {
             return Ok(None);
@@ -1373,6 +1398,7 @@ impl DeploymentConfig {
         Ok(Some(config.base_url.as_str().to_string()))
     }
 
+    #[cfg(not(target_os = "wasi"))]
     fn build_model_properties_probe(
         &self,
         efficient_target_name: &str,
@@ -1394,6 +1420,7 @@ impl DeploymentConfig {
         })
     }
 
+    #[cfg(not(target_os = "wasi"))]
     fn build_anthropic_auxiliary_target(
         &self,
         route: &AlgorithmSpec,
@@ -1422,6 +1449,7 @@ impl DeploymentConfig {
             .map(|(_, _, target)| target)
     }
 
+    #[cfg(not(target_os = "wasi"))]
     fn build_responses_auxiliary_target(
         &self,
         route: &AlgorithmSpec,
@@ -1439,6 +1467,7 @@ impl DeploymentConfig {
         })
     }
 
+    #[cfg(not(target_os = "wasi"))]
     fn build_auxiliary_target(
         &self,
         name: &str,
@@ -1458,8 +1487,10 @@ impl DeploymentConfig {
 }
 
 /// Values Anthropic accepts for `output_config.effort`.
+#[cfg(not(target_os = "wasi"))]
 const ANTHROPIC_EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
+#[cfg(not(target_os = "wasi"))]
 fn count_tokens_priority(target_name: &str, model_id: &ModelId) -> usize {
     let target_name = target_name.to_ascii_lowercase();
     let model_id = model_id.to_ascii_lowercase();
@@ -1474,8 +1505,10 @@ fn count_tokens_priority(target_name: &str, model_id: &ModelId) -> usize {
 /// Holding a `HttpBaseUrl` is proof the value is an absolute HTTP(S) URL, so no
 /// later stage has to re-check it or can forget to.
 #[derive(Clone, Debug)]
-struct HttpBaseUrl(reqwest::Url);
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
+struct HttpBaseUrl(url::Url);
 
+#[cfg(not(target_os = "wasi"))]
 impl HttpBaseUrl {
     fn as_str(&self) -> &str {
         self.0.as_str()
@@ -1488,7 +1521,7 @@ impl<'de> Deserialize<'de> for HttpBaseUrl {
         D: serde::Deserializer<'de>,
     {
         let raw = String::deserialize(deserializer)?;
-        let url = reqwest::Url::parse(raw.trim()).map_err(|error| {
+        let url = url::Url::parse(raw.trim()).map_err(|error| {
             serde::de::Error::custom(format!("base_url must be an absolute HTTP(S) URL: {error}"))
         })?;
         if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
@@ -1500,8 +1533,20 @@ impl<'de> Deserialize<'de> for HttpBaseUrl {
     }
 }
 
+// WASI parses transport settings, but the host applies them when serving calls.
+#[cfg(target_os = "wasi")]
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ResponsesReasoningPolicy {
+    Auto,
+    PreserveEncrypted,
+    PreservePlaintext,
+    Drop,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
 struct LlmClientConfig {
     format: ClientFormat,
     base_url: HttpBaseUrl,
@@ -1512,8 +1557,7 @@ struct LlmClientConfig {
     forward_auth: bool,
     #[serde(default)]
     extra_headers: BTreeMap<String, String>,
-    #[serde(default = "default_max_retries")]
-    max_retries: u32,
+    max_retries: Option<u32>,
     #[serde(default = "default_fallback_on_rate_limit")]
     fallback_on_rate_limit: bool,
     /// Cooldown after an exhausted transient completion failure. Defaults to 5 seconds; zero disables it.
@@ -1532,6 +1576,7 @@ enum ContextDiscovery {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
 struct DecisionClientConfig {
     format: DecisionFormat,
     endpoint: HttpBaseUrl,
@@ -1557,6 +1602,7 @@ struct DecisionTargetConfig {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(target_os = "wasi", allow(dead_code))]
 struct TargetConfig {
     #[serde(default)]
     labels: BTreeSet<String>,
@@ -1583,6 +1629,7 @@ enum ClientFormat {
     AnthropicMessages,
 }
 
+#[cfg(not(target_os = "wasi"))]
 impl ClientFormat {
     const fn wire_format(self) -> WireFormat {
         match self {
@@ -1600,6 +1647,7 @@ impl ClientFormat {
     }
 }
 
+#[cfg(not(target_os = "wasi"))]
 fn build_backend(
     client_name: &str,
     config: &LlmClientConfig,
@@ -1607,7 +1655,8 @@ fn build_backend(
     omit_body_fields: &BTreeSet<String>,
     reasoning_effort: Option<String>,
 ) -> RunnerResult<Backend> {
-    if config.max_retries > MAX_CONFIGURED_RETRIES {
+    let max_retries = config.max_retries.unwrap_or(DEFAULT_MAX_RETRIES);
+    if max_retries > MAX_CONFIGURED_RETRIES {
         return Err(RunnerError::configuration(format!(
             "llm client {client_name} max_retries must be at most {MAX_CONFIGURED_RETRIES}"
         )));
@@ -1635,7 +1684,7 @@ fn build_backend(
         extra_body: extra_body.clone(),
         omit_body_fields: omit_body_fields.clone(),
         reasoning_effort,
-        max_retries: config.max_retries,
+        max_retries,
         failure_cooldown: Duration::from_millis(config.failure_cooldown_ms),
         timeout: config.timeout_ms.map(Duration::from_millis),
     };
@@ -1647,6 +1696,7 @@ fn build_backend(
     Ok(backend)
 }
 
+#[cfg(not(target_os = "wasi"))]
 fn read_api_key(client: &str, variable: &str) -> RunnerResult<String> {
     if variable.trim().is_empty() {
         return Err(RunnerError::configuration(format!(
@@ -1677,11 +1727,6 @@ fn read_api_key(client: &str, variable: &str) -> RunnerResult<String> {
     Ok(api_key)
 }
 
-// A function so that serde default can use it.
-const fn default_max_retries() -> u32 {
-    DEFAULT_MAX_RETRIES
-}
-
 const fn default_fallback_on_rate_limit() -> bool {
     true
 }
@@ -1699,7 +1744,7 @@ fn validate_value(label: &str, value: &str) -> RunnerResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "wasi")))]
 mod tests {
     use super::*;
 
@@ -1754,7 +1799,7 @@ bogus = true
         assert!(message.starts_with("failed to read server config"));
     }
 }
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "wasi")))]
 mod deployment_tests {
     use super::*;
     use crate::require_target_labels;
@@ -3564,7 +3609,11 @@ target = "azure"
         let Some(primary) = default.llm_clients.get("primary") else {
             return Err(RunnerError::configuration("primary llm client is missing"));
         };
-        assert_eq!(primary.max_retries, DEFAULT_MAX_RETRIES);
+        let (Backend::OpenAiChat(backend)
+        | Backend::OpenAiResponses(backend)
+        | Backend::Anthropic(backend)) =
+            build_backend("primary", primary, &BTreeMap::new(), &BTreeSet::new(), None)?;
+        assert_eq!(backend.max_retries, DEFAULT_MAX_RETRIES);
 
         let explicit = VALID_CONFIG.replacen(
             "base_url = \"https://example.test/v1\"",
@@ -3577,7 +3626,7 @@ target = "azure"
         let Some(primary) = config.llm_clients.get("primary") else {
             return Err(RunnerError::configuration("primary llm client is missing"));
         };
-        assert_eq!(primary.max_retries, 0);
+        assert_eq!(primary.max_retries, Some(0));
 
         let maximum = VALID_CONFIG.replacen(
             "base_url = \"https://example.test/v1\"",
@@ -3592,7 +3641,7 @@ target = "azure"
         let Some(primary) = config.llm_clients.get("primary") else {
             return Err(RunnerError::configuration("primary llm client is missing"));
         };
-        assert_eq!(primary.max_retries, MAX_CONFIGURED_RETRIES);
+        assert_eq!(primary.max_retries, Some(MAX_CONFIGURED_RETRIES));
         Ok(())
     }
 
