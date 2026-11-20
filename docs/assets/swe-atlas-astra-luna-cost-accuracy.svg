@@ -9,32 +9,35 @@
   <text x="175.71" y="398.18" font-size="9.6" fill="#546052" text-anchor="middle">80%</text>
   <text x="78.82" y="398.18" font-size="9.6" fill="#546052" text-anchor="middle">100%</text>
   <text x="323.48" y="421.45" font-size="11.8" fill="#20271f" font-weight="700" text-anchor="middle">Cost Savings vs. Astra Only</text>
-  <line x1="64.28" y1="383.88" x2="582.68" y2="383.88" stroke="#e3e7e2" stroke-width="0.75"/>
-  <text x="57.28" y="387.53" font-size="9.6" fill="#546052" text-anchor="end">30%</text>
-  <line x1="64.28" y1="323.71" x2="582.68" y2="323.71" stroke="#e3e7e2" stroke-width="0.75"/>
-  <text x="57.28" y="327.35" font-size="9.6" fill="#546052" text-anchor="end">40%</text>
-  <line x1="64.28" y1="263.53" x2="582.68" y2="263.53" stroke="#e3e7e2" stroke-width="0.75"/>
-  <text x="57.28" y="267.18" font-size="9.6" fill="#546052" text-anchor="end">50%</text>
-  <line x1="64.28" y1="203.35" x2="582.68" y2="203.35" stroke="#e3e7e2" stroke-width="0.75"/>
-  <text x="57.28" y="207" font-size="9.6" fill="#546052" text-anchor="end">60%</text>
-  <line x1="64.28" y1="143.18" x2="582.68" y2="143.18" stroke="#e3e7e2" stroke-width="0.75"/>
-  <text x="57.28" y="146.82" font-size="9.6" fill="#546052" text-anchor="end">70%</text>
+  <line x1="64.28" y1="372.31" x2="582.68" y2="372.31" stroke="#e3e7e2" stroke-width="0.75"/>
+  <text x="57.28" y="375.96" font-size="9.6" fill="#546052" text-anchor="end">30%</text>
+  <line x1="64.28" y1="314.45" x2="582.68" y2="314.45" stroke="#e3e7e2" stroke-width="0.75"/>
+  <text x="57.28" y="318.1" font-size="9.6" fill="#546052" text-anchor="end">40%</text>
+  <line x1="64.28" y1="256.59" x2="582.68" y2="256.59" stroke="#e3e7e2" stroke-width="0.75"/>
+  <text x="57.28" y="260.23" font-size="9.6" fill="#546052" text-anchor="end">50%</text>
+  <line x1="64.28" y1="198.72" x2="582.68" y2="198.72" stroke="#e3e7e2" stroke-width="0.75"/>
+  <text x="57.28" y="202.37" font-size="9.6" fill="#546052" text-anchor="end">60%</text>
+  <line x1="64.28" y1="140.86" x2="582.68" y2="140.86" stroke="#e3e7e2" stroke-width="0.75"/>
+  <text x="57.28" y="144.51" font-size="9.6" fill="#546052" text-anchor="end">70%</text>
   <line x1="64.28" y1="83" x2="582.68" y2="83" stroke="#e3e7e2" stroke-width="0.75"/>
   <text x="57.28" y="86.65" font-size="9.6" fill="#546052" text-anchor="end">80%</text>
   <text x="24.3" y="233.44" font-size="11" fill="#20271f" transform="rotate(-90 24.301522 233.442)" font-weight="700" text-anchor="middle">Accuracy</text>
   <line x1="64.28" y1="383.88" x2="582.68" y2="383.88" stroke="#aeb8ad" stroke-width="0.8"/>
-  <circle cx="563.3" cy="203.68" r="3.78" fill="#f3b700" stroke="white" stroke-width="1.1"/>
-  <circle cx="518.71" cy="211.77" r="3.78" fill="#76b900" stroke="white" stroke-width="1.1"/>
-  <circle cx="205.91" cy="278.09" r="3.78" fill="#76b900" stroke="white" stroke-width="1.1"/>
-  <circle cx="86.35" cy="352.5" r="3.78" fill="#f3b700" stroke="white" stroke-width="1.1"/>
-  <text x="570.3" y="186.48" font-size="10.8" fill="#20271f" font-weight="700">Astra only</text>
-  <text x="570.3" y="198.54" font-size="9.1" fill="#546052">59.95% accuracy</text>
-  <text x="525.71" y="214.57" font-size="10.8" fill="#20271f" font-weight="700">Stage</text>
-  <text x="525.71" y="226.63" font-size="9.1" fill="#546052">58.6% accuracy · 9.2% savings</text>
-  <text x="212.91" y="280.89" font-size="10.8" fill="#20271f" font-weight="700">Plan/Execute via Stage</text>
-  <text x="212.91" y="292.95" font-size="9.1" fill="#546052">47.6% accuracy · 73.8% savings</text>
-  <text x="93.35" y="355.31" font-size="10.8" fill="#20271f" font-weight="700">Luna only</text>
-  <text x="93.35" y="367.36" font-size="9.1" fill="#546052">35.2% accuracy · ≈98.4% savings</text>
+  <circle cx="563.3" cy="199.04" r="3.78" fill="#f3b700" stroke="white" stroke-width="1.1"/>
+  <circle cx="518.71" cy="206.81" r="3.78" fill="#76b900" stroke="white" stroke-width="1.1"/>
+  <circle cx="205.91" cy="270.59" r="3.78" fill="#76b900" stroke="white" stroke-width="1.1"/>
+  <circle cx="86.35" cy="342.13" r="3.78" fill="#f3b700" stroke="white" stroke-width="1.1"/>
+  <text x="570.3" y="181.84" font-size="10.8" fill="#20271f" font-weight="700">Astra only</text>
+  <text x="570.3" y="193.4" font-size="9.1" fill="#546052">59.95% accuracy</text>
+  <text x="525.71" y="209.62" font-size="10.8" fill="#20271f" font-weight="700">Stage</text>
+  <text x="525.71" y="221.18" font-size="9.1" fill="#546052">58.6% accuracy</text>
+  <text x="525.71" y="232.18" font-size="9.1" fill="#546052">9.2% savings</text>
+  <text x="212.91" y="273.39" font-size="10.8" fill="#20271f" font-weight="700">Plan/Execute via Stage</text>
+  <text x="212.91" y="284.95" font-size="9.1" fill="#546052">47.6% accuracy</text>
+  <text x="212.91" y="295.95" font-size="9.1" fill="#546052">73.8% savings</text>
+  <text x="93.35" y="344.94" font-size="10.8" fill="#20271f" font-weight="700">Luna only</text>
+  <text x="93.35" y="356.5" font-size="9.1" fill="#546052">35.2% accuracy</text>
+  <text x="93.35" y="367.5" font-size="9.1" fill="#546052">≈98.4% savings</text>
   <circle cx="64.28" cy="449.91" r="3.45" fill="#76b900"/>
   <circle cx="189.56" cy="449.91" r="3.45" fill="#f3b700"/>
   <text x="62.21" y="33.48" font-size="23" fill="#20271f" font-weight="700">SWE-Atlas</text>
