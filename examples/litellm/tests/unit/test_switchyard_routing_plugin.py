@@ -545,3 +545,20 @@ async def test_algorithm_stream_without_terminal_outcome_fails_closed() -> None:
 
     with pytest.raises(ValueError, match="without a routing outcome"):
         await plugin.run(routing_context([{"role": "user", "content": "hello"}]))
+
+
+async def test_stage_routing_succeeds_without_step_call_decision_attribute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import switchyard_litellm.plugins.switchyard_routing_plugin as plugin_module
+
+    class LegacyStep:
+        CallModel = plugin_module.Step.CallModel
+        Done = plugin_module.Step.Done
+
+    monkeypatch.setattr(plugin_module, "Step", LegacyStep)
+    context = routing_context([{"role": "user", "content": "Explain this function."}])
+
+    await stage_plugin().run(context)
+
+    assert context.candidate_models in ([SOL], [TERRA])
