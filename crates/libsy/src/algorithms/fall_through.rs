@@ -201,6 +201,23 @@ impl FallThrough {
         }
     }
 
+    async fn observe_identity(&self, key: &RoutingIdentity, answer: AnswerSummary) {
+        let Some(states) = &self.session_states else {
+            return;
+        };
+        let Some(state) = states
+            .lock()
+            .get(key)
+            .map(|session| Arc::clone(&session.state))
+        else {
+            return;
+        };
+        let mut state = state.lock().await;
+        for classifier in &self.classifiers {
+            classifier.observe_answer(&mut state, answer);
+        }
+    }
+
     /// Returns this request's retained state without holding the registry lock.
     fn session_state(&self, request: &Request) -> Option<Arc<AsyncMutex<State>>> {
         self.session_state_at(request, Instant::now(), MAX_SESSIONS)
@@ -338,21 +355,15 @@ impl Algorithm for FallThrough {
     }
 
     async fn observe_answer(&self, session_id: &str, answer: AnswerSummary) {
-        let Some(states) = &self.session_states else {
+        self.observe_identity(&RoutingIdentity::Session(session_id.to_string()), answer)
+            .await;
+    }
+
+    async fn observe_request_answer(&self, request: &Request, answer: AnswerSummary) {
+        let Some(key) = RoutingIdentity::from_request(request) else {
             return;
         };
-        let key = RoutingIdentity::Session(session_id.to_string());
-        let Some(state) = states
-            .lock()
-            .get(&key)
-            .map(|session| Arc::clone(&session.state))
-        else {
-            return;
-        };
-        let mut state = state.lock().await;
-        for classifier in &self.classifiers {
-            classifier.observe_answer(&mut state, answer);
-        }
+        self.observe_identity(&key, answer).await;
     }
 }
 #[cfg(test)]
@@ -530,6 +541,42 @@ mod tests {
             ("weak", "weak", "strong")
         );
         assert_eq!(router.session_states.as_ref().unwrap().lock().len(), 1);
+
+        let subagent =
+            Arc::new(FallThrough::new_with_state().with_classifier(Arc::new(AnswerAware)));
+        let child = |agent: Option<&str>| Request {
+            metadata: Some(Metadata {
+                session_id: Some("session-1".to_string()),
+                agent_id: agent.map(str::to_string),
+                is_subagent: true,
+                is_delegated_work: true,
+                ..Metadata::default()
+            }),
+            ..request()
+        };
+        let (root_init, _) = run_turn(&subagent, echo()).await?;
+        let (child_a_init, _) = run_request(&subagent, child(Some("child-a")), echo()).await?;
+        let (unidentified, _) = run_request(&subagent, child(None), echo()).await?;
+        subagent
+            .observe_request_answer(&child(None), AnswerSummary { final_reply: true })
+            .await;
+        subagent
+            .observe_request_answer(&child(Some("child-a")), AnswerSummary { final_reply: true })
+            .await;
+        let (root_after, _) = run_turn(&subagent, echo()).await?;
+        let (child_a_after, _) = run_request(&subagent, child(Some("child-a")), echo()).await?;
+        let (child_b_after, _) = run_request(&subagent, child(Some("child-b")), echo()).await?;
+        assert_eq!(
+            (
+                root_init.as_str(),
+                child_a_init.as_str(),
+                unidentified.as_str(),
+                root_after.as_str(),
+                child_a_after.as_str(),
+                child_b_after.as_str(),
+            ),
+            ("weak", "weak", "weak", "weak", "strong", "weak")
+        );
         Ok(())
     }
 

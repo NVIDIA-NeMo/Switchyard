@@ -918,6 +918,16 @@ pub trait Algorithm: Send + Sync + 'static {
     /// session's next request is routed with this answer already recorded.
     async fn observe_answer(&self, _session_id: &str, _answer: AnswerSummary) {}
 
+    /// Records the answer the host served for `request`.
+    ///
+    /// Defaults to [`Self::observe_answer`] for root-session requests and ignores
+    /// sub-agent requests unless the algorithm overrides this method.
+    async fn observe_request_answer(&self, request: &Request, answer: AnswerSummary) {
+        if let Some(RoutingIdentity::Session(session_id)) = RoutingIdentity::from_request(request) {
+            self.observe_answer(&session_id, answer).await;
+        }
+    }
+
     /// Expose work requests and the final outcome so the host can control execution.
     ///
     /// Each call waits for its host reply. A run ends with one terminal item — [`Step::Done`] on
