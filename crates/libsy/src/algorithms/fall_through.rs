@@ -28,7 +28,7 @@ use parking_lot::Mutex;
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::algorithms::util::prompts::prepend_system_prompt;
-use crate::core::algorithm::{self, Algorithm, AnswerSummary, Driver};
+use crate::core::algorithm::{self, Algorithm, AnswerSummary, Driver, RoutingIdentity};
 use crate::core::classifier::{Classifier, Score};
 use crate::core::processor::{Event, Processor};
 use crate::core::state::State;
@@ -40,7 +40,10 @@ struct SessionState {
     last_accessed: Instant,
 }
 
-type SessionStates = Mutex<HashMap<String, SessionState>>;
+type SessionStates = Mutex<HashMap<RoutingIdentity, SessionState>>;
+
+/// Upper bound on retained in-memory session and child-agent states.
+const MAX_SESSIONS: usize = 4096;
 
 /// Delete sessions that have been inactive this long. Catches sessions that did not terminate
 /// cleanly.
@@ -102,17 +105,18 @@ impl FallThrough {
     }
     /// Executes the processor and classifier sequence for wrappers and the trait entrypoint.
     pub(crate) async fn execute(&self, driver: Driver, request: Request) -> Result<RoutingOutcome> {
-        let session = session_id(&request);
-        if session.is_some() {
+        if RoutingIdentity::from_request(&request).is_some() {
             self.start_cleanup_task();
         }
-        let session_final = request
+        let clear_session = request
             .metadata
             .as_ref()
-            .and_then(|metadata| metadata.session_final)
-            == Some(true);
+            .filter(|metadata| metadata.session_final == Some(true))
+            .and_then(|metadata| metadata.session_id.as_deref())
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned);
         let result = self.execute_session(driver, request).await;
-        if session_final && let Some(session) = session.as_deref() {
+        if let Some(session) = clear_session.as_deref() {
             self.remove_session(session);
         }
         result
@@ -190,25 +194,56 @@ impl FallThrough {
         }
     }
 
-    /// Drops retained routing state once the host marks a session complete.
+    /// Drops retained routing state for the root session and its sub-agents once complete.
     fn remove_session(&self, session: &str) {
         if let Some(states) = &self.session_states {
-            states.lock().remove(session);
+            states.lock().retain(|key, _| key.session_id() != session);
         }
     }
 
     /// Returns this request's retained state without holding the registry lock.
     fn session_state(&self, request: &Request) -> Option<Arc<AsyncMutex<State>>> {
+        self.session_state_at(request, Instant::now(), MAX_SESSIONS)
+    }
+
+    fn session_state_at(
+        &self,
+        request: &Request,
+        now: Instant,
+        max_sessions: usize,
+    ) -> Option<Arc<AsyncMutex<State>>> {
         let states = self.session_states.as_ref()?;
-        let session_id = session_id(request)?;
+        let identity = RoutingIdentity::from_request(request)?;
         let mut states = states.lock();
-        let now = Instant::now();
-        let session = states.entry(session_id).or_insert_with(|| SessionState {
-            state: Arc::new(AsyncMutex::new(State::default())),
-            last_accessed: now,
-        });
-        session.last_accessed = now;
-        Some(Arc::clone(&session.state))
+        if let Some(session) = states.get_mut(&identity) {
+            session.last_accessed = now;
+            return Some(Arc::clone(&session.state));
+        }
+        if states.len() >= max_sessions {
+            states.retain(|_, session| {
+                Arc::strong_count(&session.state) > 1
+                    || now.saturating_duration_since(session.last_accessed) < SESSION_STATE_TTL
+            });
+        }
+        if states.len() >= max_sessions {
+            // Every retained slot may be actively in flight; route against ephemeral state
+            // rather than growing past the cap or evicting active work.
+            let oldest_idle = states
+                .iter()
+                .filter(|(_, session)| Arc::strong_count(&session.state) == 1)
+                .min_by_key(|(_, session)| session.last_accessed)
+                .map(|(key, _)| key.clone())?;
+            states.remove(&oldest_idle);
+        }
+        let state = Arc::new(AsyncMutex::new(State::default()));
+        states.insert(
+            identity,
+            SessionState {
+                state: Arc::clone(&state),
+                last_accessed: now,
+            },
+        );
+        Some(state)
     }
 
     pub(crate) async fn route(
@@ -284,16 +319,6 @@ fn remove_inactive_sessions(states: &SessionStates, now: Instant, ttl: Duration)
     });
 }
 
-fn session_id(request: &Request) -> Option<String> {
-    request
-        .metadata
-        .as_ref()?
-        .session_id
-        .as_deref()
-        .filter(|id| !id.is_empty())
-        .map(str::to_string)
-}
-
 #[async_trait]
 impl Algorithm for FallThrough {
     fn name(&self) -> &str {
@@ -316,9 +341,10 @@ impl Algorithm for FallThrough {
         let Some(states) = &self.session_states else {
             return;
         };
+        let key = RoutingIdentity::Session(session_id.to_string());
         let Some(state) = states
             .lock()
-            .get(session_id)
+            .get(&key)
             .map(|session| Arc::clone(&session.state))
         else {
             return;
@@ -884,7 +910,7 @@ mod tests {
             .as_ref()
             .expect("stateful router has a session registry")
             .lock();
-        assert!(!states.contains_key("session-1"));
+        assert!(!states.contains_key(&RoutingIdentity::Session("session-1".to_string())));
     }
 
     #[test]
@@ -911,7 +937,145 @@ mod tests {
         remove_inactive_sessions(states, now, SESSION_STATE_TTL);
 
         let states = states.lock();
-        assert!(states.contains_key("session-1"));
-        assert!(!states.contains_key("session-2"));
+        assert!(states.contains_key(&RoutingIdentity::Session("session-1".to_string())));
+        assert!(!states.contains_key(&RoutingIdentity::Session("session-2".to_string())));
+    }
+
+    #[tokio::test]
+    async fn subagent_sessions_are_isolated_from_parent_and_cleared_appropriately() -> Result<()> {
+        use crate::core::state::StateValue;
+
+        struct CountingProcessor;
+
+        #[async_trait]
+        impl Processor for CountingProcessor {
+            async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
+                if let Event::Request { .. } = event {
+                    let next = match state.extra.get("count") {
+                        Some(StateValue::Count(n)) => *n + 1,
+                        _ => 1,
+                    };
+                    state
+                        .extra
+                        .insert("count".to_string(), StateValue::Count(next));
+                }
+                Ok(())
+            }
+        }
+
+        struct ThresholdClassifier;
+
+        #[async_trait]
+        impl Classifier for ThresholdClassifier {
+            async fn score(
+                &self,
+                state: &mut State,
+                _request: &mut Request,
+                _driver: &Driver,
+            ) -> Result<(Classification, Option<Response>)> {
+                let count = match state.extra.get("count") {
+                    Some(StateValue::Count(n)) => *n,
+                    _ => 0,
+                };
+                let target = if count >= 2 { "strong" } else { "weak" };
+                Ok((Classification::Scores(vec![score(target, 1.0)]), None))
+            }
+        }
+
+        let router = Arc::new(
+            FallThrough::new_with_state()
+                .with_processor(Arc::new(CountingProcessor))
+                .with_classifier(Arc::new(ThresholdClassifier)),
+        );
+
+        let (root1, _) = run_turn(&router, echo()).await?;
+        let (root2, _) = run_turn(&router, echo()).await?;
+        assert_eq!((root1.as_str(), root2.as_str()), ("weak", "strong"));
+
+        let child_req = |agent: Option<&str>, session_final: Option<bool>| Request {
+            metadata: Some(Metadata {
+                session_id: Some("session-1".to_string()),
+                agent_id: agent.map(str::to_string),
+                is_subagent: true,
+                is_delegated_work: true,
+                session_final,
+                ..Metadata::default()
+            }),
+            ..request()
+        };
+
+        let (child_a1, _) = run_request(&router, child_req(Some("child-a"), None), echo()).await?;
+        let (unidentified, _) = run_request(&router, child_req(None, None), echo()).await?;
+        let (child_b1, _) = run_request(&router, child_req(Some("child-b"), None), echo()).await?;
+        assert_eq!(child_a1, "weak");
+        assert_eq!(unidentified, "weak");
+        assert_eq!(child_b1, "weak");
+
+        let (child_a2, _) = run_request(&router, child_req(Some("child-a"), None), echo()).await?;
+        let (child_b2, _) = run_request(&router, child_req(Some("child-b"), None), echo()).await?;
+        let (root3, _) = run_turn(&router, echo()).await?;
+        assert_eq!(child_a2, "strong");
+        assert_eq!(child_b2, "strong");
+        assert_eq!(root3, "strong");
+
+        let _ = run_request(&router, child_req(Some("child-a"), Some(true)), echo()).await?;
+        assert!(
+            router
+                .session_states
+                .as_ref()
+                .expect("stateful router")
+                .lock()
+                .is_empty()
+        );
+        let (child_b_restarted, _) =
+            run_request(&router, child_req(Some("child-b"), None), echo()).await?;
+        let (root_restarted, _) = run_turn(&router, echo()).await?;
+        assert_eq!(child_b_restarted, "weak");
+        assert_eq!(root_restarted, "weak");
+        Ok(())
+    }
+
+    #[test]
+    fn session_cap_evicts_expired_then_oldest_idle_and_protects_active_work() {
+        let router = FallThrough::new_with_state();
+        let req_for = |id: &str| Request {
+            metadata: Some(Metadata {
+                session_id: Some(id.to_string()),
+                ..Metadata::default()
+            }),
+            ..request()
+        };
+        let t0 = Instant::now();
+        drop(router.session_state_at(&req_for("s1"), t0, 3));
+        drop(router.session_state_at(&req_for("s2"), t0 + Duration::from_secs(10), 3));
+        drop(router.session_state_at(&req_for("s3"), t0 + Duration::from_secs(20), 3));
+
+        drop(router.session_state_at(&req_for("s2"), t0 + Duration::from_secs(25), 3));
+        assert_eq!(router.session_states.as_ref().unwrap().lock().len(), 3);
+
+        drop(router.session_state_at(&req_for("s4"), t0 + Duration::from_secs(30), 3));
+        {
+            let states = router.session_states.as_ref().unwrap().lock();
+            assert_eq!(states.len(), 3);
+            assert!(!states.contains_key(&RoutingIdentity::Session("s1".into())));
+            assert!(states.contains_key(&RoutingIdentity::Session("s2".into())));
+        }
+
+        let active_2 = router
+            .session_state_at(&req_for("s2"), t0 + Duration::from_secs(31), 3)
+            .unwrap();
+        let active_3 = router
+            .session_state_at(&req_for("s3"), t0 + Duration::from_secs(32), 3)
+            .unwrap();
+        let active_4 = router
+            .session_state_at(&req_for("s4"), t0 + Duration::from_secs(33), 3)
+            .unwrap();
+        assert!(
+            router
+                .session_state_at(&req_for("s5"), t0 + Duration::from_secs(34), 3)
+                .is_none()
+        );
+        assert_eq!(router.session_states.as_ref().unwrap().lock().len(), 3);
+        drop((active_2, active_3, active_4));
     }
 }

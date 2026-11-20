@@ -827,7 +827,7 @@ pub(crate) fn ensure_model_is_target(targets: &[ModelId], name: &ModelId) -> Res
 
 /// Key for routing affinity: a root request by its session, a child request by its session
 /// and agent.
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum RoutingIdentity {
     /// Root request, keyed by session ID.
     Session(String),
@@ -851,6 +851,12 @@ impl RoutingIdentity {
             })
         } else {
             Some(Self::Session(session.to_string()))
+        }
+    }
+
+    pub(crate) fn session_id(&self) -> &str {
+        match self {
+            Self::Session(session) | Self::Subagent { session, .. } => session.as_str(),
         }
     }
 }
