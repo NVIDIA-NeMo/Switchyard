@@ -339,7 +339,16 @@ max_capable_inflight = 2
         drop(inflight);
 
         // Prompt-rewriting stage_router + infra is rejected at config parse time.
-        let bad_infra = format!("{config}\ncapable_system_prompt = 'nope'\n");
-        assert!(Runner::from_toml(&bad_infra).is_err());
+        let bad_infra = config.replace(
+            "[routes.stage.infra]",
+            "capable_system_prompt = 'nope'\n[routes.stage.infra]",
+        );
+        let error = Runner::from_toml(&bad_infra)
+            .err()
+            .expect("prompt-rewriting stage_router + infra must fail");
+        assert!(
+            error.to_string().contains("rewrite-free stage_router"),
+            "unexpected validation error: {error}"
+        );
     }
 }
