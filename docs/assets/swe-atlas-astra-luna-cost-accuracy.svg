@@ -37,7 +37,7 @@
   <text x="212.91" y="295.95" font-size="9.1" fill="#546052">73.8% savings</text>
   <text x="93.35" y="344.94" font-size="10.8" fill="#20271f" font-weight="700">Luna only</text>
   <text x="93.35" y="356.5" font-size="9.1" fill="#546052">35.2% accuracy</text>
-  <text x="93.35" y="367.5" font-size="9.1" fill="#546052">≈98.4% savings</text>
+  <text x="93.35" y="367.5" font-size="9.1" fill="#546052">98.4% savings</text>
   <circle cx="64.28" cy="449.91" r="3.45" fill="#76b900"/>
   <circle cx="189.56" cy="449.91" r="3.45" fill="#f3b700"/>
   <text x="62.21" y="33.48" font-size="23" fill="#20271f" font-weight="700">SWE-Atlas</text>

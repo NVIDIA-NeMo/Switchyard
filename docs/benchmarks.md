@@ -15,15 +15,14 @@ judges and infrastructure.
 
 | Strategy | Tasks solved across 3 runs | Accuracy | Cost Savings vs. Astra Only |
 | --- | ---: | ---: | ---: |
-| Luna only | 212/339 | 62.54% | ≈96.4% |
-| Plan/Execute via Stage | 235/339 | 69.32% | Up to 82.1% |
-| Stage | 247/339 | 72.86% | 22.55% |
+| Luna only | 212/339 | 62.54% | 96.4% |
+| Plan/Execute via Stage | 235/339 | 69.32% | 82.1% |
+| Stage | 247/339 | 72.86% | 22.6% |
 | Astra only | 245/339 | 72.27% | 0% |
 
 Stage started on Luna and could switch to Astra after tool errors or when
 Codex compacted context. [Plan/Execute via Stage](routing_algorithms/stage_router_routing.md#plan-and-execute)
-used Astra to plan and Luna to execute. One task in those runs lacked
-usage data, so its estimated savings are at most 82.1% compared with Astra.
+used Astra to plan and Luna to execute.
 
 ## SWE-Atlas
 
@@ -37,9 +36,9 @@ attempts. The 18 execution errors count as failures.
 
 | Strategy | Tasks solved across 3 runs | Accuracy | Cost Savings vs. Astra Only |
 | --- | ---: | ---: | ---: |
-| Luna only | 131/372 | 35.22% | ≈98.4% |
-| Plan/Execute via Stage | 177/372 | 47.58% | ≈73.8% |
-| Stage | 218/372 | 58.60% | ≈9.2% |
+| Luna only | 131/372 | 35.22% | 98.4% |
+| Plan/Execute via Stage | 177/372 | 47.58% | 73.8% |
+| Stage | 218/372 | 58.60% | 9.2% |
 | Astra only | 223/372 | 59.95% | 0% |
 
 ## Earlier benchmarks

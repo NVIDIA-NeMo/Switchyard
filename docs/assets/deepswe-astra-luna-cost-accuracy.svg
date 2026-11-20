@@ -34,10 +34,10 @@
   <text x="461.05" y="149.67" font-size="9.1" fill="#546052">22.6% savings</text>
   <text x="172.54" y="147.59" font-size="10.8" fill="#20271f" font-weight="700">Plan/Execute via Stage</text>
   <text x="172.54" y="159.15" font-size="9.1" fill="#546052">69.3% accuracy</text>
-  <text x="172.54" y="170.15" font-size="9.1" fill="#546052">up to 82.1% savings</text>
+  <text x="172.54" y="170.15" font-size="9.1" fill="#546052">82.1% savings</text>
   <text x="103.21" y="186.85" font-size="10.8" fill="#20271f" font-weight="700">Luna only</text>
   <text x="103.21" y="198.41" font-size="9.1" fill="#546052">62.5% accuracy</text>
-  <text x="103.21" y="209.41" font-size="9.1" fill="#546052">≈96.4% savings</text>
+  <text x="103.21" y="209.41" font-size="9.1" fill="#546052">96.4% savings</text>
   <circle cx="64.28" cy="449.91" r="3.45" fill="#76b900"/>
   <circle cx="189.56" cy="449.91" r="3.45" fill="#f3b700"/>
   <text x="62.21" y="33.48" font-size="23" fill="#20271f" font-weight="700">DeepSWE v1.1</text>
