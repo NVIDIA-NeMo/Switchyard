@@ -3,6 +3,7 @@
 
 """Tests for the dictionary-based libsy Python API."""
 
+import json
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID
@@ -23,6 +24,7 @@ from switchyard.libsy import (
     Step,
     TaskClassifierConfig,
     algorithms,
+    session_key,
 )
 
 
@@ -611,3 +613,172 @@ def test_stage_router_rejects_unknown_tool_semantics_category() -> None:
             confidence_threshold=0.5,
             tool_semantics={"complete": ["end_conversation"]},
         )
+
+
+async def test_caller_managed_state_and_session_key_across_independent_routers() -> None:
+    """Two independent Python routers share session state via state/outcome.state."""
+    assert session_key(None) is None
+    assert session_key({}) is None
+    assert session_key({"x-switchyard-session-id": "s-1"}) == {
+        "session_id": "s-1",
+        "agent_id": None,
+        "session_final": False,
+    }
+    assert session_key(
+        {
+            "x-switchyard-session-id": "s-1",
+            "x-claude-code-agent-id": "worker-2",
+            "x-switchyard-session-final": "true",
+        }
+    ) == {
+        "session_id": "s-1",
+        "agent_id": "worker-2",
+        "session_final": True,
+    }
+    assert (
+        session_key(
+            {
+                "x-switchyard-session-id": "s-1",
+                "x-openai-subagent": "compact",
+            }
+        )
+        is None
+    )
+
+    cfg = TaskClassifierConfig(0.5, session_affinity=True)
+    pod_a = algorithms.llm_task_classifier(config=cfg)
+    pod_b = algorithms.llm_task_classifier(config=cfg)
+    models = {
+        "judge": ["judge"],
+        "efficient": ["fast"],
+        "capable": ["strong"],
+        "any": ["strong", "fast"],
+    }
+    headers = {"x-switchyard-session-id": "s-1"}
+    req = {
+        "model": "auto",
+        "messages": [{"role": "user", "content": [{"type": "text", "text": "design consensus"}]}],
+    }
+
+    judge_calls = 0
+
+    async def drive_once(
+        algo: Algorithm,
+        state: dict[str, object],
+        hdrs: dict[str, str],
+    ) -> tuple[str, dict[str, object]]:
+        nonlocal judge_calls
+        stream = algo.run_stream(req, models, headers=hdrs, state=state)
+        async for step in stream:
+            match step:
+                case Step.CallModel(call):
+                    judge_calls += 1
+                    verdict = {
+                        "crux": "consensus",
+                        "primary_rule": "ESC-1",
+                        "capability_boundary": "exceeded",
+                        "p_solve": 0.1,
+                    }
+                    msg = {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": json.dumps(verdict)}],
+                        "stop_reason": "end_turn",
+                    }
+                    resp = LlmResponse.Agg({"model": "judge", "outputs": [msg]})
+
+                    async def _reply(r: LlmResponse.Agg = resp) -> LlmResponse.Agg:
+                        return r
+
+                    await call.respond(_reply())
+                case Step.Done(outcome):
+                    return outcome.selected_model_ids[0], outcome.state
+        raise AssertionError("missing Done step")
+
+    selected_1, saved_state = await drive_once(pod_a, {}, headers)
+    assert selected_1 == "strong"
+    assert judge_calls == 1
+    assert saved_state
+
+    selected_2, saved_state_2 = await drive_once(pod_b, saved_state, headers)
+    assert selected_2 == "strong"
+    assert judge_calls == 1
+    assert saved_state_2 == saved_state
+
+    selected_final, cleared_state = await drive_once(
+        pod_b,
+        saved_state_2,
+        {**headers, "x-switchyard-session-final": "true"},
+    )
+    assert selected_final == "strong"
+    assert judge_calls == 1
+    assert cleared_state == {}
+
+
+@pytest.mark.asyncio
+async def test_session_key_partitions_stateless_store_across_root_and_subagents() -> None:
+    pod_a = algorithms.stage_router(picker="efficient_first", confidence_threshold=0.5)
+    pod_b = algorithms.stage_router(picker="efficient_first", confidence_threshold=0.5)
+    models = {
+        "efficient": ["fast"],
+        "capable": ["strong"],
+        "any": ["strong", "fast"],
+    }
+    escalating_req = {
+        "model": "auto",
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "fix the build"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "call_1",
+                        "name": "Bash",
+                        "arguments": {"command": "cargo test"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "call_1",
+                        "content": [{"type": "text", "text": "fatal runtime error: out of memory"}],
+                        "is_error": True,
+                    }
+                ],
+            },
+        ],
+    }
+    redis_store: dict[tuple[str, str | None], str] = {}
+
+    async def route_via_redis(algo: Algorithm, req: dict[str, object], hdrs: dict[str, str]) -> str:
+        ident = session_key(hdrs)
+        assert ident is not None
+        key = (ident["session_id"], ident["agent_id"])
+        loaded = json.loads(redis_store[key]) if key in redis_store else {}
+        stream = algo.run_stream(req, models, headers=hdrs, state=loaded)
+        async for step in stream:
+            if isinstance(step, Step.Done):
+                if step.outcome.state:
+                    redis_store[key] = json.dumps(step.outcome.state)
+                else:
+                    redis_store.pop(key, None)
+                return step.outcome.selected_model_ids[0]
+        raise AssertionError("missing Done step")
+
+    root_headers = {"x-switchyard-session-id": "ent-sess-1"}
+    child_a_headers = {**root_headers, "x-claude-code-agent-id": "child-a"}
+    child_b_headers = {**root_headers, "x-claude-code-agent-id": "child-b"}
+
+    # child-a escalates to capable on pod_a and stays held on pod_b without affecting root or child-b.
+    assert await route_via_redis(pod_a, escalating_req, child_a_headers) == "strong"
+    assert await route_via_redis(pod_b, request_body(), child_a_headers) == "strong"
+    assert await route_via_redis(pod_b, request_body(), root_headers) == "fast"
+    assert await route_via_redis(pod_a, request_body(), child_b_headers) == "fast"
+    assert set(redis_store) == {
+        ("ent-sess-1", "child-a"),
+        ("ent-sess-1", None),
+        ("ent-sess-1", "child-b"),
+    }

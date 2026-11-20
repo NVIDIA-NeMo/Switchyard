@@ -19,8 +19,10 @@ from switchyard_rust.libsy import (
     ModelCall,
     OutcomeMetadata,
     RoutingOutcome,
+    SessionKey,
     Step,
     TaskClassifierConfig,
+    session_key,
 )
 
 from . import algorithms as algorithms
@@ -41,7 +43,9 @@ __all__ = [
     "ModelCall",
     "OutcomeMetadata",
     "RoutingOutcome",
+    "SessionKey",
     "Step",
     "TaskClassifierConfig",
     "algorithms",
+    "session_key",
 ]

@@ -87,7 +87,10 @@ impl Processor for TierSetter {
         let Event::Request { request, driver } = event else {
             return Ok(());
         };
-        let identity = retention_key(request, self.message_hash_fallback);
+        let host_managed = driver.is_host_managed();
+        let identity = (!host_managed)
+            .then(|| retention_key(request, self.message_hash_fallback))
+            .flatten();
         if self.is_due(identity.as_ref(), state, request) {
             let (classification, _) = self.judge.score(state, request, driver).await?;
             if let Some(winner) = classification.argmax(false)?
@@ -99,11 +102,13 @@ impl Processor for TierSetter {
                 }
                 return Ok(());
             }
-            if self.trigger == ClassifyTrigger::NewSession
-                && let Some(identity) = identity.as_ref()
-            {
+            if self.trigger == ClassifyTrigger::NewSession {
                 // A failed opening judgment is still the session's one judgment.
-                self.retain(identity.clone(), self.default_tier);
+                if let Some(identity) = identity.as_ref() {
+                    self.retain(identity.clone(), self.default_tier);
+                } else if host_managed && fall_open_tier(state).is_none() {
+                    set_fall_open(state, self.default_tier);
+                }
             }
         }
         // Either not this request's turn or the judge had no verdict, so the last
@@ -795,6 +800,78 @@ mod tests {
             );
             assert_eq!(recorder.judge_calls(), 1, "{trigger:?}");
         }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn caller_state_shares_tier_across_instances_even_with_session_id() -> Result<()> {
+        for trigger in [ClassifyTrigger::UserTurn, ClassifyTrigger::NewSession] {
+            let recorder = Arc::new(Recorder::default());
+            *recorder.judge_p_solve.lock() = 0.1;
+            let pod_a = router_with_trigger(trigger)?;
+            let pod_b = router_with_trigger(trigger)?;
+
+            let first = crate::core::testing::test_drive_with_host_state(
+                pod_a,
+                user_turn_request(),
+                runtime_models(),
+                State::default(),
+                recorder.serve(),
+            )
+            .await?;
+            assert_eq!(first.selected_model_id()?, &ModelId::from("strong"));
+
+            let continued = crate::core::testing::test_drive_with_host_state(
+                pod_b,
+                turn_request(false),
+                runtime_models(),
+                first.state,
+                recorder.serve(),
+            )
+            .await?;
+            assert_eq!(continued.selected_model_id()?, &ModelId::from("strong"));
+            assert_eq!(recorder.judge_calls(), 1, "{trigger:?}");
+        }
+
+        // A failed opening judgment under NewSession records the default tier in state
+        // so a second router instance does not re-judge the session.
+        let pod_a = router_with_trigger(ClassifyTrigger::NewSession)?;
+        let pod_b = router_with_trigger(ClassifyTrigger::NewSession)?;
+        let bad_judge_calls = Arc::new(Mutex::new(0));
+        let bad_serve = {
+            let calls = bad_judge_calls.clone();
+            move |target: ModelId, _request: Request| {
+                let completion = if target.as_str() == JUDGE {
+                    *calls.lock() += 1;
+                    "not JSON".to_string()
+                } else {
+                    target.to_string()
+                };
+                async move { Ok(crate::core::testing::reply(completion)) }
+            }
+        };
+        let first = crate::core::testing::test_drive_with_host_state(
+            pod_a,
+            user_turn_request(),
+            runtime_models(),
+            State::default(),
+            bad_serve,
+        )
+        .await?;
+        assert_eq!(first.selected_model_id()?, &ModelId::from("weak"));
+        let recorder = Arc::new(Recorder::default());
+        *recorder.judge_p_solve.lock() = 0.1;
+        let second = crate::core::testing::test_drive_with_host_state(
+            pod_b,
+            user_turn_request(),
+            runtime_models(),
+            first.state,
+            recorder.serve(),
+        )
+        .await?;
+        assert_eq!(second.selected_model_id()?, &ModelId::from("weak"));
+        assert_eq!(*bad_judge_calls.lock(), 1);
+        assert_eq!(recorder.judge_calls(), 0);
         Ok(())
     }
 }

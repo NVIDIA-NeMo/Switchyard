@@ -170,7 +170,10 @@ Consume `steps` through the same model and Decision call handlers. Switchyard
 does not create provider clients or read their credentials. The host owns target
 prompts, provider settings and transport, and must keep answer attempts and
 fallbacks within the returned candidates. Existing `build()` handles do not
-accept target requirements. Per-run libsy state is not carried between Python calls.
+accept target requirements. Pass `state=None` to use the handle's bounded
+in-memory session storage (`4,096` entries), or pass a `state` mapping and save
+`outcome.state` keyed by `session_key(headers)` for multi-process storage
+(routes using `vgr` or `advisor_gate` reject caller-managed `state`).
 
 ### Concurrent calls and cancellation
 

@@ -158,16 +158,30 @@ impl ConfiguredAlgorithm {
     /// Requires Tokio. Reuse the handle to retain task requirements and algorithm-owned state;
     /// `state` is per-run routing state. Answer/fallback attempts must stay within returned candidates.
     pub fn run_stream(&self, request: Request, state: State) -> Result<StepStream, RunnerError> {
-        let setup = match &self.eligibility {
-            Some(eligibility) => eligibility.select(&request, &self.standard)?,
-            None if has_target_requirements(&request) => {
-                return Err(LlmClientError::InvalidRequest {
-                    message: "route does not accept target requirements".into(),
-                }
-                .into());
-            }
-            None => self.standard.clone(),
-        };
+        let setup = self.select_setup(&request)?;
         Ok(setup.algorithm.run_stream(request, setup.models, state))
+    }
+
+    /// Like [`Self::run_stream`], using caller-managed `state` instead of in-memory session storage.
+    pub fn run_stream_with_host_state(
+        &self,
+        request: Request,
+        state: State,
+    ) -> Result<StepStream, RunnerError> {
+        let setup = self.select_setup(&request)?;
+        Ok(setup
+            .algorithm
+            .run_stream_with_host_state(request, setup.models, state))
+    }
+
+    fn select_setup(&self, request: &Request) -> Result<AlgorithmSetup, RunnerError> {
+        match &self.eligibility {
+            Some(eligibility) => eligibility.select(request, &self.standard),
+            None if has_target_requirements(request) => Err(LlmClientError::InvalidRequest {
+                message: "route does not accept target requirements".into(),
+            }
+            .into()),
+            None => Ok(self.standard.clone()),
+        }
     }
 }

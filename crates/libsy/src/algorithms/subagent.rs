@@ -116,6 +116,10 @@ impl Algorithm for SubagentRouter {
         self.parent.name()
     }
 
+    fn supports_host_state(&self) -> bool {
+        self.parent.supports_host_state() && !self.subagent.tracks_answers()
+    }
+
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         if request
             .metadata
@@ -123,7 +127,49 @@ impl Algorithm for SubagentRouter {
             .is_some_and(Metadata::is_subagent_work)
         {
             // Delegated work routes over the sub-agent's own models, never the parent's.
-            self.subagent.execute(driver.for_subagent()?, request).await
+            let subagent_driver = driver.for_subagent()?;
+            if subagent_driver.is_host_managed() {
+                const PREFIX: &str = "subagent.";
+                let full_state = subagent_driver.take_state();
+                let child_state = crate::State {
+                    extra: full_state
+                        .extra
+                        .iter()
+                        .filter_map(|(key, value)| {
+                            key.strip_prefix(PREFIX)
+                                .map(|key| (key.to_string(), value.clone()))
+                        })
+                        .collect(),
+                    ..crate::State::default()
+                };
+                subagent_driver.set_state(child_state);
+                let session_final = request
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.session_final)
+                    == Some(true);
+                let outcome = self
+                    .subagent
+                    .execute(subagent_driver.clone(), request)
+                    .await?;
+                let child_after = subagent_driver.take_state();
+                if session_final {
+                    subagent_driver.set_state(crate::State::default());
+                } else {
+                    let mut merged = full_state;
+                    merged.extra.retain(|key, _| !key.starts_with(PREFIX));
+                    merged.extra.extend(
+                        child_after
+                            .extra
+                            .into_iter()
+                            .map(|(key, value)| (format!("{PREFIX}{key}"), value)),
+                    );
+                    subagent_driver.set_state(merged);
+                }
+                Ok(outcome)
+            } else {
+                self.subagent.execute(subagent_driver, request).await
+            }
         } else {
             self.warn_if_subagent_identity_unsupported(&request);
             self.parent.clone().route(driver, request).await
@@ -290,6 +336,83 @@ mod tests {
         )?);
         let (fixed, _) = test_drive_with_models(fixed, child("fixed"), models, echo()).await?;
         assert_eq!(fixed, "worker");
+        Ok(())
+    }
+    #[tokio::test]
+    async fn caller_state_preserves_subagent_affinity_and_clears_on_final() -> crate::Result<()> {
+        let classifier_b = Arc::new(ScriptedClassifier {
+            calls: AtomicUsize::new(0),
+        });
+        let pod_a = configured(Arc::new(ScriptedClassifier {
+            calls: AtomicUsize::new(0),
+        }))?;
+        let pod_b = configured(classifier_b.clone())?;
+        let models = RuntimeModels::new([(Category::Any, vec![ModelId::from("parent")])].into())
+            .with_subagent(
+                [
+                    (
+                        Category::Any,
+                        vec![ModelId::from("worker"), ModelId::from("reviewer")],
+                    ),
+                    (Category::Capable, vec![ModelId::from("worker")]),
+                    (Category::Efficient, vec![ModelId::from("reviewer")]),
+                ]
+                .into(),
+            );
+
+        let first = crate::core::testing::test_drive_with_host_state(
+            pod_a,
+            child("child-1"),
+            models.clone(),
+            State::default(),
+            echo(),
+        )
+        .await?;
+        assert_eq!(first.selected_model_id()?, &ModelId::from("worker"));
+
+        // Maintenance traffic from the same child routes to parent without losing subagent state.
+        let maintenance = request(Some(Metadata {
+            session_id: Some("session-1".to_string()),
+            agent_id: Some("child-1".to_string()),
+            is_subagent: true,
+            is_delegated_work: false,
+            ..Metadata::default()
+        }));
+        let maint = crate::core::testing::test_drive_with_host_state(
+            pod_b.clone(),
+            maintenance,
+            models.clone(),
+            first.state,
+            echo(),
+        )
+        .await?;
+        assert_eq!(maint.selected_model_id()?, &ModelId::from("parent"));
+
+        let resumed = crate::core::testing::test_drive_with_host_state(
+            pod_b.clone(),
+            child("child-1"),
+            models.clone(),
+            maint.state,
+            echo(),
+        )
+        .await?;
+        assert_eq!(resumed.selected_model_id()?, &ModelId::from("worker"));
+        assert_eq!(classifier_b.calls.load(Ordering::Relaxed), 0);
+
+        let final_parent = request(Some(Metadata {
+            session_id: Some("session-1".to_string()),
+            session_final: Some(true),
+            ..Metadata::default()
+        }));
+        let closed = crate::core::testing::test_drive_with_host_state(
+            pod_b,
+            final_parent,
+            models,
+            resumed.state,
+            echo(),
+        )
+        .await?;
+        assert!(closed.state.extra.is_empty());
         Ok(())
     }
 }

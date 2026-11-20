@@ -6,9 +6,18 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from switchyard_rust._native import load_native
+
+
+class SessionKey(TypedDict):
+    """Normalized session and sub-agent identity for host-managed state storage."""
+
+    session_id: str
+    agent_id: str | None
+    session_final: bool
+
 
 _EXPORTS = frozenset(
     {
@@ -33,6 +42,7 @@ _EXPORTS = frozenset(
         "llm_task_classifier",
         "noop",
         "random",
+        "session_key",
         "stage_router",
     }
 )
@@ -184,6 +194,9 @@ if TYPE_CHECKING:
         @property
         def response(self) -> LlmResponse.Agg | LlmResponse.Stream | None: ...
 
+        @property
+        def state(self) -> dict[str, object]: ...
+
     class Step:
         @final
         class CallModel:
@@ -292,6 +305,7 @@ if TYPE_CHECKING:
             models: Mapping[str, Sequence[str]],
             subagent_models: Mapping[str, Sequence[str]] | None = None,
             headers: Mapping[str, str] | None = None,
+            state: Mapping[str, object] | None = None,
         ) -> AsyncIterator[Step.CallModel | Step.CallDecision | Step.Done]: ...
 
     @final
@@ -333,16 +347,21 @@ if TYPE_CHECKING:
             headers: Mapping[str, str] | None = None,
             required_labels: Sequence[str] | None = None,
             task_id: str | None = None,
+            state: Mapping[str, object] | None = None,
         ) -> AsyncIterator[Step.CallModel | Step.CallDecision | Step.Done]:
             """Yield host calls; target requirements need a ``build_configured()`` handle.
 
             Omitted labels mean no assessment; ``[]`` supplies no new requirements.
             Reuse the handle for retained task requirements. The host authorizes
-            ``task_id``, which overrides a task ID from headers. Libsy's per-run
-            State is not carried forward. Answers and fallbacks must use the
-            returned candidates.
+            ``task_id``, which overrides a task ID from headers. Pass ``state=None``
+            for in-memory session storage or a mapping for caller-managed state.
+            Answers and fallbacks must use the returned candidates.
             """
             ...
+
+    def session_key(
+        headers: Mapping[str, str] | None = None,
+    ) -> SessionKey | None: ...
 
     def noop() -> Algorithm: ...
 
@@ -382,4 +401,4 @@ def __getattr__(name: str) -> object:
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
-__all__ = sorted(_EXPORTS)
+__all__ = sorted(_EXPORTS | {"SessionKey"})

@@ -19,8 +19,8 @@ use switchyard_libsy::{
     DEFAULT_UNMATCHED_STEPS, DecisionJudgeConfig, DeescalationConfig, EscalationJudgeConfig,
     HandoffNoteConfig, LibsyError as RustLibsyError, LlmCapabilityConfig, LlmClassifierConfig,
     LlmFallback, LlmTaskClassifier, Noop, PickerMode, Random, RoutingOutcome, RuntimeModels,
-    StageRouter, StageRouterConfig, State, Step as RustStep, StepStream, TaskClassifierConfig,
-    ToolSemantics,
+    SessionKey, StageRouter, StageRouterConfig, State, Step as RustStep, StepStream,
+    TaskClassifierConfig, ToolSemantics,
 };
 use switchyard_protocol::{
     Category, DecisionResponse, LlmClientError, LlmResponse, LlmResponseStream,
@@ -92,6 +92,10 @@ fn request_from_python(
         raw_request: None,
         metadata: headers.map(|headers| Metadata::from_headers(&headers)),
     })
+}
+
+fn state_from_python(state: Option<&Bound<'_, PyAny>>) -> PyResult<Option<State>> {
+    state.map(from_python).transpose()
 }
 
 /// Classifier settings shared by standalone and stage-router classifiers.
@@ -822,6 +826,7 @@ struct PyRoutingOutcome {
     response: Option<Py<PyAny>>,
     #[pyo3(get)]
     metadata: Option<Py<PyOutcomeMetadata>>,
+    state: Py<PyAny>,
 }
 
 #[pymethods]
@@ -852,6 +857,12 @@ impl PyRoutingOutcome {
         self.response
             .as_ref()
             .map(|response| response.clone_ref(py))
+    }
+
+    /// Updated session routing state for caller-managed persistence.
+    #[getter]
+    fn state(&self, py: Python<'_>) -> Py<PyAny> {
+        self.state.clone_ref(py)
     }
 }
 
@@ -917,11 +928,21 @@ struct PyRunStream {
 }
 
 impl PyRunStream {
-    fn new(algorithm: &Arc<dyn Algorithm>, request: Request, models: Arc<RuntimeModels>) -> Self {
+    fn new(
+        algorithm: &Arc<dyn Algorithm>,
+        request: Request,
+        models: Arc<RuntimeModels>,
+        state: Option<State>,
+    ) -> Self {
         // Starting a run spawns Rust work, including when Python's event loop has not started.
         let stream = {
             let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
-            Arc::clone(algorithm).run_stream(request, models, State::default())
+            match state {
+                Some(state) => {
+                    Arc::clone(algorithm).run_stream_with_host_state(request, models, state)
+                }
+                None => Arc::clone(algorithm).run_stream(request, models, State::default()),
+            }
         };
         Self::from_stream(stream)
     }
@@ -980,15 +1001,17 @@ impl PyAlgorithm {
     /// [`Metadata`] exactly as an HTTP host would (`Metadata::from_headers`),
     /// so metadata-driven algorithms see the same signals in Python as when
     /// served over HTTP.
-    #[pyo3(signature = (request, models, subagent_models=None, headers=None))]
+    #[pyo3(signature = (request, models, subagent_models=None, headers=None, state=None))]
     fn run_stream(
         &self,
         request: &Bound<'_, PyAny>,
         models: HashMap<String, Vec<String>>,
         subagent_models: Option<HashMap<String, Vec<String>>>,
         headers: Option<HashMap<String, String>>,
+        state: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyRunStream> {
         let request = request_from_python(request, headers)?;
+        let state = state_from_python(state)?;
         let mut runtime_models = RuntimeModels::new(category_models_from_python(models)?);
         if let Some(subagent_models) = subagent_models {
             runtime_models =
@@ -998,6 +1021,7 @@ impl PyAlgorithm {
             &self.inner,
             request,
             Arc::new(runtime_models),
+            state,
         ))
     }
 
@@ -1099,8 +1123,9 @@ impl PyConfiguredAlgorithm {
     /// Yield host-owned model and decision calls for a normalized request.
     /// Omitted labels mean no assessment; an empty collection supplies no new requirements.
     /// The host authorizes `task_id`, which overrides any task ID in `headers`.
-    /// Libsy's per-run `State` is not carried forward, as in `Algorithm.run_stream`.
-    #[pyo3(signature = (request, *, headers=None, required_labels=None, task_id=None))]
+    /// Pass `state=None` to use the algorithm's in-memory session storage, or a state
+    /// dictionary to manage routing state in the host.
+    #[pyo3(signature = (request, *, headers=None, required_labels=None, task_id=None, state=None))]
     fn run_stream(
         &self,
         py: Python<'_>,
@@ -1108,8 +1133,10 @@ impl PyConfiguredAlgorithm {
         headers: Option<&Bound<'_, PyAny>>,
         required_labels: Option<Vec<String>>,
         task_id: Option<String>,
+        state: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<PyRunStream> {
         let headers = headers.map(from_python).transpose()?;
+        let state = state_from_python(state)?;
         let mut request = request_from_python(request, headers)?;
         if let Some(task_id) = task_id {
             request.metadata.get_or_insert_default().task_id = Some(task_id);
@@ -1121,7 +1148,12 @@ impl PyConfiguredAlgorithm {
                         "target requirements require AlgorithmFactory.build_configured()",
                     ));
                 }
-                Ok(PyRunStream::new(algorithm, request, Arc::clone(models)))
+                Ok(PyRunStream::new(
+                    algorithm,
+                    request,
+                    Arc::clone(models),
+                    state,
+                ))
             }
             ConfiguredBackend::Governed(algorithm) => {
                 if let Some(labels) = required_labels {
@@ -1129,7 +1161,10 @@ impl PyConfiguredAlgorithm {
                 }
                 let _guard = pyo3_async_runtimes::tokio::get_runtime().enter();
                 let stream = py
-                    .detach(|| algorithm.run_stream(request, State::default()))
+                    .detach(|| match state {
+                        Some(state) => algorithm.run_stream_with_host_state(request, state),
+                        None => algorithm.run_stream(request, State::default()),
+                    })
                     .map_err(py_libsy_error)?;
                 Ok(PyRunStream::from_stream(stream))
             }
@@ -1157,7 +1192,7 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                 candidate_requests,
                 response,
                 metadata,
-                state: _,
+                state,
             } = *outcome;
             Python::attach(|py| {
                 Ok(PyStep::Done {
@@ -1185,12 +1220,30 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                             response: response
                                 .map(|response| response_to_python(py, response.llm_response))
                                 .transpose()?,
+                            state: to_python(py, &state)?,
                         },
                     )?,
                 })
             })
         }
     }
+}
+
+/// Normalize `headers` and extract the session/sub-agent storage key, or `None` when unkeyed.
+#[pyfunction(name = "session_key")]
+#[pyo3(signature = (headers=None))]
+fn session_key_from_headers(
+    py: Python<'_>,
+    headers: Option<&Bound<'_, PyAny>>,
+) -> PyResult<Option<Py<PyAny>>> {
+    let Some(headers) = headers else {
+        return Ok(None);
+    };
+    let headers: HashMap<String, String> = from_python(headers)?;
+    let headers = header_map_from_python(&headers)?;
+    SessionKey::from_headers(&headers)
+        .map(|key| to_python(py, &key))
+        .transpose()
 }
 
 /// Construct the no-op reference algorithm.
@@ -1347,6 +1400,7 @@ pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
         &libsy_module
     )?)?;
     libsy_module.add_function(wrap_pyfunction!(stage_router_algorithm, &libsy_module)?)?;
+    libsy_module.add_function(wrap_pyfunction!(session_key_from_headers, &libsy_module)?)?;
     libsy_module.add(
         "ContextWindowExceededError",
         module.getattr("ContextWindowExceededError")?,

@@ -29,7 +29,10 @@ use switchyard_protocol::{Category, ContentBlock, Message, ModelId, Request, Rol
 use crate::core::algorithm::{Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::processor::{Event, Processor};
-use crate::core::state::State;
+use crate::core::state::{State, StateValue};
+
+const AFFINITY_TARGET_KEY: &str = "affinity.target";
+const AFFINITY_CATEGORY_KEY: &str = "affinity.category";
 
 /// Upper bound on retained assignments, keeping the process-local map from growing
 /// without limit; the oldest entry is evicted once the bound is reached.
@@ -215,32 +218,105 @@ impl AffinityRouter {
         key
     }
 
+    /// Reports whether caller-managed state may retain an assignment for `request`.
+    fn allows_host_state(&self, request: &Request) -> bool {
+        let metadata = request.metadata.as_ref();
+        let is_subagent = metadata.is_some_and(|metadata| metadata.is_subagent);
+        let is_subagent_work = metadata.is_some_and(|metadata| metadata.is_subagent_work());
+        if self.subagents_only && !is_subagent_work {
+            return false;
+        }
+        if is_subagent && RoutingIdentity::from_request(request).is_none() {
+            if self.should_warn_unkeyed() {
+                tracing::warn!(
+                    target: "libsy",
+                    is_subagent,
+                    message_hash_fallback = self.message_hash_fallback,
+                    "affinity is enabled but this request carries no usable identity, so no \
+                     affinity is applied; root requests need a session id or message-hash \
+                     fallback with usable first-user text, and child requests need both session \
+                     and agent ids"
+                );
+            }
+            return false;
+        }
+        true
+    }
+
     /// Reports whether this call owns the one-time warning for an unkeyable request.
     fn should_warn_unkeyed(&self) -> bool {
         !self.unkeyed_warning_emitted.swap(true, Ordering::Relaxed)
     }
 }
 
+fn read_state_assignment(state: &State) -> Option<(ModelId, Option<Category>)> {
+    let Some(StateValue::String(target)) = state.extra.get(AFFINITY_TARGET_KEY) else {
+        return None;
+    };
+    let category = match state.extra.get(AFFINITY_CATEGORY_KEY) {
+        Some(StateValue::String(raw)) => raw.parse::<Category>().ok(),
+        _ => None,
+    };
+    Some((ModelId::from(target.as_str()), category))
+}
+
+fn write_state_assignment(state: &mut State, target: &ModelId, category: Option<Category>) {
+    state.extra.insert(
+        AFFINITY_TARGET_KEY.to_string(),
+        StateValue::String(target.to_string()),
+    );
+    match category {
+        Some(category) => {
+            state.extra.insert(
+                AFFINITY_CATEGORY_KEY.to_string(),
+                StateValue::String(category.as_str().to_string()),
+            );
+        }
+        None => {
+            state.extra.remove(AFFINITY_CATEGORY_KEY);
+        }
+    }
+}
+
+fn clear_state_assignment(state: &mut State) {
+    state.extra.remove(AFFINITY_TARGET_KEY);
+    state.extra.remove(AFFINITY_CATEGORY_KEY);
+}
+
 #[async_trait]
 impl Processor for AffinityRouter {
-    async fn process(&self, _state: &mut State, event: Event<'_>) -> crate::Result<()> {
+    async fn process(&self, state: &mut State, event: Event<'_>) -> crate::Result<()> {
         if let Event::Decision {
             request,
             selected_model_id,
             category,
-            ..
+            driver,
         } = event
-            && let Some(key) = self.affinity_key(request)
         {
-            let mut assignments = self.assignments.lock();
-            let writable = self.release_on_user_turn || !assignments.contains_key(&key);
-            if self.should_latch(selected_model_id) && writable {
-                evict_if_full(&mut assignments);
-                assignments.insert(key, (selected_model_id.clone(), category));
-            } else if self.release_on_user_turn && starts_user_turn(request) {
-                // The new turn was decided for a model that is not retained, so the
-                // previous turn's hold must not reach this turn's tool calls.
-                assignments.remove(&key);
+            if driver.is_host_managed() {
+                if !self.allows_host_state(request) {
+                    return Ok(());
+                }
+                let writable =
+                    self.release_on_user_turn || !state.extra.contains_key(AFFINITY_TARGET_KEY);
+                if self.should_latch(selected_model_id) && writable {
+                    write_state_assignment(state, selected_model_id, category);
+                } else if self.release_on_user_turn && starts_user_turn(request) {
+                    clear_state_assignment(state);
+                }
+                return Ok(());
+            }
+            if let Some(key) = self.affinity_key(request) {
+                let mut assignments = self.assignments.lock();
+                let writable = self.release_on_user_turn || !assignments.contains_key(&key);
+                if self.should_latch(selected_model_id) && writable {
+                    evict_if_full(&mut assignments);
+                    assignments.insert(key, (selected_model_id.clone(), category));
+                } else if self.release_on_user_turn && starts_user_turn(request) {
+                    // The new turn was decided for a model that is not retained, so the
+                    // previous turn's hold must not reach this turn's tool calls.
+                    assignments.remove(&key);
+                }
             }
         }
         Ok(())
@@ -283,10 +359,41 @@ fn first_user_message_hash(request: &Request) -> Option<String> {
 impl Classifier for AffinityRouter {
     async fn score(
         &self,
-        _state: &mut State,
+        state: &mut State,
         request: &mut Request,
         driver: &Driver,
     ) -> crate::Result<(Classification, Option<switchyard_protocol::Response>)> {
+        if driver.is_host_managed() {
+            if !self.allows_host_state(request) {
+                return Ok((Classification::Scores(Vec::new()), None));
+            }
+            if self.release_on_user_turn && starts_user_turn(request) {
+                return Ok((Classification::Scores(Vec::new()), None));
+            }
+            let available = driver.models_for(&Category::Any);
+            let assigned = match read_state_assignment(state) {
+                Some((target, _)) if !available.is_empty() && !available.contains(&target) => {
+                    clear_state_assignment(state);
+                    None
+                }
+                assigned => assigned,
+            };
+            if assigned.is_some() {
+                driver.set_evidence(serde_json::json!({"source": "retained"}));
+            }
+            return Ok((
+                Classification::Scores(match assigned {
+                    Some((target, category)) => vec![Score {
+                        confidence: 1.0,
+                        target,
+                        category,
+                    }],
+                    None => Vec::new(),
+                }),
+                None,
+            ));
+        }
+
         let Some(key) = self.affinity_key(request) else {
             return Ok((Classification::Scores(Vec::new()), None));
         };
@@ -1050,6 +1157,71 @@ mod tests {
                 .map(|s| s.target.as_str()),
             Some("model-a")
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn host_managed_state_carries_affinity_across_router_instances() -> Result<(), BoxErr> {
+        let pod_a = AffinityRouter::new()
+            .with_release_on_user_turn()
+            .with_latch_only(["strong"]);
+        let pod_b = AffinityRouter::new()
+            .with_release_on_user_turn()
+            .with_latch_only(["strong"]);
+        let mut host_driver = driver();
+        host_driver.set_host_state(State::default());
+
+        let mut state = State::default();
+        let mut opening = task_request(Some(session("session-1", "agent-a")), "add caching", None);
+        pod_a
+            .process(
+                &mut state,
+                Event::Decision {
+                    request: &mut opening,
+                    selected_model_id: &fixed_model("strong"),
+                    category: Some(Category::Capable),
+                    driver: &host_driver,
+                },
+            )
+            .await?;
+        assert!(pod_a.assignments.lock().is_empty());
+
+        let mut continued = opening.clone();
+        continued.llm_request.messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult(ToolResult {
+                tool_call_id: "call-1".to_string(),
+                content: Vec::new(),
+                is_error: None,
+            })],
+        ));
+        let (classification, _) = pod_b
+            .score(&mut state, &mut continued, &host_driver)
+            .await?;
+        let Classification::Scores(retained) = classification else {
+            return Err("affinity never returns ambiguous scores".into());
+        };
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].target, "strong");
+        assert_eq!(retained[0].category, Some(Category::Capable));
+
+        // If the retained model leaves the eligible pool, it is cleared from state.
+        let mut restricted_driver = Driver::new(
+            "test",
+            Arc::new(RuntimeModels::new(
+                [(Category::Any, vec![ModelId::from("weak")])].into(),
+            )),
+        )
+        .0;
+        restricted_driver.set_host_state(State::default());
+        let (classification, _) = pod_b
+            .score(&mut state, &mut continued, &restricted_driver)
+            .await?;
+        let Classification::Scores(cleared) = classification else {
+            return Err("affinity never returns ambiguous scores".into());
+        };
+        assert!(cleared.is_empty());
+        assert!(state.extra.is_empty());
         Ok(())
     }
 }

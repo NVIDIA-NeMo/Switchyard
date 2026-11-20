@@ -102,7 +102,8 @@ impl FallThrough {
     }
     /// Executes the processor and classifier sequence for wrappers and the trait entrypoint.
     pub(crate) async fn execute(&self, driver: Driver, request: Request) -> Result<RoutingOutcome> {
-        let session = session_id(&request);
+        let host_managed = driver.is_host_managed();
+        let session = (!host_managed).then(|| session_id(&request)).flatten();
         if session.is_some() {
             self.start_cleanup_task();
         }
@@ -111,7 +112,7 @@ impl FallThrough {
             .as_ref()
             .and_then(|metadata| metadata.session_final)
             == Some(true);
-        let result = self.execute_session(driver, request).await;
+        let result = self.execute_session(driver, request, session_final).await;
         if session_final && let Some(session) = session.as_deref() {
             self.remove_session(session);
         }
@@ -129,11 +130,20 @@ impl FallThrough {
         });
     }
 
-    async fn execute_session(&self, driver: Driver, request: Request) -> Result<RoutingOutcome> {
+    async fn execute_session(
+        &self,
+        driver: Driver,
+        request: Request,
+        session_final: bool,
+    ) -> Result<RoutingOutcome> {
         // The request is threaded mutably through the whole fold: any component may rewrite
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
-        let session_state = self.session_state(&request);
+        let session_state = if driver.is_host_managed() {
+            None
+        } else {
+            self.session_state(&request)
+        };
         let (score, served, prompts) = match session_state {
             Some(state) => {
                 let mut state = state.lock().await;
@@ -144,6 +154,9 @@ impl FallThrough {
                 let mut state = driver.take_state();
                 let (score, served) = self.route(&mut state, &driver, &mut request).await?;
                 let prompts = std::mem::take(&mut state.target_prompts);
+                if session_final {
+                    state.extra.clear();
+                }
                 driver.set_state(state);
                 (score, served, prompts)
             }
@@ -913,5 +926,94 @@ mod tests {
         let states = states.lock();
         assert!(states.contains_key("session-1"));
         assert!(!states.contains_key("session-2"));
+    }
+
+    #[tokio::test]
+    async fn caller_managed_state_overrides_in_memory_sessions_and_clears_on_final() -> Result<()> {
+        use crate::core::state::StateValue;
+        use crate::core::testing::test_drive_with_host_state;
+
+        struct CountingProcessor;
+
+        #[async_trait]
+        impl Processor for CountingProcessor {
+            async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
+                if let Event::Request { .. } = event {
+                    let next = match state.extra.get("count") {
+                        Some(StateValue::Count(n)) => *n + 1,
+                        _ => 1,
+                    };
+                    state
+                        .extra
+                        .insert("count".to_string(), StateValue::Count(next));
+                }
+                Ok(())
+            }
+        }
+
+        struct ThresholdClassifier;
+
+        #[async_trait]
+        impl Classifier for ThresholdClassifier {
+            async fn score(
+                &self,
+                state: &mut State,
+                _request: &mut Request,
+                _driver: &Driver,
+            ) -> Result<(Classification, Option<Response>)> {
+                let count = match state.extra.get("count") {
+                    Some(StateValue::Count(n)) => *n,
+                    _ => 0,
+                };
+                let target = if count >= 2 { "strong" } else { "weak" };
+                Ok((Classification::Scores(vec![score(target, 1.0)]), None))
+            }
+        }
+
+        let make_router = || {
+            Arc::new(
+                FallThrough::new_with_state()
+                    .with_processor(Arc::new(CountingProcessor))
+                    .with_classifier(Arc::new(ThresholdClassifier)),
+            )
+        };
+        let pod_a = make_router();
+        let pod_b = make_router();
+        let models = category_models(Category::Any, &["weak", "strong"]);
+
+        let first = test_drive_with_host_state(
+            pod_a.clone(),
+            request(),
+            models.clone(),
+            State::default(),
+            echo(),
+        )
+        .await?;
+        assert_eq!(first.selected_model_id()?, &ModelId::from("weak"));
+        assert!(pod_a.session_states.as_ref().unwrap().lock().is_empty());
+
+        let second = test_drive_with_host_state(
+            pod_b.clone(),
+            request(),
+            models.clone(),
+            first.state,
+            echo(),
+        )
+        .await?;
+        assert_eq!(second.selected_model_id()?, &ModelId::from("strong"));
+        assert!(pod_b.session_states.as_ref().unwrap().lock().is_empty());
+
+        let final_req = Request {
+            metadata: Some(Metadata {
+                session_id: Some("session-1".to_string()),
+                session_final: Some(true),
+                ..Metadata::default()
+            }),
+            ..request()
+        };
+        let ended =
+            test_drive_with_host_state(pod_a, final_req, models, second.state, echo()).await?;
+        assert!(ended.state.extra.is_empty());
+        Ok(())
     }
 }
