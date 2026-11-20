@@ -34,7 +34,7 @@ use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
     capture_request_preservation, capture_response_preservation, embed_preservation,
     exact_preserved_request, exact_preserved_response, is_responses_native_input_item, json_string,
-    push_lossy, stable_id, string_value, validate_request_capabilities,
+    push_lossy, push_lossy_at, stable_id, string_value, validate_request_capabilities,
 };
 
 /// Format codec for OpenAI Responses payloads.
@@ -298,6 +298,14 @@ impl FormatCodec for OpenAiResponsesCodec {
         }
         if let Some(value) = request.sampling.top_p {
             body.insert("top_p".to_string(), json!(value));
+        }
+        if let Some(value) = request.sampling.top_k {
+            push_lossy_at(
+                &mut diagnostics,
+                policy,
+                "$.top_k",
+                format!("top_k {value} is omitted because OpenAI Responses has no top_k"),
+            )?;
         }
         if request.stream {
             body.insert("stream".to_string(), Value::Bool(true));

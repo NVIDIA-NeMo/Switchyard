@@ -66,6 +66,24 @@ pub fn push_lossy(
     }
 }
 
+/// Applies the lossy-conversion policy to a loss at a known source path.
+pub(crate) fn push_lossy_at(
+    diagnostics: &mut Vec<TranslationDiagnostic>,
+    policy: &TranslationPolicy,
+    path: &str,
+    message: impl Into<String>,
+) -> Result<()> {
+    let message = message.into();
+    match policy.lossy_conversion_policy {
+        LossyConversionPolicy::AllowWithDiagnostics => {
+            diagnostics
+                .push(TranslationDiagnostic::warning("lossy_conversion", message).at_path(path));
+            Ok(())
+        }
+        LossyConversionPolicy::Reject => Err(TranslationError::LossyConversion(message)),
+    }
+}
+
 // These Responses history items are valid only as top-level `input` items.
 pub(crate) fn is_responses_native_input_item(item: &Value) -> bool {
     matches!(
