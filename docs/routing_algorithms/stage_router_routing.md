@@ -127,10 +127,10 @@ Both pickers read the same signals; only the default tier differs.
 
 !!! warning "`capable_first` is experimental"
 
-    [DeepSWE and SWE-Atlas benchmarks](../benchmarks.md#deepswe-v11) report accuracy
-    and cost for `capable_first` with GPT-6 Astra and Luna. The server logs a
-    warning at startup when a route selects this picker. Calibrate its threshold
-    for your model pair and workload. See
+    The [SWE-Atlas results](../benchmarks.md#swe-atlas) report accuracy and cost
+    savings for `capable_first`. It has no calibrated threshold. The server logs a
+    warning at startup when a route selects it. Use `efficient_first` unless you
+    are running your own calibration. See
     [Reachable scores per picker](#reachable-scores-per-picker) for what a
     threshold can and cannot do with each picker.
 
