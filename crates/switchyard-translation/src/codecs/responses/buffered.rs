@@ -637,7 +637,7 @@ fn decode_responses_input(
                         pending_tool_calls.push(ToolCall {
                             id,
                             name,
-                            arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                            arguments: decode_tool_arguments(item),
                         });
                     }
                     kind @ (Some("function_call_output") | Some("custom_tool_call_output")) => {
@@ -1836,15 +1836,7 @@ fn decode_responses_output_item(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                arguments: item
-                    .get("arguments")
-                    .map(|value| {
-                        value
-                            .as_str()
-                            .and_then(|text| serde_json::from_str(text).ok())
-                            .unwrap_or_else(|| value.clone())
-                    })
-                    .unwrap_or_else(|| json!({})),
+                arguments: decode_tool_arguments(item),
             })],
             stop_reason: Some(StopReason::ToolUse),
         })),
@@ -2082,6 +2074,17 @@ fn encode_responses_reasoning_output(
         item["encrypted_content"] = Value::String(encrypted.to_string());
     }
     item
+}
+
+fn decode_tool_arguments(item: &Map<String, Value>) -> Value {
+    item.get("arguments")
+        .map(|value| {
+            value
+                .as_str()
+                .and_then(|text| serde_json::from_str(text).ok())
+                .unwrap_or_else(|| value.clone())
+        })
+        .unwrap_or_else(|| json!({}))
 }
 
 // Serializes JSON with Python-like spacing to match legacy converter behavior.

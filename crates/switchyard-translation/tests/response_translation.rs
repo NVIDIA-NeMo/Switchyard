@@ -29,8 +29,20 @@ fn responses_tool_arguments_are_not_double_encoded() -> TestResult {
         (json!("not JSON"), json!("not JSON")),
         (json!({"city": "Paris"}), json!({"city": "Paris"})),
     ] {
-        let body = json!({"output": [{"type": "function_call", "call_id": "call_1",
-            "name": "lookup", "arguments": arguments}]});
+        let item = json!({"type": "function_call", "call_id": "call_1",
+            "name": "lookup", "arguments": arguments});
+        let body = json!({"model": "fixture", "input": [item]});
+        let request = engine.decode_request(format, &body, &policy)?.request;
+        assert_eq!(engine.encode_request(format, &request, &policy)?.body, body);
+        let output = engine
+            .encode_request(format, &request, &normalized_policy())?
+            .body;
+        let request_wire = expected
+            .as_str()
+            .map_or_else(|| expected.to_string(), str::to_owned);
+        assert_eq!(output["input"][0]["arguments"], request_wire);
+
+        let body = json!({"output": [item]});
         let response = engine.decode_response(format, &body, &policy)?.response;
         assert_eq!(
             engine.encode_response(format, &response, &policy)?.body,
