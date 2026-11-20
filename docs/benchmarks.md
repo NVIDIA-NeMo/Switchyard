@@ -16,7 +16,7 @@ judges and infrastructure.
 | Strategy | Tasks solved across 3 runs | Accuracy | Cost Savings vs. Astra Only |
 | --- | ---: | ---: | ---: |
 | Luna only | 212/339 | 62.54% | 96.4% |
-| Plan/Execute via Stage | 235/339 | 69.32% | 82.1% |
+| [Plan/Execute via Stage](../benchmark/DEEPSWE_V11_QUALIFICATION.md#astra-planner-and-luna-executor) | 235/339 | 69.32% | 82.1% |
 | Stage | 247/339 | 72.86% | 22.6% |
 | Astra only | 245/339 | 72.27% | 0% |
 
