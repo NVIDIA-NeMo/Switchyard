@@ -35,6 +35,7 @@ _PATCH_FIELDS = frozenset(
         "stop",
     }
 )
+_REMOVABLE_FIELDS = _PATCH_FIELDS | {"max_tokens"}
 
 
 class LiteLLMRequestRewriter(CustomLogger):
@@ -72,7 +73,7 @@ class LiteLLMRequestRewriter(CustomLogger):
             or not all(isinstance(item, str) for item in raw_remove_values)
         ):
             raise ValueError("Switchyard LiteLLM request patch remove must be a string sequence")
-        unknown_remove_fields = sorted(set(raw_remove_values) - _PATCH_FIELDS)
+        unknown_remove_fields = sorted(set(raw_remove_values) - _REMOVABLE_FIELDS)
         if unknown_remove_fields:
             raise ValueError(
                 "Switchyard LiteLLM request patch cannot remove fields: "
@@ -96,13 +97,16 @@ class LiteLLMRequestRewriter(CustomLogger):
     @staticmethod
     def _locate_patch(
         kwargs: Mapping[str, object],
-    ) -> tuple[
-        str,
-        Mapping[str, object],
-        Mapping[str, object],
-        Mapping[str, object],
-        Mapping[str, object],
-    ] | None:
+    ) -> (
+        tuple[
+            str,
+            Mapping[str, object],
+            Mapping[str, object],
+            Mapping[str, object],
+            Mapping[str, object],
+        ]
+        | None
+    ):
         """Find a Switchyard request patch in either LiteLLM metadata field."""
         for metadata_key in ("litellm_metadata", "metadata"):
             raw_metadata = kwargs.get(metadata_key)

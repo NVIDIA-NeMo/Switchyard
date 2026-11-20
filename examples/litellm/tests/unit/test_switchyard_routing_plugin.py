@@ -238,10 +238,19 @@ async def test_unsupported_structured_messages_fail_closed(
         await stage_plugin().run(routing_context(messages))
 
 
-async def test_classifier_backed_algorithm_fails_on_intermediate_model_call() -> None:
+@pytest.mark.parametrize(
+    "config",
+    [
+        TaskClassifierConfig(0.5),
+        TaskClassifierConfig.decision(cutoff=0.5),
+    ],
+)
+async def test_classifier_backed_algorithm_fails_on_intermediate_model_call(
+    config: TaskClassifierConfig,
+) -> None:
     plugin = SwitchyardRoutingPlugin(
         algorithms.llm_task_classifier(
-            config=TaskClassifierConfig(0.5),
+            config=config,
         )
     )
 
@@ -318,6 +327,86 @@ async def test_stage_request_rewrite_is_applied_after_litellm_selects_a_deployme
     assert rewritten["tools"] == [{"type": "function", "function": {"name": "Bash"}}]
     assert "request_patch" not in rewritten["metadata"]["routing_plugin_signals"]["switchyard"]
     assert "request_patch" in context.signals["switchyard"]
+
+
+async def test_rewriter_removes_max_tokens_when_applying_output_budget_patch() -> None:
+    plugin = stage_plugin()
+    patch = build_request_patch(
+        {
+            "model": "auto",
+            "instructions": [],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+            "tools": [],
+            "tool_choice": None,
+            "sampling": {"temperature": None, "top_p": None, "top_k": None},
+            "output": {"max_output_tokens": None, "response_format": None},
+            "reasoning": {"effort": None, "raw": None},
+            "stream": False,
+            "extensions": {"fields": {}},
+            "preservation": {"requests": {}, "responses": {}},
+        },
+        {
+            "model": SOL,
+            "instructions": [],
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "Hello"}]}],
+            "tools": [],
+            "tool_choice": None,
+            "sampling": {"temperature": None, "top_p": None, "top_k": None},
+            "output": {"max_output_tokens": 2048, "response_format": None},
+            "reasoning": {"effort": None, "raw": None},
+            "stream": False,
+            "extensions": {"fields": {}},
+            "preservation": {"requests": {}, "responses": {}},
+        },
+        selected_model_id=SOL,
+    )
+    rewritten = await plugin.async_pre_call_deployment_hook(
+        {
+            "messages": [{"role": "user", "content": "Hello"}],
+            "max_tokens": 512,
+            "metadata": {"routing_plugin_signals": {"switchyard": {"request_patch": patch}}},
+        },
+        None,
+    )
+
+    assert rewritten is not None
+    assert "max_tokens" not in rewritten
+    assert rewritten["max_completion_tokens"] == 2048
+
+    with pytest.raises(ValueError, match="cannot set fields: max_tokens"):
+        await plugin.async_pre_call_deployment_hook(
+            {
+                "messages": [{"role": "user", "content": "Hello"}],
+                "metadata": {
+                    "routing_plugin_signals": {
+                        "switchyard": {"request_patch": {"set": {"max_tokens": 512}}}
+                    }
+                },
+            },
+            None,
+        )
+
+
+async def test_stage_routes_compaction_summary_without_request_shape_error() -> None:
+    context = routing_context(
+        [
+            {
+                "role": "user",
+                "content": (
+                    "This session is being continued from a previous conversation "
+                    "that ran out of context. Continue."
+                ),
+            }
+        ]
+    )
+
+    await stage_plugin().run(context)
+
+    assert context.candidate_models == [SOL]
+    assert context.signals["switchyard"] == {
+        "selected_model_id": SOL,
+        "fallback_models": [TERRA],
+    }
 
 
 def test_request_patch_maps_supported_switchyard_request_overrides() -> None:
@@ -405,6 +494,14 @@ def test_request_patch_maps_supported_switchyard_request_overrides() -> None:
         {"reasoning": {"effort": None, "raw": {"budget_tokens": 512}}},
         {"extensions": {"fields": {"api_key": "must-not-be-forwarded"}}},
         {"preservation": {"requests": {"openai_chat": {}}, "responses": {}}},
+        {"has_compaction": 1},
+        {
+            "output": {
+                "max_output_tokens": None,
+                "response_format": None,
+                "is_schema_enforced": True,
+            }
+        },
     ],
 )
 def test_request_patch_rejects_unsafe_or_unrepresentable_overrides(

@@ -200,7 +200,7 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
         )
         async for step in self._algorithm.run_stream(request, models):
             match step:
-                case Step.CallModel(_):
+                case Step.CallModel(_) | Step.CallDecision(_):
                     raise ValueError(
                         "Switchyard algorithm requested an intermediate model call, "
                         "which a LiteLLM routing plugin cannot serve"
