@@ -43,6 +43,8 @@ async def test_stage_uses_deployer_candidates_in_capable_then_efficient_order() 
     assert context.signals["switchyard"] == {
         "selected_model_id": "provider/deployer-efficient",
         "fallback_models": ["provider/deployer-capable"],
+        "algorithm": "stage_router",
+        "evidence": {"source": "fall_open"},
     }
 
 
