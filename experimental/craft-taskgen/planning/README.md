@@ -56,15 +56,10 @@ Narrow within the directory with a glob filter:
 SOURCE_DATASET=harbor-tasks/my-dataset TASKS='scrapy__*' ./planning/run_plan_impl.sh
 ```
 
-Implementer defaults to Haiku 4.5 — the fixed implementer in the methodology.
-Override either side for ablations:
-
-```bash
-# Non-Anthropic implementer (opencode + Nemotron)
-IMPL_AGENT=opencode IMPL_MODEL=nvdev/nvidia/nemotron-3-super \
-PLANNER_MODEL=aws/anthropic/bedrock-claude-opus-4-6 \
-./planning/run_plan_impl.sh
-```
+The implementer defaults to Haiku 4.5 — the fixed implementer in the methodology.
+Set `IMPL_AGENT` and `IMPL_MODEL` to override the implementer for ablations.
+The launcher passes `IMPL_MODEL` to Harbor unchanged; use the provider prefix
+and model ID required by the selected agent.
 
 ## See per-task rewards
 

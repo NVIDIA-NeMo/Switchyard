@@ -1,7 +1,7 @@
 # Running a batch
 
 End-to-end runbook for launching one deterministic repo batch through the
-tools pipeline. Replaces / supersedes GitLab snippet 13878.
+tools pipeline.
 
 A "batch" is 50 repos drawn from
 `~/projects/craft-bench/docs/plans/expanded-repos/candidates.csv` via
@@ -33,8 +33,8 @@ every machine ⇒ shards never overlap.
    (e.g. `.venv/lib/python3.13/site-packages`). Silent glob misses are the
    most common source of "Harbor smoke behaves weirdly" later on.
 
-3. **`.env`** must set the NVIDIA gateway keys — every LLM step is
-   gateway-only, no OAuth fallback.
+3. **`.env`** must set the gateway credentials. Every LLM step uses the
+   gateway; OAuth fallback is disabled.
 
    ```bash
    # .env (at repo root)
@@ -44,7 +44,7 @@ every machine ⇒ shards never overlap.
    OPENAI_BASE_URL=<gateway base url>
    ```
 
-   Copy from another working VM, or ask in #craft-dev.
+   Obtain credentials from your gateway administrator.
 
 4. **Run preflight** — catches missing `.env`, wrong Docker daemon, no `gh
    auth`, harbor-lab not on PATH, etc. `--check-endpoints` makes a few
@@ -57,9 +57,8 @@ every machine ⇒ shards never overlap.
        --check-endpoints
    ```
 
-5. **Check Docker storage.** ZFS-backed hosts (craftbench02, craftbench03)
-   have 300–400 GB on `/scratch/docker`; non-ZFS hosts may have as little as
-   25 GB. Confirm before launching:
+5. **Check Docker storage.** Check the storage available to Docker before
+   launching a batch:
 
    ```bash
    docker info | grep -E "Storage Driver|Docker Root Dir"
@@ -205,10 +204,9 @@ kill <pid>   # the PID run-pipeline.sh printed at launch
   prior runs will be re-evaluated. Move or delete stale ones.
 - **Harbor patches silently no-op** if the `.venv/lib/python*/...` glob
   doesn't match. If Harbor smoke behavior looks wrong, re-check step 2.
-- **Disk pressure on ZFS hosts is misleading.** If `df -h` shows `/dockerroot
-  95%` but `docker info` says `Docker Root Dir: /scratch/docker`, ignore the
-  legacy mount — real storage is ZFS on `/scratch` (check with
-  `zpool list`).
+- **Check Docker's filesystem.** Use `Docker Root Dir` from `docker info`
+  to find the filesystem whose free space matters. On ZFS, also check the
+  pool capacity with `zpool list`.
 - **Timing.** 50 repos × up to 25 builds/repo (per
   `max_promising_per_repo=25` in the profile) → ~12–24 h wall clock
   depending on complexity and Opus smoke queue depth.
@@ -228,7 +226,7 @@ kill <pid>   # the PID run-pipeline.sh printed at launch
   docker system df                     # check the damage
   docker image prune -af               # wipes dangling + unused (won't touch running containers)
   docker builder prune -af             # BuildKit cache (separate pool)
-  zpool list scratch                   # confirm ALLOC dropped
+  zpool list                           # Check pool usage on ZFS hosts.
   ```
   Safe while the pipeline is running — prune skips images that are
   referenced by live containers.
