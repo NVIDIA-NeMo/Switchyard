@@ -27,8 +27,8 @@
   <circle cx="454.05" cy="124.31" r="3.78" fill="#76b900" stroke="white" stroke-width="1.1"/>
   <circle cx="165.54" cy="144.79" r="3.78" fill="#76b900" stroke="white" stroke-width="1.1"/>
   <circle cx="96.21" cy="184.05" r="3.78" fill="#f3b700" stroke="white" stroke-width="1.1"/>
-  <text x="570.3" y="110.53" font-size="10.8" fill="#20271f" font-weight="700">Astra only</text>
-  <text x="570.3" y="122.08" font-size="9.1" fill="#546052">72.3% accuracy</text>
+  <text x="570.3" y="130.53" font-size="10.8" fill="#20271f" font-weight="700">Astra only</text>
+  <text x="570.3" y="142.08" font-size="9.1" fill="#546052">72.3% accuracy</text>
   <text x="461.05" y="127.11" font-size="10.8" fill="#20271f" font-weight="700">Stage</text>
   <text x="461.05" y="138.67" font-size="9.1" fill="#546052">72.9% accuracy</text>
   <text x="461.05" y="149.67" font-size="9.1" fill="#546052">22.6% savings</text>
