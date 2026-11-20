@@ -70,6 +70,18 @@ impl Runner {
         config::runner_from_toml(source)
     }
 
+    /// Loads a version-1 deployment TOML file and rejects routes that produce responses or
+    /// rewrite request semantics before constructing provider clients.
+    pub fn load_decision_only(path: impl AsRef<Path>) -> Result<Self, RunnerError> {
+        config::load_decision_only_runner(path)
+    }
+
+    /// Loads a version-1 deployment TOML document and rejects routes that produce responses or
+    /// rewrite request semantics before constructing provider clients.
+    pub fn from_toml_decision_only(source: &str) -> Result<Self, RunnerError> {
+        config::decision_only_runner_from_toml(source)
+    }
+
     /// Builds a runner from named routes in caller-provided order.
     /// Pre-condition: There must be at least one route.
     pub fn new(routes: Vec<(ModelId, Route)>) -> Self {

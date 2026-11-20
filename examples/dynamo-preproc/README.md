@@ -83,10 +83,11 @@ Once the queue drains, requests use the original task choice again. EPP selects 
 worker. This rule does not estimate waiting time or cache reuse. Removing `infra`
 or `METRICS_CONFIG` disables the override; StageRouter is unaffected.
 
-PreProc polls `sglang:num_queue_reqs` and `sglang:num_running_reqs` through the
-Prometheus endpoint in [metrics.toml](config/metrics.toml). Select every engine in
-each pool exactly once. Duplicate rank series or missing workers distort the counts;
-this example does not detect those cases or check worker health.
+PreProc polls `sglang:num_queue_reqs` and `sglang:num_running_reqs` by default (or
+`vllm:num_requests_waiting` and `vllm:num_requests_running` when a `[[models]]` entry sets
+`engine = "vllm"`) through the Prometheus endpoint in [metrics.toml](config/metrics.toml).
+Select every engine in each pool exactly once. Duplicate rank series or missing workers
+distort the counts; this example does not detect those cases or check worker health.
 
 Failed queries, missing aggregates or stale samples keep the task choice. Freshness
 uses the oldest original scrape time, not the time of the Prometheus query.

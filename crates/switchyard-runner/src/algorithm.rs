@@ -714,6 +714,72 @@ impl StageSettingsConfig {
             .cloned();
         config
     }
+
+    /// True when the stage settings do not inject prompts or handoff notes into requests.
+    pub fn is_rewrite_free(&self) -> bool {
+        self.handoff_notes.is_none()
+            && self.capable_system_prompt.is_none()
+            && self.efficient_system_prompt.is_none()
+    }
+}
+
+impl AlgorithmSpec {
+    /// Whether `[routes.<name>.infra]` queue spillover may be attached to this algorithm.
+    pub fn supports_infra(&self) -> bool {
+        match self {
+            Self::LlmClassifier { config } => {
+                matches!(config.mode, None | Some(ClassifierMode::Capability))
+                    && config.escalation.is_none()
+            }
+            Self::StageRouter { settings, .. } => settings.is_rewrite_free(),
+            Self::Auto { .. } => true,
+            _ => false,
+        }
+    }
+
+    /// Reason why a route cannot run in a decision-only host that leaves the request body
+    /// untouched (apart from replacing `model`).
+    pub(crate) fn decision_only_incompatibility(&self) -> Option<&'static str> {
+        match self {
+            Self::Noop {} => Some("noop produces a synthetic response"),
+            Self::Advisor { .. } => Some("advisor buffers and reviews responses"),
+            Self::Vgr { .. } => Some("vgr requires served-answer tracking"),
+            Self::LlmClassifier { config }
+                if matches!(config.mode, Some(ClassifierMode::Escalation))
+                    || (config.mode.is_none() && config.escalation.is_some()) =>
+            {
+                Some("escalation llm_classifier serves the weak target during routing")
+            }
+            Self::StageRouter { settings, .. } if !settings.is_rewrite_free() => {
+                Some("stage_router prompts or handoff_notes rewrite requests")
+            }
+            Self::Composite {
+                stage,
+                efficient,
+                capable,
+                ..
+            } => {
+                let defaults = StageProfileConfig::default();
+                let eff = stage.profile_config(
+                    efficient.as_deref().unwrap_or(&defaults),
+                    PickerMode::EfficientFirst,
+                );
+                let cap = stage.profile_config(
+                    capable.as_deref().unwrap_or(&defaults),
+                    PickerMode::CapableFirst,
+                );
+                [eff, cap]
+                    .iter()
+                    .any(|cfg| {
+                        cfg.handoff_notes.is_some()
+                            || cfg.capable_system_prompt.is_some()
+                            || cfg.efficient_system_prompt.is_some()
+                    })
+                    .then_some("composite profile prompts or handoff_notes rewrite requests")
+            }
+            _ => None,
+        }
+    }
 }
 
 impl StageTierConfig {
