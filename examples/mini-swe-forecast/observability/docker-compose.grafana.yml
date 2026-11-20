@@ -1,0 +1,15 @@
+# Grafana reading Langfuse's ClickHouse directly (per-model-call charts Langfuse can't draw).
+services:
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: sy-grafana
+    environment:
+      GF_INSTALL_PLUGINS: grafana-clickhouse-datasource
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Editor
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/per-call.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3001:3000"]
+    depends_on: [clickhouse]
