@@ -60,29 +60,48 @@ struct TaskClassifierVerdict {
 }
 
 impl TaskClassifierVerdict {
-    /// Rejects malformed or internally inconsistent verdicts before policy evaluation.
+    /// Returns the capability boundary that a packaged rule label implies, or `None` for an
+    /// unknown label.
+    fn boundary_for_rule(rule: &str) -> Option<&'static str> {
+        match rule {
+            "SUP-1" | "SUP-2" | "SUP-3" | "SUP-4" | "SUP-5" => Some("supported"),
+            "UNC-1" | "UNC-2" => Some("uncertain"),
+            "LIM-1" | "LIM-2" => Some("unsupported"),
+            "none" => Some("unmatched"),
+            _ => None,
+        }
+    }
+
+    /// Rejects malformed verdicts before policy evaluation.
+    ///
+    /// The rule label implies the boundary, so a `capability_boundary` that disagrees with
+    /// `primary_rule` is routed by the rule's boundary instead of being rejected. Judges that
+    /// pick the right rule but echo the wrong label would otherwise fail the route open to
+    /// the capable target on every such request.
     fn is_valid(&self) -> bool {
         (0.0..=1.0).contains(&self.p_solve)
             && !self.crux.trim().is_empty()
-            && matches!(
-                (
-                    self.primary_rule.as_str(),
-                    self.capability_boundary.as_str()
-                ),
-                ("SUP-1" | "SUP-2" | "SUP-3" | "SUP-4" | "SUP-5", "supported")
-                    | ("UNC-1" | "UNC-2", "uncertain")
-                    | ("LIM-1" | "LIM-2", "unsupported")
-                    | ("none", "unmatched")
-            )
+            && Self::boundary_for_rule(&self.primary_rule).is_some()
     }
 
-    /// Returns the number of threshold steps assigned to this capability boundary.
+    /// Returns the boundary used for routing: the one implied by the rule label.
+    fn effective_boundary(&self) -> Option<&'static str> {
+        Self::boundary_for_rule(&self.primary_rule)
+    }
+
+    /// Reports whether the judge's boundary label disagreed with its rule label.
+    fn boundary_corrected(&self) -> bool {
+        self.effective_boundary()
+            .is_some_and(|boundary| boundary != self.capability_boundary)
+    }
+
+    /// Returns the number of threshold steps assigned to this verdict's boundary.
     ///
     /// `unmatched_steps` comes from the route configuration: a request that matches no
     /// capability rule has no evidence behind its solve probability, so operators can
     /// require more confidence for it than for an uncertain verdict.
     fn boundary_steps(&self, unmatched_steps: u8) -> Option<u8> {
-        match self.capability_boundary.as_str() {
+        match self.effective_boundary()? {
             "supported" => Some(0),
             "uncertain" => Some(1),
             "unmatched" => Some(unmatched_steps),
@@ -271,8 +290,10 @@ impl JudgePolicy for TaskClassifierPolicy {
         verdict: Option<&Self::Verdict>,
         driver: &Driver,
     ) -> Result<Classification> {
-        // Judge output is untrusted. An absent, invalid, or inconsistent verdict is
-        // ambiguous so the surrounding router applies its configured fallback.
+        // Judge output is untrusted. An absent or invalid verdict is ambiguous so the
+        // surrounding router applies its configured fallback. A boundary label that
+        // disagrees with the rule label does not invalidate a verdict: routing uses the
+        // boundary the rule implies.
         let Some(verdict) = verdict.filter(|verdict| verdict.is_valid()) else {
             return Ok(Classification::Ambiguous(vec![]));
         };
@@ -317,11 +338,15 @@ fn capability_evidence(
             "reason_code": "invalid_verdict",
         }));
     };
-    Some(serde_json::json!({
+    let mut evidence = serde_json::json!({
         "source": "llm-classifier",
         "score": verdict.p_solve,
         "threshold": threshold,
-    }))
+    });
+    if verdict.boundary_corrected() {
+        evidence["boundary_corrected"] = Value::Bool(true);
+    }
+    Some(evidence)
 }
 
 /// Settings shared by capability judges and their surrounding route.
@@ -1993,17 +2018,14 @@ mod tests {
     #[test]
     fn an_unusable_verdict_is_ambiguous() -> Result<()> {
         let policy = policy();
-        let inconsistent_rule = TaskClassifierVerdict {
-            capability_boundary: "uncertain".to_string(),
-            ..verdict(1.0, "supported", "SUP-1")
-        };
+        let unknown_rule = verdict(1.0, "supported", "SUP-9");
         let empty_crux = TaskClassifierVerdict {
             crux: "  ".to_string(),
             ..verdict(1.0, "supported", "SUP-1")
         };
         let unusable = [
             Some(verdict(1.1, "supported", "SUP-1")),
-            Some(inconsistent_rule),
+            Some(unknown_rule),
             Some(empty_crux),
             None,
         ];
@@ -2013,6 +2035,35 @@ mod tests {
             assert!(classification.argmax(false)?.is_none());
             assert!(classification.argmax(true)?.is_none());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn a_boundary_that_disagrees_with_its_rule_follows_the_rule() -> Result<()> {
+        let policy = TaskClassifierPolicy::new(&LlmCapabilityConfig {
+            threshold_step: 0.1,
+            ..llm_config(0.4)
+        });
+
+        // LIM-1 implies `unsupported` (two steps, threshold 0.6). Taken literally, the echoed
+        // `supported` label would have cleared the base threshold and routed to the weak target.
+        let mislabeled = verdict(0.55, "supported", "LIM-1");
+        assert!(mislabeled.is_valid());
+        assert_eq!(selected(&policy, Some(&mislabeled))?, "capable");
+        let evidence = capability_evidence(&policy, Some(&mislabeled)).expect("evidence");
+        assert_eq!(evidence["source"], "llm-classifier");
+        let threshold = evidence["threshold"].as_f64().expect("threshold");
+        assert!((threshold - 0.6).abs() < 1e-9, "threshold {threshold}");
+        assert_eq!(evidence["boundary_corrected"], true);
+
+        // The other direction: a `supported` rule echoed as `unsupported` keeps the base threshold.
+        let relaxed = verdict(0.45, "unsupported", "SUP-2");
+        assert_eq!(selected(&policy, Some(&relaxed))?, "efficient");
+
+        // Consistent verdicts carry no correction marker.
+        let consistent = capability_evidence(&policy, Some(&verdict(0.9, "supported", "SUP-1")))
+            .expect("evidence");
+        assert!(consistent.get("boundary_corrected").is_none());
         Ok(())
     }
 
