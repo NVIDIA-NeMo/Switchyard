@@ -11,14 +11,14 @@ reasoning effort. Accuracy counts every task, including execution errors.
 Savings compare estimated solver costs per full run with Astra alone, excluding
 judges and infrastructure.
 
-![DeepSWE accuracy versus estimated solver cost savings relative to Astra alone.](assets/deepswe-astra-luna-cost-accuracy.svg)
+![DeepSWE accuracy versus estimated solver cost as a percentage of Astra-only cost, with savings labeled at each point.](assets/deepswe-astra-luna-cost-accuracy.svg)
 
 | Strategy | Tasks solved across 3 runs | Accuracy | Solver cost savings vs. Astra |
 | --- | ---: | ---: | ---: |
-| Astra only | 245/339 | 72.27% | 0% |
-| Stage | 247/339 | 72.86% | 22.55% |
-| Plan/Execute via Stage | 235/339 | 69.32% | Up to 82.1% |
 | Luna only | 212/339 | 62.54% | ≈96.4% |
+| Plan/Execute via Stage | 235/339 | 69.32% | Up to 82.1% |
+| Stage | 247/339 | 72.86% | 22.55% |
+| Astra only | 245/339 | 72.27% | 0% |
 
 Stage started on Luna and could switch to Astra after tool errors or when
 Codex compacted context. [Plan/Execute via Stage](routing_algorithms/stage_router_routing.md#plan-and-execute)
@@ -33,14 +33,14 @@ These results use the same Codex version, max reasoning effort, and three-run
 scoring as DeepSWE. Stage started on Astra and solved 218 of 372 task
 attempts. The 18 execution errors count as failures.
 
-![SWE-Atlas accuracy versus estimated solver cost savings relative to Astra alone.](assets/swe-atlas-astra-luna-cost-accuracy.svg)
+![SWE-Atlas accuracy versus estimated solver cost as a percentage of Astra-only cost, with savings labeled at each point.](assets/swe-atlas-astra-luna-cost-accuracy.svg)
 
 | Strategy | Tasks solved across 3 runs | Accuracy | Solver cost savings vs. Astra |
 | --- | ---: | ---: | ---: |
-| Astra only | 223/372 | 59.95% | 0% |
-| Stage | 218/372 | 58.60% | ≈9.2% |
-| Plan/Execute via Stage | 177/372 | 47.58% | ≈73.8% |
 | Luna only | 131/372 | 35.22% | ≈98.4% |
+| Plan/Execute via Stage | 177/372 | 47.58% | ≈73.8% |
+| Stage | 218/372 | 58.60% | ≈9.2% |
+| Astra only | 223/372 | 59.95% | 0% |
 
 ## Earlier benchmarks
 

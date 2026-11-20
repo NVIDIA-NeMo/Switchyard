@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 691.2 471.6" width="691.2" height="471.6" role="img" aria-labelledby="title desc" font-family="DejaVu Sans, Arial, sans-serif">
   <title id="title">Switchyard cost and accuracy on SWE-Atlas</title>
-  <desc id="desc">Each point shows the percentage of tasks solved and estimated solver cost savings relative to Astra alone. All results average three runs. The table below the chart gives the number of tasks solved.</desc>
+  <desc id="desc">The horizontal axis shows estimated solver cost as a percentage of Astra-only cost, increasing from Luna on the left to Astra on the right. The vertical axis shows task accuracy. Point labels show savings relative to Astra alone. All results average three runs. The table below the chart gives the number of tasks solved.</desc>
   <rect width="100%" height="100%" fill="white"/>
   <text x="80.77" y="398.18" font-size="9.6" fill="#546052" text-anchor="middle">0%</text>
   <text x="190.72" y="398.18" font-size="9.6" fill="#546052" text-anchor="middle">20%</text>
@@ -8,7 +8,7 @@
   <text x="410.61" y="398.18" font-size="9.6" fill="#546052" text-anchor="middle">60%</text>
   <text x="520.56" y="398.18" font-size="9.6" fill="#546052" text-anchor="middle">80%</text>
   <text x="630.5" y="398.18" font-size="9.6" fill="#546052" text-anchor="middle">100%</text>
-  <text x="358.39" y="421.45" font-size="11.8" fill="#20271f" font-weight="700" text-anchor="middle">Solver cost savings vs. Astra</text>
+  <text x="358.39" y="421.45" font-size="11.8" fill="#20271f" font-weight="700" text-anchor="middle">Solver cost (% of Astra-only cost)</text>
   <line x1="64.28" y1="383.88" x2="652.49" y2="383.88" stroke="#e3e7e2" stroke-width="0.75"/>
   <text x="57.28" y="387.53" font-size="9.6" fill="#546052" text-anchor="end">30%</text>
   <line x1="64.28" y1="323.71" x2="652.49" y2="323.71" stroke="#e3e7e2" stroke-width="0.75"/>
@@ -23,18 +23,18 @@
   <text x="57.28" y="86.65" font-size="9.6" fill="#546052" text-anchor="end">80%</text>
   <text x="24.3" y="233.44" font-size="11" fill="#20271f" transform="rotate(-90 24.301522 233.442)" font-weight="700" text-anchor="middle">Accuracy</text>
   <line x1="64.28" y1="383.88" x2="652.49" y2="383.88" stroke="#aeb8ad" stroke-width="0.8"/>
-  <circle cx="80.77" cy="203.68" r="3.78" fill="#f3b700" stroke="white" stroke-width="1.1"/>
-  <circle cx="131.37" cy="211.77" r="3.78" fill="#76b900" stroke="white" stroke-width="1.1"/>
-  <circle cx="486.29" cy="278.09" r="3.78" fill="#76b900" stroke="white" stroke-width="1.1"/>
-  <circle cx="621.96" cy="352.5" r="3.78" fill="#f3b700" stroke="white" stroke-width="1.1"/>
-  <text x="87.77" y="186.48" font-size="10.8" fill="#20271f" font-weight="700">Astra only</text>
-  <text x="87.77" y="198.54" font-size="9.1" fill="#546052">59.95% accuracy · 0% savings</text>
-  <text x="138.37" y="219.57" font-size="10.8" fill="#20271f" font-weight="700">Stage</text>
-  <text x="138.37" y="231.63" font-size="9.1" fill="#546052">58.6% accuracy · 9.2% savings</text>
-  <text x="479.29" y="273.89" font-size="10.8" fill="#20271f" font-weight="700" text-anchor="end">Plan/Execute via Stage</text>
-  <text x="479.29" y="285.95" font-size="9.1" fill="#546052" text-anchor="end">47.6% accuracy · 73.8% savings</text>
-  <text x="614.96" y="348.31" font-size="10.8" fill="#20271f" font-weight="700" text-anchor="end">Luna only</text>
-  <text x="614.96" y="360.36" font-size="9.1" fill="#546052" text-anchor="end">35.2% accuracy · ≈98.4% savings</text>
+  <circle cx="630.5" cy="203.68" r="3.78" fill="#f3b700" stroke="white" stroke-width="1.1"/>
+  <circle cx="579.91" cy="211.77" r="3.78" fill="#76b900" stroke="white" stroke-width="1.1"/>
+  <circle cx="224.99" cy="278.09" r="3.78" fill="#76b900" stroke="white" stroke-width="1.1"/>
+  <circle cx="89.32" cy="352.5" r="3.78" fill="#f3b700" stroke="white" stroke-width="1.1"/>
+  <text x="623.5" y="186.48" font-size="10.8" fill="#20271f" font-weight="700" text-anchor="end">Astra only</text>
+  <text x="623.5" y="198.54" font-size="9.1" fill="#546052" text-anchor="end">59.95% accuracy · 0% savings</text>
+  <text x="572.91" y="219.57" font-size="10.8" fill="#20271f" font-weight="700" text-anchor="end">Stage</text>
+  <text x="572.91" y="231.63" font-size="9.1" fill="#546052" text-anchor="end">58.6% accuracy · 9.2% savings</text>
+  <text x="231.99" y="273.89" font-size="10.8" fill="#20271f" font-weight="700">Plan/Execute via Stage</text>
+  <text x="231.99" y="285.95" font-size="9.1" fill="#546052">47.6% accuracy · 73.8% savings</text>
+  <text x="96.32" y="348.31" font-size="10.8" fill="#20271f" font-weight="700">Luna only</text>
+  <text x="96.32" y="360.36" font-size="9.1" fill="#546052">35.2% accuracy · ≈98.4% savings</text>
   <circle cx="64.28" cy="449.91" r="3.45" fill="#76b900"/>
   <circle cx="189.56" cy="449.91" r="3.45" fill="#f3b700"/>
   <text x="62.21" y="33.48" font-size="23" fill="#20271f" font-weight="700">SWE-Atlas</text>
