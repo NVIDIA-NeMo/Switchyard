@@ -1931,7 +1931,7 @@ fn build_algorithm(
         } => {
             if matches!(picker, PickerMode::CapableFirst) {
                 tracing::warn!(
-                    "stage_router route {route_name} uses picker \"capable_first\", which is experimental: published thresholds and routing results all come from \"efficient_first\", so there is no calibrated confidence_threshold for it and no measured accuracy or cost. Use \"efficient_first\" unless you are running your own calibration."
+                    "stage_router route {route_name} uses the experimental \"capable_first\" picker. Use \"efficient_first\" by default or calibrate confidence_threshold for your model pair and workload."
                 );
             }
             warn_identical_tiers(route_name, capable_target, efficient_target);
