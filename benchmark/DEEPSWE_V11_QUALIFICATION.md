@@ -2,6 +2,7 @@
 
 Routing configurations:
 
+- [Stage Plan/Execute: Astra planner and Luna executor](#astra-planner-and-luna-executor)
 - [Advisor gate: Luna executor with Sol reviews](routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml)
 - The [historical Plan/Execute configuration](#historical-planexecute-configuration) uses Sol as the planner and Luna as the executor.
 - [Stage router: Luna efficient tier with Sol capable tier](routing-profiles/deepswe-v11-stage-router-luna-sol.toml)
@@ -52,3 +53,28 @@ later revision. It requires a version that still supports the removed
 `plan_execute` route. These results belong to the standalone implementation.
 The current [Plan/Execute configuration for Stage](../docs/routing_algorithms/stage_router_routing.md#plan-and-execute)
 has [separate DeepSWE results](../docs/benchmarks.md#deepswe-v11).
+
+## Astra planner and Luna executor
+
+The [tested Stage profile](routing-profiles/deepswe-v11-stage-plan-execute-astra-luna.toml)
+uses OpenRouter's Responses API with `OPENROUTER_API_KEY`. Astra plans at
+maximum reasoning effort; the first edit hands execution to Luna, also at
+maximum effort. This is a `stage_router` configuration, not the historical
+standalone `plan_execute` route.
+
+The three closed-book runs used Switchyard `dc71d36`, Codex CLI 0.158.0 and
+Harbor 0.13.2, with up to 16 tasks in flight per run.
+
+| Run | Tasks solved | Estimated solver cost |
+| --- | ---: | ---: |
+| 1 | 79/113 | $151.10 |
+| 2 | 78/113 | $153.89 |
+| 3 | 78/113 | $158.60 |
+
+Mean accuracy was 69.32% (sample SD 0.51 percentage points). One verifier
+timeout per run counted as unsolved. One verifier sandbox setup failure in
+run 1 was rerun; the replacement also scored zero.
+
+Mean estimated solver cost was $154.53 per run (sample SD $3.79), using
+session token counts and a fixed price table, not provider invoices. One
+task in run 1 lacked usage data, so its run cost and the mean are lower bounds.
