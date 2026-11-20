@@ -28,7 +28,7 @@ provider continuation IDs alone can hide that evidence. Scope session IDs to
 the tenant and conversation. Reuse algorithm instances when they retain session
 decisions, and decide how your host handles concurrent turns and multiple
 processes. State behavior is algorithm-specific; see [Composite sessions](../routing_algorithms/composite_routing.md#sessions)
-and the [Plan/Execute history requirement](../routing_algorithms/stage_router_routing.md#plan-and-execute).
+and the [Plan/Execute history requirement](../routing_algorithms/plan_execute_routing.md#responses-api-history-requirement).
 
 **Observe the complete run.** Include judge calls and final model work in your
 host's observations. Configure telemetry collection in your application and
@@ -98,7 +98,7 @@ create a project and install the released package:
 ```bash
 uv init --bare switchyard-python-demo
 cd switchyard-python-demo
-uv add "nemo-switchyard==0.3.0"
+uv add "nemo-switchyard==0.4.0"
 ```
 
 Save as `route.py`:
@@ -106,14 +106,21 @@ Save as `route.py`:
 ```python
 import asyncio
 from switchyard.libsy import Step, algorithms
+from switchyard.translation import TranslationEngine, WireFormat
 
 async def main():
+    engine = TranslationEngine()
+    oai_chat_request = {"messages": [{"role": "user", "content": "Hello"}]}
+    decoded = engine.decode_request(WireFormat.OPENAI_CHAT, oai_chat_request)
+    request = decoded["request"]
+    if decoded["diagnostics"]:
+        print(f"Translation diagnostics: {decoded['diagnostics']}")
+
     router = algorithms.stage_router(
         picker="efficient_first", confidence_threshold=0.5)
     models = {"efficient": ["Efficient"], "capable": ["Capable"]}
     models["any"] = ["Efficient", "Capable"]
-    text = {"type": "text", "text": "Hello"}
-    request = {"messages": [{"role": "user", "content": [text]}]}
+
     async for step in router.run_stream(request, models):
         if isinstance(step, Step.Done):
             print("Selected:", step.outcome.selected_model_ids[0])
@@ -122,55 +129,6 @@ asyncio.run(main())
 ```
 
 `uv run route.py` prints `Selected: Efficient` without making a network call.
-
-### Target requirements (development)
-
-With matching development bindings, load deployment TOML that declares target
-labels and route eligibility. Build once and reuse the returned handles:
-
-```python
-from switchyard.libsy import AlgorithmFactory
-
-routes = AlgorithmFactory.from_toml(toml).build_configured()
-coding = routes["switchyard/coding"]
-targets = coding.target_models()
-
-steps = coding.run_stream(
-    request,
-    required_labels=["private", "customer_data"],
-    task_id=trusted_task_id,
-)
-```
-
-For each `Step.CallModel`, resolve the returned target before calling your client.
-Here `clients` is supplied by the gateway and keyed by the TOML client aliases,
-not a new Switchyard interface. Its clients follow the
-[Python host example](../../examples/libsy.py): they accept a normalized request
-and provider model ID, and return `LlmResponse.Agg` or `LlmResponse.Stream`.
-
-```python
-async def serve_model(call):
-    target = targets[call.models[0]]
-    client = clients[target["client"]]
-    await call.respond(client.call(call.request, target["id"]))
-```
-
-Use the first routing-time candidate and pass client failures back to Switchyard.
-Typed Decision calls use `targets[call.model]` and their own Decision handler.
-For a final answer candidate, use `targets[outcome.selected_model_ids[0]]`.
-The lookup contains all possible targets, not the eligible pool for this request;
-use only keys returned by calls and outcomes. `build()` handles reject this lookup.
-
-The host supplies the assessment and an authorized task ID. An explicit task ID
-overrides a task ID from headers. Omitted labels mean no assessment; `[]` supplies
-no new requirements. In task scope, earlier requirements remain in effect.
-Invalid requirements or missing approved targets fail before any routing call.
-
-Consume `steps` through the same model and Decision call handlers. Switchyard
-does not create provider clients or read their credentials. The host owns target
-prompts, provider settings and transport, and must keep answer attempts and
-fallbacks within the returned candidates. Existing `build()` handles do not
-accept target requirements. Per-run libsy state is not carried between Python calls.
 
 ### Concurrent calls and cancellation
 
