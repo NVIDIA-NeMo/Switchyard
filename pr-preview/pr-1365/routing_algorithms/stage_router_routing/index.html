@@ -2978,7 +2978,7 @@ signals are ambiguous and no classifier verdict is available.</p>
 <p>Both pickers read the same signals; only the default tier differs.</p>
 <div class="admonition warning">
 <p class="admonition-title"><code>capable_first</code> is experimental</p>
-<p>The <a href="../../benchmarks/#swe-atlas">SWE-Atlas results</a> report accuracy and cost
+<p>The <a href="../../benchmarks/#swe-atlas-qna">SWE-Atlas-QnA results</a> report accuracy and cost
 savings for <code>capable_first</code>. It has no calibrated threshold. The server logs a
 warning at startup when a route selects it. Use <code>efficient_first</code> unless you
 are running your own calibration. See
@@ -3047,7 +3047,7 @@ These are the ones that matter when you choose a threshold:</p>
 the capable side stays below 0.46. An error in the window removes the
 clean-production bonus, so with a hard error the efficient side reaches at most
 0.24. The unit test <code>scorer_ceilings_match_the_documented_values</code> in
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6322bb4c3bc2a38cbe5e73190ebf028646654bd/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/c94808b08b73c64b5e0bc75e7b82706fed4db2a1/crates/libsy/src/algorithms/util/stage.rs"><code>crates/libsy/src/algorithms/util/stage.rs</code></a>
 pins these values, so a change to the scorer fails CI until this table is
 updated.</p>
 <h3 id="reachable-scores-per-picker">Reachable scores per picker<a class="headerlink" href="#reachable-scores-per-picker" title="Permanent link">&para;</a></h3>
