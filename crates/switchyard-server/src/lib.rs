@@ -7,7 +7,6 @@ mod capabilities;
 pub mod config;
 mod metrics;
 mod observability;
-mod observed_translation;
 mod redaction;
 mod response;
 mod routing_log;
@@ -42,6 +41,7 @@ use libsy::{LibsyError, RoutingOutcome};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use switchyard_llm_client::observed_translation;
 use switchyard_llm_client::{AuxiliaryOperation, RunObservation, RunObserver};
 use switchyard_protocol::{LlmClientError, Metadata, ModelId, ProviderExtensions, Request, Usage};
 use switchyard_runner::{
@@ -1070,7 +1070,7 @@ fn resolve_route(
     if let Some(metadata) = body.get_mut("metadata").and_then(Value::as_object_mut) {
         metadata.remove(switchyard_translation::util::SWITCHYARD_METADATA_KEY);
     }
-    let mut llm_request = observed_translation::decode_request(wire_format, &body)
+    let mut llm_request = observed_translation::decode_request(&body, wire_format)
         .map_err(|error| invalid_body_error(StatusCode::BAD_REQUEST, error.to_string()))?;
     switchyard_translation::normalize_compaction(&mut llm_request, metadata.http_headers.as_ref());
     let requested_model = llm_request
