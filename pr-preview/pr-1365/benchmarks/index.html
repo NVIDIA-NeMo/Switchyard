@@ -2577,19 +2577,19 @@ judges and infrastructure.</p>
 <td>Luna only</td>
 <td style="text-align: right;">212/339</td>
 <td style="text-align: right;">62.54%</td>
-<td style="text-align: right;">≈96.4%</td>
+<td style="text-align: right;">96.4%</td>
 </tr>
 <tr>
 <td>Plan/Execute via Stage</td>
 <td style="text-align: right;">235/339</td>
 <td style="text-align: right;">69.32%</td>
-<td style="text-align: right;">Up to 82.1%</td>
+<td style="text-align: right;">82.1%</td>
 </tr>
 <tr>
 <td>Stage</td>
 <td style="text-align: right;">247/339</td>
 <td style="text-align: right;">72.86%</td>
-<td style="text-align: right;">22.55%</td>
+<td style="text-align: right;">22.6%</td>
 </tr>
 <tr>
 <td>Astra only</td>
@@ -2601,8 +2601,7 @@ judges and infrastructure.</p>
 </table>
 <p>Stage started on Luna and could switch to Astra after tool errors or when
 Codex compacted context. <a href="../routing_algorithms/stage_router_routing/#plan-and-execute">Plan/Execute via Stage</a>
-used Astra to plan and Luna to execute. One task in those runs lacked
-usage data, so its estimated savings are at most 82.1% compared with Astra.</p>
+used Astra to plan and Luna to execute.</p>
 <h2 id="swe-atlas">SWE-Atlas<a class="headerlink" href="#swe-atlas" title="Permanent link">&para;</a></h2>
 <p><strong>GPT-6 Astra and GPT-6 Luna · SWE-Atlas Q&amp;A, AA variant · 124 tasks per run</strong></p>
 <p>These results use the same Codex version, max reasoning effort, and three-run
@@ -2623,19 +2622,19 @@ attempts. The 18 execution errors count as failures.</p>
 <td>Luna only</td>
 <td style="text-align: right;">131/372</td>
 <td style="text-align: right;">35.22%</td>
-<td style="text-align: right;">≈98.4%</td>
+<td style="text-align: right;">98.4%</td>
 </tr>
 <tr>
 <td>Plan/Execute via Stage</td>
 <td style="text-align: right;">177/372</td>
 <td style="text-align: right;">47.58%</td>
-<td style="text-align: right;">≈73.8%</td>
+<td style="text-align: right;">73.8%</td>
 </tr>
 <tr>
 <td>Stage</td>
 <td style="text-align: right;">218/372</td>
 <td style="text-align: right;">58.60%</td>
-<td style="text-align: right;">≈9.2%</td>
+<td style="text-align: right;">9.2%</td>
 </tr>
 <tr>
 <td>Astra only</td>
@@ -2665,19 +2664,19 @@ attempts. The 18 execution errors count as failures.</p>
 <td>Plan/Execute (standalone, removed)</td>
 <td style="text-align: right;">60.8%</td>
 <td style="text-align: right;">$180.51</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90e732c2c582d968120d1d2e971c8277e96549b0/benchmark/DEEPSWE_V11_QUALIFICATION.md#historical-planexecute-configuration">Historical config</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6322bb4c3bc2a38cbe5e73190ebf028646654bd/benchmark/DEEPSWE_V11_QUALIFICATION.md#historical-planexecute-configuration">Historical config</a></td>
 </tr>
 <tr>
 <td>Advisor</td>
 <td style="text-align: right;">57.5%</td>
 <td style="text-align: right;">$208.00</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90e732c2c582d968120d1d2e971c8277e96549b0/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">TOML</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6322bb4c3bc2a38cbe5e73190ebf028646654bd/benchmark/routing-profiles/deepswe-v11-advisor-gate-luna-sol.toml">TOML</a></td>
 </tr>
 <tr>
 <td>Stage</td>
 <td style="text-align: right;">61.36%</td>
 <td style="text-align: right;">$466.28</td>
-<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90e732c2c582d968120d1d2e971c8277e96549b0/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">TOML</a></td>
+<td><a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6322bb4c3bc2a38cbe5e73190ebf028646654bd/benchmark/routing-profiles/deepswe-v11-stage-router-luna-sol.toml">TOML</a></td>
 </tr>
 <tr>
 <td>Sol only</td>
@@ -2693,15 +2692,15 @@ attempts. The 18 execution errors count as failures.</p>
 </tr>
 </tbody>
 </table>
-<p>Luna: one run; others: three-run means. <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90e732c2c582d968120d1d2e971c8277e96549b0/benchmark/DEEPSWE_V11_QUALIFICATION.md">Evaluation settings</a>.</p>
+<p>Luna: one run; others: three-run means. <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6322bb4c3bc2a38cbe5e73190ebf028646654bd/benchmark/DEEPSWE_V11_QUALIFICATION.md">Evaluation settings</a>.</p>
 <p>The Plan/Execute result used the removed standalone implementation. Its archived
 config requires an older Switchyard version. The <a href="#deepswe-v11">GPT-6 results above</a>
 use the current Plan/Execute configuration for Stage.</p>
 <h2 id="run-a-benchmark">Run a benchmark<a class="headerlink" href="#run-a-benchmark" title="Permanent link">&para;</a></h2>
 <p>The linked OpenRouter configs use <code>OPENROUTER_API_KEY</code>.</p>
 <ul>
-<li><strong>Terminal-Bench 2.1:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90e732c2c582d968120d1d2e971c8277e96549b0/benchmark/README.md#one-time-setup">Setup</a> · <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90e732c2c582d968120d1d2e971c8277e96549b0/benchmark/README.md#run-with-switchyard-routing">Run</a></li>
-<li><strong>DeepSWE:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/90e732c2c582d968120d1d2e971c8277e96549b0/benchmark/README.md#deepswe-v11">Run Codex through Switchyard locally</a></li>
+<li><strong>Terminal-Bench 2.1:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6322bb4c3bc2a38cbe5e73190ebf028646654bd/benchmark/README.md#one-time-setup">Setup</a> · <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6322bb4c3bc2a38cbe5e73190ebf028646654bd/benchmark/README.md#run-with-switchyard-routing">Run</a></li>
+<li><strong>DeepSWE:</strong> <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/a6322bb4c3bc2a38cbe5e73190ebf028646654bd/benchmark/README.md#deepswe-v11">Run Codex through Switchyard locally</a></li>
 </ul>
 
 
