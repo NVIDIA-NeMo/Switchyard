@@ -37,11 +37,19 @@ impl InfraPolicy {
     fn evaluate(
         &self,
         signals: &InfraSignals,
-        source: &ModelId,
-        destination: &ModelId,
+        source_pool: &ModelId,
+        source_target: &ModelId,
+        dest_pool: &ModelId,
+        dest_target: &ModelId,
     ) -> Option<(bool, &'static str)> {
-        let source = signals.get(source)?.load.as_ref()?;
-        let destination = signals.get(destination)?;
+        let source = signals
+            .get(source_pool)
+            .or_else(|| signals.get(source_target))?
+            .load
+            .as_ref()?;
+        let destination = signals
+            .get(dest_pool)
+            .or_else(|| signals.get(dest_target))?;
         let load = destination.load.as_ref()?;
         let now = Instant::now();
         if [source, load].iter().any(|pool| {
@@ -88,14 +96,24 @@ impl InfraPolicy {
                 message: "infra requires one efficient and one capable model".into(),
             });
         };
-        if outcome.selected_model_id()? != efficient || efficient == capable {
+        let efficient_pool = models.provider_model(efficient);
+        let capable_pool = models.provider_model(capable);
+        if outcome.selected_model_id()? != efficient
+            || efficient == capable
+            || efficient_pool == capable_pool
+        {
             return Ok(false);
         }
         let (is_spillover, reason) = self
-            .evaluate(signals, efficient, capable)
+            .evaluate(signals, efficient_pool, efficient, capable_pool, capable)
             .unwrap_or((false, "unknown_or_stale_signals"));
-        tracing::info!(task_model = %efficient, alternate_model = %capable, spillover = is_spillover, reason,
-            "queue routing decision");
+        tracing::info!(
+            task_model = %efficient_pool,
+            alternate_model = %capable_pool,
+            spillover = is_spillover,
+            reason,
+            "queue routing decision"
+        );
         if is_spillover {
             outcome.selected_model_ids.retain(|id| id != capable);
             outcome.selected_model_ids.insert(0, capable.clone());
@@ -190,8 +208,94 @@ mod tests {
             outcome.request.llm_request.model = None;
             assert_eq!(outcome.request.llm_request, request.llm_request);
         }
-        let mut invalid = policy;
+        let mut invalid = policy.clone();
         invalid.min_waiting_requests = 0;
         assert!(invalid.validate().is_err());
+
+        // Provider model IDs resolve pool signals while preserving target-key outcomes,
+        // and never spill between two targets backed by the same physical model pool.
+        let aliased_models = RuntimeModels::new(
+            [
+                (Category::Efficient, vec!["qwen-small".into()]),
+                (Category::Capable, vec!["qwen-large".into()]),
+            ]
+            .into(),
+        )
+        .with_provider_models(
+            [
+                (
+                    ModelId::from("qwen-small"),
+                    ModelId::from("Qwen/Qwen3-0.6B"),
+                ),
+                (
+                    ModelId::from("qwen-large"),
+                    ModelId::from("Qwen/Qwen3-1.7B"),
+                ),
+            ]
+            .into(),
+        );
+        let pool_signals: InfraSignals = [
+            (
+                ModelId::from("Qwen/Qwen3-0.6B"),
+                ModelInfraSignals {
+                    load: Some(PoolLoad {
+                        sampled_at: Instant::now(),
+                        running: 1,
+                        min_waiting: 6,
+                        max_waiting: 6,
+                    }),
+                    local_inflight: 0,
+                },
+            ),
+            (
+                ModelId::from("Qwen/Qwen3-1.7B"),
+                ModelInfraSignals {
+                    load: Some(PoolLoad {
+                        sampled_at: Instant::now(),
+                        running: 0,
+                        min_waiting: 0,
+                        max_waiting: 0,
+                    }),
+                    local_inflight: 0,
+                },
+            ),
+        ]
+        .into();
+        let mut aliased_outcome =
+            RoutingOutcome::route_to("qwen-small".into(), vec![], request.clone());
+        assert!(
+            policy
+                .apply(&mut aliased_outcome, &aliased_models, &pool_signals)
+                .unwrap()
+        );
+        assert_eq!(aliased_outcome.selected_model_id().unwrap(), "qwen-large");
+
+        let shared_pool_models = RuntimeModels::new(
+            [
+                (Category::Efficient, vec!["low-effort".into()]),
+                (Category::Capable, vec!["high-effort".into()]),
+            ]
+            .into(),
+        )
+        .with_provider_models(
+            [
+                (
+                    ModelId::from("low-effort"),
+                    ModelId::from("Qwen/Qwen3-0.6B"),
+                ),
+                (
+                    ModelId::from("high-effort"),
+                    ModelId::from("Qwen/Qwen3-0.6B"),
+                ),
+            ]
+            .into(),
+        );
+        let mut shared_outcome = RoutingOutcome::route_to("low-effort".into(), vec![], request);
+        assert!(
+            !policy
+                .apply(&mut shared_outcome, &shared_pool_models, &pool_signals)
+                .unwrap()
+        );
+        assert_eq!(shared_outcome.selected_model_id().unwrap(), "low-effort");
     }
 }

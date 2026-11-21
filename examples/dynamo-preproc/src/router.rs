@@ -225,42 +225,6 @@ mod tests {
         assert!(sessions.contains_key(&("auto".into(), "new".into(), None)));
     }
 
-    #[tokio::test]
-    async fn preserves_original_values_including_precise_numbers_and_nested_fields() {
-        let input = br#"{
-            "mo\u0064el":"auto",
-            "messages":[ {"role":"user", "content":"Hello"} ],
-            "large_integer":18446744073709551617,
-            "precise_decimal":0.12345678901234567890123456789,
-            "custom\u005ffield":{ "nested": [18446744073709551617, {"text":"\u0061"}] }
-        }"#;
-        let (output, model, _) = router()
-            .decide(input, &http::HeaderMap::new())
-            .await
-            .unwrap();
-        assert_eq!(model, "Qwen/Qwen3-0.6B");
-        let original: HashMap<String, &serde_json::value::RawValue> =
-            serde_json::from_slice(input).unwrap();
-        let rewritten: HashMap<String, &serde_json::value::RawValue> =
-            serde_json::from_slice(&output).unwrap();
-        assert_eq!(original.len(), rewritten.len());
-        for (key, value) in original {
-            if key == "model" {
-                assert_eq!(rewritten[&key].get(), r#""Qwen/Qwen3-0.6B""#);
-            } else {
-                assert_eq!(rewritten[&key].get(), value.get(), "changed {key}");
-            }
-        }
-        let classifier = Router::from_toml(include_str!("../config/task-classifier.toml")).unwrap();
-        let direct = replace_model(input, "Qwen/Qwen3-1.7B").unwrap();
-        let (output, model, _) = classifier
-            .decide(&direct, &http::HeaderMap::new())
-            .await
-            .unwrap();
-        assert_eq!(model, "Qwen/Qwen3-1.7B");
-        assert_eq!(output, direct);
-    }
-
     #[test]
     fn startup_rejects_response_producing_and_rewriting_routes() {
         let base = r#"
@@ -330,8 +294,8 @@ max_capable_inflight = 2
 "#;
         let mut r = Router::from_toml(config).unwrap();
         r.metrics = Some(crate::metrics::Metrics::seeded_for_test(
-            ("small", 5, 1),
-            ("large", 0, 1),
+            ("Qwen/Qwen3-0.6B", 5, 1),
+            ("Qwen/Qwen3-1.7B", 0, 1),
         ));
         let body = serde_json::to_vec(&neutral()).unwrap();
         let (_, model, inflight) = r.decide(&body, &http::HeaderMap::new()).await.unwrap();
@@ -350,5 +314,41 @@ max_capable_inflight = 2
             error.to_string().contains("rewrite-free stage_router"),
             "unexpected validation error: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn preserves_original_values_including_precise_numbers_and_nested_fields() {
+        let input = br#"{
+            "mo\u0064el":"auto",
+            "messages":[ {"role":"user", "content":"Hello"} ],
+            "large_integer":18446744073709551617,
+            "precise_decimal":0.12345678901234567890123456789,
+            "custom\u005ffield":{ "nested": [18446744073709551617, {"text":"\u0061"}] }
+        }"#;
+        let (output, model, _) = router()
+            .decide(input, &http::HeaderMap::new())
+            .await
+            .unwrap();
+        assert_eq!(model, "Qwen/Qwen3-0.6B");
+        let original: HashMap<String, &serde_json::value::RawValue> =
+            serde_json::from_slice(input).unwrap();
+        let rewritten: HashMap<String, &serde_json::value::RawValue> =
+            serde_json::from_slice(&output).unwrap();
+        assert_eq!(original.len(), rewritten.len());
+        for (key, value) in original {
+            if key == "model" {
+                assert_eq!(rewritten[&key].get(), r#""Qwen/Qwen3-0.6B""#);
+            } else {
+                assert_eq!(rewritten[&key].get(), value.get(), "changed {key}");
+            }
+        }
+        let classifier = Router::from_toml(include_str!("../config/task-classifier.toml")).unwrap();
+        let direct = replace_model(input, "Qwen/Qwen3-1.7B").unwrap();
+        let (output, model, _) = classifier
+            .decide(&direct, &http::HeaderMap::new())
+            .await
+            .unwrap();
+        assert_eq!(model, "Qwen/Qwen3-1.7B");
+        assert_eq!(output, direct);
     }
 }

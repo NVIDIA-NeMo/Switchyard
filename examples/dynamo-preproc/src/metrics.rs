@@ -205,7 +205,7 @@ impl Metrics {
     ) -> anyhow::Result<InFlight> {
         let mut signals = self.state.lock().unwrap_or_else(|p| p.into_inner());
         route.apply_infra(outcome, &signals)?;
-        let model = outcome.selected_model_id()?.clone();
+        let model = route.provider_model(outcome.selected_model_id()?).clone();
         signals.entry(model.clone()).or_default().local_inflight += 1;
         Ok(InFlight {
             state: self.state.clone(),

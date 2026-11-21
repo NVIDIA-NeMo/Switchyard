@@ -716,7 +716,7 @@ impl StageSettingsConfig {
     }
 
     /// True when the stage settings do not inject prompts or handoff notes into requests.
-    pub fn is_rewrite_free(&self) -> bool {
+    fn is_rewrite_free(&self) -> bool {
         self.handoff_notes.is_none()
             && self.capable_system_prompt.is_none()
             && self.efficient_system_prompt.is_none()
@@ -725,7 +725,7 @@ impl StageSettingsConfig {
 
 impl AlgorithmSpec {
     /// Whether `[routes.<name>.infra]` queue spillover may be attached to this algorithm.
-    pub fn supports_infra(&self) -> bool {
+    pub(crate) fn supports_infra(&self) -> bool {
         match self {
             Self::LlmClassifier { config } => {
                 matches!(config.mode, None | Some(ClassifierMode::Capability))

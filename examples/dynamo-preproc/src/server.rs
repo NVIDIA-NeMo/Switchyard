@@ -610,6 +610,217 @@ mod tests {
         assert!(rx.message().await.unwrap().is_none());
     }
 
+    #[tokio::test]
+    async fn stage_router_spills_over_and_recovers_across_live_vllm_prometheus_and_extproc_streams()
+    {
+        use axum::{Json, extract::Query, routing::get};
+        use std::collections::BTreeMap;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        let small_waiting = Arc::new(AtomicU64::new(0));
+        let prom_waiting = small_waiting.clone();
+        let prom_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let prom_addr = prom_listener.local_addr().unwrap();
+        let prom_app = axum::Router::new().route(
+            "/api/v1/query",
+            get(move |Query(query): Query<BTreeMap<String, String>>| {
+                let prom_waiting = prom_waiting.clone();
+                async move {
+                    let q = &query["query"];
+                    let value = if q.starts_with("time()") {
+                        "0.005".to_string()
+                    } else if q.contains("vllm:num_requests_waiting{pool=\"small\"}") {
+                        prom_waiting.load(Ordering::SeqCst).to_string()
+                    } else {
+                        "0".to_string()
+                    };
+                    Json(serde_json::json!({
+                        "status": "success",
+                        "data": {
+                            "resultType": "vector",
+                            "result": [{"metric": {}, "value": [1, value]}]
+                        }
+                    }))
+                }
+            }),
+        );
+        let prom_server = tokio::spawn(async move {
+            axum::serve(prom_listener, prom_app).await.unwrap();
+        });
+
+        let metrics_path = std::env::temp_dir().join(format!(
+            "switchyard-preproc-e2e-{}-{}.toml",
+            std::process::id(),
+            prom_addr.port()
+        ));
+        std::fs::write(
+            &metrics_path,
+            format!(
+                r#"
+endpoint = "http://{prom_addr}/api/v1/query"
+poll_interval_ms = 10
+timeout_ms = 10
+
+[[models]]
+model = "Qwen/Qwen3-0.6B"
+selector = 'pool="small"'
+engine = "vllm"
+
+[[models]]
+model = "Qwen/Qwen3-1.7B"
+selector = 'pool="large"'
+engine = "vllm"
+"#
+            ),
+        )
+        .unwrap();
+
+        let routes_toml = r#"
+schema_version = 1
+[llm_clients.dynamo]
+format = "openai_chat"
+base_url = "http://switchyard-gateway/v1"
+[targets.small]
+id = "Qwen/Qwen3-0.6B"
+llm_client = "dynamo"
+[targets.large]
+id = "Qwen/Qwen3-1.7B"
+llm_client = "dynamo"
+[routes.stage]
+id = "auto"
+type = "stage_router"
+efficient_target = "small"
+capable_target = "large"
+picker = "efficient_first"
+confidence_threshold = 0.5
+[routes.stage.infra]
+max_signal_age_ms = 3000
+min_waiting_requests = 4
+max_capable_inflight = 1
+"#;
+        let grpc_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let grpc_addr = grpc_listener.local_addr().unwrap();
+        let mut router = Router::from_toml(routes_toml).unwrap();
+        router.metrics = Some(crate::metrics::Metrics::load(&metrics_path).unwrap());
+        let router = Arc::new(router);
+        let server = Server::new(router, 16);
+        let grpc_server = tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(server.into_service())
+                .serve_with_incoming(TcpListenerStream::new(grpc_listener))
+                .await
+                .unwrap();
+        });
+        let mut client = Client::new(
+            tonic::transport::Endpoint::from_shared(format!("http://{grpc_addr}"))
+                .unwrap()
+                .connect()
+                .await
+                .unwrap(),
+        );
+        let payload = br#"{"model":"auto","messages":[{"role":"user","content":"Sort [3,1,2]."}]}"#;
+
+        async fn route_once(
+            client: &mut Client,
+            payload: &[u8],
+        ) -> (
+            String,
+            mpsc::Sender<ext::ProcessingRequest>,
+            Streaming<ext::ProcessingResponse>,
+        ) {
+            let (tx, receive) = mpsc::channel(8);
+            send(&tx, headers()).await;
+            send(&tx, Input::RequestBody(body(payload, true))).await;
+            let mut rx = client
+                .process(ReceiverStream::new(receive))
+                .await
+                .unwrap()
+                .into_inner();
+            let Output::RequestHeaders(hdrs) = next(&mut rx).await else {
+                panic!("expected request headers");
+            };
+            let header_model = hdrs
+                .response
+                .unwrap()
+                .header_mutation
+                .unwrap()
+                .set_headers
+                .into_iter()
+                .find_map(|h| {
+                    let header = h.header?;
+                    (header.key == MODEL_HEADER)
+                        .then(|| String::from_utf8(header.raw_value).unwrap())
+                })
+                .expect("expected routed model header");
+            let Output::RequestBody(resp_body) = next(&mut rx).await else {
+                panic!("expected request body");
+            };
+            let json: serde_json::Value =
+                serde_json::from_slice(&streamed(resp_body).body).unwrap();
+            assert_eq!(json["model"], header_model);
+            (header_model, tx, rx)
+        }
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let (initial_model, initial_tx, initial_rx) = route_once(&mut client, payload).await;
+        assert_eq!(initial_model, "Qwen/Qwen3-0.6B");
+        drop((initial_tx, initial_rx));
+
+        small_waiting.store(6, Ordering::SeqCst);
+        let (held_tx, held_rx) = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let (model, tx, rx) = route_once(&mut client, payload).await;
+                if model == "Qwen/Qwen3-1.7B" {
+                    break (tx, rx);
+                }
+                drop((tx, rx));
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("expected spillover to Qwen/Qwen3-1.7B");
+
+        // While 1 stream is held in-flight on Qwen/Qwen3-1.7B (max_capable_inflight = 1),
+        // a concurrent request must not stampede the capable pool.
+        let (capped_model, capped_tx, capped_rx) = route_once(&mut client, payload).await;
+        assert_eq!(capped_model, "Qwen/Qwen3-0.6B");
+        drop((capped_tx, capped_rx));
+
+        // Dropping the held stream releases InFlight so spillover resumes.
+        drop((held_tx, held_rx));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let (model, tx, rx) = route_once(&mut client, payload).await;
+                drop((tx, rx));
+                if model == "Qwen/Qwen3-1.7B" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("expected spillover to resume once InFlight is released");
+
+        // When vLLM queue waiting drops below min_waiting_requests, traffic returns to small.
+        small_waiting.store(0, Ordering::SeqCst);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let (model, tx, rx) = route_once(&mut client, payload).await;
+                drop((tx, rx));
+                if model == "Qwen/Qwen3-0.6B" {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("expected recovery back to Qwen/Qwen3-0.6B");
+
+        grpc_server.abort();
+        prom_server.abort();
+        let _ = std::fs::remove_file(&metrics_path);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn loopback_judge_runs_when_task_slots_are_full() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
