@@ -31,7 +31,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   **Host API change (source-breaking):** Rust uses `call.respond(work).await?`;
   Python uses `await call.respond(work)` and `await call.fail(error)`. Pass work
   before awaiting it. See the
-  [host integration guide](docs/getting_started.md#drive-the-algorithm).
+  [host integration guide](docs/reference/host_integration.md#serve-routing-time-calls).
   ([#948](https://github.com/NVIDIA-NeMo/Switchyard/pull/948))
 
 ### Changed

@@ -362,9 +362,9 @@ records every knob the launcher resolved; `result.json` records what
 happened.
 
 Schema is versioned via `run.schema_version`; see
-[`src/craft_taskgen/baselines/run_manifest.py`](../src/craft_taskgen/baselines/run_manifest.py)
+[`src/craft_taskgen/baselines/run_manifest.py`](../../src/craft_taskgen/baselines/run_manifest.py)
 for the module that produces it and
-[`tests/test_run_manifest.py`](../tests/test_run_manifest.py) for the
+[`tests/test_run_manifest.py`](../../tests/test_run_manifest.py) for the
 contract.
 
 Self-resolved fields (populated by the module regardless of caller):

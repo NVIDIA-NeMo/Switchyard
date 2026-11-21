@@ -17,7 +17,7 @@ You need:
 - Bash on Linux/macOS
 - Git and curl
 - [uv](https://docs.astral.sh/uv/)
-- The [Rust toolchain prerequisites](../../docs/getting_started.md#prerequisites) for the current checkout bindings
+- The [Rust toolchain prerequisites](../../INSTALLATION.md#requirements) for the current checkout bindings
 - An NVIDIA API key from [build.nvidia.com](https://build.nvidia.com/) with access to `nvidia/nemotron-3-ultra-550b-a55b` and `nvidia/nemotron-3.5-lightning-30b-a3b`
 
 Run these commands in Bash from the Switchyard repository root. These one-time commands create a Gym checkout under `scratch/` at the tested `v0.6.0` release. Choose an unused `GYM_DIR` without spaces or shell metacharacters.
