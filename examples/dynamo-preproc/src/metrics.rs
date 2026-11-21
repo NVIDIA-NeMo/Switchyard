@@ -275,6 +275,16 @@ impl Metrics {
             .map(|v| v.local_inflight)
             .sum()
     }
+
+    pub fn min_waiting_for_test(&self, model: &str) -> Option<u64> {
+        self.state
+            .lock()
+            .unwrap()
+            .get(model)?
+            .load
+            .as_ref()
+            .map(|load| load.min_waiting)
+    }
 }
 #[cfg(test)]
 mod tests {

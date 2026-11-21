@@ -658,8 +658,8 @@ mod tests {
             format!(
                 r#"
 endpoint = "http://{prom_addr}/api/v1/query"
-poll_interval_ms = 10
-timeout_ms = 10
+poll_interval_ms = 50
+timeout_ms = 50
 
 [[models]]
 model = "Qwen/Qwen3-0.6B"
@@ -703,7 +703,8 @@ max_capable_inflight = 1
         let mut router = Router::from_toml(routes_toml).unwrap();
         router.metrics = Some(crate::metrics::Metrics::load(&metrics_path).unwrap());
         let router = Arc::new(router);
-        let server = Server::new(router, 16);
+        let server_router = router.clone();
+        let server = Server::new(server_router, 16);
         let grpc_server = tokio::spawn(async move {
             tonic::transport::Server::builder()
                 .add_service(server.into_service())
@@ -761,13 +762,25 @@ max_capable_inflight = 1
             (header_model, tx, rx)
         }
 
-        tokio::time::sleep(Duration::from_millis(30)).await;
+        let metrics = router.metrics.as_ref().unwrap();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if metrics.min_waiting_for_test("Qwen/Qwen3-0.6B") == Some(0)
+                    && metrics.min_waiting_for_test("Qwen/Qwen3-1.7B") == Some(0)
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("expected initial Prometheus samples for both pools");
         let (initial_model, initial_tx, initial_rx) = route_once(&mut client, payload).await;
         assert_eq!(initial_model, "Qwen/Qwen3-0.6B");
         drop((initial_tx, initial_rx));
 
         small_waiting.store(6, Ordering::SeqCst);
-        let (held_tx, held_rx) = tokio::time::timeout(Duration::from_secs(1), async {
+        let (held_tx, held_rx) = tokio::time::timeout(Duration::from_secs(3), async {
             loop {
                 let (model, tx, rx) = route_once(&mut client, payload).await;
                 if model == "Qwen/Qwen3-1.7B" {
@@ -788,7 +801,7 @@ max_capable_inflight = 1
 
         // Dropping the held stream releases InFlight so spillover resumes.
         drop((held_tx, held_rx));
-        tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::time::timeout(Duration::from_secs(3), async {
             loop {
                 let (model, tx, rx) = route_once(&mut client, payload).await;
                 drop((tx, rx));
@@ -801,20 +814,25 @@ max_capable_inflight = 1
         .await
         .expect("expected spillover to resume once InFlight is released");
 
-        // When vLLM queue waiting drops below min_waiting_requests, traffic returns to small.
+        // Wait for both server-side InFlight teardown and a fresh zero-waiting scrape
+        // so recovery cannot pass via max_capable_inflight or missing samples.
         small_waiting.store(0, Ordering::SeqCst);
-        tokio::time::timeout(Duration::from_secs(1), async {
+        tokio::time::timeout(Duration::from_secs(3), async {
             loop {
-                let (model, tx, rx) = route_once(&mut client, payload).await;
-                drop((tx, rx));
-                if model == "Qwen/Qwen3-0.6B" {
+                if metrics.inflight_for_test() == 0
+                    && metrics.min_waiting_for_test("Qwen/Qwen3-0.6B") == Some(0)
+                    && metrics.min_waiting_for_test("Qwen/Qwen3-1.7B") == Some(0)
+                {
                     break;
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await
-        .expect("expected recovery back to Qwen/Qwen3-0.6B");
+        .expect("expected InFlight drain and fresh zero-waiting Prometheus poll");
+        let (recovered_model, recovered_tx, recovered_rx) = route_once(&mut client, payload).await;
+        assert_eq!(recovered_model, "Qwen/Qwen3-0.6B");
+        drop((recovered_tx, recovered_rx));
 
         grpc_server.abort();
         prom_server.abort();
