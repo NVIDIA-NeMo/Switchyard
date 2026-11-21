@@ -175,15 +175,17 @@ accept target requirements.
 Pass `state=None` to use the handle's in-memory session storage, or pass a
 `state` mapping and save `outcome.state` for multi-process storage. Use
 `session_key(headers)` to extract `(key, session_final)` where `key` carries
-`session_id` and `agent_id`. Child-agent records stay separate from the root
-session across both delegated work and child maintenance turns. Serialize the
-load, route, and save-or-delete sequence per `(session_id, agent_id)` so
-overlapping turns do not overwrite newer state; independent keys can run
-concurrently. When `session_final` is `True`, delete all stored records for
-that `session_id` whether routing succeeds (`outcome.state` is empty) or fails
-without emitting `Step.Done`. On store read failure, fall open to `{}`; on
-write failure, skip saving. Routes using `vgr` or `advisor_gate` reject
-caller-managed `state`.
+`session_id` and `agent_id`. Keying storage by `key` keeps child-agent records
+separate from the root session across delegated work and child maintenance
+turns. In-memory `FallThrough` currently keys non-delegated child maintenance
+by `session_id`. Serialize the load, route, and save-or-delete steps per
+`(session_id, agent_id)`. Independent sessions can run concurrently. When
+`session_final` is `True`, delete all stored records for `session_id` whether
+routing succeeds or fails before `Step.Done`. Coordinate finalization across
+`session_id`, or reject saves from an earlier session generation, so an
+in-flight child run cannot recreate a finalized session. On store read failure,
+fall open to `{}`; on write failure, skip saving. Routes using `vgr` or
+`advisor_gate` reject caller-managed `state`.
 
 ### Concurrent calls and cancellation
 

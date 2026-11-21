@@ -1043,10 +1043,12 @@ pub trait Algorithm: Send + Sync + 'static {
 
     /// Like [`Self::run_stream`], using caller-managed `state` instead of in-memory session storage.
     ///
-    /// Hosts should key external records by [`SessionKey`] and serialize the load, route, and
-    /// save-or-delete steps per key. Independent keys can run concurrently. When `session_final`
-    /// is `true`, successful runs return an empty `outcome.state.extra`, and failed runs emit no
-    /// [`Step::Done`]; in both cases the host must delete all stored records for `session_id`.
+    /// Key external records by [`SessionKey`] and serialize the load, route, and save-or-delete
+    /// steps per key. Independent sessions can run concurrently. When `session_final` is `true`,
+    /// successful runs return an empty `outcome.state.extra`, and failed runs emit no
+    /// [`Step::Done`]. In both cases, delete all stored records for `session_id` and coordinate
+    /// across the session, or reject saves from an earlier session generation, so an in-flight
+    /// child run cannot recreate a finalized session.
     fn run_stream_with_host_state(
         self: Arc<Self>,
         request: Request,

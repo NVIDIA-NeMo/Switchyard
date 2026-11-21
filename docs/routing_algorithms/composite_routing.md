@@ -198,11 +198,16 @@ Caller-managed state overrides the router's in-memory session storage even when
 passing `state=None` in Python uses the router's in-memory session storage.
 
 Use `SessionKey::from_headers` in Rust or `session_key(headers)` in Python to
-extract `((session_id, agent_id), session_final)`. Serialize the complete load,
-route, and save-or-delete operation for each `(session_id, agent_id)`.
-Independent keys can run concurrently. When `session_final` is true, delete all
-stored records for that `session_id` even if routing fails before producing
-`Step::Done`.
+extract `((session_id, agent_id), session_final)`. Keying storage by
+`(session_id, agent_id)` keeps child-agent records separate from the root
+session across delegated work and child maintenance turns. In-memory
+`FallThrough` currently keys non-delegated child maintenance by `session_id`.
+Serialize the load, route, and save-or-delete operation for each
+`(session_id, agent_id)`. Independent sessions can run concurrently. When
+`session_final` is true, delete all stored records for `session_id` even if
+routing fails before `Step::Done`. Coordinate finalization across `session_id`,
+or reject saves from an earlier session generation, so an in-flight child run
+cannot recreate a finalized session.
 
 ## Example use
 
