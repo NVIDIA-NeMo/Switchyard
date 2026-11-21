@@ -170,10 +170,20 @@ Consume `steps` through the same model and Decision call handlers. Switchyard
 does not create provider clients or read their credentials. The host owns target
 prompts, provider settings and transport, and must keep answer attempts and
 fallbacks within the returned candidates. Existing `build()` handles do not
-accept target requirements. Pass `state=None` to use the handle's bounded
-in-memory session storage (`4,096` entries), or pass a `state` mapping and save
-`outcome.state` keyed by `session_key(headers)` for multi-process storage
-(routes using `vgr` or `advisor_gate` reject caller-managed `state`).
+accept target requirements.
+
+Pass `state=None` to use the handle's in-memory session storage, or pass a
+`state` mapping and save `outcome.state` for multi-process storage. Use
+`session_key(headers)` to extract `(key, session_final)` where `key` carries
+`session_id` and `agent_id`. Child-agent records stay separate from the root
+session across both delegated work and child maintenance turns. Serialize the
+load, route, and save-or-delete sequence per `(session_id, agent_id)` so
+overlapping turns do not overwrite newer state; independent keys can run
+concurrently. When `session_final` is `True`, delete all stored records for
+that `session_id` whether routing succeeds (`outcome.state` is empty) or fails
+without emitting `Step.Done`. On store read failure, fall open to `{}`; on
+write failure, skip saving. Routes using `vgr` or `advisor_gate` reject
+caller-managed `state`.
 
 ### Concurrent calls and cancellation
 

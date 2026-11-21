@@ -12,11 +12,10 @@ from switchyard_rust._native import load_native
 
 
 class SessionKey(TypedDict):
-    """Normalized session and sub-agent identity for host-managed state storage."""
+    """Normalized session and sub-agent storage key for host-managed state."""
 
     session_id: str
     agent_id: str | None
-    session_final: bool
 
 
 _EXPORTS = frozenset(
@@ -361,7 +360,7 @@ if TYPE_CHECKING:
 
     def session_key(
         headers: Mapping[str, str] | None = None,
-    ) -> SessionKey | None: ...
+    ) -> tuple[SessionKey, bool] | None: ...
 
     def noop() -> Algorithm: ...
 

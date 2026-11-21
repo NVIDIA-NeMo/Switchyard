@@ -16,6 +16,7 @@ from switchyard.libsy import (
     CustomClassifierConfig,
     DeescalationConfig,
     EscalationClassifierConfig,
+    LibsyError,
     LlmClassifierConfig,
     LlmResponse,
     ModelCall,
@@ -619,22 +620,20 @@ async def test_caller_managed_state_and_session_key_across_independent_routers()
     """Two independent Python routers share session state via state/outcome.state."""
     assert session_key(None) is None
     assert session_key({}) is None
-    assert session_key({"x-switchyard-session-id": "s-1"}) == {
-        "session_id": "s-1",
-        "agent_id": None,
-        "session_final": False,
-    }
+    assert session_key({"x-switchyard-session-id": "s-1"}) == (
+        {"session_id": "s-1", "agent_id": None},
+        False,
+    )
     assert session_key(
         {
             "x-switchyard-session-id": "s-1",
             "x-claude-code-agent-id": "worker-2",
             "x-switchyard-session-final": "true",
         }
-    ) == {
-        "session_id": "s-1",
-        "agent_id": "worker-2",
-        "session_final": True,
-    }
+    ) == (
+        {"session_id": "s-1", "agent_id": "worker-2"},
+        True,
+    )
     assert (
         session_key(
             {
@@ -753,19 +752,36 @@ async def test_session_key_partitions_stateless_store_across_root_and_subagents(
     }
     redis_store: dict[tuple[str, str | None], str] = {}
 
-    async def route_via_redis(algo: Algorithm, req: dict[str, object], hdrs: dict[str, str]) -> str:
-        ident = session_key(hdrs)
-        assert ident is not None
+    def clear_session(session_id: str) -> None:
+        for stored_key in [k for k in redis_store if k[0] == session_id]:
+            redis_store.pop(stored_key, None)
+
+    async def route_via_redis(
+        algo: Algorithm,
+        req: dict[str, object],
+        hdrs: dict[str, str],
+        run_models: dict[str, list[str]] = models,
+    ) -> str:
+        extracted = session_key(hdrs)
+        assert extracted is not None
+        ident, session_final = extracted
         key = (ident["session_id"], ident["agent_id"])
         loaded = json.loads(redis_store[key]) if key in redis_store else {}
-        stream = algo.run_stream(req, models, headers=hdrs, state=loaded)
-        async for step in stream:
-            if isinstance(step, Step.Done):
-                if step.outcome.state:
-                    redis_store[key] = json.dumps(step.outcome.state)
-                else:
-                    redis_store.pop(key, None)
-                return step.outcome.selected_model_ids[0]
+        stream = algo.run_stream(req, run_models, headers=hdrs, state=loaded)
+        try:
+            async for step in stream:
+                if isinstance(step, Step.Done):
+                    if session_final:
+                        clear_session(ident["session_id"])
+                    elif not step.outcome.state:
+                        redis_store.pop(key, None)
+                    else:
+                        redis_store[key] = json.dumps(step.outcome.state)
+                    return step.outcome.selected_model_ids[0]
+        except Exception:
+            if session_final:
+                clear_session(ident["session_id"])
+            raise
         raise AssertionError("missing Done step")
 
     root_headers = {"x-switchyard-session-id": "ent-sess-1"}
@@ -782,3 +798,13 @@ async def test_session_key_partitions_stateless_store_across_root_and_subagents(
         ("ent-sess-1", None),
         ("ent-sess-1", "child-b"),
     }
+
+    # A failed final turn still evicts every stored record for that session_id.
+    with pytest.raises(LibsyError):
+        await route_via_redis(
+            pod_b,
+            request_body(),
+            {**child_a_headers, "x-switchyard-session-final": "true"},
+            run_models={},
+        )
+    assert redis_store == {}

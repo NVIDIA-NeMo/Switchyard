@@ -129,43 +129,49 @@ impl Algorithm for SubagentRouter {
             // Delegated work routes over the sub-agent's own models, never the parent's.
             let subagent_driver = driver.for_subagent()?;
             if subagent_driver.is_host_managed() {
-                const PREFIX: &str = "subagent.";
                 let full_state = subagent_driver.take_state();
+                let Some(agent_id) = request
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.agent_id.as_deref())
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_owned)
+                else {
+                    subagent_driver.set_state(crate::State::default());
+                    let outcome = self
+                        .subagent
+                        .execute(subagent_driver.clone(), request)
+                        .await?;
+                    subagent_driver.set_state(full_state);
+                    return Ok(outcome);
+                };
+                let prefix = format!("subagent.{agent_id}.");
                 let child_state = crate::State {
                     extra: full_state
                         .extra
                         .iter()
                         .filter_map(|(key, value)| {
-                            key.strip_prefix(PREFIX)
+                            key.strip_prefix(&prefix)
                                 .map(|key| (key.to_string(), value.clone()))
                         })
                         .collect(),
                     ..crate::State::default()
                 };
                 subagent_driver.set_state(child_state);
-                let session_final = request
-                    .metadata
-                    .as_ref()
-                    .and_then(|metadata| metadata.session_final)
-                    == Some(true);
                 let outcome = self
                     .subagent
                     .execute(subagent_driver.clone(), request)
                     .await?;
                 let child_after = subagent_driver.take_state();
-                if session_final {
-                    subagent_driver.set_state(crate::State::default());
-                } else {
-                    let mut merged = full_state;
-                    merged.extra.retain(|key, _| !key.starts_with(PREFIX));
-                    merged.extra.extend(
-                        child_after
-                            .extra
-                            .into_iter()
-                            .map(|(key, value)| (format!("{PREFIX}{key}"), value)),
-                    );
-                    subagent_driver.set_state(merged);
-                }
+                let mut merged = full_state;
+                merged.extra.retain(|key, _| !key.starts_with(&prefix));
+                merged.extra.extend(
+                    child_after
+                        .extra
+                        .into_iter()
+                        .map(|(key, value)| (format!("{prefix}{key}"), value)),
+                );
+                subagent_driver.set_state(merged);
                 Ok(outcome)
             } else {
                 self.subagent.execute(subagent_driver, request).await
@@ -340,79 +346,252 @@ mod tests {
     }
     #[tokio::test]
     async fn caller_state_preserves_subagent_affinity_and_clears_on_final() -> crate::Result<()> {
+        use crate::{Algorithm, SessionKey};
+        use std::collections::HashMap;
+        use switchyard_protocol::{ContentBlock, Message, Role};
+
+        struct AnswerTrackingChild;
+
+        #[async_trait]
+        impl Classifier for AnswerTrackingChild {
+            fn tracks_answers(&self) -> bool {
+                true
+            }
+
+            async fn score(
+                &self,
+                _state: &mut State,
+                _request: &mut Request,
+                _driver: &Driver,
+            ) -> crate::Result<(Classification, Option<Response>)> {
+                Ok((Classification::Scores(Vec::new()), None))
+            }
+        }
+
+        let answer_child = SubagentRouter::new(
+            Arc::new(Passthrough),
+            SubagentRouterConfig {
+                classifier: Arc::new(AnswerTrackingChild),
+                default_target: Category::Efficient,
+                classify_trigger: ClassifyTrigger::NewSession,
+                message_hash_fallback: false,
+            },
+        )?;
+        assert!(!answer_child.supports_host_state());
+
         let classifier_b = Arc::new(ScriptedClassifier {
             calls: AtomicUsize::new(0),
         });
-        let pod_a = configured(Arc::new(ScriptedClassifier {
+        let make_stateful_pod =
+            |classifier: Arc<dyn Classifier>| -> crate::Result<Arc<SubagentRouter>> {
+                let parent = Arc::new(crate::StageRouter::new(crate::StageRouterConfig::new(
+                    crate::PickerMode::EfficientFirst,
+                    0.5,
+                ))?);
+                Ok(Arc::new(SubagentRouter::new(
+                    parent,
+                    SubagentRouterConfig {
+                        classifier,
+                        default_target: Category::Efficient,
+                        classify_trigger: ClassifyTrigger::NewSession,
+                        message_hash_fallback: false,
+                    },
+                )?))
+            };
+        let pod_a = make_stateful_pod(Arc::new(ScriptedClassifier {
             calls: AtomicUsize::new(0),
         }))?;
-        let pod_b = configured(classifier_b.clone())?;
-        let models = RuntimeModels::new([(Category::Any, vec![ModelId::from("parent")])].into())
-            .with_subagent(
-                [
-                    (
-                        Category::Any,
-                        vec![ModelId::from("worker"), ModelId::from("reviewer")],
-                    ),
-                    (Category::Capable, vec![ModelId::from("worker")]),
-                    (Category::Efficient, vec![ModelId::from("reviewer")]),
-                ]
-                .into(),
-            );
+        let pod_b = make_stateful_pod(classifier_b.clone())?;
+        let models = RuntimeModels::new(
+            [
+                (
+                    Category::Any,
+                    vec![ModelId::from("parent_strong"), ModelId::from("parent_fast")],
+                ),
+                (Category::Capable, vec![ModelId::from("parent_strong")]),
+                (Category::Efficient, vec![ModelId::from("parent_fast")]),
+            ]
+            .into(),
+        )
+        .with_subagent(
+            [
+                (
+                    Category::Any,
+                    vec![ModelId::from("worker"), ModelId::from("reviewer")],
+                ),
+                (Category::Capable, vec![ModelId::from("worker")]),
+                (Category::Efficient, vec![ModelId::from("reviewer")]),
+            ]
+            .into(),
+        );
 
-        let first = crate::core::testing::test_drive_with_host_state(
-            pod_a,
-            child("child-1"),
+        let tool_turn = |meta: Metadata, output: &str, is_error: bool| Request {
+            llm_request: switchyard_protocol::LlmRequest {
+                messages: vec![
+                    Message::new(
+                        Role::User,
+                        vec![ContentBlock::Text {
+                            text: "fix build".to_string(),
+                        }],
+                    ),
+                    Message::new(
+                        Role::Assistant,
+                        vec![ContentBlock::ToolCall(switchyard_protocol::ToolCall {
+                            id: "call-1".to_string(),
+                            name: "Bash".to_string(),
+                            arguments: serde_json::json!({"command": "cargo test"}),
+                        })],
+                    ),
+                    Message::new(
+                        Role::Tool,
+                        vec![ContentBlock::ToolResult(switchyard_protocol::ToolResult {
+                            tool_call_id: "call-1".to_string(),
+                            content: vec![ContentBlock::Text {
+                                text: output.to_string(),
+                            }],
+                            is_error: Some(is_error),
+                        })],
+                    ),
+                ],
+                ..Default::default()
+            },
+            metadata: Some(meta),
+            ..Default::default()
+        };
+
+        // Key external records by SessionKey so parent and child records stay separate.
+        let mut store: HashMap<SessionKey, State> = HashMap::new();
+        let route_keyed = |algo: Arc<SubagentRouter>,
+                           req: Request,
+                           models: RuntimeModels,
+                           mut store: HashMap<SessionKey, State>| async move {
+            let (key, session_final) = SessionKey::from_request(&req).unwrap();
+            let loaded = store.get(&key).cloned().unwrap_or_default();
+            let outcome =
+                crate::core::testing::test_drive_with_host_state(algo, req, models, loaded, echo())
+                    .await?;
+            let selected = outcome.selected_model_id()?.clone();
+            if session_final {
+                store.retain(|stored, _| stored.session_id != key.session_id);
+            } else if outcome.state.extra.is_empty() {
+                store.remove(&key);
+            } else {
+                store.insert(key, outcome.state);
+            }
+            Ok::<_, crate::LibsyError>((selected, store))
+        };
+
+        let root_meta = Metadata {
+            session_id: Some("session-1".to_string()),
+            ..Metadata::default()
+        };
+        let (root_open, next_store) = route_keyed(
+            pod_a.clone(),
+            request(Some(root_meta.clone())),
             models.clone(),
-            State::default(),
+            store,
+        )
+        .await?;
+        store = next_store;
+        assert_eq!(root_open, ModelId::from("parent_fast"));
+
+        // Root escalates on a critical error, arming its 2-turn capable hold.
+        let (root_escalated, next_store) = route_keyed(
+            pod_a.clone(),
+            tool_turn(
+                root_meta.clone(),
+                "fatal runtime error: out of memory",
+                true,
+            ),
+            models.clone(),
+            store,
+        )
+        .await?;
+        store = next_store;
+        assert_eq!(root_escalated, ModelId::from("parent_strong"));
+
+        let (first_sel, next_store) =
+            route_keyed(pod_a.clone(), child("child-1"), models.clone(), store).await?;
+        store = next_store;
+        assert_eq!(first_sel, ModelId::from("worker"));
+
+        let (sibling_sel, next_store) =
+            route_keyed(pod_a.clone(), child("child-2"), models.clone(), store).await?;
+        store = next_store;
+        assert_eq!(sibling_sel, ModelId::from("reviewer"));
+
+        // Non-delegated child maintenance uses child-1's SessionKey, keeping root's hold
+        // turns intact while preserving child-1's delegated affinity in the same record.
+        let maintenance = tool_turn(
+            Metadata {
+                session_id: Some("session-1".to_string()),
+                agent_id: Some("child-1".to_string()),
+                is_subagent: true,
+                is_delegated_work: false,
+                agent_kind: Some("compact".to_string()),
+                ..Metadata::default()
+            },
+            "summary complete",
+            false,
+        );
+        let (maint_sel, next_store) =
+            route_keyed(pod_b.clone(), maintenance, models.clone(), store).await?;
+        store = next_store;
+        assert_eq!(maint_sel, ModelId::from("parent_fast"));
+
+        // Both of root's capable hold turns remain untouched on pod_b.
+        for _ in 0..2 {
+            let (held_sel, next_store) = route_keyed(
+                pod_b.clone(),
+                tool_turn(root_meta.clone(), "ok", false),
+                models.clone(),
+                store,
+            )
+            .await?;
+            store = next_store;
+            assert_eq!(held_sel, ModelId::from("parent_strong"));
+        }
+
+        // child-1's delegated affinity also remains intact without re-classifying.
+        let (resumed_sel, next_store) =
+            route_keyed(pod_b.clone(), child("child-1"), models.clone(), store).await?;
+        store = next_store;
+        assert_eq!(resumed_sel, ModelId::from("worker"));
+        assert_eq!(classifier_b.calls.load(Ordering::Relaxed), 0);
+
+        // An unidentifiable delegated child routes ephemerally without mutating caller state.
+        let root_key = SessionKey {
+            session_id: "session-1".to_string(),
+            agent_id: None,
+        };
+        let before_unkeyed = store.get(&root_key).cloned().unwrap();
+        let unkeyed_child = request(Some(Metadata {
+            session_id: Some("session-1".to_string()),
+            is_subagent: true,
+            is_delegated_work: true,
+            ..Metadata::default()
+        }));
+        let unkeyed_outcome = crate::core::testing::test_drive_with_host_state(
+            pod_a,
+            unkeyed_child,
+            models.clone(),
+            before_unkeyed.clone(),
             echo(),
         )
         .await?;
-        assert_eq!(first.selected_model_id()?, &ModelId::from("worker"));
+        assert_eq!(unkeyed_outcome.state.extra, before_unkeyed.extra);
 
-        // Maintenance traffic from the same child routes to parent without losing subagent state.
-        let maintenance = request(Some(Metadata {
+        // session_final clears every stored record belonging to the finalized session.
+        let final_child = request(Some(Metadata {
             session_id: Some("session-1".to_string()),
             agent_id: Some("child-1".to_string()),
             is_subagent: true,
-            is_delegated_work: false,
-            ..Metadata::default()
-        }));
-        let maint = crate::core::testing::test_drive_with_host_state(
-            pod_b.clone(),
-            maintenance,
-            models.clone(),
-            first.state,
-            echo(),
-        )
-        .await?;
-        assert_eq!(maint.selected_model_id()?, &ModelId::from("parent"));
-
-        let resumed = crate::core::testing::test_drive_with_host_state(
-            pod_b.clone(),
-            child("child-1"),
-            models.clone(),
-            maint.state,
-            echo(),
-        )
-        .await?;
-        assert_eq!(resumed.selected_model_id()?, &ModelId::from("worker"));
-        assert_eq!(classifier_b.calls.load(Ordering::Relaxed), 0);
-
-        let final_parent = request(Some(Metadata {
-            session_id: Some("session-1".to_string()),
+            is_delegated_work: true,
             session_final: Some(true),
             ..Metadata::default()
         }));
-        let closed = crate::core::testing::test_drive_with_host_state(
-            pod_b,
-            final_parent,
-            models,
-            resumed.state,
-            echo(),
-        )
-        .await?;
-        assert!(closed.state.extra.is_empty());
+        let (_, store) = route_keyed(pod_b, final_child, models, store).await?;
+        assert!(store.is_empty());
         Ok(())
     }
 }

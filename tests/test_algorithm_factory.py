@@ -153,56 +153,6 @@ async def test_alternatives_and_task_requirements_use_the_trusted_task_id() -> N
         }
 
 
-@pytest.mark.parametrize("judge", ["llm", "decision"])
-async def test_approved_judge_calls_are_executed_by_the_python_host(
-    judge: Literal["llm", "decision"],
-) -> None:
-    route = AlgorithmFactory.from_toml(deployment(judge=judge)).build_configured()[
-        "switchyard/coding"
-    ]
-    targets = route.target_models()
-    stream = route.run_stream(request_body(), required_labels=["private", "customer_data"])
-    step = await anext(stream)
-    if judge == "decision":
-        assert isinstance(step, Step.CallDecision)
-        assert step.call.model == step.call.request["model"] == "decision/approved"
-        assert targets[step.call.model] == {"client": "scoring", "id": "decision/approved"}
-        choice = {
-            "type": "choice",
-            "data": {
-                "selected": "efficient",
-                "probabilities": {"efficient": 0.9, "capable": 0.1},
-            },
-        }
-        response = {"answers": {"route": {"value": choice}}}
-    else:
-        assert isinstance(step, Step.CallModel)
-        assert step.call.models == ["approved_judge"]
-        assert step.call.request["model"] == "approved_judge"
-        target = targets[step.call.models[0]]
-        assert target == {"client": "approved", "id": "provider/approved_judge"}
-        verdict = {
-            "crux": "bounded task",
-            "primary_rule": "SUP-1",
-            "capability_boundary": "supported",
-            "p_solve": 0.9,
-        }
-        message = {
-            "role": "assistant",
-            "content": [{"type": "text", "text": json.dumps(verdict)}],
-            "stop_reason": "end_turn",
-        }
-        response = LlmResponse.Agg({"model": target["id"], "outputs": [message]})
-
-    async def reply() -> object:
-        return response
-
-    await step.call.respond(reply())
-    outcome = await finish(stream)
-    assert outcome.selected_model_ids == ["both_fast", "both_capable"]
-    assert all(targets[key]["client"] == "approved" for key in outcome.selected_model_ids)
-
-
 async def test_configured_algorithm_carries_state_across_handles() -> None:
     """Configured handles forward caller-managed state and return updated state."""
     toml = """
@@ -263,3 +213,53 @@ efficient_hold_turns = -1
 
     resumed = await finish(pod_b.run_stream(request_body(), headers=headers, state=switched.state))
     assert resumed.selected_model_ids[0] == "fast"
+
+
+@pytest.mark.parametrize("judge", ["llm", "decision"])
+async def test_approved_judge_calls_are_executed_by_the_python_host(
+    judge: Literal["llm", "decision"],
+) -> None:
+    route = AlgorithmFactory.from_toml(deployment(judge=judge)).build_configured()[
+        "switchyard/coding"
+    ]
+    targets = route.target_models()
+    stream = route.run_stream(request_body(), required_labels=["private", "customer_data"])
+    step = await anext(stream)
+    if judge == "decision":
+        assert isinstance(step, Step.CallDecision)
+        assert step.call.model == step.call.request["model"] == "decision/approved"
+        assert targets[step.call.model] == {"client": "scoring", "id": "decision/approved"}
+        choice = {
+            "type": "choice",
+            "data": {
+                "selected": "efficient",
+                "probabilities": {"efficient": 0.9, "capable": 0.1},
+            },
+        }
+        response = {"answers": {"route": {"value": choice}}}
+    else:
+        assert isinstance(step, Step.CallModel)
+        assert step.call.models == ["approved_judge"]
+        assert step.call.request["model"] == "approved_judge"
+        target = targets[step.call.models[0]]
+        assert target == {"client": "approved", "id": "provider/approved_judge"}
+        verdict = {
+            "crux": "bounded task",
+            "primary_rule": "SUP-1",
+            "capability_boundary": "supported",
+            "p_solve": 0.9,
+        }
+        message = {
+            "role": "assistant",
+            "content": [{"type": "text", "text": json.dumps(verdict)}],
+            "stop_reason": "end_turn",
+        }
+        response = LlmResponse.Agg({"model": target["id"], "outputs": [message]})
+
+    async def reply() -> object:
+        return response
+
+    await step.call.respond(reply())
+    outcome = await finish(stream)
+    assert outcome.selected_model_ids == ["both_fast", "both_capable"]
+    assert all(targets[key]["client"] == "approved" for key in outcome.selected_model_ids)

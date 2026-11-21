@@ -112,7 +112,7 @@ impl FallThrough {
             .as_ref()
             .and_then(|metadata| metadata.session_final)
             == Some(true);
-        let result = self.execute_session(driver, request, session_final).await;
+        let result = self.execute_session(driver, request).await;
         if session_final && let Some(session) = session.as_deref() {
             self.remove_session(session);
         }
@@ -130,35 +130,36 @@ impl FallThrough {
         });
     }
 
-    async fn execute_session(
-        &self,
-        driver: Driver,
-        request: Request,
-        session_final: bool,
-    ) -> Result<RoutingOutcome> {
+    async fn execute_session(&self, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         // The request is threaded mutably through the whole fold: any component may rewrite
         // it, later components see the rewrite, and the final value reaches the model.
         let mut request = request;
+        let unkeyed_subagent = request.metadata.as_ref().is_some_and(|metadata| {
+            metadata.is_subagent && metadata.agent_id.as_deref().is_none_or(str::is_empty)
+        });
         let session_state = if driver.is_host_managed() {
             None
         } else {
             self.session_state(&request)
         };
-        let (score, served, prompts) = match session_state {
-            Some(state) => {
-                let mut state = state.lock().await;
-                let (score, served) = self.route(&mut state, &driver, &mut request).await?;
-                (score, served, std::mem::take(&mut state.target_prompts))
-            }
-            None => {
-                let mut state = driver.take_state();
-                let (score, served) = self.route(&mut state, &driver, &mut request).await?;
-                let prompts = std::mem::take(&mut state.target_prompts);
-                if session_final {
-                    state.extra.clear();
+        let (score, served, prompts) = if driver.is_host_managed() && unkeyed_subagent {
+            let mut ephemeral = State::default();
+            let (score, served) = self.route(&mut ephemeral, &driver, &mut request).await?;
+            (score, served, std::mem::take(&mut ephemeral.target_prompts))
+        } else {
+            match session_state {
+                Some(state) => {
+                    let mut state = state.lock().await;
+                    let (score, served) = self.route(&mut state, &driver, &mut request).await?;
+                    (score, served, std::mem::take(&mut state.target_prompts))
                 }
-                driver.set_state(state);
-                (score, served, prompts)
+                None => {
+                    let mut state = driver.take_state();
+                    let (score, served) = self.route(&mut state, &driver, &mut request).await?;
+                    let prompts = std::mem::take(&mut state.target_prompts);
+                    driver.set_state(state);
+                    (score, served, prompts)
+                }
             }
         };
 
@@ -1011,9 +1012,34 @@ mod tests {
             }),
             ..request()
         };
-        let ended =
-            test_drive_with_host_state(pod_a, final_req, models, second.state, echo()).await?;
+        let ended = test_drive_with_host_state(
+            pod_a,
+            final_req.clone(),
+            models.clone(),
+            second.state,
+            echo(),
+        )
+        .await?;
         assert!(ended.state.extra.is_empty());
+
+        // Ordinary stateless FallThrough::new() runs retain updated driver state on final turns.
+        let stateless = Arc::new(
+            FallThrough::new()
+                .with_processor(Arc::new(CountingProcessor))
+                .with_classifier(Arc::new(ThresholdClassifier)),
+        );
+        let ordinary_final = crate::core::testing::test_drive_with_state(
+            stateless,
+            final_req,
+            models,
+            State::default(),
+            echo(),
+        )
+        .await?;
+        assert_eq!(
+            ordinary_final.state.extra.get("count"),
+            Some(&StateValue::Count(1))
+        );
         Ok(())
     }
 }

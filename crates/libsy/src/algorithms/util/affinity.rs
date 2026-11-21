@@ -297,8 +297,7 @@ impl Processor for AffinityRouter {
                 if !self.allows_host_state(request) {
                     return Ok(());
                 }
-                let writable =
-                    self.release_on_user_turn || !state.extra.contains_key(AFFINITY_TARGET_KEY);
+                let writable = self.release_on_user_turn || read_state_assignment(state).is_none();
                 if self.should_latch(selected_model_id) && writable {
                     write_state_assignment(state, selected_model_id, category);
                 } else if self.release_on_user_turn && starts_user_turn(request) {
@@ -1222,6 +1221,27 @@ mod tests {
         };
         assert!(cleared.is_empty());
         assert!(state.extra.is_empty());
+
+        // A corrupted non-string value at affinity.target is replaced by the next valid decision.
+        let sticky = AffinityRouter::new().with_latch_only(["strong"]);
+        state
+            .extra
+            .insert(AFFINITY_TARGET_KEY.to_string(), StateValue::Count(1));
+        sticky
+            .process(
+                &mut state,
+                Event::Decision {
+                    request: &mut opening,
+                    selected_model_id: &fixed_model("strong"),
+                    category: Some(Category::Capable),
+                    driver: &host_driver,
+                },
+            )
+            .await?;
+        assert_eq!(
+            read_state_assignment(&state),
+            Some((ModelId::from("strong"), Some(Category::Capable)))
+        );
         Ok(())
     }
 }

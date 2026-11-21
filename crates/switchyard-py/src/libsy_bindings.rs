@@ -1229,20 +1229,20 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
     }
 }
 
-/// Normalize `headers` and extract the session/sub-agent storage key, or `None` when unkeyed.
+/// Normalize `headers` and extract `(session_key, session_final)`, or `None` when unkeyed.
 #[pyfunction(name = "session_key")]
 #[pyo3(signature = (headers=None))]
 fn session_key_from_headers(
     py: Python<'_>,
     headers: Option<&Bound<'_, PyAny>>,
-) -> PyResult<Option<Py<PyAny>>> {
+) -> PyResult<Option<(Py<PyAny>, bool)>> {
     let Some(headers) = headers else {
         return Ok(None);
     };
     let headers: HashMap<String, String> = from_python(headers)?;
     let headers = header_map_from_python(&headers)?;
     SessionKey::from_headers(&headers)
-        .map(|key| to_python(py, &key))
+        .map(|(key, session_final)| Ok((to_python(py, &key)?, session_final)))
         .transpose()
 }
 

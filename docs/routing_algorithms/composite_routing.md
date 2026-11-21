@@ -191,14 +191,18 @@ conversation keeps its own. A client that sends no session ID can set
 instead. Conversations that open with the same text then share a tier.
 
 Hosts that manage session storage across processes can call
-`Algorithm::run_stream_with_host_state` in Rust (or pass a `state` mapping to
-`run_stream` in Python) and save `RoutingOutcome.state` after each turn.
-Caller-managed state overrides the router's in-memory session table even when
-`x-switchyard-session-id` is set. Calling `Algorithm::run_stream` in Rust (or
-passing `state=None` in Python) keeps the default bounded in-memory session
-registry (`4,096` entries). Use `SessionKey::from_headers` in Rust or
-`session_key(headers)` in Python to key external storage by
-`(session_id, agent_id)`.
+`Algorithm::run_stream_with_host_state` in Rust or pass a `state` mapping to
+`run_stream` in Python, then save `RoutingOutcome.state` after each turn.
+Caller-managed state overrides the router's in-memory session storage even when
+`x-switchyard-session-id` is set. Calling `Algorithm::run_stream` in Rust or
+passing `state=None` in Python uses the router's in-memory session storage.
+
+Use `SessionKey::from_headers` in Rust or `session_key(headers)` in Python to
+extract `((session_id, agent_id), session_final)`. Serialize the complete load,
+route, and save-or-delete operation for each `(session_id, agent_id)`.
+Independent keys can run concurrently. When `session_final` is true, delete all
+stored records for that `session_id` even if routing fails before producing
+`Step::Done`.
 
 ## Example use
 

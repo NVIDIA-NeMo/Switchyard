@@ -73,6 +73,10 @@ fn delegated_prompt_request(request: &Request) -> Option<Request> {
 
 #[async_trait]
 impl Classifier for SubagentGate {
+    fn tracks_answers(&self) -> bool {
+        self.inner.tracks_answers()
+    }
+
     async fn score(
         &self,
         state: &mut State,

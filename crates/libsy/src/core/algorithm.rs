@@ -481,12 +481,12 @@ impl Driver {
     }
 
     /// Takes the current per-run state out of the driver, leaving [`State::default()`].
-    pub fn take_state(&self) -> State {
+    pub(crate) fn take_state(&self) -> State {
         std::mem::take(&mut *self.state.lock())
     }
 
     /// Replaces the per-run state returned on [`RoutingOutcome::state`].
-    pub fn set_state(&self, state: State) {
+    pub(crate) fn set_state(&self, state: State) {
         *self.state.lock() = state;
     }
 
@@ -683,6 +683,8 @@ impl Driver {
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
         let result = result.map(|mut outcome| {
             outcome.state = self.take_state();
+            // Failed final turns publish no outcome; hosts must still delete the stored record
+            // whenever `session_final` is true so stale state cannot survive a failed close.
             if self.host_managed && self.session_final {
                 outcome.state.extra.clear();
             }
@@ -914,40 +916,45 @@ impl RoutingIdentity {
     }
 }
 
-/// Normalized session and sub-agent identity for host-managed state storage.
-#[derive(Clone, Debug, Eq, PartialEq, Hash, serde::Serialize, serde::Deserialize)]
+/// Normalized session and sub-agent storage key for host-managed state.
+///
+/// Root requests use `agent_id: None`. Recognized sub-agent requests use `Some(agent_id)`,
+/// keeping child records separate from the root session across both delegated work and
+/// child maintenance turns.
+#[derive(
+    Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct SessionKey {
     /// Stable conversation session identifier.
     pub session_id: String,
     /// Child agent identifier when the request comes from a recognized sub-agent.
     pub agent_id: Option<String>,
-    /// Whether the harness marked this request as the session's final turn.
-    pub session_final: bool,
 }
 
 impl SessionKey {
-    /// Extracts the storage key from `request`, returning `None` when the request carries
-    /// no session ID or comes from an unidentifiable child agent.
-    pub fn from_request(request: &Request) -> Option<Self> {
+    /// Extracts the storage key and whether `request` marks the final turn.
+    ///
+    /// Returns `None` when the request carries no session ID or comes from an
+    /// unidentifiable child agent.
+    pub fn from_request(request: &Request) -> Option<(Self, bool)> {
         let metadata = request.metadata.as_ref()?;
         let session_final = metadata.session_final == Some(true);
-        match RoutingIdentity::from_request(request)? {
-            RoutingIdentity::Session(session_id) => Some(Self {
+        let key = match RoutingIdentity::from_request(request)? {
+            RoutingIdentity::Session(session_id) => Self {
                 session_id,
                 agent_id: None,
-                session_final,
-            }),
-            RoutingIdentity::Subagent { session, agent } => Some(Self {
+            },
+            RoutingIdentity::Subagent { session, agent } => Self {
                 session_id: session,
                 agent_id: Some(agent),
-                session_final,
-            }),
-        }
+            },
+        };
+        Some((key, session_final))
     }
 
     /// Normalizes `headers` with [`switchyard_protocol::Metadata::from_headers`] and extracts
-    /// the storage key.
-    pub fn from_headers(headers: &http::HeaderMap) -> Option<Self> {
+    /// the storage key and final-turn flag.
+    pub fn from_headers(headers: &http::HeaderMap) -> Option<(Self, bool)> {
         let request = Request {
             metadata: Some(switchyard_protocol::Metadata::from_headers(headers)),
             ..Default::default()
@@ -1035,6 +1042,11 @@ pub trait Algorithm: Send + Sync + 'static {
     }
 
     /// Like [`Self::run_stream`], using caller-managed `state` instead of in-memory session storage.
+    ///
+    /// Hosts should key external records by [`SessionKey`] and serialize the load, route, and
+    /// save-or-delete steps per key. Independent keys can run concurrently. When `session_final`
+    /// is `true`, successful runs return an empty `outcome.state.extra`, and failed runs emit no
+    /// [`Step::Done`]; in both cases the host must delete all stored records for `session_id`.
     fn run_stream_with_host_state(
         self: Arc<Self>,
         request: Request,
@@ -2353,14 +2365,28 @@ mod tests {
             "x-switchyard-session-id",
             http::HeaderValue::from_static("sess-1"),
         );
+        let (root_key, root_final) = SessionKey::from_headers(&root_headers).unwrap();
         assert_eq!(
-            SessionKey::from_headers(&root_headers),
-            Some(SessionKey {
-                session_id: "sess-1".to_string(),
-                agent_id: None,
-                session_final: false,
-            })
+            (root_key.clone(), root_final),
+            (
+                SessionKey {
+                    session_id: "sess-1".to_string(),
+                    agent_id: None,
+                },
+                false,
+            )
         );
+
+        let mut final_root_headers = root_headers.clone();
+        final_root_headers.insert(
+            "x-switchyard-session-final",
+            http::HeaderValue::from_static("true"),
+        );
+        let (final_root_key, final_flag) = SessionKey::from_headers(&final_root_headers).unwrap();
+        assert!(final_flag);
+        assert_eq!(root_key, final_root_key);
+        let mut store = HashMap::from([(root_key, 1_usize)]);
+        assert_eq!(store.remove(&final_root_key), Some(1));
 
         let mut child_headers = root_headers.clone();
         child_headers.insert(
@@ -2373,11 +2399,13 @@ mod tests {
         );
         assert_eq!(
             SessionKey::from_headers(&child_headers),
-            Some(SessionKey {
-                session_id: "sess-1".to_string(),
-                agent_id: Some("worker-7".to_string()),
-                session_final: true,
-            })
+            Some((
+                SessionKey {
+                    session_id: "sess-1".to_string(),
+                    agent_id: Some("worker-7".to_string()),
+                },
+                true,
+            ))
         );
 
         let mut unidentified_child = root_headers;
