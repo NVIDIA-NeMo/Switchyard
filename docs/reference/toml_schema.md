@@ -273,10 +273,13 @@ Every route takes the common keys below, plus the keys for its type.
 
 ### Optional infrastructure check
 
-A capability `llm_classifier` route without escalation may include `[routes.<name>.infra]`. Both tiers must have one model; each model may have
-multiple workers. A host applies the policy explicitly with `Route::apply_infra`
-after `Route::decide`, using periodically collected model-pool metrics and local in-flight
-counts. Plain `decide` and `execute` retain task routing. Sub-agent routing is unchanged.
+Capability `llm_classifier` routes without escalation, `auto` routes, and
+`stage_router` routes without prompts or `handoff_notes` may include
+`[routes.<name>.infra]`. Answer targets on the route cannot set `system_prompt`.
+Both tiers must have one model; each model may have multiple workers. A host
+applies the policy explicitly with `Route::apply_infra` after `Route::decide`,
+using periodically collected model-pool metrics and local in-flight counts.
+Plain `decide` and `execute` retain task routing. Sub-agent routing is unchanged.
 
 ```toml
 [routes.example.infra]

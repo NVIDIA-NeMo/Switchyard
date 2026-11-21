@@ -351,12 +351,24 @@ impl Route {
         match &self.infra {
             Some(policy) => {
                 let lane = self.select_lane(&outcome.request)?;
-                if outcome.selected_model_ids.iter().any(|model| {
-                    !lane
-                        .models
-                        .models_for(&switchyard_protocol::Category::Any)
-                        .contains(model)
-                }) {
+                let is_subagent = outcome
+                    .request
+                    .metadata
+                    .as_ref()
+                    .is_some_and(|metadata| metadata.is_subagent_work());
+                let subagent_pool = lane
+                    .models
+                    .subagent_models_for(&switchyard_protocol::Category::Any);
+                let allowed_models = if is_subagent && !subagent_pool.is_empty() {
+                    subagent_pool
+                } else {
+                    lane.models.models_for(&switchyard_protocol::Category::Any)
+                };
+                if outcome
+                    .selected_model_ids
+                    .iter()
+                    .any(|model| !allowed_models.contains(model))
+                {
                     return Err(LlmClientError::InvalidRequest {
                         message: "target requirements changed after the routing decision".into(),
                     }
@@ -551,6 +563,118 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[tokio::test]
+    async fn stage_router_with_subagents_and_infra_preserves_delegated_subagent_target() {
+        let source = r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+
+[targets.fast]
+id = "fast"
+llm_client = "primary"
+
+[targets.capable]
+id = "capable"
+llm_client = "primary"
+
+[targets.subagent_worker]
+id = "worker"
+llm_client = "primary"
+
+[routes.auto]
+id = "auto"
+type = "stage_router"
+efficient_target = "fast"
+capable_target = "capable"
+picker = "efficient_first"
+confidence_threshold = 0.5
+
+[routes.auto.subagents]
+type = "passthrough"
+target = "subagent_worker"
+
+[routes.auto.infra]
+max_signal_age_ms = 1000
+min_waiting_requests = 4
+max_capable_inflight = 2
+"#;
+        let runner = Runner::from_toml(source).expect("stage_router with subagents and infra");
+        let route = runner.route("auto").expect("route");
+        let signals: InfraSignals = [("fast", 8), ("capable", 0), ("subagent_worker", 8)]
+            .into_iter()
+            .map(|(model, waiting)| {
+                (
+                    model.into(),
+                    ModelInfraSignals {
+                        load: Some(PoolLoad {
+                            sampled_at: std::time::Instant::now(),
+                            min_waiting: waiting,
+                            max_waiting: waiting,
+                            running: 0,
+                        }),
+                        ..Default::default()
+                    },
+                )
+            })
+            .collect();
+
+        let mut subagent_req = Request::default();
+        subagent_req
+            .llm_request
+            .messages
+            .push(Message::text(Role::User, "Delegate subagent task"));
+        let meta = subagent_req.metadata.get_or_insert_default();
+        meta.is_subagent = true;
+        meta.is_delegated_work = true;
+        let mut subagent_outcome = route
+            .decide(subagent_req)
+            .await
+            .expect("delegated subagent decision");
+        assert_eq!(
+            subagent_outcome
+                .selected_model_id()
+                .expect("subagent model"),
+            "subagent_worker"
+        );
+        assert!(
+            !route
+                .apply_infra(&mut subagent_outcome, &signals)
+                .expect("subagent infra check succeeds without 400")
+        );
+        assert_eq!(
+            subagent_outcome
+                .selected_model_id()
+                .expect("unchanged subagent model"),
+            "subagent_worker"
+        );
+
+        let mut parent_req = Request::default();
+        parent_req
+            .llm_request
+            .messages
+            .push(Message::text(Role::User, "Parent turn"));
+        let mut parent_outcome = route.decide(parent_req).await.expect("parent decision");
+        assert_eq!(
+            parent_outcome
+                .selected_model_id()
+                .expect("initial parent model"),
+            "fast"
+        );
+        assert!(
+            route
+                .apply_infra(&mut parent_outcome, &signals)
+                .expect("parent spills over to capable")
+        );
+        assert_eq!(
+            parent_outcome
+                .selected_model_id()
+                .expect("spilled parent model"),
+            "capable"
+        );
     }
 
     #[tokio::test]

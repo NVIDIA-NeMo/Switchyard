@@ -45,13 +45,17 @@ pub struct Router {
 
 impl Router {
     pub fn load(routes: impl AsRef<Path>) -> Result<Self> {
-        // SDK parse/build access would allow validation of decision-only options before construction.
-        let mut router = Self::new(Runner::load(routes)?);
+        let mut router = Self::new(Runner::load_decision_only(routes)?);
         router.metrics = std::env::var("METRICS_CONFIG")
             .ok()
             .map(|path| crate::metrics::Metrics::load(Path::new(&path)))
             .transpose()?;
         Ok(router)
+    }
+
+    #[cfg(test)]
+    pub fn from_toml(source: &str) -> Result<Self> {
+        Ok(Self::new(Runner::from_toml_decision_only(source)?))
     }
 
     pub fn new(runner: Runner) -> Self {
@@ -172,7 +176,7 @@ mod tests {
     use serde_json::{Value, json};
 
     fn router() -> Router {
-        Router::new(Runner::from_toml(include_str!("../config/routes.toml")).unwrap())
+        Router::from_toml(include_str!("../config/routes.toml")).unwrap()
     }
     fn neutral() -> Value {
         json!({"model":"auto", "messages":[{"role":"user", "content":"Say hello"}], "stream":true, "temperature":0.2, "custom_vendor_field":{"preserve":true}, "nvext":{"custom":"keep"}})
@@ -221,6 +225,97 @@ mod tests {
         assert!(sessions.contains_key(&("auto".into(), "new".into(), None)));
     }
 
+    #[test]
+    fn startup_rejects_response_producing_and_rewriting_routes() {
+        let base = r#"
+schema_version = 1
+[llm_clients.dynamo]
+format = "openai_chat"
+base_url = "http://switchyard-gateway/v1"
+[targets.small]
+id = "Qwen/Qwen3-0.6B"
+llm_client = "dynamo"
+[targets.large]
+id = "Qwen/Qwen3-1.7B"
+llm_client = "dynamo"
+"#;
+        for incompatible in [
+            r#"[routes.r]
+id = "auto"
+type = "noop""#,
+            r#"[routes.r]
+id = "auto"
+type = "stage_router"
+efficient_target = "small"
+capable_target = "large"
+picker = "efficient_first"
+confidence_threshold = 0.5
+capable_system_prompt = "Rewrite me""#,
+            r#"[targets.prompted]
+id = "Qwen/Qwen3-4B"
+llm_client = "dynamo"
+system_prompt = "Injected"
+[routes.r]
+id = "auto"
+type = "passthrough"
+target = "prompted""#,
+        ] {
+            assert!(
+                Router::from_toml(&format!("{base}\n{incompatible}")).is_err(),
+                "expected Router::from_toml to reject incompatible decision-only config:\n{incompatible}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rewrite_free_stage_router_supports_infra_spillover() {
+        let config = r#"
+schema_version = 1
+[llm_clients.dynamo]
+format = "openai_chat"
+base_url = "http://switchyard-gateway/v1"
+[targets.small]
+id = "Qwen/Qwen3-0.6B"
+llm_client = "dynamo"
+[targets.large]
+id = "Qwen/Qwen3-1.7B"
+llm_client = "dynamo"
+[routes.stage]
+id = "auto"
+type = "stage_router"
+efficient_target = "small"
+capable_target = "large"
+picker = "efficient_first"
+confidence_threshold = 0.5
+[routes.stage.infra]
+max_signal_age_ms = 3000
+min_waiting_requests = 4
+max_capable_inflight = 2
+"#;
+        let mut r = Router::from_toml(config).unwrap();
+        r.metrics = Some(crate::metrics::Metrics::seeded_for_test(
+            ("Qwen/Qwen3-0.6B", 5, 1),
+            ("Qwen/Qwen3-1.7B", 0, 1),
+        ));
+        let body = serde_json::to_vec(&neutral()).unwrap();
+        let (_, model, inflight) = r.decide(&body, &http::HeaderMap::new()).await.unwrap();
+        assert_eq!(model, "Qwen/Qwen3-1.7B");
+        drop(inflight);
+
+        // Prompt-rewriting stage_router + infra is rejected at config parse time.
+        let bad_infra = config.replace(
+            "[routes.stage.infra]",
+            "capable_system_prompt = 'nope'\n[routes.stage.infra]",
+        );
+        let error = Runner::from_toml(&bad_infra)
+            .err()
+            .expect("prompt-rewriting stage_router + infra must fail");
+        assert!(
+            error.to_string().contains("rewrite-free stage_router"),
+            "unexpected validation error: {error}"
+        );
+    }
+
     #[tokio::test]
     async fn preserves_original_values_including_precise_numbers_and_nested_fields() {
         let input = br#"{
@@ -247,8 +342,7 @@ mod tests {
                 assert_eq!(rewritten[&key].get(), value.get(), "changed {key}");
             }
         }
-        let classifier =
-            Router::new(Runner::from_toml(include_str!("../config/task-classifier.toml")).unwrap());
+        let classifier = Router::from_toml(include_str!("../config/task-classifier.toml")).unwrap();
         let direct = replace_model(input, "Qwen/Qwen3-1.7B").unwrap();
         let (output, model, _) = classifier
             .decide(&direct, &http::HeaderMap::new())
