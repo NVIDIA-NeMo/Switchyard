@@ -827,7 +827,7 @@ pub(crate) fn ensure_model_is_target(targets: &[ModelId], name: &ModelId) -> Res
 
 /// Key for routing affinity: a root request by its session, a child request by its session
 /// and agent.
-#[derive(Clone, Hash, PartialEq, Eq)]
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub(crate) enum RoutingIdentity {
     /// Root request, keyed by session ID.
     Session(String),
@@ -851,6 +851,12 @@ impl RoutingIdentity {
             })
         } else {
             Some(Self::Session(session.to_string()))
+        }
+    }
+
+    pub(crate) fn session_id(&self) -> &str {
+        match self {
+            Self::Session(session) | Self::Subagent { session, .. } => session.as_str(),
         }
     }
 }
@@ -911,6 +917,16 @@ pub trait Algorithm: Send + Sync + 'static {
     /// The host reports a streamed answer before forwarding its final chunk, so the
     /// session's next request is routed with this answer already recorded.
     async fn observe_answer(&self, _session_id: &str, _answer: AnswerSummary) {}
+
+    /// Records the answer the host served for `request`.
+    ///
+    /// Defaults to [`Self::observe_answer`] for root-session requests and ignores
+    /// sub-agent requests unless the algorithm overrides this method.
+    async fn observe_request_answer(&self, request: &Request, answer: AnswerSummary) {
+        if let Some(RoutingIdentity::Session(session_id)) = RoutingIdentity::from_request(request) {
+            self.observe_answer(&session_id, answer).await;
+        }
+    }
 
     /// Expose work requests and the final outcome so the host can control execution.
     ///

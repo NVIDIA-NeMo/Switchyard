@@ -116,6 +116,26 @@ impl Algorithm for SubagentRouter {
         self.parent.name()
     }
 
+    fn tracks_answers(&self) -> bool {
+        self.parent.tracks_answers() || self.subagent.tracks_answers()
+    }
+
+    async fn observe_answer(&self, session_id: &str, answer: crate::AnswerSummary) {
+        self.parent.observe_answer(session_id, answer).await;
+    }
+
+    async fn observe_request_answer(&self, request: &Request, answer: crate::AnswerSummary) {
+        if request
+            .metadata
+            .as_ref()
+            .is_some_and(Metadata::is_subagent_work)
+        {
+            self.subagent.observe_request_answer(request, answer).await;
+        } else {
+            self.parent.observe_request_answer(request, answer).await;
+        }
+    }
+
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         if request
             .metadata
@@ -288,8 +308,69 @@ mod tests {
             Arc::new(Passthrough),
             SubagentRouterConfig::fixed_target(),
         )?);
-        let (fixed, _) = test_drive_with_models(fixed, child("fixed"), models, echo()).await?;
+        assert!(!fixed.tracks_answers());
+        let (fixed, _) =
+            test_drive_with_models(fixed, child("fixed"), models.clone(), echo()).await?;
         assert_eq!(fixed, "worker");
+
+        struct AnswerChild;
+
+        #[async_trait]
+        impl Classifier for AnswerChild {
+            fn tracks_answers(&self) -> bool {
+                true
+            }
+
+            fn observe_answer(&self, state: &mut State, answer: crate::AnswerSummary) {
+                state
+                    .extra
+                    .insert("final".into(), crate::StateValue::Bool(answer.final_reply));
+            }
+
+            async fn score(
+                &self,
+                state: &mut State,
+                _request: &mut Request,
+                driver: &Driver,
+            ) -> crate::Result<(Classification, Option<Response>)> {
+                let category = match state.extra.get("final") {
+                    Some(crate::StateValue::Bool(true)) => Category::Capable,
+                    _ => Category::Efficient,
+                };
+                Ok((
+                    Classification::Scores(vec![Score {
+                        confidence: 1.0,
+                        target: driver.first_model_for(&category)?.clone(),
+                        category: Some(category),
+                    }]),
+                    None,
+                ))
+            }
+        }
+
+        use crate::Algorithm;
+        let tracked = Arc::new(SubagentRouter::new(
+            Arc::new(Passthrough),
+            SubagentRouterConfig {
+                classifier: Arc::new(AnswerChild),
+                default_target: Category::Efficient,
+                classify_trigger: ClassifyTrigger::EveryRequest,
+                message_hash_fallback: false,
+            },
+        )?);
+        assert!(tracked.tracks_answers());
+        let (before, _) =
+            test_drive_with_models(tracked.clone(), child("child-a"), models.clone(), echo())
+                .await?;
+        assert_eq!(before, "reviewer");
+        tracked
+            .observe_request_answer(
+                &child("child-a"),
+                crate::AnswerSummary { final_reply: true },
+            )
+            .await;
+        let (after, _) = test_drive_with_models(tracked, child("child-a"), models, echo()).await?;
+        assert_eq!(after, "worker");
         Ok(())
     }
 }

@@ -124,29 +124,50 @@ pub async fn run(
     }
     let mut response = result?;
     if algorithm.tracks_answers()
-        && let Some(session) = session_id(&outcome.request)
+        && let Some(identity_request) = answer_identity_request(&outcome.request)
     {
-        response = report_answer(algorithm, session, response).await;
+        response = report_answer(algorithm, identity_request, response).await;
     }
     Ok((selected_model_id, response))
 }
 
-fn session_id(request: &Request) -> Option<String> {
-    let session = request.metadata.as_ref()?.session_id.as_deref()?;
-    (!session.is_empty()).then(|| session.to_string())
+fn answer_identity_request(request: &Request) -> Option<Request> {
+    let metadata = request.metadata.as_ref()?;
+    let session = metadata.session_id.as_deref().filter(|id| !id.is_empty())?;
+    let agent_id = if metadata.is_subagent {
+        Some(
+            metadata
+                .agent_id
+                .as_deref()
+                .filter(|id| !id.is_empty())?
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    Some(Request {
+        metadata: Some(switchyard_protocol::Metadata {
+            session_id: Some(session.to_string()),
+            agent_id,
+            is_subagent: metadata.is_subagent,
+            is_delegated_work: metadata.is_delegated_work,
+            ..Default::default()
+        }),
+        ..Default::default()
+    })
 }
 
 /// Reports the served answer to the algorithm; a stream reports it before its final chunk
 /// so the client cannot send its next request first.
 async fn report_answer(
     algorithm: Arc<dyn Algorithm>,
-    session: String,
+    identity_request: Request,
     mut response: Response,
 ) -> Response {
     let stream = match response.llm_response {
         LlmResponse::Agg(aggregate) => {
             algorithm
-                .observe_answer(&session, AnswerSummary::of(&aggregate))
+                .observe_request_answer(&identity_request, AnswerSummary::of(&aggregate))
                 .await;
             response.llm_response = LlmResponse::Agg(aggregate);
             return response;
@@ -154,12 +175,16 @@ async fn report_answer(
         LlmResponse::Stream(stream) => stream,
     };
     algorithm
-        .observe_answer(&session, AnswerSummary { final_reply: false })
+        .observe_request_answer(&identity_request, AnswerSummary { final_reply: false })
         .await;
-    let report = (algorithm, session, Some(ResponseAccumulator::new()));
+    let report = (
+        algorithm,
+        identity_request,
+        Some(ResponseAccumulator::new()),
+    );
     response.llm_response = LlmResponse::Stream(Box::pin(stream::unfold(
         (stream, report),
-        |(mut stream, (algorithm, session, mut accumulator))| async move {
+        |(mut stream, (algorithm, identity_request, mut accumulator))| async move {
             let item = stream.next().await?;
             let failed = match &item {
                 Err(_) => true,
@@ -171,7 +196,7 @@ async fn report_answer(
             if failed {
                 accumulator = None;
                 algorithm
-                    .observe_answer(&session, AnswerSummary { final_reply: false })
+                    .observe_request_answer(&identity_request, AnswerSummary { final_reply: false })
                     .await;
             }
             let mut stopped = false;
@@ -183,9 +208,11 @@ async fn report_answer(
             }
             if stopped && let Some(answer) = accumulator.take() {
                 let answer = AnswerSummary::of(&answer.finish());
-                algorithm.observe_answer(&session, answer).await;
+                algorithm
+                    .observe_request_answer(&identity_request, answer)
+                    .await;
             }
-            Some((item, (stream, (algorithm, session, accumulator))))
+            Some((item, (stream, (algorithm, identity_request, accumulator))))
         },
     )));
     response
@@ -1670,6 +1697,20 @@ mod tests {
                     .lock()
                     .push((session_id.to_string(), answer.final_reply));
             }
+
+            async fn observe_request_answer(&self, request: &Request, answer: AnswerSummary) {
+                let metadata = request.metadata.as_ref().unwrap();
+                if metadata.is_subagent {
+                    if let Some(agent) = metadata.agent_id.as_deref() {
+                        self.answers
+                            .lock()
+                            .push((format!("subagent:{agent}"), answer.final_reply));
+                    }
+                    return;
+                }
+                self.observe_answer(metadata.session_id.as_deref().unwrap(), answer)
+                    .await;
+            }
         }
 
         assert!(!CandidateAlgorithm {}.tracks_answers());
@@ -1749,6 +1790,45 @@ mod tests {
                 }
             );
         }
+
+        let subagent_algo = Arc::new(ReportingAlgorithm {
+            tracking: true,
+            ..Default::default()
+        });
+        for agent_id in [None, Some("child-1".to_string())] {
+            let client = Arc::new(CandidateClient {
+                calls: Mutex::new(Vec::new()),
+                requests: Mutex::new(Vec::new()),
+                first: FirstOutcome::StreamSuccess,
+            });
+            let (_, response) = run(
+                subagent_algo.clone(),
+                ClientRouter::single(client),
+                Request {
+                    metadata: Some(switchyard_protocol::Metadata {
+                        session_id: Some("session-1".to_string()),
+                        agent_id,
+                        is_subagent: true,
+                        ..Default::default()
+                    }),
+                    ..request()
+                },
+                to_category_map(&["weak"]),
+                None,
+            )
+            .await?;
+            let LlmResponse::Stream(mut stream) = response.llm_response else {
+                panic!("expected a streamed answer");
+            };
+            while stream.next().await.is_some() {}
+        }
+        assert_eq!(
+            *subagent_algo.answers.lock(),
+            vec![
+                ("subagent:child-1".to_string(), false),
+                ("subagent:child-1".to_string(), true),
+            ]
+        );
         Ok(())
     }
 

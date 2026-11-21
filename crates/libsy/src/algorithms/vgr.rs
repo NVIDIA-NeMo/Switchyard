@@ -111,6 +111,10 @@ impl Algorithm for Vgr {
     async fn observe_answer(&self, session_id: &str, answer: AnswerSummary) {
         self.route.observe_answer(session_id, answer).await;
     }
+
+    async fn observe_request_answer(&self, request: &Request, answer: AnswerSummary) {
+        self.route.observe_request_answer(request, answer).await;
+    }
 }
 
 /// The verification regime a request's capabilities license.

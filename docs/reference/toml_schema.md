@@ -615,7 +615,8 @@ For decision classifier configuration, see
 [Decision model classifier](../routing_algorithms/composite_routing.md#decision-model-classifier).
 The same decision settings are accepted by the optional `stage_router` classifier.
 
-The tier is retained per session. A deployment that sends no session ID needs
+The tier is retained per session (up to `4,096` concurrent in-memory sessions per
+router instance). A deployment that sends no session ID needs
 `classifier.message_hash_fallback = true`, which keys on the first user message
 instead. The outer `[routes.<name>.classifier]` table is required. The nested
 `[routes.<name>.stage]` table accepts neither `picker` nor a second `classifier`.

@@ -178,10 +178,12 @@ classifiers default to no tracking. Stateful `FallThrough` routes opt in when a
 classifier requests reports.
 
 Custom libsy hosts can check `tracks_answers()` and report
-`AnswerSummary::of(&response)` through `Algorithm::observe_answer` for aggregate
-responses. For streams, report `final_reply = false` when serving begins and
-report the final summary before forwarding the terminal chunk. Use the request's
-session ID; requests without one retain the existing behavior.
+`AnswerSummary::of(&response)` through `Algorithm::observe_request_answer` for
+aggregate responses. `Algorithm::observe_answer` remains available for root-only
+sessions. For streams, report `final_reply = false` when serving begins and
+report the final summary before forwarding the terminal chunk. Sub-agent
+requests with an `agent_id` update their own sub-agent state. Requests without
+a session ID and unidentified sub-agents keep ephemeral routing.
 
 Without a recognized `x-initiator` header, reported incomplete answers and
 immediate recovery nudges retain the turn hold and budget. A reply to a complete
