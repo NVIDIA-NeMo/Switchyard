@@ -425,8 +425,11 @@ pub struct Driver {
     /// Run-scoped evidence shared by driver clones and attached only to a successful outcome.
     evidence: Arc<Mutex<RunEvidence>>,
 
-    /// Caller-supplied routing state, read and updated when a request carries no session ID.
+    /// Caller-supplied routing state, read and updated when a request carries no session ID
+    /// or when the caller explicitly manages session state.
     state: Arc<Mutex<State>>,
+    host_managed: bool,
+    session_final: bool,
 
     /// Every group this run may route over, shared by all driver clones.
     models: Arc<RuntimeModels>,
@@ -454,6 +457,8 @@ impl Driver {
                 algorithm: algorithm.to_string(),
                 evidence: Arc::new(Mutex::new(RunEvidence::default())),
                 state: Arc::new(Mutex::new(State::default())),
+                host_managed: false,
+                session_final: false,
                 models,
                 scope: Scope::Parent,
                 judge: None,
@@ -462,10 +467,25 @@ impl Driver {
         )
     }
 
+    pub(crate) fn set_host_state(&mut self, state: State) {
+        *self.state.lock() = state;
+        self.host_managed = true;
+    }
+
+    pub(crate) fn set_session_final(&mut self, session_final: bool) {
+        self.session_final = session_final;
+    }
+
+    pub(crate) fn is_host_managed(&self) -> bool {
+        self.host_managed
+    }
+
+    /// Takes the current per-run state out of the driver, leaving [`State::default()`].
     pub(crate) fn take_state(&self) -> State {
         std::mem::take(&mut *self.state.lock())
     }
 
+    /// Replaces the per-run state returned on [`RoutingOutcome::state`].
     pub(crate) fn set_state(&self, state: State) {
         *self.state.lock() = state;
     }
@@ -663,6 +683,11 @@ impl Driver {
     pub(crate) async fn finish(&self, result: Result<RoutingOutcome>) -> Result<()> {
         let result = result.map(|mut outcome| {
             outcome.state = self.take_state();
+            // Failed final turns publish no outcome; hosts must still delete the stored record
+            // whenever `session_final` is true so stale state cannot survive a failed close.
+            if self.host_managed && self.session_final {
+                outcome.state.extra.clear();
+            }
             let evidence = std::mem::take(&mut *self.evidence.lock());
             let metadata = outcome.metadata.get_or_insert_with(|| {
                 crate::OutcomeMetadata::new(self.algorithm.clone(), evidence.outcome)
@@ -732,10 +757,11 @@ where
     F: Fn(Call) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    drive_with_state(algorithm, request, models, State::default(), serve).await
+    drive_internal(algorithm, request, models, State::default(), false, serve).await
 }
 
-/// [`drive`] starting from caller-supplied `state`.
+/// [`drive`] starting from caller-supplied `state` without overriding in-memory session storage.
+#[cfg(test)]
 pub(crate) async fn drive_with_state<F, Fut>(
     algorithm: Arc<dyn Algorithm>,
     request: Request,
@@ -747,7 +773,42 @@ where
     F: Fn(Call) -> Fut,
     Fut: Future<Output = Result<()>>,
 {
-    let stream = algorithm.run_stream(request, Arc::clone(&models), state);
+    drive_internal(algorithm, request, models, state, false, serve).await
+}
+
+/// [`drive`] using [`Algorithm::run_stream_with_host_state`].
+#[cfg(test)]
+pub(crate) async fn drive_with_host_state<F, Fut>(
+    algorithm: Arc<dyn Algorithm>,
+    request: Request,
+    models: Arc<RuntimeModels>,
+    state: State,
+    serve: F,
+) -> Result<RoutingOutcome>
+where
+    F: Fn(Call) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    drive_internal(algorithm, request, models, state, true, serve).await
+}
+
+async fn drive_internal<F, Fut>(
+    algorithm: Arc<dyn Algorithm>,
+    request: Request,
+    models: Arc<RuntimeModels>,
+    state: State,
+    host_managed: bool,
+    serve: F,
+) -> Result<RoutingOutcome>
+where
+    F: Fn(Call) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    let stream = if host_managed {
+        algorithm.run_stream_with_host_state(request, Arc::clone(&models), state)
+    } else {
+        algorithm.run_stream(request, Arc::clone(&models), state)
+    };
     tokio::pin!(stream);
 
     let mut in_flight = futures::stream::FuturesUnordered::new();
@@ -855,6 +916,53 @@ impl RoutingIdentity {
     }
 }
 
+/// Normalized session and sub-agent storage key for host-managed state.
+///
+/// Root requests use `agent_id: None`. Recognized sub-agent requests use `Some(agent_id)`,
+/// keeping child records separate from the root session across both delegated work and
+/// child maintenance turns.
+#[derive(
+    Clone, Debug, Eq, PartialEq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+pub struct SessionKey {
+    /// Stable conversation session identifier.
+    pub session_id: String,
+    /// Child agent identifier when the request comes from a recognized sub-agent.
+    pub agent_id: Option<String>,
+}
+
+impl SessionKey {
+    /// Extracts the storage key and whether `request` marks the final turn.
+    ///
+    /// Returns `None` when the request carries no session ID or comes from an
+    /// unidentifiable child agent.
+    pub fn from_request(request: &Request) -> Option<(Self, bool)> {
+        let metadata = request.metadata.as_ref()?;
+        let session_final = metadata.session_final == Some(true);
+        let key = match RoutingIdentity::from_request(request)? {
+            RoutingIdentity::Session(session_id) => Self {
+                session_id,
+                agent_id: None,
+            },
+            RoutingIdentity::Subagent { session, agent } => Self {
+                session_id: session,
+                agent_id: Some(agent),
+            },
+        };
+        Some((key, session_final))
+    }
+
+    /// Normalizes `headers` with [`switchyard_protocol::Metadata::from_headers`] and extracts
+    /// the storage key and final-turn flag.
+    pub fn from_headers(headers: &http::HeaderMap) -> Option<(Self, bool)> {
+        let request = Request {
+            metadata: Some(switchyard_protocol::Metadata::from_headers(headers)),
+            ..Default::default()
+        };
+        Self::from_request(&request)
+    }
+}
+
 /// Routing policy independent of how external calls are executed.
 /// Implement [`route`](Self::route), using [`Driver`] to request work from the host.
 /// Hosts can use [`drive`] for the shared execution loop or consume
@@ -906,6 +1014,11 @@ pub trait Algorithm: Send + Sync + 'static {
         false
     }
 
+    /// Whether [`Self::run_stream_with_host_state`] accepts caller-managed state.
+    fn supports_host_state(&self) -> bool {
+        !self.tracks_answers()
+    }
+
     /// Records the answer the host served for a request in `session_id`.
     ///
     /// The host reports a streamed answer before forwarding its final chunk, so the
@@ -925,44 +1038,97 @@ pub trait Algorithm: Send + Sync + 'static {
         models: Arc<RuntimeModels>,
         state: State,
     ) -> StepStream {
-        let (driver, step_rx) = Driver::new(self.name(), models);
-        driver.set_state(state);
-        let span = observability::run_span(self.name(), &request);
-        let handle = tokio::spawn(
-            async move {
-                let algorithm = self.name().to_string();
-                // Catch a panicking algorithm so the run still publishes a terminal step.
-                let route = AssertUnwindSafe(self.route(driver.clone(), request)).catch_unwind();
-                let result = observability::observe_run(&algorithm, async {
-                    let outcome = route.await.unwrap_or_else(|payload| {
-                        Err(LibsyError::AlgorithmError {
-                            message: format!(
-                                "algorithm task panicked: {}",
-                                panic_message(payload.as_ref())
-                            ),
-                        })
-                    })?;
-                    if outcome.response.is_none() {
-                        driver
-                            .models
-                            .check_request_targets(&outcome.request, &outcome.selected_model_ids)?;
-                    }
-                    Ok(outcome)
-                })
-                .await;
-
-                let _ = driver.finish(result).await;
-            }
-            .instrument(span),
-        );
-        // Dropping the stream aborts the algorithm task when its consumer goes away.
-        let abort_guard = AbortOnDrop(handle.abort_handle());
-        Box::pin(ReceiverStream::new(step_rx).map(move |step| {
-            // link abort guard to stream
-            let _keep_alive = &abort_guard;
-            step
-        }))
+        spawn_run_stream(self, request, models, state, false)
     }
+
+    /// Like [`Self::run_stream`], using caller-managed `state` instead of in-memory session storage.
+    ///
+    /// Key external records by [`SessionKey`] and serialize the load, route, and save-or-delete
+    /// steps per key. Independent sessions can run concurrently. When `session_final` is `true`,
+    /// successful runs return an empty `outcome.state.extra`, and failed runs emit no
+    /// [`Step::Done`]. In both cases, delete all stored records for `session_id` and coordinate
+    /// across the session, or reject saves from an earlier session generation, so an in-flight
+    /// child run cannot recreate a finalized session.
+    fn run_stream_with_host_state(
+        self: Arc<Self>,
+        request: Request,
+        models: Arc<RuntimeModels>,
+        state: State,
+    ) -> StepStream {
+        if !self.supports_host_state() {
+            let message = if self.tracks_answers() {
+                format!(
+                    "algorithm {} tracks served answers and cannot use caller-managed state",
+                    self.name()
+                )
+            } else {
+                format!(
+                    "algorithm {} maintains process-local state and cannot use caller-managed state",
+                    self.name()
+                )
+            };
+            return Box::pin(futures::stream::once(std::future::ready(Err(
+                LibsyError::AlgorithmError { message },
+            ))));
+        }
+        spawn_run_stream(self, request, models, state, true)
+    }
+}
+
+fn spawn_run_stream<A: Algorithm + ?Sized>(
+    algorithm: Arc<A>,
+    request: Request,
+    models: Arc<RuntimeModels>,
+    state: State,
+    host_managed: bool,
+) -> StepStream {
+    let session_final = request
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.session_final)
+        == Some(true);
+    let (mut driver, step_rx) = Driver::new(algorithm.name(), models);
+    driver.set_session_final(session_final);
+    if host_managed {
+        driver.set_host_state(state);
+    } else {
+        driver.set_state(state);
+    }
+    let span = observability::run_span(algorithm.name(), &request);
+    let handle = tokio::spawn(
+        async move {
+            let name = algorithm.name().to_string();
+            // Catch a panicking algorithm so the run still publishes a terminal step.
+            let route = AssertUnwindSafe(algorithm.route(driver.clone(), request)).catch_unwind();
+            let result = observability::observe_run(&name, async {
+                let outcome = route.await.unwrap_or_else(|payload| {
+                    Err(LibsyError::AlgorithmError {
+                        message: format!(
+                            "algorithm task panicked: {}",
+                            panic_message(payload.as_ref())
+                        ),
+                    })
+                })?;
+                if outcome.response.is_none() {
+                    driver
+                        .models
+                        .check_request_targets(&outcome.request, &outcome.selected_model_ids)?;
+                }
+                Ok(outcome)
+            })
+            .await;
+
+            let _ = driver.finish(result).await;
+        }
+        .instrument(span),
+    );
+    // Dropping the stream aborts the algorithm task when its consumer goes away.
+    let abort_guard = AbortOnDrop(handle.abort_handle());
+    Box::pin(ReceiverStream::new(step_rx).map(move |step| {
+        // link abort guard to stream
+        let _keep_alive = &abort_guard;
+        step
+    }))
 }
 
 #[cfg(test)]
@@ -2192,5 +2358,101 @@ mod tests {
                 Ok(())
             }
         }
+    }
+
+    #[test]
+    fn session_key_normalizes_root_subagent_and_unidentifiable_children() {
+        let mut root_headers = http::HeaderMap::new();
+        root_headers.insert(
+            "x-switchyard-session-id",
+            http::HeaderValue::from_static("sess-1"),
+        );
+        let (root_key, root_final) = SessionKey::from_headers(&root_headers).unwrap();
+        assert_eq!(
+            (root_key.clone(), root_final),
+            (
+                SessionKey {
+                    session_id: "sess-1".to_string(),
+                    agent_id: None,
+                },
+                false,
+            )
+        );
+
+        let mut final_root_headers = root_headers.clone();
+        final_root_headers.insert(
+            "x-switchyard-session-final",
+            http::HeaderValue::from_static("true"),
+        );
+        let (final_root_key, final_flag) = SessionKey::from_headers(&final_root_headers).unwrap();
+        assert!(final_flag);
+        assert_eq!(root_key, final_root_key);
+        let mut store = HashMap::from([(root_key, 1_usize)]);
+        assert_eq!(store.remove(&final_root_key), Some(1));
+
+        let mut child_headers = root_headers.clone();
+        child_headers.insert(
+            "x-claude-code-agent-id",
+            http::HeaderValue::from_static("worker-7"),
+        );
+        child_headers.insert(
+            "x-switchyard-session-final",
+            http::HeaderValue::from_static("true"),
+        );
+        assert_eq!(
+            SessionKey::from_headers(&child_headers),
+            Some((
+                SessionKey {
+                    session_id: "sess-1".to_string(),
+                    agent_id: Some("worker-7".to_string()),
+                },
+                true,
+            ))
+        );
+
+        let mut unidentified_child = root_headers;
+        unidentified_child.insert(
+            "x-openai-subagent",
+            http::HeaderValue::from_static("compact"),
+        );
+        assert_eq!(SessionKey::from_headers(&unidentified_child), None);
+        assert_eq!(SessionKey::from_headers(&http::HeaderMap::new()), None);
+    }
+
+    #[tokio::test]
+    async fn answer_tracking_algorithm_rejects_caller_managed_state() {
+        struct AnswerTrackingAlgo;
+
+        #[async_trait]
+        impl Algorithm for AnswerTrackingAlgo {
+            fn name(&self) -> &str {
+                "answer_tracker"
+            }
+
+            fn tracks_answers(&self) -> bool {
+                true
+            }
+
+            async fn route(
+                self: Arc<Self>,
+                _driver: Driver,
+                request: Request,
+            ) -> Result<RoutingOutcome> {
+                Ok(RoutingOutcome::route_to("m".into(), vec![], request))
+            }
+        }
+
+        let algo: Arc<dyn Algorithm> = Arc::new(AnswerTrackingAlgo);
+        let mut stream = algo.run_stream_with_host_state(
+            request(),
+            Arc::new(RuntimeModels::default()),
+            State::default(),
+        );
+        assert!(matches!(
+            stream.next().await,
+            Some(Err(LibsyError::AlgorithmError { message }))
+                if message.contains("tracks served answers")
+        ));
+        assert!(stream.next().await.is_none());
     }
 }

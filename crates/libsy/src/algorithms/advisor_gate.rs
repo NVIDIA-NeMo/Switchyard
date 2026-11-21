@@ -541,6 +541,10 @@ impl Algorithm for AdvisorGate {
         "advisor_gate"
     }
 
+    fn supports_host_state(&self) -> bool {
+        false
+    }
+
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
         let scope = budget_scope(&request);
         let session_final = request
@@ -566,5 +570,48 @@ enum ConsultOutcome {
 fn algorithm_error(message: impl Into<String>) -> LibsyError {
     LibsyError::AlgorithmError {
         message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod host_state_tests {
+    use super::*;
+    use crate::{RuntimeModels, State, SubagentRouter, SubagentRouterConfig};
+    use futures::StreamExt;
+
+    #[tokio::test]
+    async fn advisor_gate_rejects_caller_managed_state_even_under_subagent_router() -> Result<()> {
+        let gate: Arc<dyn Algorithm> = Arc::new(AdvisorGate::new(AdvisorGateConfig::default())?);
+        let models = Arc::new(RuntimeModels::new(
+            [
+                (Category::Efficient, vec![ModelId::from("executor")]),
+                (Category::Capable, vec![ModelId::from("advisor")]),
+            ]
+            .into(),
+        ));
+
+        let mut stream = gate.clone().run_stream_with_host_state(
+            Request::default(),
+            models.clone(),
+            State::default(),
+        );
+        let err = match stream.next().await {
+            Some(Err(err)) => err,
+            _ => panic!("advisor_gate must reject caller-managed state"),
+        };
+        assert!(err.to_string().contains("cannot use caller-managed state"));
+
+        let wrapped: Arc<dyn Algorithm> = Arc::new(SubagentRouter::new(
+            gate,
+            SubagentRouterConfig::fixed_target(),
+        )?);
+        let mut wrapped_stream =
+            wrapped.run_stream_with_host_state(Request::default(), models, State::default());
+        let err = match wrapped_stream.next().await {
+            Some(Err(err)) => err,
+            _ => panic!("SubagentRouter(AdvisorGate) must reject caller-managed state"),
+        };
+        assert!(err.to_string().contains("cannot use caller-managed state"));
+        Ok(())
     }
 }

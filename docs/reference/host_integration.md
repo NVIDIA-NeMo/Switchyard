@@ -170,7 +170,22 @@ Consume `steps` through the same model and Decision call handlers. Switchyard
 does not create provider clients or read their credentials. The host owns target
 prompts, provider settings and transport, and must keep answer attempts and
 fallbacks within the returned candidates. Existing `build()` handles do not
-accept target requirements. Per-run libsy state is not carried between Python calls.
+accept target requirements.
+
+Pass `state=None` to use the handle's in-memory session storage, or pass a
+`state` mapping and save `outcome.state` for multi-process storage. Use
+`session_key(headers)` to extract `(key, session_final)` where `key` carries
+`session_id` and `agent_id`. Keying storage by `key` keeps child-agent records
+separate from the root session across delegated work and child maintenance
+turns. In-memory `FallThrough` currently keys non-delegated child maintenance
+by `session_id`. Serialize the load, route, and save-or-delete steps per
+`(session_id, agent_id)`. Independent sessions can run concurrently. When
+`session_final` is `True`, delete all stored records for `session_id` whether
+routing succeeds or fails before `Step.Done`. Coordinate finalization across
+`session_id`, or reject saves from an earlier session generation, so an
+in-flight child run cannot recreate a finalized session. On store read failure,
+fall open to `{}`; on write failure, skip saving. Routes using `vgr` or
+`advisor_gate` reject caller-managed `state`.
 
 ### Concurrent calls and cancellation
 

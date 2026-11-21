@@ -190,12 +190,24 @@ conversation keeps its own. A client that sends no session ID can set
 `classifier.message_hash_fallback = true`, which keys on the first user message
 instead. Conversations that open with the same text then share a tier.
 
-Rust code that calls `Algorithm::run_stream` directly can store the tier
-itself. Pass the stored `State` to `run_stream`, save `RoutingOutcome.state`
-after each turn, and send no session ID. With a session ID, the router uses its
-own session state and returns the passed `State` unchanged. `switchyard-server`
-starts each request with an empty `State`, so server clients still send
-`x-switchyard-session-id`.
+Hosts that manage session storage across processes can call
+`Algorithm::run_stream_with_host_state` in Rust or pass a `state` mapping to
+`run_stream` in Python, then save `RoutingOutcome.state` after each turn.
+Caller-managed state overrides the router's in-memory session storage even when
+`x-switchyard-session-id` is set. Calling `Algorithm::run_stream` in Rust or
+passing `state=None` in Python uses the router's in-memory session storage.
+
+Use `SessionKey::from_headers` in Rust or `session_key(headers)` in Python to
+extract `((session_id, agent_id), session_final)`. Keying storage by
+`(session_id, agent_id)` keeps child-agent records separate from the root
+session across delegated work and child maintenance turns. In-memory
+`FallThrough` currently keys non-delegated child maintenance by `session_id`.
+Serialize the load, route, and save-or-delete operation for each
+`(session_id, agent_id)`. Independent sessions can run concurrently. When
+`session_final` is true, delete all stored records for `session_id` even if
+routing fails before `Step::Done`. Coordinate finalization across `session_id`,
+or reject saves from an earlier session generation, so an in-flight child run
+cannot recreate a finalized session.
 
 ## Example use
 
