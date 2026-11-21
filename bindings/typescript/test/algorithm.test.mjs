@@ -118,6 +118,31 @@ test("factory returns logical targets, full outcomes, and header-driven subagent
   }
   assert.throws(() => AlgorithmFactory.fromToml("invalid"), { code: "ERR_CONFIG" });
   assert.throws(() => routes["public/main"].runStream({ messages: [{ role: "invalid", content: [] }] }), { code: "ERR_INVALID_REQUEST" });
+
+  const userTurn = AlgorithmFactory.fromToml(`${deployment}
+[routes.initiator]
+id = "public/initiator"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "capable"
+weak_target = "fast"
+classify_trigger = "user_turn"
+`).build()["public/initiator"];
+  let decisionCalls = 0;
+  for (const initiator of ["user", "agent"]) {
+    const run = userTurn.runStream(request, {
+      headers: { "x-switchyard-session-id": "sess-ts-1", "x-initiator": initiator },
+    });
+    for await (const step of run) {
+      if (step instanceof Step.CallDecision) {
+        decisionCalls++;
+        await step.call.respond(Promise.resolve(answer));
+      } else if (step instanceof Step.Done) {
+        assert.deepEqual(step.outcome.selected_model_ids, ["capable", "fast"]);
+      }
+    }
+  }
+  assert.equal(decisionCalls, 1);
 });
 
 test("factory rejects configuration requiring Runner admission", () => {
