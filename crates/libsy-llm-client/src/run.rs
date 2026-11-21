@@ -150,6 +150,7 @@ fn answer_identity_request(request: &Request) -> Option<Request> {
             session_id: Some(session.to_string()),
             agent_id,
             is_subagent: metadata.is_subagent,
+            is_delegated_work: metadata.is_delegated_work,
             ..Default::default()
         }),
         ..Default::default()
