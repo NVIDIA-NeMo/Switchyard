@@ -64,7 +64,7 @@ jobs:
         run: uv run --only-group docs mkdocs build --strict
       - name: Build Rust crate documentation
         env:
-          RUSTDOCFLAGS: -D warnings
+          RUSTDOCFLAGS: -D warnings -Z unstable-options --enable-index-page
           RUSTUP_TOOLCHAIN: nightly-2026-11-23
         run: |
           rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
