@@ -16,7 +16,9 @@ use switchyard_protocol::{
     AggLlmResponse, Category, DecisionRequest, LlmRequest, LlmResponse, Metadata, ModelId, Request,
     Response, WireFormat,
 };
-use switchyard_runner::AlgorithmSpec;
+use switchyard_runner::{
+    AlgorithmFactory, AlgorithmSpec, ConfiguredAlgorithm, require_target_labels,
+};
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -60,11 +62,25 @@ struct RouterConfig {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfiguredRouterConfig {
+    configured: ConfiguredSource,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfiguredSource {
+    toml: String,
+    route_id: String,
+}
+
+#[derive(Deserialize)]
 struct RunInput {
     request: LlmRequest,
-    models: ModelGroups,
+    models: Option<ModelGroups>,
     subagent_models: Option<ModelGroups>,
     metadata: Option<RequestMetadata>,
+    required_labels: Option<Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -76,6 +92,7 @@ struct RequestMetadata {
     #[serde(default)]
     is_delegated_work: bool,
     session_final: Option<bool>,
+    task_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -114,6 +131,12 @@ struct OutcomeMetadataRef<'a> {
 }
 
 #[derive(Serialize)]
+struct TargetModelRef<'a> {
+    client: &'a str,
+    id: &'a ModelId,
+}
+
+#[derive(Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum RunStep<'a> {
     CallModel {
@@ -136,8 +159,13 @@ enum RunStep<'a> {
     },
 }
 
+enum EngineAlgorithm {
+    Bare(Arc<dyn Algorithm>),
+    Configured(ConfiguredAlgorithm),
+}
+
 struct Engine {
-    algorithm: Arc<dyn Algorithm>,
+    algorithm: EngineAlgorithm,
     runtime: Runtime,
 }
 
@@ -461,13 +489,61 @@ pub unsafe extern "C" fn sy_router_new(
     ffi_call(|| {
         let out = unsafe { out.as_mut() }.ok_or("missing router output")?;
         *out = std::ptr::null_mut();
-        let config: RouterConfig = unsafe { parse_json_input(config_json) }?;
-        let algorithm = config.algorithm.build("embedded", &config.targets)?;
+        let config: serde_json::Value = unsafe { parse_json_input(config_json) }?;
+        let algorithm = if config.get("configured").is_some() {
+            if config.get("algorithm").is_some() || config.get("targets").is_some() {
+                return Err("configured routers cannot include raw algorithm settings".into());
+            }
+            let config: ConfiguredRouterConfig = serde_json::from_value(config)?;
+            let route = AlgorithmFactory::from_toml(&config.configured.toml)?
+                .build_configured()?
+                .remove(&config.configured.route_id)
+                .ok_or("unknown configured route ID")?;
+            EngineAlgorithm::Configured(route)
+        } else {
+            let config: RouterConfig = serde_json::from_value(config)?;
+            EngineAlgorithm::Bare(config.algorithm.build("embedded", &config.targets)?)
+        };
         let runtime = new_runtime()?;
         *out = Box::into_raw(Box::new(SyRouter {
             engine: Arc::new(Engine { algorithm, runtime }),
         }));
         Ok(())
+    })
+}
+
+/// Returns owned JSON mapping emitted model IDs to their host client and provider model ID.
+/// # Safety
+/// The router must be live and `out_json` writable. Free the output with `sy_string_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_router_target_models(
+    router: *const SyRouter,
+    out_json: *mut *mut c_char,
+) -> *mut c_char {
+    ffi_call(|| {
+        let out = unsafe { out_json.as_mut() }.ok_or("missing target models output")?;
+        *out = std::ptr::null_mut();
+        let router = unsafe { router.as_ref() }.ok_or("missing router")?;
+        match &router.engine.algorithm {
+            EngineAlgorithm::Bare(_) => Err("target discovery needs a configured router".into()),
+            EngineAlgorithm::Configured(route) => {
+                let models: BTreeMap<_, _> = route
+                    .target_models()
+                    .iter()
+                    .map(|(name, model)| {
+                        (
+                            name,
+                            TargetModelRef {
+                                client: &model.client,
+                                id: &model.id,
+                            },
+                        )
+                    })
+                    .collect();
+                *out = encode_json(&models)?.into_raw();
+                Ok(())
+            }
+        }
     })
 }
 
@@ -547,10 +623,6 @@ pub unsafe extern "C" fn sy_run_new(
         let out = unsafe { out.as_mut() }.ok_or("missing run output")?;
         *out = std::ptr::null_mut();
         let input: RunInput = unsafe { parse_json_input(input_json) }?;
-        let mut models = RuntimeModels::new(parse_model_groups(input.models)?);
-        if let Some(subagent_models) = input.subagent_models {
-            models = models.with_subagent(parse_model_groups(subagent_models)?);
-        }
         let mut request = Request {
             llm_request: input.request,
             metadata: input.metadata.map(|metadata| Metadata {
@@ -559,17 +631,36 @@ pub unsafe extern "C" fn sy_run_new(
                 is_subagent: metadata.is_subagent,
                 is_delegated_work: metadata.is_delegated_work,
                 session_final: metadata.session_final,
+                task_id: metadata.task_id,
                 ..Default::default()
             }),
             ..Default::default()
         };
         switchyard_translation::normalize_compaction(&mut request.llm_request, None);
         let _entered = router.engine.runtime.enter();
-        let stream = Arc::clone(&router.engine.algorithm).run_stream(
-            request,
-            Arc::new(models),
-            State::default(),
-        );
+        let stream = match &router.engine.algorithm {
+            EngineAlgorithm::Bare(algorithm) => {
+                if input.required_labels.is_some() {
+                    return Err("target requirements need a configured router".into());
+                }
+                let mut models = RuntimeModels::new(parse_model_groups(
+                    input.models.ok_or("missing model groups")?,
+                )?);
+                if let Some(subagent_models) = input.subagent_models {
+                    models = models.with_subagent(parse_model_groups(subagent_models)?);
+                }
+                Arc::clone(algorithm).run_stream(request, Arc::new(models), State::default())
+            }
+            EngineAlgorithm::Configured(route) => {
+                if input.models.is_some() || input.subagent_models.is_some() {
+                    return Err("configured routers do not accept host model groups".into());
+                }
+                if let Some(labels) = input.required_labels {
+                    require_target_labels(&mut request, labels)?;
+                }
+                route.run_stream(request, State::default())?
+            }
+        };
         *out = Box::into_raw(Box::new(SyRun::new(stream, Arc::clone(&router.engine))));
         Ok(())
     })

@@ -21,14 +21,41 @@ import (
 // Backend returns the compiled routing backend: "native" or "wasm".
 func Backend() string { return "wasm" }
 
+func (backend *wasmBackend) targetModels() (map[string]TargetModel, error) {
+	if !backend.configured {
+		return nil, errors.New("target discovery needs a configured router")
+	}
+	slot := backend.slots[0]
+	slot.mu.Lock()
+	defer slot.mu.Unlock()
+	if backend.closed.Load() {
+		return nil, errors.New("Switchyard router is closed")
+	}
+	if slot.err != nil {
+		return nil, slot.err
+	}
+	gen := slot.gen
+	data, err := gen.guest.callJSONResult(context.Background(), "sy_router_target_models", gen.router)
+	if err != nil {
+		if gen.guest.module.IsClosed() || isWasmTrap(err) {
+			slot.poisonLocked(gen, err)
+		}
+		return nil, err
+	}
+	var models map[string]TargetModel
+	err = json.Unmarshal(data, &models)
+	return models, err
+}
+
 type wasmBackend struct {
-	runtime   *wasmRuntime
-	slots     []*wasmSlot
-	next      atomic.Uint64
-	active    atomic.Int64
-	closed    atomic.Bool
-	lifecycle sync.Mutex
-	finalize  sync.Once
+	runtime    *wasmRuntime
+	slots      []*wasmSlot
+	next       atomic.Uint64
+	active     atomic.Int64
+	closed     atomic.Bool
+	lifecycle  sync.Mutex
+	finalize   sync.Once
+	configured bool
 }
 
 type wasmSlot struct {
@@ -77,11 +104,19 @@ func newWasmBackendWithPoolSize(config json.RawMessage, size int) (*wasmBackend,
 	if size < 1 {
 		return nil, errors.New("Switchyard wasm instance pool must have at least one instance")
 	}
+	var source map[string]json.RawMessage
+	if err := json.Unmarshal(config, &source); err != nil {
+		return nil, err
+	}
+	_, configured := source["configured"]
+	if configured {
+		size = 1
+	}
 	runtime, err := newWasmRuntime()
 	if err != nil {
 		return nil, err
 	}
-	backend := &wasmBackend{runtime: runtime, slots: make([]*wasmSlot, size)}
+	backend := &wasmBackend{runtime: runtime, slots: make([]*wasmSlot, size), configured: configured}
 	for index := range backend.slots {
 		slot := &wasmSlot{owner: backend, config: bytesClone(config)}
 		slot.gen, err = backend.newGeneration(context.Background(), slot.config)
@@ -282,6 +317,11 @@ func (slot *wasmSlot) poisonLocked(gen *wasmGeneration, cause error) {
 		run.cancel()
 	}
 	_ = gen.guest.module.Close(context.Background())
+	if slot.owner.configured {
+		// Recreating the guest would forget retained task requirements.
+		slot.err = gen.error()
+		return
+	}
 	if slot.owner.closed.Load() {
 		return
 	}
@@ -438,6 +478,9 @@ func (slot *wasmSlot) startRun(ctx context.Context, input []byte) (*wasmRun, err
 		return nil, err
 	}
 	if slot.err != nil {
+		if slot.owner.configured {
+			return nil, slot.err
+		}
 		replacement, err := slot.owner.newGeneration(context.Background(), slot.config)
 		if err != nil {
 			slot.err = fmt.Errorf("replace trapped Switchyard wasm instance: %w", err)
@@ -547,8 +590,13 @@ func (run *wasmRun) close() {
 	slot.mu.Lock()
 	delete(run.gen.runs, run)
 	if slot.gen == run.gen && !run.gen.poisoned {
-		_, _ = run.gen.guest.call(context.Background(), "sy_run_cancel", uint64(run.ptr))
-		_, _ = run.gen.guest.call(context.Background(), "sy_run_free", uint64(run.ptr))
+		for _, operation := range []string{"sy_run_cancel", "sy_run_free"} {
+			_, err := run.gen.guest.call(context.Background(), operation, uint64(run.ptr))
+			if err != nil && slot.owner.configured {
+				slot.poisonLocked(run.gen, err)
+				break
+			}
+		}
 	}
 	slot.mu.Unlock()
 	if slot.owner.active.Add(-1) == 0 && slot.owner.closed.Load() {

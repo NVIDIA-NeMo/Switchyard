@@ -232,6 +232,11 @@ func (guest *guestModule) callJSON(ctx context.Context, export string, input []b
 		return nil, err
 	}
 	defer guest.free(context.Background(), inputPtr, inputLen)
+	return guest.callJSONResult(ctx, export, inputPtr)
+}
+
+// The first argument may point to JSON input or an opaque router handle.
+func (guest *guestModule) callJSONResult(ctx context.Context, export string, inputPtr uint32) ([]byte, error) {
 	outPtr, err := guest.alloc(ctx, make([]byte, 4))
 	if err != nil {
 		return nil, err
