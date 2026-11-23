@@ -10,7 +10,7 @@ use std::io::Write;
 use std::sync::Arc;
 
 use axum::body::{Body, Bytes};
-use axum::extract::{DefaultBodyLimit, Path, State};
+use axum::extract::{DefaultBodyLimit, OriginalUri, Path, State};
 use axum::http::{HeaderMap, HeaderValue, Request as HttpRequest, StatusCode, Uri};
 use axum::response::sse::{Event, Sse};
 use axum::response::{IntoResponse, Response as HttpResponse};
@@ -51,6 +51,10 @@ impl MockUpstream {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let app = Router::new()
             .route("/props", get(upstream_props))
+            .route(
+                "/api/projects/pilot/router:rank",
+                post(upstream_foundry_rank),
+            )
             .route("/v1/chat/completions", post(upstream_chat))
             .route("/buffered/responses", post(upstream_buffered_responses))
             .route(
@@ -109,6 +113,46 @@ fn user_prompt(body: &Value) -> &str {
         .and_then(|messages| messages.iter().find(|message| message["role"] == "user"))
         .and_then(|message| message["content"].as_str())
         .unwrap_or_default()
+}
+
+async fn upstream_foundry_rank(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    Json(body): Json<Value>,
+) -> HttpResponse {
+    calls.lock().await.push(json!({
+        "rank": body,
+        "query": uri.query(),
+        "authorization": headers.get("authorization").and_then(|value| value.to_str().ok()),
+        "features": headers.get("foundry-features").and_then(|value| value.to_str().ok()),
+        "session": headers.get("x-ms-session-id").and_then(|value| value.to_str().ok()),
+        "trusted_context": headers.contains_key("azure-resource-id"),
+    }));
+    let (model, version) = match body["payload"]["metadata"]["rank_test"].as_str() {
+        Some("unknown_model") => ("unknown", "test-version"),
+        Some("wrong_version") => ("gpt-5-mini", "wrong-version"),
+        Some("oversized") => return " ".repeat(256 * 1024 + 1).into_response(),
+        Some("no_models") => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"error": {
+                    "code": "no_supported_models", "message": "provider diagnostic"
+                }})),
+            )
+                .into_response();
+        }
+        _ => ("GPT-5-MINI", "test-version"),
+    };
+    Json(json!({
+        "id": "rank-test-1",
+        "object": "model_router.ranking",
+        "ranking": {
+            "status": "fallback",
+            "candidates": [{"rank": 1, "model": model, "version": version}]
+        }
+    }))
+    .into_response()
 }
 
 fn has_system_prompt(call: &Value, expected: &str) -> bool {
@@ -1616,6 +1660,208 @@ fn load_test_config(toml: &str) -> TestResult<ServerState> {
     config.write_all(toml.as_bytes())?;
     config.flush()?;
     Ok(load_server_state(config.path())?)
+}
+
+fn foundry_rank_config(upstream: &MockUpstream, token: &std::path::Path) -> String {
+    format!(
+        r#"
+schema_version = 1
+[llm_clients.mock]
+format = "openai_chat"
+base_url = "{base}"
+[targets]
+mini = {{ id = "deployment/mini", llm_client = "mock" }}
+other = {{ id = "deployment/other", llm_client = "mock" }}
+large = {{ id = "deployment/large", llm_client = "mock" }}
+[decision_clients.foundry]
+format = "foundry_rank"
+endpoint = "{root}/api/projects/pilot/router:rank?api-version=test-version"
+bearer_token_file = {token:?}
+timeout_ms = 2000
+model_versions = {{ gpt-5-mini = "test-version", "gpt-4.1" = "test-version", gpt-5 = "test-version" }}
+[decision_targets.ranker]
+id = "foundry-project-router"
+decision_client = "foundry"
+[routes.rank]
+id = "{ROUTE_MODEL}"
+type = "llm_classifier"
+mode = "direct"
+default_target = "gpt-5"
+fail_open = false
+[routes.rank.models]
+judge = ["ranker"]
+any = ["large", "other", "mini"]
+gpt-5-mini = ["mini"]
+"gpt-4.1" = ["other"]
+gpt-5 = ["large"]
+"#,
+        base = upstream.base_url,
+        root = upstream.base_url.trim_end_matches("/v1"),
+    )
+}
+
+#[tokio::test]
+async fn foundry_rank_selects_the_mapped_deployment() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let token = tempfile::NamedTempFile::new()?;
+    std::fs::write(token.path(), "mock-token\n")?;
+    let app = build_switchyard_router(load_test_config(&foundry_rank_config(
+        &upstream,
+        token.path(),
+    ))?);
+    let body = json!({
+        "model": ROUTE_MODEL,
+        "messages": [
+            {"role": "system", "content": "Answer in JSON."},
+            {"role": "user", "content": "Give a color."}
+        ],
+        "tools": [{"type": "function", "function": {"name": "lookup"}}],
+        "response_format": {"type": "json_object"},
+        "max_completion_tokens": 32
+    });
+    let response = send_with_headers(
+        &app,
+        "POST",
+        "/v1/chat/completions",
+        Some(body.clone()),
+        &[
+            ("x-switchyard-session-id", "test-session"),
+            ("authorization", "Bearer caller-token"),
+            ("azure-resource-id", "caller-context"),
+        ],
+    )
+    .await?;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+    assert_eq!(upstream.models().await, ["deployment/mini"]);
+    let calls = upstream.calls.lock().await;
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[0],
+        json!({
+            "rank": {
+                "payload_format": "chat_completions",
+                "routing_config": {
+                    "models": ["gpt-4.1", "gpt-5", "gpt-5-mini"],
+                    "require_parameters": true,
+                    "session_affinity": {"strategy": "none"}
+                },
+                "payload": body
+            },
+            "authorization": "Bearer mock-token",
+            "query": "api-version=test-version",
+            "features": "Rank=V1Preview",
+            "session": null,
+            "trusted_context": false
+        })
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn foundry_rank_preserves_native_formats_and_stops_on_no_usable_model() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let token = tempfile::NamedTempFile::new()?;
+    std::fs::write(token.path(), "mock-token")?;
+    let app = build_switchyard_router(load_test_config(&foundry_rank_config(
+        &upstream,
+        token.path(),
+    ))?);
+    let cases = [
+        (
+            "/v1/responses",
+            "responses",
+            json!({
+                "model": ROUTE_MODEL, "input": "Give a color.", "instructions": "Answer in JSON.",
+                "reasoning": {"effort": "low"}, "text": {"format": {"type": "json_object"}},
+                "metadata": {"rank_test": "no_models"}
+            }),
+            StatusCode::UNPROCESSABLE_ENTITY,
+        ),
+        (
+            "/v1/messages",
+            "messages",
+            json!({
+                "model": ROUTE_MODEL, "system": "Answer in JSON.", "max_tokens": 1024,
+                "messages": [{"role": "user", "content": "Give a color."}],
+                "thinking": {"type": "enabled", "budget_tokens": 512},
+                "metadata": {"rank_test": "unknown_model"}
+            }),
+            StatusCode::BAD_GATEWAY,
+        ),
+        (
+            "/v1/chat/completions",
+            "chat_completions",
+            json!({
+                "model": ROUTE_MODEL, "messages": [{"role": "user", "content": "Give a color."}],
+                "metadata": {"rank_test": "wrong_version"}
+            }),
+            StatusCode::BAD_GATEWAY,
+        ),
+        (
+            "/v1/chat/completions",
+            "chat_completions",
+            json!({
+                "model": ROUTE_MODEL, "messages": [{"role": "user", "content": "Give a color."}],
+                "metadata": {"rank_test": "oversized"}
+            }),
+            StatusCode::BAD_GATEWAY,
+        ),
+    ];
+    for (path, format, body, expected_status) in cases {
+        let current_token = format!("mock-{format}");
+        std::fs::write(token.path(), &current_token)?;
+        let response = send_with_headers(
+            &app,
+            "POST",
+            path,
+            Some(body.clone()),
+            &[("x-switchyard-session-id", "test-session")],
+        )
+        .await?;
+        assert_eq!(
+            response.status,
+            expected_status,
+            "{path}: {}",
+            response.text()?
+        );
+        if expected_status == StatusCode::UNPROCESSABLE_ENTITY {
+            assert_eq!(response.json()?["error"]["code"], "no_supported_models");
+        }
+        if body["metadata"]["rank_test"] == "oversized" {
+            assert!(response.text()?.contains("ranking response exceeded"));
+        }
+        let mut calls = upstream.calls.lock().await;
+        assert_eq!(calls.len(), 1, "{path}");
+        let call = calls.remove(0);
+        assert_eq!(call["rank"]["payload_format"], format);
+        assert_eq!(call["rank"]["payload"], body);
+        assert_eq!(call["authorization"], format!("Bearer {current_token}"));
+        assert!(call["session"].is_null());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn foundry_rank_rejects_unmapped_and_fail_open_routes() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let token = tempfile::NamedTempFile::new()?;
+    let config = foundry_rank_config(&upstream, token.path());
+    for (config, message) in [
+        (
+            config.replace("fail_open = false", "fail_open = true"),
+            "requires fail_open = false",
+        ),
+        (
+            config.replace("gpt-5-mini = \"test-version\", ", ""),
+            "with configured versions",
+        ),
+    ] {
+        let error = Runner::from_toml(&config)
+            .err()
+            .ok_or("invalid Rank route loaded")?;
+        assert!(error.to_string().contains(message), "{error}");
+    }
+    Ok(())
 }
 
 fn weighted_random_state(base_url: &str, weights: [u32; 2]) -> TestResult<ServerState> {

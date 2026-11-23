@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,11 +15,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
-    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    OpenAiDecisionClient, ResponsesReasoningPolicy, SystemOneClient, TranslatingLlmClient,
+    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, FoundryRankClient,
+    HttpBackendConfig, ModelConfig, OpenAiDecisionClient, ResponsesReasoningPolicy,
+    SystemOneClient, TranslatingLlmClient,
 };
 use switchyard_protocol::{
-    LlmClientError, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat,
+    Category, LlmClientError, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat,
 };
 
 use crate::algorithm_factory::AlgorithmAndModels;
@@ -27,8 +28,8 @@ use crate::eligibility::{EligibilityPolicy, validate_labels};
 use crate::route::ExecutionLane;
 use crate::runner::ModelPropertiesProbe;
 use crate::{
-    AlgorithmFactory, AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, DecisionTarget,
-    ModelCapabilities, Route, Runner, RunnerError,
+    AlgorithmFactory, AlgorithmSpec, AuxiliaryTarget, CallerAuthKind, ClassifierMode,
+    DecisionTarget, ModelCapabilities, Route, Runner, RunnerError,
 };
 
 const SUPPORTED_SCHEMA_VERSION: u32 = 1;
@@ -52,9 +53,16 @@ pub fn api_key_variables(source: &str) -> Result<BTreeSet<String>, RunnerError> 
         .values()
         .filter_map(|client| client.api_key_env.clone())
         .collect();
-    for client in config.decision_clients.values() {
-        variables.insert(client.api_key_env.clone());
-    }
+    variables.extend(
+        config
+            .decision_clients
+            .values()
+            .filter_map(|client| match client {
+                DecisionClientConfig::SystemOne(config)
+                | DecisionClientConfig::OpenaiDecisions(config) => Some(config.api_key_env.clone()),
+                DecisionClientConfig::FoundryRank { .. } => None,
+            }),
+    );
     if variables
         .iter()
         .any(|name| name.trim().is_empty() || name.contains(['\0', '=']))
@@ -744,9 +752,95 @@ impl DeploymentConfig {
             }
         }
         for (route_name, config) in &self.routes {
+            self.validate_foundry_rank(route_name, config)?;
             if let Some(eligibility) = &config.eligibility {
                 self.validate_eligibility(route_name, &config.algorithm, eligibility)?;
             }
+        }
+        Ok(())
+    }
+
+    fn validate_foundry_rank(&self, name: &str, route: &RouteConfig) -> RunnerResult<()> {
+        let judge_names = route.algorithm.decision_target_names();
+        let foundry_versions = |target: &str| {
+            let target = self.decision_targets.get(target)?;
+            match self.decision_clients.get(&target.decision_client)? {
+                DecisionClientConfig::FoundryRank { model_versions, .. } => Some(model_versions),
+                _ => None,
+            }
+        };
+        let invalid = |message: &str| {
+            RunnerError::configuration(format!("route {name}: Foundry Rank {message}"))
+        };
+        if let Some(eligibility) = &route.eligibility
+            && eligibility
+                .target_alternatives
+                .values()
+                .flatten()
+                .any(|target| foundry_versions(target).is_some())
+        {
+            return Err(invalid("does not support decision target alternatives"));
+        }
+        let Some(versions) = judge_names.iter().find_map(|judge| foundry_versions(judge)) else {
+            return Ok(());
+        };
+        let AlgorithmSpec::LlmClassifier { config } = &route.algorithm else {
+            return Err(invalid(
+                "requires a standalone llm_classifier in direct mode",
+            ));
+        };
+        let Some(models) = config
+            .models
+            .as_ref()
+            .filter(|_| matches!(config.mode, Some(ClassifierMode::Direct)))
+        else {
+            return Err(invalid(
+                "requires a standalone llm_classifier in direct mode",
+            ));
+        };
+        if judge_names.len() != 1 || route.eligibility.is_some() {
+            return Err(invalid(
+                "requires one judge and does not support route eligibility",
+            ));
+        }
+        if config.fail_open != Some(false) || config.recent_turn_window.is_some() {
+            return Err(invalid(
+                "requires fail_open = false and the full request (no recent_turn_window)",
+            ));
+        }
+        let mut mapped_targets = BTreeSet::new();
+        for (category, targets) in models.groups() {
+            if targets.is_empty() || matches!(category, Category::Judge | Category::Any) {
+                continue;
+            }
+            let id = category.as_str();
+            if id.trim() != id
+                || id.to_ascii_lowercase() != id
+                || versions
+                    .get(id)
+                    .is_none_or(|v| v.is_empty() || v.trim() != v)
+            {
+                return Err(invalid(
+                    "requires lowercase canonical model group IDs with configured versions",
+                ));
+            }
+            let [target] = targets.as_slice() else {
+                return Err(invalid("requires one execution target per model group"));
+            };
+            if !mapped_targets.insert(target.clone()) {
+                return Err(invalid(
+                    "requires a distinct execution target per model group",
+                ));
+            }
+        }
+        if models
+            .get(&Category::Any)
+            .iter()
+            .any(|target| !mapped_targets.contains(target))
+        {
+            return Err(invalid(
+                "requires every models.any target to have a canonical model group",
+            ));
         }
         Ok(())
     }
@@ -1176,31 +1270,42 @@ impl DeploymentConfig {
             .iter()
             .map(|(name, config)| {
                 validate_value("decision client name", name)?;
-                let DecisionClientConfig {
-                    format,
-                    endpoint,
-                    api_key_env,
-                    timeout_ms,
-                } = config;
-                if *timeout_ms == 0 {
+                if config.timeout_ms() == 0 {
                     return Err(RunnerError::configuration(format!(
                         "decision client {name} timeout_ms must be at least 1"
                     )));
                 }
-                let api_key = read_api_key(&format!("decision client {name}"), api_key_env)?;
-                let timeout = Duration::from_millis(*timeout_ms);
-                let client = match format {
-                    DecisionFormat::SystemOne => {
-                        SystemOneClient::new(endpoint.0.clone(), api_key.clone(), timeout)
-                            .map(|client| Arc::new(client) as Arc<dyn RoutedDecisionClient>)
+                let timeout = Duration::from_millis(config.timeout_ms());
+                let client = match config {
+                    DecisionClientConfig::SystemOne(legacy)
+                    | DecisionClientConfig::OpenaiDecisions(legacy) => {
+                        let api_key =
+                            read_api_key(&format!("decision client {name}"), &legacy.api_key_env)?;
+                        let endpoint = legacy.endpoint.0.clone();
+                        let client = if matches!(config, DecisionClientConfig::SystemOne(_)) {
+                            SystemOneClient::new(endpoint, api_key.clone(), timeout)
+                                .map(|client| Arc::new(client) as Arc<dyn RoutedDecisionClient>)
+                        } else {
+                            OpenAiDecisionClient::new(endpoint, api_key.clone(), timeout)
+                                .map(|client| Arc::new(client) as Arc<dyn RoutedDecisionClient>)
+                        };
+                        provider_api_keys.push(api_key);
+                        client
                     }
-                    DecisionFormat::OpenaiDecisions => {
-                        OpenAiDecisionClient::new(endpoint.0.clone(), api_key.clone(), timeout)
-                            .map(|client| Arc::new(client) as Arc<dyn RoutedDecisionClient>)
-                    }
+                    DecisionClientConfig::FoundryRank {
+                        endpoint,
+                        bearer_token_file,
+                        model_versions,
+                        ..
+                    } => FoundryRankClient::new(
+                        endpoint.0.clone(),
+                        bearer_token_file.clone(),
+                        model_versions.clone(),
+                        timeout,
+                    )
+                    .map(|client| Arc::new(client) as Arc<dyn RoutedDecisionClient>),
                 }
                 .map_err(|error| RunnerError::configuration(error.to_string()))?;
-                provider_api_keys.push(api_key);
                 Ok((name.clone(), client))
             })
             .collect()
@@ -1532,18 +1637,32 @@ enum ContextDiscovery {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DecisionClientConfig {
-    format: DecisionFormat,
+struct KeyDecisionClientConfig {
     endpoint: HttpBaseUrl,
     api_key_env: String,
     timeout_ms: u64,
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum DecisionFormat {
-    SystemOne,
-    OpenaiDecisions,
+#[serde(tag = "format", rename_all = "snake_case", deny_unknown_fields)]
+enum DecisionClientConfig {
+    SystemOne(KeyDecisionClientConfig),
+    OpenaiDecisions(KeyDecisionClientConfig),
+    FoundryRank {
+        endpoint: HttpBaseUrl,
+        bearer_token_file: PathBuf,
+        model_versions: BTreeMap<String, String>,
+        timeout_ms: u64,
+    },
+}
+
+impl DecisionClientConfig {
+    fn timeout_ms(&self) -> u64 {
+        match self {
+            Self::SystemOne(config) | Self::OpenaiDecisions(config) => config.timeout_ms,
+            Self::FoundryRank { timeout_ms, .. } => *timeout_ms,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

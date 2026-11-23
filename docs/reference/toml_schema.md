@@ -235,9 +235,11 @@ Decision clients serve typed judgments for routing classifiers.
 
 | Key | Required | Meaning |
 |---|:---:|---|
-| `format` | Yes | `system_one` or `openai_decisions`. |
+| `format` | Yes | `system_one`, `openai_decisions`, or `foundry_rank`. |
 | `endpoint` | Yes | Full API URL, including the endpoint path. |
-| `api_key_env` | Yes | Environment variable holding a non-empty API key. |
+| `api_key_env` | `system_one`, `openai_decisions` | Environment variable holding a non-empty API key. |
+| `bearer_token_file` | `foundry_rank` | File containing a bearer token. Switchyard reads it on each Rank call; the operator acquires and rotates the token. |
+| `model_versions` | `foundry_rank` | Map from canonical model group names to the versions served by their configured targets. |
 | `timeout_ms` | Yes | Request and response deadline in milliseconds; must be at least `1`. |
 
 For [OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions):
@@ -254,9 +256,24 @@ id = "gpt-6-luna"
 decision_client = "decisions"
 ```
 
-Each `decision_targets` entry pairs an upstream model `id` with a `decision_client`.
-Both formats receive the conversation messages, the question instructions, and
-the choice descriptions.
+Each `decision_targets` entry pairs a decision `id` with a `decision_client`.
+System One and OpenAI Decisions receive conversation messages, question
+instructions, and choice descriptions.
+
+Foundry Rank requires a standalone [direct route](../routing_algorithms/llm_classifier_routing.md#direct-selection)
+with one judge, `fail_open = false`, and no `recent_turn_window` or target
+eligibility settings. Name each choice group after a lowercase canonical
+model ID and give it one distinct execution target. Include every `models.any`
+target in those mappings. A returned version must match `model_versions` when
+Rank supplies one. The decision target `id` is a local identifier for this client.
+
+Configure the full HTTPS Rank URL, including any required API-version query.
+This client sends the preview header and the full native Chat Completions,
+Responses, or Messages request to Foundry. Only enable the route for requests
+you are allowed to send there. It requests strict parameter matching, disables
+Foundry affinity, and makes no Rank retries or outcome reports. A Rank error
+stops routing. Generation still uses Switchyard's configured completion
+fallback order, so qualify all generation targets for the requests you serve.
 
 ## `[routes.<name>]`
 

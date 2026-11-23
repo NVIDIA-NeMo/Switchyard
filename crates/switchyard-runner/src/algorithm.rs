@@ -224,7 +224,7 @@ impl CategoryModelConfig {
         Ok(())
     }
 
-    fn get(&self, category: &Category) -> &[String] {
+    pub(crate) fn get(&self, category: &Category) -> &[String] {
         self.0.get(category.as_str()).map_or(&[], Vec::as_slice)
     }
 
@@ -256,7 +256,7 @@ impl CategoryModelConfig {
             .collect()
     }
 
-    fn groups(&self) -> impl Iterator<Item = (Category, Vec<String>)> + '_ {
+    pub(crate) fn groups(&self) -> impl Iterator<Item = (Category, Vec<String>)> + '_ {
         self.0
             .iter()
             .filter_map(|(name, models)| Some((name.parse::<Category>().ok()?, models.clone())))

@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use thiserror::Error;
 
-use crate::{DecisionRequest, DecisionResponse, ModelId, Request, Response};
+use crate::{DecisionRequest, DecisionResponse, ModelId, Request, Response, WireFormat};
 
 /// A boxed client-specific error preserved as the source of a routed call failure.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync + 'static>;
@@ -215,10 +215,32 @@ pub trait RoutedLlmClient: Send + Sync {
     async fn call(&self, request: Request) -> Result<Response, LlmClientError>;
 }
 
+/// Original inference input for decision services that need native payloads.
+pub struct NativeDecisionInput {
+    /// The ingress API format.
+    pub format: WireFormat,
+    /// The original native request object.
+    pub payload: serde_json::Value,
+}
+
 /// Serves typed decision calls over a host-owned transport.
 /// Implementations may be shared across targets and called concurrently.
 #[async_trait]
 pub trait RoutedDecisionClient: Send + Sync {
     /// Evaluate the request using its selected model.
     async fn call(&self, request: DecisionRequest) -> Result<DecisionResponse, LlmClientError>;
+
+    /// Whether the host should retain native input for this client.
+    fn needs_native_input(&self) -> bool {
+        false
+    }
+
+    /// Evaluate a decision with the original inference input when supported.
+    async fn call_with_native_input(
+        &self,
+        request: DecisionRequest,
+        _native: Option<&NativeDecisionInput>,
+    ) -> Result<DecisionResponse, LlmClientError> {
+        self.call(request).await
+    }
 }
