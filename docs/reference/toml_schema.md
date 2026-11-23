@@ -320,7 +320,7 @@ see [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md).
 
 ### `decision_select`
 
-Applies a gateway rule to chat requests that ask for a list of names. The SDK extracts the task and choices, calls the decision target once, and returns the selected names in an ordinary chat response. See [Apply a decision model to a list-selection call](../routing_algorithms/decision_select.md) for a request-to-response example and configuration.
+Applies a gateway rule when the agent asks a question such as “Which APIs do I need?” The SDK extracts the task and choices, calls the decision target once, and returns the selected names in an ordinary chat response. See [Use a decision model when an agent asks which tools it needs](../routing_algorithms/decision_select.md) for a request-to-response example and configuration.
 
 The operator supplies three things.
 

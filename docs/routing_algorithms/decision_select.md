@@ -1,6 +1,8 @@
-# Apply a decision model to a list-selection call
+# Use a decision model when an agent asks which tools it needs
 
-Use `decision_select` when an agent already sends a chat request that means “choose from this list.” An operator configures a rule for that call. Each time it matches, Switchyard turns the task and choices into a batch of decision questions, calls the decision model, and returns the chosen names to the agent. Other chat requests go to the usual LLM.
+An agent often asks its LLM, “Which tools do I need for this task?” With Switchyard, a gateway operator can send that question to a decision model. The agent sends its usual prompt and gets back the tool names it expects. Its next request can still go to the LLM to write code.
+
+The SDK feature is called `decision_select`. You can use it for other named choices when the request contains both the task and the available options, and the agent expects one or more names in reply.
 
 ## Follow one request
 
