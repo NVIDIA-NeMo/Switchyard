@@ -412,6 +412,15 @@ pub enum AlgorithmSpec {
         #[serde(flatten)]
         config: LlmClassifierRouteConfig,
     },
+    /// Answers a recognized list-selection prompt through a decision service.
+    DecisionSelect {
+        /// Serves other requests and handles a failed selection.
+        target: String,
+        /// Scores the choices extracted by this rule.
+        decision_target: String,
+        /// Match, input and output definitions.
+        rule: Box<libsy::SelectionRule>,
+    },
     /// Picks a tier per turn by scoring signals from recent tool results.
     StageRouter {
         capable_target: String,
@@ -1018,6 +1027,12 @@ impl AlgorithmSpec {
 
     /// Judge targets that must be decision targets.
     pub(crate) fn decision_target_names(&self) -> Vec<&str> {
+        if let Self::DecisionSelect {
+            decision_target, ..
+        } = self
+        {
+            return vec![decision_target];
+        }
         let mut names: Vec<&str> = self
             .classifier_targets()
             .filter(|(_, decision)| decision.is_some())
@@ -1036,6 +1051,7 @@ impl AlgorithmSpec {
     pub fn routing_target_names(&self) -> Vec<&str> {
         match self {
             Self::Noop { .. } => Vec::new(),
+            Self::DecisionSelect { target, .. } => vec![target],
             Self::Random { targets, .. } => targets.iter().map(String::as_str).collect(),
             Self::Passthrough {
                 target, subagents, ..
@@ -1146,6 +1162,9 @@ impl AlgorithmSpec {
             Self::StageRouter { .. } | Self::Composite { .. } => {
                 names.extend(self.classifier_targets().map(|(target, _)| target));
             }
+            Self::DecisionSelect {
+                decision_target, ..
+            } => names.push(decision_target),
             Self::Advisor { advisor_target, .. } => names.push(advisor_target),
             Self::Vgr { config } => {
                 names.extend(config.judge_target.as_deref());
@@ -1179,6 +1198,14 @@ impl AlgorithmSpec {
             Self::Random { targets, .. } | Self::PrefillRouter { targets, .. } => {
                 category_models([(Category::Any, targets.clone())])
             }
+            Self::DecisionSelect {
+                target,
+                decision_target,
+                ..
+            } => category_models([
+                (Category::Any, vec![target.clone()]),
+                (Category::Judge, vec![decision_target.clone()]),
+            ]),
             Self::Passthrough { target, .. } => {
                 category_models([(Category::Any, vec![target.clone()])])
             }
@@ -1309,6 +1336,7 @@ impl AlgorithmSpec {
             | Self::StageRouter { .. }
             | Self::Auto { .. }
             | Self::Composite { .. }
+            | Self::DecisionSelect { .. }
             | Self::PrefillRouter { .. } => None,
         }
     }
@@ -1844,6 +1872,15 @@ fn build_algorithm(
             let algorithm = Random::new(weights.clone(), *seed).map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("random route {route_name}: {error}"),
+                    error,
+                )
+            })?;
+            Ok(Arc::new(algorithm))
+        }
+        AlgorithmSpec::DecisionSelect { rule, .. } => {
+            let algorithm = libsy::DecisionSelect::new((**rule).clone()).map_err(|error| {
+                AlgorithmConfigError::with_source(
+                    format!("decision_select route {route_name}: {error}"),
                     error,
                 )
             })?;

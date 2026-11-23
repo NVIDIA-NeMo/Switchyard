@@ -318,6 +318,21 @@ see [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md).
 | `target` | Yes | Target used for parent and harness-maintenance requests. |
 | `subagents` | No | Nested `passthrough` or `llm_classifier` policy used only for delegated sub-agent work. Nested classifiers currently support only `mode = "custom"`. |
 
+### `decision_select`
+
+Set `target` to the LLM that handles ordinary requests and `decision_target` to a configured decision model.
+Under `[routes.<name>.rule]`, set `enabled`, `system_instruction`, `catalog_prefix`, `task_prefix`, `task_suffix`,
+`question`, `shortlist`, and `top_k`. The [AppWorld example](../../examples/appworld/routes.toml) shows a complete rule.
+
+The rule matches the exact system instruction, reads the YAML catalog after the first user message's prefix,
+and extracts the task between the final user message's prefix and suffix. A flat catalog maps names to
+descriptions. A grouped catalog yields names such as `music.search`. BM25 shortlists up to `shortlist` options.
+The decision model scores them in one request. Switchyard returns up to `top_k` names, one per line, ranked by
+probability. Original catalog order breaks ties during shortlisting. Shortlist order breaks ties between scores.
+
+Set `enabled = false` and reload the configuration to send every call to the LLM. A prompt mismatch, unsupported
+catalog or unusable decision response also sends the original request to the LLM.
+
 ### `random`
 
 Splits traffic across targets. See
