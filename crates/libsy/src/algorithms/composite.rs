@@ -13,14 +13,9 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 
 use super::fall_through::FallThrough;
-use super::llm_class::{
-    CapabilityJudgeConfig, CustomClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
-    is_decision_user_message,
-};
+use super::llm_class::{CustomClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 use super::stage::{StageRouterConfig, build_stage_route};
-use super::util::affinity::{
-    ClassifyTrigger, evict_if_full, has_new_user_turn, is_turn_context, retention_key,
-};
+use super::util::affinity::{ClassifyTrigger, evict_if_full, has_new_user_turn, retention_key};
 use super::util::stage::{PickerMode, Tier, fall_open_tier, set_fall_open};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier};
@@ -39,7 +34,6 @@ const COMPOSITE: &str = "composite";
 struct TierSetter {
     judge: Arc<dyn Classifier>,
     trigger: ClassifyTrigger,
-    decision_judge: bool,
     message_hash_fallback: bool,
     default_tier: Tier,
     tiers: Mutex<HashMap<RoutingIdentity, Tier>>,
@@ -57,28 +51,16 @@ impl TierSetter {
     /// Two requests for one identity can both pass this and both judge, since a
     /// judge call sits between here and [`retain`](Self::retain). The later wins.
     fn is_due(&self, identity: Option<&RoutingIdentity>, state: &State, request: &Request) -> bool {
-        let messages = &request.llm_request.messages;
         match self.trigger {
             ClassifyTrigger::UserTurn => {
                 !request.llm_request.is_compaction
-                    && if self.decision_judge {
-                        messages
-                            .iter()
-                            .rev()
-                            .find(|m| !is_turn_context(m))
-                            .is_some_and(is_decision_user_message)
-                    } else {
-                        has_new_user_turn(messages)
-                    }
+                    && has_new_user_turn(&request.llm_request.messages)
             }
             // Unkeyed requests with no carried tier cannot be told apart, so every one
             // is a new session.
             ClassifyTrigger::NewSession => {
                 identity.is_none_or(|identity| !self.tiers.lock().contains_key(identity))
                     && fall_open_tier(state).is_none()
-                    && (!self.decision_judge
-                        || (!request.llm_request.is_compaction
-                            && messages.iter().any(is_decision_user_message)))
             }
             // Rejected by the constructor, and only in the enum for the standalone route.
             ClassifyTrigger::EveryRequest => true,
@@ -177,14 +159,12 @@ impl CompositeRouter {
     }
 
     fn tier_setter(judge: CompositeJudgeConfig) -> Result<TierSetter> {
-        let (trigger, message_hash_fallback, decision_judge) = match &judge {
-            CompositeJudgeConfig::Capability(config) => (
-                config.classify_trigger,
-                config.message_hash_fallback,
-                matches!(config.judge, CapabilityJudgeConfig::Decision(_)),
-            ),
+        let (trigger, message_hash_fallback) = match &judge {
+            CompositeJudgeConfig::Capability(judge) => {
+                (judge.classify_trigger, judge.message_hash_fallback)
+            }
             CompositeJudgeConfig::Custom(config) => {
-                (config.classify_trigger, config.message_hash_fallback, false)
+                (config.classify_trigger, config.message_hash_fallback)
             }
         };
         if trigger == ClassifyTrigger::EveryRequest {
@@ -201,7 +181,7 @@ impl CompositeRouter {
                         message_hash_fallback: false,
                         ..judge
                     },
-                    Some(trigger),
+                    true,
                 )?)
             }
             CompositeJudgeConfig::Custom(config) => {
@@ -211,7 +191,6 @@ impl CompositeRouter {
         Ok(TierSetter {
             judge,
             trigger,
-            decision_judge,
             message_hash_fallback,
             default_tier: Tier::Efficient,
             tiers: Mutex::new(HashMap::new()),
@@ -349,23 +328,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn decision_input_contains_the_users_task_or_history() -> Result<()> {
-        let task = "Fix the build.\n";
-        let mut request = turn_request(false);
-        let messages = &mut request.llm_request.messages;
-        messages[0] = Message::text(Role::User, task);
-        messages[2].role = Role::User;
-        let env = "<environment_context>setup</environment_context>";
-        messages.insert(0, Message::text(Role::User, env));
-        messages.insert(0, Message::text(Role::Developer, "Permissions"));
-        messages.insert(0, Message::text(Role::System, "Instructions"));
-        let mut users = vec![Message::text(Role::User, task)];
-        users.extend((1..=12).map(|n| Message::text(Role::User, format!("Follow-up {n}"))));
-        messages.extend_from_slice(&users[1..]);
-        for (classify_trigger, expected) in [
-            (ClassifyTrigger::NewSession, serde_json::json!(task)),
-            (ClassifyTrigger::UserTurn, serde_json::json!(users)),
+    async fn decision_input_omits_inline_instructions() -> Result<()> {
+        let mut opening = turn_request(false);
+        opening.llm_request.messages.truncate(1);
+        for (classify_trigger, mut request) in [
+            (ClassifyTrigger::NewSession, opening),
+            (ClassifyTrigger::UserTurn, user_turn_request()),
         ] {
+            let messages = &mut request.llm_request.messages;
+            let expected = serde_json::json!(messages);
+            messages.insert(0, Message::text(Role::Developer, "Permissions"));
+            messages.insert(0, Message::text(Role::System, "Instructions"));
             let judge = CompositeJudgeConfig::Capability(TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Decision(Default::default()),
                 classify_trigger,

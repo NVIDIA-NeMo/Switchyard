@@ -12,7 +12,6 @@ use serde_json::Value;
 use switchyard_protocol::{Category, ContentBlock, Message, Role};
 
 mod decision;
-pub(super) use decision::is_decision_user_message;
 pub use decision::{DecisionChoice, DecisionJudgeConfig, DirectClassifierConfig};
 use decision::{DecisionClassifier, DirectClassifier};
 
@@ -730,7 +729,7 @@ impl LlmTaskClassifier {
     /// settings are invalid.
     pub fn new(config: LlmClassifierConfig) -> Result<Self> {
         match config {
-            LlmClassifierConfig::Capability { config } => Self::build_capability(config, None),
+            LlmClassifierConfig::Capability { config } => Self::build_capability(config, false),
             LlmClassifierConfig::Escalation {
                 contract,
                 config,
@@ -750,7 +749,7 @@ impl LlmTaskClassifier {
 
     pub(super) fn build_capability(
         config: TaskClassifierConfig,
-        composite_trigger: Option<ClassifyTrigger>,
+        omit_inline_decision_instructions: bool,
     ) -> Result<Self> {
         config.validate()?;
         let classify_trigger = config.classify_trigger;
@@ -777,7 +776,7 @@ impl LlmTaskClassifier {
                 judge,
                 input,
                 config.fail_open,
-                composite_trigger,
+                omit_inline_decision_instructions,
             )?),
         };
         Self::from_classifier(
