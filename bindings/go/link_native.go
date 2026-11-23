@@ -5,11 +5,9 @@
 
 package switchyard
 
-// Source builds link the local archive; packaged modules supply package-local paths.
-
 /*
-#cgo CFLAGS: -I${SRCDIR}/../../crates/switchyard-ffi/include
-#cgo LDFLAGS: ${SRCDIR}/../../target/release/libswitchyard_ffi.a
+#cgo linux,amd64 LDFLAGS: ${SRCDIR}/libswitchyard_ffi_linux_amd64.a
+#cgo linux,arm64 LDFLAGS: ${SRCDIR}/libswitchyard_ffi_linux_arm64.a
 #cgo linux LDFLAGS: -ldl -lpthread -lm
 #cgo darwin LDFLAGS: -framework Security -framework CoreFoundation -liconv
 */

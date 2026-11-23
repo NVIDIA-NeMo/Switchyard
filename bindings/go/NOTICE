@@ -1,0 +1,40 @@
+Switchyard
+Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+This product is licensed under the Apache License, Version 2.0 (the "License").
+You may obtain a copy of the License in the LICENSE file at the root of this
+repository, or at:
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+================================================================================
+Third-party software
+================================================================================
+
+This repository contains no vendored third-party source code. All third-party
+software is consumed as Python package dependencies declared in pyproject.toml
+and resolved at install time. Each such package retains its own license, which
+applies to the package contents and is distributed separately by the package
+itself (typically as a LICENSE file inside the installed wheel).
+
+A non-exhaustive list of the principal runtime dependencies and their licenses:
+
+  - openai (Apache-2.0)
+  - anthropic (MIT)
+  - fastapi (MIT)
+  - uvicorn (BSD-3-Clause)
+  - sse-starlette (BSD-3-Clause)
+  - httpx (BSD-3-Clause)
+  - pydantic (MIT)
+
+For the complete and authoritative dependency list, see pyproject.toml. The
+license of each installed package can be inspected after install via:
+
+    pip show <package-name>
+
+or by reading the LICENSE file inside the corresponding installed distribution.
