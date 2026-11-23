@@ -653,14 +653,23 @@ def parse_result(
         oha_p50 = p50 * 1000 if p50 is not None else None
         oha_p99 = p99 * 1000 if p99 is not None else None
     aiperf = read_json_object(aiperf_path)
-    errors, _unit = _metric(aiperf, "error_request_count", "avg")
-    error_count = errors or 0.0
-    measured_requests, _unit = _metric(aiperf, "request_count", "avg")
-    error_rate = (
-        error_count / measured_requests
-        if measured_requests is not None and measured_requests > 0
-        else 1.0
-    )
+    error_count, _unit = _metric(aiperf, "error_request_count", "avg")
+    # AIPerf can omit the error metric on successful profiles.
+    if (
+        error_count is None
+        and aiperf.get("error_request_count") is None
+        and ("error_request_count" in aiperf or aiperf.get("error_summary") == [])
+    ):
+        error_count = 0.0
+    successful_requests, _unit = _metric(aiperf, "request_count", "avg")
+    if successful_requests is None or error_count is None:
+        raise RuntimeError(f"AIPerf export {aiperf_path} has missing request counts")
+    attempted_requests = successful_requests + error_count
+    if not math.isfinite(attempted_requests) or min(successful_requests, error_count) < 0:
+        raise RuntimeError(f"AIPerf export {aiperf_path} has invalid request counts")
+    if attempted_requests == 0:
+        raise RuntimeError(f"AIPerf export {aiperf_path} has zero attempted requests")
+    error_rate = error_count / attempted_requests
     expectation_met = (
         scenario.expected_error_rate_min <= error_rate <= scenario.expected_error_rate_max
     )

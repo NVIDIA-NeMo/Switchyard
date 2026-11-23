@@ -39,7 +39,7 @@ def test_report_combines_scenarios_single_and_aggregate_results(tmp_path) -> Non
     single_path.write_text(
         json.dumps(
             {
-                "error_request_count": {"unit": "requests", "avg": 0},
+                "error_request_count": None,
                 "request_count": {"unit": "requests", "avg": 4},
                 "request_throughput": {"unit": "requests/sec", "avg": 95.5},
                 "request_latency": {"unit": "ms", "p50": 40.0},
@@ -55,7 +55,7 @@ def test_report_combines_scenarios_single_and_aggregate_results(tmp_path) -> Non
     direct_path.write_text(
         json.dumps(
             {
-                "error_request_count": {"unit": "requests", "avg": 0},
+                "error_summary": [],
                 "request_count": {"unit": "requests", "avg": 4},
                 "request_throughput": {"unit": "requests/sec", "avg": 100.0},
                 "request_latency": {"unit": "ms", "p50": 35.0},
@@ -225,7 +225,7 @@ def test_report_combines_scenarios_single_and_aggregate_results(tmp_path) -> Non
     assert "## Repeatability" in report
     assert "## Resilience" in report
     assert (
-        "| classifier | failure-pressure | fixed | 50.00% | 1.00%–75.00% | PASS | `{"
+        "| classifier | failure-pressure | fixed | 33.33% | 1.00%–75.00% | PASS | `{"
         '"mock/weak":2}` | failures stay bounded |' in report
     )
     rows = list(csv.DictReader((output_dir / "report.csv").open()))
@@ -245,6 +245,7 @@ def test_report_combines_scenarios_single_and_aggregate_results(tmp_path) -> Non
     assert random_payload["aiperf_ttft_p50_delta_pct"] == 25.0
     assert random_payload["aiperf_output_tokens_per_second_delta"] == -80.0
     assert random_payload["scenario_description"] == "short baseline"
+    assert classifier_payload["aiperf_error_rate"] == pytest.approx(2 / 6)
     assert classifier_payload["aiperf_request_latency_p50_ms"] == 50.0
     assert classifier_payload["aiperf_request_throughput_cv"] == 0.03
     assert classifier_payload["classifier_latency_avg_ms"] == 4.0
@@ -253,6 +254,38 @@ def test_report_combines_scenarios_single_and_aggregate_results(tmp_path) -> Non
 
     with pytest.raises(RuntimeError, match="missing direct baseline for mixed-traffic fixed"):
         compare_to_direct_backend((results[0], replace(results[1], scenario="mixed-traffic")))
+
+
+@pytest.mark.parametrize(
+    ("valid", "errors", "expected_rate", "expected_error"),
+    [
+        (10, 10, 0.5, None),
+        (0, 20, 1.0, None),
+        (0, 0, None, "zero attempted requests"),
+        (None, 20, None, "missing request counts"),
+        (20, None, None, "missing request counts"),
+    ],
+    ids=["mixed", "all-timeout", "zero-attempts", "missing-valid", "missing-errors"],
+)
+def test_benchmark_error_rate_uses_all_attempts(
+    tmp_path, valid, errors, expected_rate, expected_error
+) -> None:
+    export = tmp_path / "aiperf.json"
+    metrics = {
+        name: {"avg": count}
+        for name, count in (("request_count", valid), ("error_request_count", errors))
+        if count is not None
+    }
+    export.write_text(json.dumps(metrics))
+    arm = BenchmarkArm("classifier", "switchyard/classifier", "http://127.0.0.1:4000", False)
+    scenario = ScenarioDefinition("mixed", "resilience", "mixed outcomes", "", 0.4, 0.6, export, ())
+    if expected_error:
+        with pytest.raises(RuntimeError, match=expected_error):
+            parse_result(arm, scenario, "fixed", None, export, {}, {})
+        return
+    result = parse_result(arm, scenario, "fixed", None, export, {}, {})
+    assert result.aiperf_error_rate == expected_rate
+    assert result.expectation_met is (expected_rate == 0.5)
 
 
 def test_materialized_sessions_are_unique_and_cover_request_count(tmp_path) -> None:
