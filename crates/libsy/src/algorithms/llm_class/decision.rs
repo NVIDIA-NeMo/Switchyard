@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use switchyard_protocol::{
     Category, ChoiceOption, DecisionKind, DecisionQuestion, DecisionRequest, DecisionValue,
-    ModelId, Request, Response,
+    Message, ModelId, Request, Response, Role,
 };
 
 use crate::algorithms::llm_class::TaskInput;
@@ -65,15 +65,10 @@ fn choice_question(instructions: String, choices: Vec<DecisionChoice>) -> Decisi
 }
 
 /// Builds a request that asks `question` about the selected conversation messages.
-fn route_request(
-    input: &TaskInput,
-    request: &Request,
-    question: &DecisionQuestion,
-) -> Result<DecisionRequest> {
-    let messages = input.messages(request);
+fn route_request(messages: &[Message], question: &DecisionQuestion) -> Result<DecisionRequest> {
     Ok(DecisionRequest {
         model: None,
-        input: serde_json::to_value(&messages)
+        input: serde_json::to_value(messages)
             .map_err(|error| LibsyError::external("serializing decision input", error))?,
         questions: BTreeMap::from([(ROUTE.into(), question.clone())]),
     })
@@ -154,6 +149,7 @@ impl DecisionJudgeConfig {
 pub(super) struct DecisionClassifier {
     config: DecisionJudgeConfig,
     input: TaskInput,
+    omit_inline_instructions: bool,
     fail_open: bool,
     question: DecisionQuestion,
 }
@@ -163,6 +159,7 @@ impl DecisionClassifier {
         mut config: DecisionJudgeConfig,
         mut input: TaskInput,
         fail_open: bool,
+        omit_inline_instructions: bool,
     ) -> Result<Self> {
         input.recent_turn_window.get_or_insert(DEFAULT_TURN_WINDOW);
         let question = choice_question(
@@ -175,6 +172,7 @@ impl DecisionClassifier {
         Ok(Self {
             config,
             input,
+            omit_inline_instructions,
             fail_open,
             question,
         })
@@ -234,7 +232,11 @@ impl Classifier for DecisionClassifier {
         let judge = driver.first_model_for(&Category::Judge)?;
         let capable = driver.first_model_for(&Category::Capable)?;
         let efficient = driver.first_model_for(&Category::Efficient)?;
-        let decision = route_request(&self.input, request, &self.question)?;
+        let mut messages = self.input.messages(request);
+        if self.omit_inline_instructions {
+            messages.retain(|message| !matches!(message.role, Role::System | Role::Developer));
+        }
+        let decision = route_request(&messages, &self.question)?;
         let score = match self.try_score(decision, driver, judge).await {
             Ok(score) => score,
             Err(error) if self.fail_open => {
@@ -358,7 +360,7 @@ impl Classifier for DirectClassifier {
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
         let judge = driver.first_model_for(&Category::Judge)?;
-        let decision = route_request(&self.input, request, &self.question)?;
+        let decision = route_request(&self.input.messages(request), &self.question)?;
         let category = match self.try_select(decision, driver, judge).await {
             Ok(category) => category,
             Err(error) if self.config.fail_open => {

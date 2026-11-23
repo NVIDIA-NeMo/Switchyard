@@ -729,7 +729,7 @@ impl LlmTaskClassifier {
     /// settings are invalid.
     pub fn new(config: LlmClassifierConfig) -> Result<Self> {
         match config {
-            LlmClassifierConfig::Capability { config } => Self::build_capability(config),
+            LlmClassifierConfig::Capability { config } => Self::build_capability(config, false),
             LlmClassifierConfig::Escalation {
                 contract,
                 config,
@@ -747,7 +747,10 @@ impl LlmTaskClassifier {
         }
     }
 
-    fn build_capability(config: TaskClassifierConfig) -> Result<Self> {
+    pub(super) fn build_capability(
+        config: TaskClassifierConfig,
+        omit_inline_decision_instructions: bool,
+    ) -> Result<Self> {
         config.validate()?;
         let classify_trigger = config.classify_trigger;
         let message_hash_fallback = config.message_hash_fallback;
@@ -769,9 +772,12 @@ impl LlmTaskClassifier {
                 .with_error_recovery(config.fail_open)
                 .with_evidence(capability_evidence),
             ),
-            CapabilityJudgeConfig::Decision(judge) => {
-                Arc::new(DecisionClassifier::new(judge, input, config.fail_open)?)
-            }
+            CapabilityJudgeConfig::Decision(judge) => Arc::new(DecisionClassifier::new(
+                judge,
+                input,
+                config.fail_open,
+                omit_inline_decision_instructions,
+            )?),
         };
         Self::from_classifier(
             classifier,
