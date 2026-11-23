@@ -17,7 +17,7 @@ use self::text::ToolRecord;
 use crate::Result;
 use crate::algorithms::fall_through::FallThrough;
 use crate::algorithms::util::affinity::AffinityRouter;
-use crate::core::algorithm::{Algorithm, AnswerSummary, Driver, RoutingOutcome};
+use crate::core::algorithm::{Algorithm, AnswerSummary, Driver, RoutingIdentity, RoutingOutcome};
 
 mod compaction;
 mod config;
@@ -39,6 +39,7 @@ mod tests;
 pub struct Vgr {
     route: FallThrough,
     classifier: Arc<runtime::VgrClassifier>,
+    affinity: Arc<AffinityRouter>,
 }
 
 impl Vgr {
@@ -65,10 +66,14 @@ impl Vgr {
         if classifier.config.mode != ServingMode::Shadow {
             route = route
                 .with_processor(affinity.clone())
-                .with_classifier(Arc::new(runtime::Held(affinity, reason)));
+                .with_classifier(Arc::new(runtime::Held(affinity.clone(), reason)));
         }
         let route = route.with_classifier(classifier.clone());
-        Ok(Self { route, classifier })
+        Ok(Self {
+            route,
+            classifier,
+            affinity,
+        })
     }
 }
 
@@ -85,7 +90,16 @@ impl Algorithm for Vgr {
             .classifier
             .efficient_may_stand_in(&request)
             .then(|| request.clone());
-        let mut outcome = self.route.execute(driver.clone(), request).await?;
+        let final_identity = request
+            .metadata
+            .as_ref()
+            .filter(|metadata| metadata.session_final == Some(true))
+            .and_then(|_| RoutingIdentity::from_request(&request));
+        let result = self.route.execute(driver.clone(), request).await;
+        if let Some(identity) = final_identity {
+            self.affinity.release(&identity);
+        }
+        let mut outcome = result?;
         // Efficient answers are already buffered and have no fallback.
         outcome.selected_model_ids.truncate(1);
         let config = &self.classifier.config;

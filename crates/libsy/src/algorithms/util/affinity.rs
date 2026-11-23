@@ -179,6 +179,11 @@ impl AffinityRouter {
         self
     }
 
+    /// Releases one completed routing identity.
+    pub(crate) fn release(&self, key: &RoutingIdentity) {
+        self.assignments.lock().remove(key);
+    }
+
     /// Whether a decision for `model` should be retained.
     fn should_latch(&self, model: &str) -> bool {
         self.latch_only

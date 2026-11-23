@@ -185,6 +185,56 @@ async fn two_consecutive_escalation_votes_latch_the_session() -> Result<()> {
 }
 
 #[tokio::test]
+async fn final_request_releases_only_its_own_affinity() -> Result<()> {
+    let route = route(|_| {})?;
+    let calls = Arc::new(Calls::default());
+    let task = |id: &str, final_request: bool| {
+        let mut request = session(vec![Message::text(Role::User, "fix the build")]);
+        let metadata = request.metadata.as_mut().expect("session metadata");
+        metadata.session_id = Some(id.into());
+        metadata.session_final = Some(final_request);
+        request
+    };
+    for id in ["session-1", "session-2"] {
+        assert_eq!(
+            drive(&route, task(id, false), calls.clone(), complete_call, 0.9).await?,
+            "efficient"
+        );
+        assert_eq!(
+            drive(&route, task(id, false), calls.clone(), complete_call, 0.9).await?,
+            "capable"
+        );
+    }
+    assert_eq!(
+        drive(
+            &route,
+            task("session-1", true),
+            calls.clone(),
+            complete_call,
+            0.0
+        )
+        .await?,
+        "capable"
+    );
+    assert_eq!(
+        drive(
+            &route,
+            task("session-2", false),
+            calls.clone(),
+            complete_call,
+            0.0
+        )
+        .await?,
+        "capable"
+    );
+    assert_eq!(
+        drive(&route, task("session-1", false), calls, complete_call, 0.0).await?,
+        "efficient"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn final_answers_commit_only_on_a_verified_clean_record() -> Result<()> {
     let answer = || reply("the build passes");
     let run = |tool_output: &str| {
