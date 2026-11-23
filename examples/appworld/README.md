@@ -2,6 +2,8 @@
 
 AppWorld asks an LLM for a list of APIs, then asks it to write Python. This example lets a decision model answer the first call. The original agent still writes and runs its program through the usual path. The benchmark operates on simulated accounts.
 
+This example configures the [decision_select SDK route](../../docs/routing_algorithms/decision_select.md). The prompt and model choices live in the gateway configuration.
+
 ## Run one task
 
 1. Install AppWorld and its simplified agents from [the compatible upstream checkout](https://github.com/StonyBrookNLP/appworld/tree/42b5bcf3cd334fee33f0c37c02070a9f5807add5). Follow its setup instructions to install the apps and download the data. Set `APPWORLD_ROOT` to the directory containing `data/`.

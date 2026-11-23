@@ -320,22 +320,17 @@ see [Sub-Agent-Aware Routing](../routing_algorithms/subagent_routing.md).
 
 ### `decision_select`
 
-Set `target` to the LLM that handles ordinary requests and `decision_target` to a configured decision model.
-Under `[routes.<name>.rule]`, set `enabled`, `system_instruction`, `catalog_prefix`, `task_prefix`, `task_suffix`,
-`question`, `shortlist`, and `top_k`. The [AppWorld example](../../examples/appworld/routes.toml) shows a complete rule.
+Applies a gateway rule to chat requests that ask for a list of names. The SDK extracts the task and choices, calls the decision target once, and returns the selected names in an ordinary chat response. See [Apply a decision model to a list-selection call](../routing_algorithms/decision_select.md) for a request-to-response example and configuration.
 
-The rule matches the exact system instruction, reads the YAML catalog after the first user message's prefix,
-and extracts the task between the final user message's prefix and suffix. A flat catalog maps names to
-descriptions. A grouped catalog yields names such as `music.search`. BM25 shortlists up to `shortlist` options.
-The decision model scores them in one request. Switchyard returns up to `top_k` names, one per line, ranked by
-probability. Original catalog order breaks ties during shortlisting. Shortlist order breaks ties between scores.
+The operator supplies three things.
 
-Set optional `stop_words` to a list of lowercase words to ignore in the query and catalog during shortlisting.
-The default list is empty. Set optional `question_prefix` to name the numbered questions sent to the model.
-The default prefix is `q`, giving IDs such as `q0` and `q1`. The rule preserves the task text sent to the model.
+- **How to recognize the call.** `system_instruction` matches the full system message. `catalog_prefix` identifies the first user message. The YAML after the prefix maps names to descriptions. A grouped catalog combines group and option names, such as `music.search`.
+- **What to score.** Switchyard extracts the task between `task_prefix` and `task_suffix` in the final user message. It uses BM25 to shortlist up to `shortlist` choices, then sends the task as shared input and one Boolean question per choice to `decision_target`. Set `question` to the selection instruction. Optional `stop_words` excludes the supplied lowercase words during shortlisting. Optional `question_prefix` sets the numbered question IDs, which default to `q0`, `q1`, and so on.
+- **What to return.** `top_k` is the maximum number of names in the chat reply. Switchyard ranks them by probability. Catalog order breaks ties during shortlisting and shortlist order breaks ties between model scores.
 
-Set `enabled = false` and reload the configuration to send every call to the LLM. A prompt mismatch, unsupported
-catalog or unusable decision response also sends the original request to the LLM.
+The chat `target` handles ordinary requests, unsupported catalogs, and failed or unusable decision responses. It also handles requests with output token limits, multiple completions, stop sequences, log probabilities or explicit modalities. Set `enabled = false` and reload the route to send every request to the chat target.
+
+The [AppWorld walkthrough](../../examples/appworld/README.md) and [complete gateway configuration](../../examples/appworld/routes.toml) apply the same SDK feature to a catalog of APIs.
 
 ### `random`
 
