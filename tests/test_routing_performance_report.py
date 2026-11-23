@@ -394,3 +394,67 @@ def test_aiperf_cells_use_disjoint_artifacts(tmp_path, monkeypatch) -> None:
     assert first != second
     assert observed[0][0] != observed[1][0]
     assert observed[0][1] != observed[1][1]
+
+
+@pytest.mark.parametrize(
+    ("key_env", "value", "error"),
+    [
+        ("QA_DIRECT_KEY", "harmless-credential-sentinel", None),
+        ("QA_DIRECT_KEY", None, "must name a nonempty environment variable"),
+        ("QA_DIRECT_KEY", "", "must name a nonempty environment variable"),
+        ("QA_DIRECT_KEY", " ", "must name a nonempty environment variable"),
+        ("QA_DIRECT_KEY:default", "harmless-credential-sentinel", "invalid.*variable name"),
+        (None, "harmless-credential-sentinel", None),
+    ],
+)
+def test_direct_auth_uses_only_an_environment_reference(
+    tmp_path, monkeypatch, key_env, value, error
+) -> None:
+    name = key_env or "QA_DIRECT_KEY"
+    if value is None:
+        monkeypatch.delenv(name, raising=False)
+    else:
+        monkeypatch.setenv(name, value)
+    dataset = tmp_path / "input.json"
+    dataset.write_text(json.dumps({"data": [{"session_id": "one", "payloads": [{}]}]}))
+    scenario = ScenarioDefinition("short", "core", "short", "success", 0, 0, dataset, ())
+    config = BenchmarkConfig(
+        base_url="http://not-contacted.invalid",
+        models=(("route", "model"),),
+        concurrency=3,
+        request_count=5,
+        backend_label="test",
+        output_dir=tmp_path,
+        oha_bin="unused",
+        aiperf_bin="aiperf",
+        soak_bin="unused",
+        profile_runs=1,
+    )
+    arm = BenchmarkArm("direct", "model", config.base_url, True, key_env)
+    calls = []
+
+    def admit(command, log_path, artifact_dir, timeout_seconds, **kwargs):
+        calls.append(command)
+        assert "--api-key" not in command
+        if key_env is None:
+            assert "--config" not in command
+        else:
+            path = Path(command[command.index("--config") + 1])
+            contents = path.read_text()
+            auth = json.loads(contents)
+            assert auth["benchmark"]["endpoint"]["api_key"] == f"${{{key_env}}}"
+            assert auth["random_seed"] == 42
+            assert auth["benchmark"]["phases"][0]["requests"] == 5
+            assert auth["benchmark"]["phases"][0]["concurrency"] == 2
+            assert Path(auth["benchmark"]["datasets"][0]["path"]).is_file()
+            assert value not in contents + json.dumps(command)
+        return artifact_dir / "profile_export_aiperf.json"
+
+    monkeypatch.setattr(benchmark, "run_profile", admit)
+    if error:
+        with pytest.raises(RuntimeError, match=error):
+            benchmark.run_aiperf(config, arm, scenario, {"kind": "fixed"}, tmp_path, "auth", 2)
+        assert not calls
+    else:
+        benchmark.run_aiperf(config, arm, scenario, {"kind": "fixed"}, tmp_path, "auth", 2)
+        assert len(calls) == 1

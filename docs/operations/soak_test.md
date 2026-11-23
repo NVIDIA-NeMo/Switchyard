@@ -103,7 +103,11 @@ arm. That difference isolates Switchyard overhead only when the direct and route
 same backend deployment, model, and response settings. Resilience scenarios have different
 failure semantics, so the script does not run or compare the direct arm for them. For an
 authenticated backend, pass the name of the key variable, not the key itself, with
-`--direct-api-key-env NVIDIA_API_KEY`.
+`--direct-api-key-env NVIDIA_API_KEY`. The variable must be set and nonempty.
+The script writes an AIPerf configuration containing only the variable reference;
+AIPerf resolves it from its inherited environment. The key value is not placed in
+command-line arguments or the generated configuration. Omit the option for an
+unauthenticated direct backend.
 
 The Markdown report starts with one overhead row for each route and workload. Positive request or
 TTFT latency means the routed request took longer than the direct request. Negative request or
