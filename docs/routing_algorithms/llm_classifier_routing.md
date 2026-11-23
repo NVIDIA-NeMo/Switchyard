@@ -288,7 +288,9 @@ any = ["balanced", "fast", "premium"]
 
 Every non-empty group except `judge` and `any` is an option, and its name is the
 option ID, so name each group with an ID the decision service returns. Options
-are sent in group-name order. A route needs at least two options. `models.judge`
+are sent in group-name order. A route normally needs at least two options.
+[Foundry Rank](../reference/toml_schema.md#decision_clientsname) also supports
+a single option. `models.judge`
 must name a decision target.
 
 The request `input` holds the conversation messages. `recent_turn_window` sets

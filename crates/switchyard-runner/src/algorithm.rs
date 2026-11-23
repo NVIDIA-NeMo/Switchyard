@@ -103,6 +103,7 @@ enum LlmClassifierModeConfig {
         models: CategoryModelConfig,
         default_target: Category,
         config: DirectClassifierConfig,
+        is_native: bool,
     },
 }
 
@@ -283,6 +284,9 @@ pub struct DecisionJudgeRouteConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LlmClassifierRouteConfig {
+    #[doc(hidden)]
+    #[serde(skip)]
+    pub is_native_direct: bool,
     /// Target the judge is called through. Never a routing destination itself.
     pub classifier_target: String,
     /// Mode to run. Defaults to escalation when `escalation` is set, otherwise capability.
@@ -1419,6 +1423,7 @@ impl LlmClassifierRouteConfig {
         route_name: &str,
     ) -> AlgorithmResult<LlmClassifierModeConfig> {
         let Self {
+            is_native_direct,
             classifier_target,
             mode,
             strong_target,
@@ -1649,9 +1654,15 @@ impl LlmClassifierRouteConfig {
                     })
                     .map(|(category, _)| category)
                     .collect();
+                if *is_native_direct && matches!(default_target, Category::Any | Category::Judge) {
+                    return Err(AlgorithmConfigError::new(format!(
+                        "llm_classifier route {route_name}: direct default_target must be one of the options"
+                    )));
+                }
                 Ok(LlmClassifierModeConfig::Direct {
                     models,
                     default_target,
+                    is_native: *is_native_direct,
                     config: DirectClassifierConfig {
                         options,
                         fail_open: fail_open.unwrap_or(true),
@@ -1902,6 +1913,11 @@ fn build_algorithm(
                         config: classifier_config,
                     })
                 }
+                LlmClassifierModeConfig::Direct {
+                    config,
+                    is_native: true,
+                    ..
+                } => LlmTaskClassifier::new_native_direct(config),
                 LlmClassifierModeConfig::Direct {
                     default_target,
                     config,

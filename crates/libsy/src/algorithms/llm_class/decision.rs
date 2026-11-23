@@ -290,18 +290,24 @@ pub(super) struct DirectClassifier {
     config: DirectClassifierConfig,
     input: TaskInput,
     question: DecisionQuestion,
+    is_native: bool,
 }
 
 impl DirectClassifier {
-    pub(super) fn new(config: DirectClassifierConfig) -> Result<Self> {
-        if config.options.len() < 2
+    pub(super) fn new(config: DirectClassifierConfig, is_native: bool) -> Result<Self> {
+        if config.options.len() < if is_native { 1 } else { 2 }
             || config
                 .options
                 .iter()
                 .any(|option| matches!(option, Category::Judge | Category::Any))
         {
             return Err(LibsyError::AlgorithmError {
-                message: "direct mode needs at least two options other than judge and any".into(),
+                message: if is_native {
+                    "native direct mode needs at least one option other than judge and any"
+                } else {
+                    "direct mode needs at least two options other than judge and any"
+                }
+                .into(),
             });
         }
         let question = choice_question(
@@ -321,6 +327,7 @@ impl DirectClassifier {
             },
             config,
             question,
+            is_native,
         })
     }
 
@@ -358,7 +365,15 @@ impl Classifier for DirectClassifier {
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
         let judge = driver.first_model_for(&Category::Judge)?;
-        let decision = route_request(&self.input, request, &self.question)?;
+        let decision = if self.is_native {
+            DecisionRequest {
+                model: None,
+                input: Value::Null,
+                questions: BTreeMap::from([(ROUTE.into(), self.question.clone())]),
+            }
+        } else {
+            route_request(&self.input, request, &self.question)?
+        };
         let category = match self.try_select(decision, driver, judge).await {
             Ok(category) => category,
             Err(error) if self.config.fail_open => {

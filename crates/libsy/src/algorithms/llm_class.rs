@@ -805,7 +805,28 @@ impl LlmTaskClassifier {
             classify_trigger: config.classify_trigger,
             message_hash_fallback: config.message_hash_fallback,
         };
-        Self::from_classifier(Arc::new(DirectClassifier::new(config)?), route)
+        Self::from_classifier(Arc::new(DirectClassifier::new(config, false)?), route)
+    }
+
+    /// Builds a direct route whose decision checks the native request and qualifies only its winner.
+    pub fn new_native_direct(config: DirectClassifierConfig) -> Result<Self> {
+        if config.fail_open
+            || config.classify_trigger != ClassifyTrigger::EveryRequest
+            || config.message_hash_fallback
+            || config.recent_turn_window.is_some()
+        {
+            return Err(LibsyError::AlgorithmError {
+                message: "native direct mode requires fail-closed routing on every request".into(),
+            });
+        }
+        let inner: Arc<dyn Classifier> = Arc::new(DirectClassifier::new(config, true)?);
+        Ok(Self {
+            route: FallThrough::new()
+                .with_name(ALGORITHM_NAME)
+                .with_winner_only()
+                .with_classifier(Arc::clone(&inner)),
+            inner,
+        })
     }
 
     /// The judge face alone, for composite's own trigger and retained tier.

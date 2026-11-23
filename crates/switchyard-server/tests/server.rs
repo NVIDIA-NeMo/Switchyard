@@ -56,6 +56,7 @@ impl MockUpstream {
                 post(upstream_foundry_rank),
             )
             .route("/v1/chat/completions", post(upstream_chat))
+            .route("/rank-test/v1/messages", post(upstream_rank_test_messages))
             .route("/buffered/responses", post(upstream_buffered_responses))
             .route(
                 "/v1/messages",
@@ -133,6 +134,14 @@ async fn upstream_foundry_rank(
         Some("unknown_model") => ("unknown", "test-version"),
         Some("wrong_version") => ("gpt-5-mini", "wrong-version"),
         Some("oversized") => return " ".repeat(256 * 1024 + 1).into_response(),
+        Some("throttled") => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [("retry-after", "7"), ("set-cookie", "private")],
+            )
+                .into_response();
+        }
+        Some("expired_token") => return StatusCode::UNAUTHORIZED.into_response(),
         Some("no_models") => {
             return (
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -149,10 +158,24 @@ async fn upstream_foundry_rank(
         "object": "model_router.ranking",
         "ranking": {
             "status": "fallback",
+            "exclusions": [{"model": "gpt-5", "reason_code": "unsupported_by_model_capability"}],
             "candidates": [{"rank": 1, "model": model, "version": version}]
         }
     }))
     .into_response()
+}
+
+async fn upstream_rank_test_messages(
+    State(calls): State<Arc<Mutex<Vec<Value>>>>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let response = json!({
+        "id": "msg_rank", "type": "message", "role": "assistant", "model": body["model"],
+        "content": [{"type": "text", "text": "Blue"}], "stop_reason": "end_turn",
+        "usage": {"input_tokens": 1, "output_tokens": 1}
+    });
+    calls.lock().await.push(body);
+    Json(response)
 }
 
 fn has_system_prompt(call: &Value, expected: &str) -> bool {
@@ -1842,6 +1865,35 @@ async fn foundry_rank_preserves_native_formats_and_stops_on_no_usable_model() ->
 }
 
 #[tokio::test]
+async fn foundry_rank_does_not_fall_back_after_generation_failure() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let token = tempfile::NamedTempFile::new()?;
+    std::fs::write(token.path(), "mock-token")?;
+    let config = foundry_rank_config(&upstream, token.path())
+        .replace("deployment/mini", "model/weak")
+        .replace("[targets]", "max_retries = 0\n[targets]");
+    let app = build_switchyard_router(load_test_config(&config)?);
+    let body = json!({
+        "model": ROUTE_MODEL,
+        "messages": [{"role": "user", "content": "unavailable"}],
+    });
+    let decision = send(
+        &app,
+        "POST",
+        "/v1/decision",
+        Some(json!({
+            "input_format": "openai_chat", "request": body,
+        })),
+    )
+    .await?;
+    assert_eq!(decision.json()?["fallbacks"], json!([]));
+    let response = send(&app, "POST", "/v1/chat/completions", Some(body)).await?;
+    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(upstream.models().await, ["model/weak"]);
+    Ok(())
+}
+
+#[tokio::test]
 async fn foundry_rank_rejects_unmapped_and_fail_open_routes() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let token = tempfile::NamedTempFile::new()?;
@@ -1855,12 +1907,142 @@ async fn foundry_rank_rejects_unmapped_and_fail_open_routes() -> TestResult {
             config.replace("gpt-5-mini = \"test-version\", ", ""),
             "with configured versions",
         ),
+        (
+            config.replace(
+                "fail_open = false",
+                "fail_open = false\nclassify_trigger = \"new_session\"",
+            ),
+            "requires classify_trigger = every_request",
+        ),
+        (
+            config.replace("deployment/large", "deployment/mini"),
+            "distinct execution target",
+        ),
     ] {
         let error = Runner::from_toml(&config)
             .err()
             .ok_or("invalid Rank route loaded")?;
         assert!(error.to_string().contains(message), "{error}");
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn foundry_rank_rechecks_single_model_pool_and_generates_in_native_format() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let token = tempfile::NamedTempFile::new()?;
+    std::fs::write(token.path(), "mock-token")?;
+    let config = foundry_rank_config(&upstream, token.path())
+        .replace(
+            "default_target = \"gpt-5\"",
+            "default_target = \"gpt-5-mini\"",
+        )
+        .replace("any = [\"large\", \"other\", \"mini\"]", "any = [\"mini\"]")
+        .replace("\"gpt-4.1\" = [\"other\"]\ngpt-5 = [\"large\"]", "")
+        .replace("deployment/mini", "model/fallback");
+    for (path, format, backend, prompt) in [
+        (
+            "/v1/responses",
+            "openai_responses",
+            "/buffered",
+            json!({"input": "Give a color."}),
+        ),
+        (
+            "/v1/messages",
+            "anthropic_messages",
+            "/rank-test",
+            json!({
+                "messages": [{"role": "user", "content": "Give a color."}], "max_tokens": 32,
+            }),
+        ),
+    ] {
+        let config = config.replace("openai_chat", format).replace(
+            &upstream.base_url,
+            &format!("{}{backend}", upstream.base_url.trim_end_matches("/v1")),
+        );
+        let app = build_switchyard_router(load_test_config(&config)?);
+        for with_tools in [false, true] {
+            let mut body = prompt.clone();
+            body["model"] = json!(ROUTE_MODEL);
+            if with_tools {
+                body["tools"] = if format == "openai_responses" {
+                    json!([{"type":"function","name":"lookup","parameters":{"type":"object"}}])
+                } else {
+                    json!([{"name":"lookup","input_schema":{"type":"object"}}])
+                };
+            }
+            let response = send_with_headers(
+                &app,
+                "POST",
+                path,
+                Some(body.clone()),
+                &[("x-switchyard-session-id", "same-session")],
+            )
+            .await?;
+            assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+            let mut calls = upstream.calls.lock().await;
+            assert_eq!(calls.len(), 2);
+            assert_eq!(
+                calls[0]["rank"]["routing_config"]["models"],
+                json!(["gpt-5-mini"])
+            );
+            assert_eq!(calls[0]["rank"]["payload"], body);
+            assert_eq!(calls[1]["model"], "model/fallback");
+            if with_tools {
+                let schema = if format == "openai_responses" {
+                    "parameters"
+                } else {
+                    "input_schema"
+                };
+                assert_eq!(calls[1]["tools"][0]["name"], "lookup");
+                assert_eq!(calls[1]["tools"][0][schema], body["tools"][0][schema]);
+            }
+            calls.clear();
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn foundry_rank_preserves_messages_recovery_signals() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let token = tempfile::NamedTempFile::new()?;
+    std::fs::write(token.path(), "mock-token")?;
+    let app = build_switchyard_router(load_test_config(&foundry_rank_config(
+        &upstream,
+        token.path(),
+    ))?);
+    for (case, status) in [
+        ("no_models", StatusCode::UNPROCESSABLE_ENTITY),
+        ("throttled", StatusCode::TOO_MANY_REQUESTS),
+        ("expired_token", StatusCode::BAD_GATEWAY),
+    ] {
+        let response = send(
+            &app,
+            "POST",
+            "/v1/messages",
+            Some(json!({
+                "model": ROUTE_MODEL, "max_tokens": 32,
+                "messages": [{"role": "user", "content": "Give a color."}],
+                "metadata": {"rank_test": case},
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, status);
+        assert!(response.json()?["error"].get("code").is_none());
+        match case {
+            "no_models" => assert_eq!(
+                response.headers["x-switchyard-error-code"],
+                "no_supported_models"
+            ),
+            "throttled" => {
+                assert_eq!(response.headers["retry-after"], "7");
+                assert!(!response.headers.contains_key("set-cookie"));
+            }
+            _ => assert!(response.text()?.contains("configured credentials")),
+        }
+    }
+    assert!(upstream.models().await.is_empty());
     Ok(())
 }
 

@@ -58,6 +58,7 @@ pub struct FallThrough {
     classifiers: Vec<Arc<dyn Classifier>>,
     session_states: Option<Arc<SessionStates>>,
     cleanup_started: Once,
+    winner_only: bool,
 }
 
 impl FallThrough {
@@ -69,6 +70,7 @@ impl FallThrough {
             classifiers: Vec::new(),
             session_states: None,
             cleanup_started: Once::new(),
+            winner_only: false,
         }
     }
 
@@ -80,12 +82,18 @@ impl FallThrough {
             classifiers: Vec::new(),
             session_states: Some(Arc::new(Mutex::new(HashMap::new()))),
             cleanup_started: Once::new(),
+            winner_only: false,
         }
     }
 
     /// Sets the stable, low-cardinality telemetry name for this composition.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
+        self
+    }
+
+    pub(crate) fn with_winner_only(mut self) -> Self {
+        self.winner_only = true;
         self
     }
 
@@ -166,7 +174,11 @@ impl FallThrough {
                 // whose category holds one model still fails over to the other tier.
                 let chosen = driver.models_for(score.category.as_ref().unwrap_or(&Category::Any));
                 let mut fallback_models: Vec<ModelId> = Vec::new();
-                for candidate in chosen.iter().chain(driver.models_for(&Category::Any)) {
+                for candidate in chosen
+                    .iter()
+                    .chain(driver.models_for(&Category::Any))
+                    .filter(|_| !self.winner_only)
+                {
                     if *candidate != target && !fallback_models.contains(candidate) {
                         fallback_models.push(candidate.clone());
                     }

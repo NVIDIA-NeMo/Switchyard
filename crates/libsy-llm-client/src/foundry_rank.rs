@@ -25,6 +25,7 @@ pub struct FoundryRankClient {
     endpoint: Url,
     bearer_token_file: PathBuf,
     model_versions: BTreeMap<String, String>,
+    timeout: Duration,
 }
 
 impl FoundryRankClient {
@@ -68,6 +69,7 @@ impl FoundryRankClient {
             endpoint,
             bearer_token_file,
             model_versions,
+            timeout,
         })
     }
 }
@@ -85,6 +87,20 @@ impl RoutedDecisionClient for FoundryRankClient {
     }
 
     async fn call_with_native_input(
+        &self,
+        request: DecisionRequest,
+        native: Option<&NativeDecisionInput>,
+    ) -> Result<DecisionResponse> {
+        tokio::time::timeout(self.timeout, self.rank(request, native))
+            .await
+            .map_err(|source| LlmClientError::Timeout {
+                source: Box::new(source),
+            })?
+    }
+}
+
+impl FoundryRankClient {
+    async fn rank(
         &self,
         request: DecisionRequest,
         native: Option<&NativeDecisionInput>,
@@ -156,6 +172,23 @@ impl RoutedDecisionClient for FoundryRankClient {
             .map_err(convert_reqwest_error)?;
         let status = response.status();
         metrics::record_upstream_attempt(Some(status.as_u16()));
+        if matches!(
+            status,
+            http::StatusCode::UNAUTHORIZED | http::StatusCode::FORBIDDEN
+        ) {
+            return Err(LlmClientError::Configuration {
+                message: "Foundry Rank rejected the configured credentials or project access"
+                    .into(),
+            });
+        }
+        let mut headers = http::HeaderMap::new();
+        if !status.is_success() {
+            for name in ["retry-after", "retry-after-ms"] {
+                for value in response.headers().get_all(name) {
+                    headers.append(name, value.clone());
+                }
+            }
+        }
         let mut body = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(convert_reqwest_error)? {
             if chunk.len() > MAX_RESPONSE_BYTES - body.len() {
@@ -180,7 +213,7 @@ impl RoutedDecisionClient for FoundryRankClient {
                 } else {
                     "Foundry Rank rejected the request".into()
                 },
-                headers: Box::default(),
+                headers: Box::new(headers),
             });
         }
         let response: RankResponse = serde_json::from_slice(&body)

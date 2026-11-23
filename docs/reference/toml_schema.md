@@ -261,7 +261,8 @@ System One and OpenAI Decisions receive conversation messages, question
 instructions, and choice descriptions.
 
 Foundry Rank requires a standalone [direct route](../routing_algorithms/llm_classifier_routing.md#direct-selection)
-with one judge, `fail_open = false`, and no `recent_turn_window` or target
+with one judge, `fail_open = false`, `classify_trigger = "every_request"`
+(the default), and no `recent_turn_window` or target
 eligibility settings. Name each choice group after a lowercase canonical
 model ID and give it one distinct execution target. Include every `models.any`
 target in those mappings. A returned version must match `model_versions` when
@@ -272,8 +273,12 @@ This client sends the preview header and the full native Chat Completions,
 Responses, or Messages request to Foundry. Only enable the route for requests
 you are allowed to send there. It requests strict parameter matching, disables
 Foundry affinity, and makes no Rank retries or outcome reports. A Rank error
-stops routing. Generation still uses Switchyard's configured completion
-fallback order, so qualify all generation targets for the requests you serve.
+stops routing. Rank can check a pool of one or more models. Only the winner
+can generate; if it fails, Switchyard does not try another model. A Responses
+request with a recorded state owner still goes to that owner. Rank evaluates
+the incoming request, before generation-specific translation or target overrides.
+For Messages, a 422 with `x-switchyard-error-code: no_supported_models` indicates
+that Rank found no compatible target without changing the JSON error format.
 
 ## `[routes.<name>]`
 
