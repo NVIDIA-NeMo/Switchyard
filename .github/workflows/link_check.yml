@@ -1,0 +1,62 @@
+name: Repository links
+
+on:
+  pull_request:
+    paths:
+      - "**/*.md"
+      - "!docs/**"
+      - ".github/workflows/link_check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - "!docs/**"
+      - ".github/workflows/link_check.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  markdown:
+    name: Check repository Markdown links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 2
+      - name: Install lychee
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
+        with:
+          tool: lychee@0.24.2
+      - name: Check Markdown outside docs
+        run: |
+          # Rustdoc resolves these four intra-doc links when it renders the libsy README.
+          git ls-files -- ':(icase)*.md' ':(exclude)docs/**' ':(exclude)CHANGELOG.md' |
+            lychee --offline --include-fragments=full --root-dir "$PWD" \
+              --index-files index.html,README.md,. --format detailed \
+              --exclude '/crates/libsy/switchyard_protocol::(Request|Response|Usage|LlmResponse)$' \
+              --files-from -
+      - name: Check added changelog links
+        shell: bash
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [[ "$BASE" =~ ^0+$ ]]; then
+            BASE=$(git mktree </dev/null)
+          elif ! git cat-file -e "$BASE^{tree}"; then
+            git fetch --no-tags --depth=1 origin "$BASE"
+          fi
+
+          added_lines=$(mktemp "$RUNNER_TEMP/changelog.XXXXXX.md")
+          # This check requires each link in CHANGELOG.md to be an inline link on a single line.
+          git diff --no-color -U0 --output-indicator-new='>' "$BASE" HEAD -- CHANGELOG.md |
+            sed -n 's/^>//p' > "$added_lines"
+          if [[ -s "$added_lines" ]]; then
+            lychee --offline --include-fragments=full --root-dir "$PWD" \
+              --base-url "file://$PWD/CHANGELOG.md" --index-files index.html,README.md,. \
+              --format detailed "$added_lines"
+          fi
