@@ -1,8 +1,8 @@
-# Use a decision model when an agent asks which tools it needs
+# Use a gateway rule to turn an LLM request into a decision model call
 
-An agent often asks its LLM, “Which tools do I need for this task?” With Switchyard, a gateway operator can send that question to a decision model. The agent sends its usual prompt and gets back the tool names it expects. Its next request can still go to the LLM to write code.
+An agent sends its usual chat request. A Switchyard rule recognizes the request, transforms it into decision questions, routes those questions to a decision model, and turns the answers back into the chat reply the agent expects.
 
-The SDK feature is called `decision_select`. You can use it for other named choices when the request contains both the task and the available options, and the agent expects one or more names in reply.
+The SDK’s `decision_select` rule supports requests that ask the model to choose names from a supplied list. For example, an agent might ask, “Which tools do I need for this task?” The operator supplies the prompt to match, where to find the task and choices, and how many names to return. The agent keeps its existing code.
 
 ## Follow one request
 
