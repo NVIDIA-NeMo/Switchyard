@@ -12,6 +12,7 @@ use serde_json::Value;
 use switchyard_protocol::{Category, ContentBlock, Message, Role};
 
 mod decision;
+pub(super) use decision::is_decision_user_message;
 pub use decision::{DecisionChoice, DecisionJudgeConfig, DirectClassifierConfig};
 use decision::{DecisionClassifier, DirectClassifier};
 
@@ -729,7 +730,7 @@ impl LlmTaskClassifier {
     /// settings are invalid.
     pub fn new(config: LlmClassifierConfig) -> Result<Self> {
         match config {
-            LlmClassifierConfig::Capability { config } => Self::build_capability(config),
+            LlmClassifierConfig::Capability { config } => Self::build_capability(config, None),
             LlmClassifierConfig::Escalation {
                 contract,
                 config,
@@ -747,7 +748,10 @@ impl LlmTaskClassifier {
         }
     }
 
-    fn build_capability(config: TaskClassifierConfig) -> Result<Self> {
+    pub(super) fn build_capability(
+        config: TaskClassifierConfig,
+        composite_trigger: Option<ClassifyTrigger>,
+    ) -> Result<Self> {
         config.validate()?;
         let classify_trigger = config.classify_trigger;
         let message_hash_fallback = config.message_hash_fallback;
@@ -769,9 +773,12 @@ impl LlmTaskClassifier {
                 .with_error_recovery(config.fail_open)
                 .with_evidence(capability_evidence),
             ),
-            CapabilityJudgeConfig::Decision(judge) => {
-                Arc::new(DecisionClassifier::new(judge, input, config.fail_open)?)
-            }
+            CapabilityJudgeConfig::Decision(judge) => Arc::new(DecisionClassifier::new(
+                judge,
+                input,
+                config.fail_open,
+                composite_trigger,
+            )?),
         };
         Self::from_classifier(
             classifier,

@@ -14,10 +14,13 @@ use parking_lot::Mutex;
 
 use super::fall_through::FallThrough;
 use super::llm_class::{
-    CustomClassifierConfig, LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
+    CapabilityJudgeConfig, CustomClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
+    is_decision_user_message,
 };
 use super::stage::{StageRouterConfig, build_stage_route};
-use super::util::affinity::{ClassifyTrigger, evict_if_full, has_new_user_turn, retention_key};
+use super::util::affinity::{
+    ClassifyTrigger, evict_if_full, has_new_user_turn, is_turn_context, retention_key,
+};
 use super::util::stage::{PickerMode, Tier, fall_open_tier, set_fall_open};
 use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier};
@@ -36,6 +39,7 @@ const COMPOSITE: &str = "composite";
 struct TierSetter {
     judge: Arc<dyn Classifier>,
     trigger: ClassifyTrigger,
+    decision_judge: bool,
     message_hash_fallback: bool,
     default_tier: Tier,
     tiers: Mutex<HashMap<RoutingIdentity, Tier>>,
@@ -53,16 +57,28 @@ impl TierSetter {
     /// Two requests for one identity can both pass this and both judge, since a
     /// judge call sits between here and [`retain`](Self::retain). The later wins.
     fn is_due(&self, identity: Option<&RoutingIdentity>, state: &State, request: &Request) -> bool {
+        let messages = &request.llm_request.messages;
         match self.trigger {
             ClassifyTrigger::UserTurn => {
                 !request.llm_request.is_compaction
-                    && has_new_user_turn(&request.llm_request.messages)
+                    && if self.decision_judge {
+                        messages
+                            .iter()
+                            .rev()
+                            .find(|m| !is_turn_context(m))
+                            .is_some_and(is_decision_user_message)
+                    } else {
+                        has_new_user_turn(messages)
+                    }
             }
             // Unkeyed requests with no carried tier cannot be told apart, so every one
             // is a new session.
             ClassifyTrigger::NewSession => {
                 identity.is_none_or(|identity| !self.tiers.lock().contains_key(identity))
                     && fall_open_tier(state).is_none()
+                    && (!self.decision_judge
+                        || (!request.llm_request.is_compaction
+                            && messages.iter().any(is_decision_user_message)))
             }
             // Rejected by the constructor, and only in the enum for the standalone route.
             ClassifyTrigger::EveryRequest => true,
@@ -161,12 +177,14 @@ impl CompositeRouter {
     }
 
     fn tier_setter(judge: CompositeJudgeConfig) -> Result<TierSetter> {
-        let (trigger, message_hash_fallback) = match &judge {
-            CompositeJudgeConfig::Capability(judge) => {
-                (judge.classify_trigger, judge.message_hash_fallback)
-            }
+        let (trigger, message_hash_fallback, decision_judge) = match &judge {
+            CompositeJudgeConfig::Capability(config) => (
+                config.classify_trigger,
+                config.message_hash_fallback,
+                matches!(config.judge, CapabilityJudgeConfig::Decision(_)),
+            ),
             CompositeJudgeConfig::Custom(config) => {
-                (config.classify_trigger, config.message_hash_fallback)
+                (config.classify_trigger, config.message_hash_fallback, false)
             }
         };
         if trigger == ClassifyTrigger::EveryRequest {
@@ -177,13 +195,14 @@ impl CompositeRouter {
         let judge: Arc<dyn Classifier> = match judge {
             CompositeJudgeConfig::Capability(judge) => {
                 // Composite owns the trigger and retained verdict.
-                Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
-                    config: TaskClassifierConfig {
+                Arc::new(LlmTaskClassifier::build_capability(
+                    TaskClassifierConfig {
                         classify_trigger: ClassifyTrigger::EveryRequest,
                         message_hash_fallback: false,
                         ..judge
                     },
-                })?)
+                    Some(trigger),
+                )?)
             }
             CompositeJudgeConfig::Custom(config) => {
                 LlmTaskClassifier::custom_classifier(&config, true)?
@@ -192,6 +211,7 @@ impl CompositeRouter {
         Ok(TierSetter {
             judge,
             trigger,
+            decision_judge,
             message_hash_fallback,
             default_tier: Tier::Efficient,
             tiers: Mutex::new(HashMap::new()),
@@ -326,6 +346,46 @@ mod tests {
 
     fn router() -> Result<Arc<CompositeRouter>> {
         router_with_trigger(ClassifyTrigger::UserTurn)
+    }
+
+    #[tokio::test]
+    async fn decision_input_contains_the_users_task_or_history() -> Result<()> {
+        let task = "Fix the build.\n";
+        let mut request = turn_request(false);
+        let messages = &mut request.llm_request.messages;
+        messages[0] = Message::text(Role::User, task);
+        messages[2].role = Role::User;
+        let env = "<environment_context>setup</environment_context>";
+        messages.insert(0, Message::text(Role::User, env));
+        messages.insert(0, Message::text(Role::Developer, "Permissions"));
+        messages.insert(0, Message::text(Role::System, "Instructions"));
+        let mut users = vec![Message::text(Role::User, task)];
+        users.extend((1..=12).map(|n| Message::text(Role::User, format!("Follow-up {n}"))));
+        messages.extend_from_slice(&users[1..]);
+        for (classify_trigger, expected) in [
+            (ClassifyTrigger::NewSession, serde_json::json!(task)),
+            (ClassifyTrigger::UserTurn, serde_json::json!(users)),
+        ] {
+            let judge = CompositeJudgeConfig::Capability(TaskClassifierConfig {
+                judge: CapabilityJudgeConfig::Decision(Default::default()),
+                classify_trigger,
+                ..Default::default()
+            });
+            let router = router_with_judge(judge, None)?;
+            let models = Arc::new(runtime_models().into());
+            let outcome = crate::drive(router, request.clone(), models, |call| async {
+                let crate::Call::Decision(call) = call else {
+                    panic!("expected a decision")
+                };
+                assert_eq!(call.request.input, expected);
+                crate::core::testing::serve_decision(*call).await
+            })
+            .await?;
+            assert_eq!(outcome.metadata.unwrap().judgments.len(), 1);
+            let solver = outcome.request.llm_request.messages;
+            assert_eq!(solver, request.llm_request.messages);
+        }
+        Ok(())
     }
 
     #[tokio::test]

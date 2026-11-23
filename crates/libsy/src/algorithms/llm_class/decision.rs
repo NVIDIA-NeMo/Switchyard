@@ -10,12 +10,12 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use switchyard_protocol::{
-    Category, ChoiceOption, DecisionKind, DecisionQuestion, DecisionRequest, DecisionValue,
-    ModelId, Request, Response,
+    Category, ChoiceOption, ContentBlock, DecisionKind, DecisionQuestion, DecisionRequest,
+    DecisionValue, Message, ModelId, Request, Response, Role,
 };
 
 use crate::algorithms::llm_class::TaskInput;
-use crate::algorithms::util::affinity::ClassifyTrigger;
+use crate::algorithms::util::affinity::{ClassifyTrigger, is_environment_context};
 use crate::algorithms::util::llm_judge::{libsy_error_reason, report_fail_open};
 use crate::algorithms::util::robustness::safe_error_summary;
 use crate::{Classification, Classifier, Driver, LibsyError, Result, Score, State};
@@ -64,17 +64,66 @@ fn choice_question(instructions: String, choices: Vec<DecisionChoice>) -> Decisi
     }
 }
 
+pub(in crate::algorithms) fn is_decision_user_message(message: &Message) -> bool {
+    message.role == Role::User && message.content.iter().any(is_user_content)
+}
+
+fn is_user_content(block: &ContentBlock) -> bool {
+    match block {
+        ContentBlock::Text { text } => !text.trim().is_empty() && !is_environment_context(block),
+        ContentBlock::Image { .. }
+        | ContentBlock::Audio { .. }
+        | ContentBlock::Video { .. }
+        | ContentBlock::File { .. } => true,
+        _ => false,
+    }
+}
+
 /// Builds a request that asks `question` about the selected conversation messages.
 fn route_request(
     input: &TaskInput,
     request: &Request,
     question: &DecisionQuestion,
+    composite_trigger: Option<ClassifyTrigger>,
 ) -> Result<DecisionRequest> {
-    let messages = input.messages(request);
+    let messages = match composite_trigger {
+        Some(trigger) => {
+            let mut users = Vec::new();
+            for message in request
+                .llm_request
+                .messages
+                .iter()
+                .filter(|m| m.role == Role::User)
+            {
+                let content: Vec<_> = message
+                    .content
+                    .iter()
+                    .filter(|b| is_user_content(b))
+                    .cloned()
+                    .collect();
+                if !content.is_empty() {
+                    users.push(Message::new(Role::User, content));
+                    if trigger == ClassifyTrigger::NewSession {
+                        break;
+                    }
+                }
+            }
+            users
+        }
+        None => input.messages(request),
+    };
+    let input = if composite_trigger.is_some()
+        && let [message] = messages.as_slice()
+        && let [ContentBlock::Text { text }] = message.content.as_slice()
+    {
+        Value::String(text.clone())
+    } else {
+        serde_json::to_value(messages)
+            .map_err(|error| LibsyError::external("serializing decision input", error))?
+    };
     Ok(DecisionRequest {
         model: None,
-        input: serde_json::to_value(&messages)
-            .map_err(|error| LibsyError::external("serializing decision input", error))?,
+        input,
         questions: BTreeMap::from([(ROUTE.into(), question.clone())]),
     })
 }
@@ -154,6 +203,7 @@ impl DecisionJudgeConfig {
 pub(super) struct DecisionClassifier {
     config: DecisionJudgeConfig,
     input: TaskInput,
+    composite_trigger: Option<ClassifyTrigger>,
     fail_open: bool,
     question: DecisionQuestion,
 }
@@ -163,6 +213,7 @@ impl DecisionClassifier {
         mut config: DecisionJudgeConfig,
         mut input: TaskInput,
         fail_open: bool,
+        composite_trigger: Option<ClassifyTrigger>,
     ) -> Result<Self> {
         input.recent_turn_window.get_or_insert(DEFAULT_TURN_WINDOW);
         let question = choice_question(
@@ -175,6 +226,7 @@ impl DecisionClassifier {
         Ok(Self {
             config,
             input,
+            composite_trigger,
             fail_open,
             question,
         })
@@ -234,7 +286,7 @@ impl Classifier for DecisionClassifier {
         let judge = driver.first_model_for(&Category::Judge)?;
         let capable = driver.first_model_for(&Category::Capable)?;
         let efficient = driver.first_model_for(&Category::Efficient)?;
-        let decision = route_request(&self.input, request, &self.question)?;
+        let decision = route_request(&self.input, request, &self.question, self.composite_trigger)?;
         let score = match self.try_score(decision, driver, judge).await {
             Ok(score) => score,
             Err(error) if self.fail_open => {
@@ -358,7 +410,7 @@ impl Classifier for DirectClassifier {
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
         let judge = driver.first_model_for(&Category::Judge)?;
-        let decision = route_request(&self.input, request, &self.question)?;
+        let decision = route_request(&self.input, request, &self.question, None)?;
         let category = match self.try_select(decision, driver, judge).await {
             Ok(category) => category,
             Err(error) if self.config.fail_open => {

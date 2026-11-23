@@ -585,7 +585,7 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `classifier.decision.apply_cutoff_to` | No | `capable` | Choice ID whose probability is compared with `cutoff`. |
 | `classifier.fail_open` | No | `true` | On judge failure, retain the last classified tier or default to efficient. Set `false` to return the error. |
 | `classifier.message_hash_fallback` | No | `false` | Retains the tier by hashing the first user message, for clients that send no session ID. Works with either supported trigger. Conversations opening with the same text share a tier. |
-| `classifier.recent_turn_window` | No | unset | LLM judges default to task messages. Decision judges default to 10 recent messages plus the opening task. An explicit value sets the trailing message window. |
+| `classifier.recent_turn_window` | No | unset | Sets the trailing message window for LLM judges. Composite decision models select user input according to `classifier.classify_trigger`. |
 | `classifier.prompt` | No | packaged prompt | Replaces the classifier judge prompt. The verdict schema is unchanged. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the judge. Use `json_object` when the provider does not support JSON Schema. Switchyard adds the schema to the prompt and validates the verdict locally. |
 | `classifier.max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
