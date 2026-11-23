@@ -1,6 +1,6 @@
-# Use a gateway rule to turn an LLM request into a decision model call
+# Apply a rule to turn an LLM request into a decision model call
 
-An agent sends its usual chat request. A Switchyard rule recognizes the request, transforms it into decision questions, routes those questions to a decision model, and turns the answers back into the chat reply the agent expects.
+Switchyard evaluates the rule on each incoming chat request. When the prompt matches, the gateway turns it into decision questions, sends them to a decision model, and returns the answers in the chat format the agent expects.
 
 The SDK’s `decision_select` rule supports requests that ask the model to choose names from a supplied list. For example, an agent might ask, “Which tools do I need for this task?” The operator supplies the prompt to match, where to find the task and choices, and how many names to return. The agent keeps its existing code.
 
