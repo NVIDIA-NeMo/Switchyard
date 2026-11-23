@@ -6,11 +6,13 @@
 use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
+use switchyard_protocol::MAX_IR_TEMPERATURE;
 
+use super::MAX_TEMPERATURE;
 use crate::codecs::common::{
     collect_responses_reasoning_text, encrypted_reasoning_data, encrypted_reasoning_item_id,
     is_anthropic_request, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
-    text_from_blocks,
+    scale_temperature, text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::openai_media::{
@@ -68,7 +70,10 @@ impl FormatCodec for OpenAiResponsesCodec {
                 raw: body.get("reasoning").cloned(),
             },
             sampling: SamplingParams {
-                temperature: body.get("temperature").and_then(Value::as_f64),
+                temperature: body
+                    .get("temperature")
+                    .and_then(Value::as_f64)
+                    .map(|value| scale_temperature(value, MAX_TEMPERATURE, MAX_IR_TEMPERATURE)),
                 top_p: body.get("top_p").and_then(Value::as_f64),
                 top_k: None,
             },
@@ -241,6 +246,7 @@ impl FormatCodec for OpenAiResponsesCodec {
             && let Some(choice) = encode_responses_tool_choice(
                 choice,
                 crate::codex_namespaces::tool_namespaces(&request.extensions),
+                crate::codex_custom_tools::custom_tools(&request.extensions),
             )
         {
             body.insert("tool_choice".to_string(), choice);
@@ -287,6 +293,7 @@ impl FormatCodec for OpenAiResponsesCodec {
             body.insert("reasoning".to_string(), Value::Object(reasoning));
         }
         if let Some(value) = request.sampling.temperature {
+            let value = scale_temperature(value, MAX_IR_TEMPERATURE, MAX_TEMPERATURE);
             body.insert("temperature".to_string(), json!(value));
         }
         if let Some(value) = request.sampling.top_p {
@@ -345,21 +352,23 @@ impl FormatCodec for OpenAiResponsesCodec {
                         })
                         .sum::<usize>();
                     content.extend(output.content);
-                    if output.stop_reason.is_some() {
+                    if output.stop_reason.is_some() && stop_reason != Some(StopReason::ToolUse) {
                         stop_reason = output.stop_reason;
                     }
                 }
             }
         }
-        // The truncation signal is on the response, not the output items.
-        if body.get("status").and_then(Value::as_str) == Some("incomplete")
-            && body
+        // The incomplete reason is on the response, not the output items.
+        if body.get("status").and_then(Value::as_str) == Some("incomplete") {
+            match body
                 .get("incomplete_details")
                 .and_then(|details| details.get("reason"))
                 .and_then(Value::as_str)
-                == Some("max_output_tokens")
-        {
-            stop_reason = Some(StopReason::MaxTokens);
+            {
+                Some("max_output_tokens") => stop_reason = Some(StopReason::MaxTokens),
+                Some("content_filter") => stop_reason = Some(StopReason::ContentFilter),
+                _ => {}
+            }
         }
         let outputs = vec![if has_output {
             ResponseOutput {
@@ -375,7 +384,8 @@ impl FormatCodec for OpenAiResponsesCodec {
                 content: vec![ContentBlock::Text {
                     text: String::new(),
                 }],
-                stop_reason: Some(StopReason::EndTurn),
+                // An incomplete response can have no output items.
+                stop_reason: stop_reason.or(Some(StopReason::EndTurn)),
             }
         }];
         let response = AggLlmResponse {
@@ -627,7 +637,7 @@ fn decode_responses_input(
                         pending_tool_calls.push(ToolCall {
                             id,
                             name,
-                            arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                            arguments: decode_tool_arguments(item),
                         });
                     }
                     kind @ (Some("function_call_output") | Some("custom_tool_call_output")) => {
@@ -1166,6 +1176,14 @@ fn decode_responses_tool_choice(value: &Value) -> Option<ToolChoice> {
         Value::String(text) if text == "auto" => Some(ToolChoice::Auto),
         Value::String(text) if text == "required" => Some(ToolChoice::Required),
         Value::String(text) if text == "none" => Some(ToolChoice::None),
+        Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("custom") => {
+            object
+                .get("name")
+                .and_then(Value::as_str)
+                .map(|name| ToolChoice::Tool {
+                    name: name.to_string(),
+                })
+        }
         Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("function") => {
             // A forced tool has to name the same thing its definition does, or
             // the upstream rejects a choice naming a tool it was never offered.
@@ -1748,11 +1766,15 @@ fn encode_responses_tools(
 fn encode_responses_tool_choice(
     choice: &ToolChoice,
     namespaces: Option<&Map<String, Value>>,
+    custom_tools: Option<&Map<String, Value>>,
 ) -> Option<Value> {
     match choice {
         ToolChoice::Auto => Some(Value::String("auto".to_string())),
         ToolChoice::Required => Some(Value::String("required".to_string())),
         ToolChoice::None => Some(Value::String("none".to_string())),
+        ToolChoice::Tool { name } if custom_tools.is_some_and(|tools| tools.contains_key(name)) => {
+            Some(json!({"type": "custom", "name": name}))
+        }
         ToolChoice::Tool { name } => {
             let split = namespaces.and_then(|namespaces| {
                 crate::codex_namespaces::split_qualified_name(namespaces, name)
@@ -1783,12 +1805,23 @@ fn decode_responses_output_item(
         return Ok(None);
     };
     match item.get("type").and_then(Value::as_str) {
-        Some("message") => Ok(Some(ResponseOutput {
-            url_citations: decode_responses_url_citations(item.get("content")),
-            role: role_from_responses(item.get("role").and_then(Value::as_str)),
-            content: decode_responses_content(item.get("content").unwrap_or(&Value::Null)),
-            stop_reason: Some(StopReason::EndTurn),
-        })),
+        Some("message") => {
+            let content = decode_responses_content(item.get("content").unwrap_or(&Value::Null));
+            let stop_reason = if content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Refusal { .. }))
+            {
+                StopReason::ContentFilter
+            } else {
+                StopReason::EndTurn
+            };
+            Ok(Some(ResponseOutput {
+                url_citations: decode_responses_url_citations(item.get("content")),
+                role: role_from_responses(item.get("role").and_then(Value::as_str)),
+                content,
+                stop_reason: Some(stop_reason),
+            }))
+        }
         Some("function_call") => Ok(Some(ResponseOutput {
             url_citations: Vec::new(),
             role: Role::Assistant,
@@ -1803,7 +1836,7 @@ fn decode_responses_output_item(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                arguments: decode_tool_arguments(item),
             })],
             stop_reason: Some(StopReason::ToolUse),
         })),
@@ -1892,7 +1925,43 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                             if provider.as_str() == WireFormat::OpenAiResponses.as_str()
                                 && raw["type"].as_str().is_some_and(super::is_native_output))
                 });
-                let text = text_from_blocks(&output.content, "");
+                let mut content = Vec::new();
+                let mut text_offset = 0;
+                for block in &output.content {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            let text_end = text_offset + text.chars().count();
+                            let annotations = output
+                                .url_citations
+                                .iter()
+                                .filter(|citation| {
+                                    citation.start_index >= text_offset
+                                        && citation.end_index <= text_end
+                                })
+                                .map(|citation| {
+                                    json!({
+                                        "type": "url_citation",
+                                        "start_index": citation.start_index - text_offset,
+                                        "end_index": citation.end_index - text_offset,
+                                        "url": citation.url,
+                                        "title": citation.title,
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            content.push(json!({
+                                "type": "output_text",
+                                "text": text,
+                                "annotations": annotations,
+                            }));
+                            text_offset = text_end;
+                        }
+                        ContentBlock::Refusal { text } => {
+                            content.push(json!({"type": "refusal", "refusal": text}));
+                            text_offset += text.chars().count();
+                        }
+                        _ => {}
+                    }
+                }
                 let reasoning = reasoning_text_from_blocks(&output.content, "\n");
                 let status = if matches!(output.stop_reason, Some(StopReason::MaxTokens)) {
                     "incomplete"
@@ -1947,23 +2016,16 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     ));
                 }
 
-                if !text.is_empty() || (!has_output_items && reasoning.is_empty()) {
+                if content.is_empty() && !has_output_items && reasoning.is_empty() {
+                    content.push(json!({"type": "output_text", "text": "", "annotations": []}));
+                }
+                if !content.is_empty() {
                     items.push(json!({
                         "type": "message",
                         "id": "msg_switchyard",
                         "status": status,
                         "role": role_to_responses(output.role),
-                        "content": [{
-                            "type": "output_text",
-                            "text": text,
-                            "annotations": output.url_citations.iter().map(|citation| json!({
-                                "type": "url_citation",
-                                "start_index": citation.start_index,
-                                "end_index": citation.end_index,
-                                "url": citation.url,
-                                "title": citation.title,
-                            })).collect::<Vec<_>>(),
-                        }],
+                        "content": content,
                     }));
                 }
 
@@ -2012,6 +2074,17 @@ fn encode_responses_reasoning_output(
         item["encrypted_content"] = Value::String(encrypted.to_string());
     }
     item
+}
+
+fn decode_tool_arguments(item: &Map<String, Value>) -> Value {
+    item.get("arguments")
+        .map(|value| {
+            value
+                .as_str()
+                .and_then(|text| serde_json::from_str(text).ok())
+                .unwrap_or_else(|| value.clone())
+        })
+        .unwrap_or_else(|| json!({}))
 }
 
 // Serializes JSON with Python-like spacing to match legacy converter behavior.

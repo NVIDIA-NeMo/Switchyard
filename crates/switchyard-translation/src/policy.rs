@@ -5,16 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::format::FormatId;
-
-/// Controls how unknown provider fields are handled.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub enum UnknownFieldPolicy {
-    Preserve,
-    DropWithWarning,
-    Reject,
-}
-
 /// Controls whether known lossy conversions are allowed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum LossyConversionPolicy {
@@ -59,18 +49,9 @@ pub struct TargetCapabilities {
     pub openai_compatible: Option<bool>,
 }
 
-/// Provider-level profile that can be used to configure target capabilities.
-#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ProviderProfile {
-    pub format: Option<FormatId>,
-    pub provider: Option<String>,
-    pub capabilities: TargetCapabilities,
-}
-
 /// End-to-end policy applied by request, response, and stream translation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct TranslationPolicy {
-    pub unknown_field_policy: UnknownFieldPolicy,
     pub lossy_conversion_policy: LossyConversionPolicy,
     pub deterministic_ids: DeterministicIdPolicy,
     pub preservation: PreservationPolicy,
@@ -80,7 +61,6 @@ pub struct TranslationPolicy {
 impl Default for TranslationPolicy {
     fn default() -> Self {
         Self {
-            unknown_field_policy: UnknownFieldPolicy::Preserve,
             lossy_conversion_policy: LossyConversionPolicy::AllowWithDiagnostics,
             deterministic_ids: DeterministicIdPolicy::GenerateStable {
                 prefix: "sw".to_string(),

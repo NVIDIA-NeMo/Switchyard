@@ -28,7 +28,7 @@ use parking_lot::Mutex;
 use serde_json::{Value, json};
 use switchyard_libsy::{
     Algorithm, AnswerSummary, Call, CallDecision, LibsyError, OutcomeMetadata, Result,
-    RoutingOutcome, RuntimeModels, drive,
+    RoutingOutcome, RuntimeModels, drive, prepend_system_prompt,
 };
 use switchyard_protocol::{
     AggLlmResponse, LlmClientError, LlmResponse, LlmResponseChunk, LlmResponseStream, Message,
@@ -352,7 +352,15 @@ async fn call_first_available<'a>(
             {
                 return Err(error);
             }
-            Err(error) => match fallback_reason(&error, fallback_request.is_none()) {
+            Err(error) => match if algorithm == "vgr"
+                && fallback_request.is_some()
+                && matches!(&error, LibsyError::ClientCall { source, .. }
+                    if source.is_attachment_rejection())
+            {
+                Some(RoutingFallbackReason::Unavailable)
+            } else {
+                fallback_reason(&error, fallback_request.is_none())
+            } {
                 Some(reason) => tracing::info!(
                     from = %target,
                     to = %models[index + 1],
@@ -456,23 +464,27 @@ async fn call_one(
     let started = Instant::now();
     let mut routing_usage = None;
     let result = async {
-        let mut response = client?.call(request).await?;
+        let response = async { client?.call(request).await }
+            .await
+            .map_err(|source| LibsyError::client_call(model_id.clone(), source));
+        // Observe dispatch and live I/O once; buffering must not re-observe replay.
+        let mut response = observability::observe_client_call(response)?;
         if is_routing && let LlmResponse::Stream(chunks) = response.llm_response {
-            let (chunks, usage) = buffer_routing_stream(chunks).await?;
+            let (chunks, usage) = buffer_routing_stream(chunks, &response.upstream_headers)
+                .await
+                .map_err(|source| LibsyError::client_call(model_id.clone(), source))?;
             routing_usage = usage;
             response.llm_response = LlmResponse::Stream(chunks);
         }
         Ok(response)
     }
-    .await
-    .map_err(|source| LibsyError::client_call(model_id.clone(), source));
+    .await;
     let duration = started.elapsed();
 
     let result = result.map(|mut response| {
         response.set_served_model(model_id);
         response
     });
-    let result = observability::observe_client_call(result);
     let result = if is_routing {
         result
     } else {
@@ -500,6 +512,7 @@ async fn call_one(
 // Routing logs need the final usage, but replay must keep signed provider events intact.
 async fn buffer_routing_stream(
     mut chunks: LlmResponseStream,
+    upstream_headers: &http::HeaderMap,
 ) -> std::result::Result<(LlmResponseStream, Option<Usage>), LlmClientError> {
     let mut events = Vec::new();
     let mut usage = None;
@@ -514,6 +527,7 @@ async fn buffer_routing_stream(
                     return Err(LlmClientError::UpstreamHttp {
                         status: StatusCode::BAD_GATEWAY,
                         body: message.clone(),
+                        headers: Box::new(upstream_headers.clone()),
                     });
                 }
                 _ => {}
@@ -537,7 +551,7 @@ fn fallback_reason(
         LlmClientError::Transport { .. } | LlmClientError::TemporarilyUnavailable => {
             Some(RoutingFallbackReason::Unavailable)
         }
-        LlmClientError::UpstreamHttp { status, body } => {
+        LlmClientError::UpstreamHttp { status, body, .. } => {
             let policy_denial = serde_json::from_str::<Value>(body).is_ok_and(|value| {
                 value["error"]["code"].as_str() == Some("content_policy_violation")
             });
@@ -1103,19 +1117,21 @@ impl ClientRouter {
 
     /// Prepare a completion candidate with its configured target prompt.
     fn prepare_completion_request(&self, mut request: Request, target: &ModelId) -> Request {
-        let prompt = self.inner.target_prompts.get(target).map(String::as_str);
-        prepare_request_for_target(&mut request.llm_request, target, prompt);
+        prepare_request_for_target(&mut request.llm_request, target);
+        if let Some(prompt) = self.inner.target_prompts.get(target) {
+            prepend_system_prompt(&mut request.llm_request, prompt);
+        }
         request
     }
 
     /// Prepare a routing call, adding a target prompt only when it generates a candidate answer.
     fn prepare_routing_request(&self, mut request: Request, target: &ModelId) -> Request {
-        let prompt = if self.inner.routing_answer_target.as_ref() == Some(target) {
-            self.inner.target_prompts.get(target).map(String::as_str)
-        } else {
-            None
-        };
-        prepare_request_for_target(&mut request.llm_request, target, prompt);
+        prepare_request_for_target(&mut request.llm_request, target);
+        if self.inner.routing_answer_target.as_ref() == Some(target)
+            && let Some(prompt) = self.inner.target_prompts.get(target)
+        {
+            prepend_system_prompt(&mut request.llm_request, prompt);
+        }
         request
     }
 }
@@ -1250,10 +1266,12 @@ mod tests {
                     FirstOutcome::ContentPolicy(status) => Err(LlmClientError::UpstreamHttp {
                         status,
                         body: r#"{"error":{"code":"content_policy_violation","message":"request blocked by content policy","type":"invalid_request_error"},"metadata":{"documentation_section":"context window"}}"#.to_string(),
+                        headers: Box::default(),
                     }),
                     FirstOutcome::Unauthorized => Err(LlmClientError::UpstreamHttp {
                         status: StatusCode::UNAUTHORIZED,
                         body: "unauthorized".to_string(),
+                        headers: Box::default(),
                     }),
                     FirstOutcome::StreamSuccess => Ok(stream_response(vec![
                         LlmResponseChunk::TextDelta {
@@ -2508,6 +2526,7 @@ mod tests {
                     &error(LlmClientError::UpstreamHttp {
                         status,
                         body: "failed".to_string(),
+                        headers: Box::default(),
                     }),
                     true
                 ),
@@ -2531,6 +2550,7 @@ mod tests {
                     &error(LlmClientError::UpstreamHttp {
                         status: StatusCode::BAD_REQUEST,
                         body: body.to_string(),
+                        headers: Box::default(),
                     }),
                     true
                 ),
@@ -2551,6 +2571,7 @@ mod tests {
                     &error(LlmClientError::UpstreamHttp {
                         status,
                         body: "failed".to_string(),
+                        headers: Box::default(),
                     }),
                     true
                 ),
@@ -2981,6 +3002,264 @@ mod tests {
             .await
             .map_err(|source| LibsyError::client_call("weak", source))?;
         assert_eq!(completion_text(&aggregate), "");
+        Ok(())
+    }
+    struct MediaFailureClient {
+        fail_efficient: bool,
+        status: StatusCode,
+        body: String,
+        calls: Mutex<Vec<ModelId>>,
+    }
+
+    #[async_trait]
+    impl RoutedLlmClient for MediaFailureClient {
+        async fn call(&self, request: Request) -> std::result::Result<Response, LlmClientError> {
+            let target = request.model_id().unwrap();
+            self.calls.lock().push(target.clone());
+            if (self.fail_efficient && target == "efficient")
+                || (!self.fail_efficient && target == "capable")
+            {
+                return Err(LlmClientError::UpstreamHttp {
+                    status: self.status,
+                    body: self.body.clone(),
+                    headers: Default::default(),
+                });
+            }
+            Ok(Response {
+                llm_response: LlmResponse::Agg(switchyard_protocol::text_response(
+                    Some(target.to_string()),
+                    if target == "judge" { "no" } else { "Red" },
+                )),
+                metadata: None,
+                upstream_headers: Default::default(),
+            })
+        }
+    }
+
+    async fn check_vgr_media_rejections(fail_efficient: bool, has_attachment: bool) -> Result<()> {
+        use switchyard_libsy::{ACTIVE_APPROVAL, ServingMode, Vgr, VgrConfig};
+        use switchyard_protocol::{ContentBlock, ImageSource};
+        for (status, body, succeeds) in [
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"message":"unsupported content[].type"}}"#,
+                true,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"message":"The image data you provided does not represent a valid image"}}"#,
+                true,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"code":"content_policy_violation","message":"invalid image"}}"#,
+                false,
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                r#"{"error":{"code":"content_policy_violation"}}"#,
+                false,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                "injected failure",
+                fail_efficient && has_attachment,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"message":"injected failure"}}"#,
+                fail_efficient && has_attachment,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                "invalid sampling parameter",
+                fail_efficient && has_attachment,
+            ),
+        ] {
+            let mut config = VgrConfig::new("efficient".into(), "capable".into());
+            config.mode = ServingMode::Active {
+                approval: ACTIVE_APPROVAL.into(),
+            };
+            config.task_typing = false;
+            config.efficient_supports_attachments = true;
+            config.targets.judge = Some("judge".into());
+            let client = Arc::new(MediaFailureClient {
+                fail_efficient,
+                status,
+                body: body.into(),
+                calls: Mutex::new(Vec::new()),
+            });
+            let mut input = request();
+            let mut content = vec![ContentBlock::Text {
+                text: "What color?".into(),
+            }];
+            if has_attachment {
+                content.push(ContentBlock::Image {
+                    source: ImageSource::Url {
+                        url: "https://example.test/red.bmp".into(),
+                        detail: None,
+                    },
+                });
+            }
+            input.llm_request.messages = vec![Message::new(Role::User, content)];
+            let result = run(
+                Arc::new(Vgr::new(config)?),
+                ClientRouter::single(client.clone()),
+                input,
+                to_category_map(&["efficient", "capable"]),
+                None,
+            )
+            .await;
+            if succeeds {
+                let (selected, response) = result?;
+                assert_eq!(selected.as_str(), "capable");
+                assert_eq!(
+                    response.served_model().map(ModelId::as_str),
+                    Some(if fail_efficient {
+                        "capable"
+                    } else {
+                        "efficient"
+                    })
+                );
+                assert_eq!(
+                    completion_text(
+                        &response
+                            .llm_response
+                            .into_agg()
+                            .await
+                            .map_err(|e| LibsyError::client_call(selected, e))?
+                    ),
+                    "Red"
+                );
+                let local_calls = client
+                    .calls
+                    .lock()
+                    .iter()
+                    .filter(|m| m.as_str() == "efficient")
+                    .count();
+                assert_eq!(local_calls, if fail_efficient { 1 } else { 2 });
+            } else {
+                assert!(result.is_err(), "{fail_efficient}, {status}, {body}");
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn efficient_attachment_bad_requests_escalate_without_bypassing_policy() -> Result<()> {
+        check_vgr_media_rejections(true, true).await
+    }
+
+    #[tokio::test]
+    async fn capable_media_rejections_allow_vgr_stand_in_without_hiding_other_bad_requests()
+    -> Result<()> {
+        check_vgr_media_rejections(false, true).await
+    }
+
+    #[tokio::test]
+    async fn efficient_text_bad_requests_remain_terminal() -> Result<()> {
+        check_vgr_media_rejections(true, false).await
+    }
+    #[tokio::test]
+    async fn failed_efficient_attachment_is_not_retried_after_capable_rejection() -> Result<()> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use switchyard_libsy::{ACTIVE_APPROVAL, ServingMode, Vgr, VgrConfig};
+        use switchyard_protocol::{ContentBlock, ImageSource, Metadata};
+        struct Client {
+            reject_efficient: AtomicBool,
+            calls: Mutex<Vec<ModelId>>,
+        }
+        #[async_trait]
+        impl RoutedLlmClient for Client {
+            async fn call(
+                &self,
+                request: Request,
+            ) -> std::result::Result<Response, LlmClientError> {
+                let target = request.model_id().unwrap();
+                self.calls.lock().push(target.clone());
+                if target == "capable"
+                    || (target == "efficient" && self.reject_efficient.load(Ordering::Relaxed))
+                {
+                    return Err(LlmClientError::UpstreamHttp {
+                        status: if target == "efficient" {
+                            StatusCode::INTERNAL_SERVER_ERROR
+                        } else {
+                            StatusCode::BAD_REQUEST
+                        },
+                        body: if target == "efficient" {
+                            "cannot make GET request"
+                        } else {
+                            "invalid image"
+                        }
+                        .into(),
+                        headers: Default::default(),
+                    });
+                }
+                Ok(Response {
+                    llm_response: LlmResponse::Agg(switchyard_protocol::text_response(
+                        Some(target.to_string()),
+                        if target == "judge" { "no" } else { "Red" },
+                    )),
+                    metadata: None,
+                    upstream_headers: Default::default(),
+                })
+            }
+        }
+        let mut config = VgrConfig::new("efficient".into(), "capable".into());
+        config.mode = ServingMode::Active {
+            approval: ACTIVE_APPROVAL.into(),
+        };
+        config.task_typing = false;
+        config.efficient_supports_attachments = true;
+        config.targets.judge = Some("judge".into());
+        let algorithm: Arc<dyn Algorithm> = Arc::new(Vgr::new(config)?);
+        let client = Arc::new(Client {
+            reject_efficient: AtomicBool::new(true),
+            calls: Mutex::new(Vec::new()),
+        });
+        let mut input = request();
+        input.metadata = Some(Metadata {
+            session_id: Some("media-recovery".into()),
+            ..Default::default()
+        });
+        input.llm_request.messages[0]
+            .content
+            .push(ContentBlock::Image {
+                source: ImageSource::Url {
+                    url: "https://example.invalid/image.png".into(),
+                    detail: None,
+                },
+            });
+        let result = run(
+            algorithm.clone(),
+            ClientRouter::single(client.clone()),
+            input.clone(),
+            to_category_map(&["efficient", "capable"]),
+            None,
+        )
+        .await;
+        assert!(matches!(result, Err(LibsyError::ClientCall {
+            target, source: LlmClientError::UpstreamHttp { status: StatusCode::BAD_REQUEST, .. },
+        }) if target == "capable"));
+        assert_eq!(
+            *client.calls.lock(),
+            vec![ModelId::new("efficient"), ModelId::new("capable")]
+        );
+        client.reject_efficient.store(false, Ordering::Relaxed);
+        client.calls.lock().clear();
+        run(
+            algorithm,
+            ClientRouter::single(client.clone()),
+            input,
+            to_category_map(&["efficient", "capable"]),
+            None,
+        )
+        .await?;
+        let calls = client.calls.lock();
+        assert_eq!(
+            calls.iter().filter(|m| m.as_str() == "efficient").count(),
+            2
+        );
         Ok(())
     }
 }

@@ -165,7 +165,13 @@ pub struct CallModel {
     pub algorithm: String,
     /// The request to serve; its `model` is stamped with the first candidate.
     pub request: Request,
-    /// Candidate models, tried in order until one answers. Never empty.
+    /// Candidate models in fallback order. Never empty.
+    ///
+    /// The host owns candidate execution and fallback. The native
+    /// `switchyard-llm-client` consumer calls only the first candidate during routing.
+    /// A failure stops its run unless [`Self::recover_errors`] is enabled, which
+    /// returns the error to the algorithm without trying later candidates.
+    /// Terminal completion fallback is handled separately.
     pub models: Vec<ModelId>,
     /// Return client errors to the algorithm so it can apply its fallback policy.
     pub recover_errors: bool,
@@ -403,6 +409,7 @@ impl AnswerSummary {
 
 #[derive(Default)]
 struct RunEvidence {
+    failed_models: Vec<ModelId>,
     outcome: Option<Value>,
     judgments: Vec<crate::JudgeDecision>,
 }
@@ -461,6 +468,15 @@ impl Driver {
 
     pub(crate) fn set_state(&self, state: State) {
         *self.state.lock() = state;
+    }
+
+    /// Record a generation failure for this run, independently of session or backend health.
+    pub(crate) fn record_model_failure(&self, model: ModelId) {
+        self.evidence.lock().failed_models.push(model);
+    }
+
+    pub(crate) fn model_failed(&self, model: &ModelId) -> bool {
+        self.evidence.lock().failed_models.contains(model)
     }
 
     /// Replace the current run's evidence when a component makes the final decision.

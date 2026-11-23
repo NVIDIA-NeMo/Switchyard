@@ -136,14 +136,22 @@ fn raw_file_payload(raw: &Value) -> Option<Map<String, Value>> {
             ),
             filename,
         )),
-        "base64" => Some(file_data_payload(
-            &format!(
-                "data:{};base64,{}",
-                source.get("media_type")?.as_str()?,
-                source.get("data")?.as_str()?
-            ),
-            filename,
-        )),
+        "base64" => {
+            let media_type = source.get("media_type")?.as_str()?;
+            // Anthropic titles are optional display labels; OpenAI uses the filename
+            // extension to identify inline PDFs.
+            let pdf_filename = (media_type == "application/pdf").then(|| {
+                match filename.filter(|name| !name.trim().is_empty()) {
+                    Some(name) if name.to_ascii_lowercase().ends_with(".pdf") => name.to_owned(),
+                    Some(name) => format!("{name}.pdf"),
+                    None => "document.pdf".to_owned(),
+                }
+            });
+            Some(file_data_payload(
+                &format!("data:{media_type};base64,{}", source.get("data")?.as_str()?),
+                pdf_filename.as_deref().or(filename),
+            ))
+        }
         _ => None,
     }
 }

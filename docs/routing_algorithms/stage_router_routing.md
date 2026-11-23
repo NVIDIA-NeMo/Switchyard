@@ -37,10 +37,12 @@ The axes are **corroborative**: the signed score is `tanh`-squashed to a
 confidence in `[0, 1]`. One maxed scoring dimension produces about `0.46`;
 corroborating evidence pushes confidence decisively past a `0.5` threshold.
 Repeated failures, critical-error severity, and context compaction are hard
-overrides to the capable tier. Active holds bypass signal extraction and scoring.
+overrides to the capable tier. Set `compaction_override = false` to disable the
+compaction override in either picker. Active holds bypass signal extraction and scoring.
 Severity and test results come from tool output that ran something. The contents
 returned by the built-in read and search tools do not count, unless the tool
-reports a failure.
+reports a failure. Reading a missing file does not add error severity, even
+when the tool marks the result as an error.
 
 `confidence_threshold` sets how sure that estimate must be before the router acts
 on the signal alone. Scores inside the ambiguous band go to the optional
@@ -125,10 +127,8 @@ Both pickers read the same signals; only the default tier differs.
 
 !!! warning "`capable_first` is experimental"
 
-    Every published threshold and routing result comes from `efficient_first`
-    runs. `capable_first` works and the server accepts it, but it has not been
-    benchmarked, so there are no calibrated thresholds for it and no measured
-    accuracy or cost figures to set expectations against. The server logs a
+    The [SWE-Atlas-QnA results](../benchmarks.md#swe-atlas-qna) report accuracy and cost
+    savings for `capable_first`. It has no calibrated threshold. The server logs a
     warning at startup when a route selects it. Use `efficient_first` unless you
     are running your own calibration. See
     [Reachable scores per picker](#reachable-scores-per-picker) for what a
@@ -253,6 +253,7 @@ required columns.
 | `capable_system_prompt` | unset | System prompt prepended for capable requests. |
 | `efficient_system_prompt` | unset | System prompt prepended for efficient requests. |
 | `recent_turn_window` | `3` | Trailing tool results the signals are computed over. |
+| `compaction_override` | `true` | Context compaction forces capable. Set `false` to use the other signals and picker normally. |
 | `capable_hold_turns` | `2` | Requests kept on capable after switching to it; signal-driven capable decisions also start finite holds. `0` disables; `-1` pins after a switch. |
 | `efficient_hold_turns` | `0` | Requests kept on efficient after switching to it. `0` disables; `-1` pins after a switch. |
 | `tool_semantics.observe` | `[]` | Domain tool names that count as investigation. |

@@ -61,9 +61,10 @@ stateDiagram-v2
   one on another. Neither assessor retry (which doesn't change the
   instruction) nor build retry (which can't always rescue a structurally
   bad instruction) handles this. The orchestrator runs
-  `_cfg.BUILD_N_CANDIDATES` (default 2) independent build → assessor →
+  `_cfg.BUILD_N_CANDIDATES` (default 3) independent build → assessor →
   build-retry → assessor loops concurrently per task; picks a passing
   candidate uniformly at random; rejects only when all candidates fail.
+  Set `build_n_candidates` in the TOML profile to override this default.
   See `_run_build_align_candidates` and `_one_candidate_loop`.
 - **Haiku smoke deleted.** After OPUS_TRIAGED the task goes straight
   to `_compare_and_accept`, which now just sets ACCEPTED. Rank-inversion
@@ -426,7 +427,7 @@ one analysis only sees one slice — empirical tuning of any one cap can't
 be interpreted in isolation.
 
 (Independent of these per-loop counters, the orchestrator runs
-`BUILD_N_CANDIDATES` (default 2) parallel candidate loops per task.
+`BUILD_N_CANDIDATES` (default 3) parallel candidate loops per task.
 Each candidate has its own copy of the per-loop budgets below; counters
 are not shared across candidates. Parallelism addresses *unlucky-build*
 variance, which retry counters cannot.)

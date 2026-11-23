@@ -12,7 +12,6 @@ pub mod engine;
 pub mod error;
 mod helpers;
 pub mod policy;
-mod request_edit;
 mod sse;
 pub mod stream;
 pub mod util;
@@ -24,6 +23,7 @@ pub use switchyard_protocol::stream::{
 };
 pub use switchyard_protocol::{format, llm};
 
+pub use codex_namespaces::flatten_codex_namespaces_for_provider;
 pub use compaction::normalize_compaction;
 pub use diagnostic::*;
 pub use engine::*;
@@ -32,7 +32,6 @@ pub use format::*;
 pub use helpers::*;
 pub use llm::*;
 pub use policy::*;
-pub use request_edit::{append_note, prepend_system_prompt};
 pub use stream::*;
 pub use util::{
     PRESERVATION_METADATA_KEY, normalize_anthropic_tool_use_ids, prepare_request_for_target,

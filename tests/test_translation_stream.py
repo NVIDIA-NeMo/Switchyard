@@ -309,8 +309,7 @@ async def test_stream_cleanup_owns_only_translation_resources(method, exit_mode)
         stream = getattr(engine, method)("openai_chat", source)
     del engine
     async with stream:
-        async for _ in stream:
-            break
+        await asyncio.wait_for(anext(stream), 2)
         assert source.reads == 1
         if exit_mode != "break":
             pending = asyncio.create_task(anext(stream))

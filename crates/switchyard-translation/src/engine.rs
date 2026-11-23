@@ -423,9 +423,20 @@ impl TranslationEngine {
 
         let events = try_stream! {
             while let Some(item) = chunks.next().await {
-                let event = item.map_err(LlmStreamError::Client)?;
-                let mut encoded =
-                    encode_response_stream_event(&mut state, codec.as_ref(), &target_format, event);
+                let (mut encoded, client_error) = match item {
+                    Ok(event) => (
+                        encode_response_stream_event(&mut state, codec.as_ref(), &target_format, event),
+                        None,
+                    ),
+                    Err(error) => {
+                        // Let the codec flush pending content before propagating the
+                        // original transport error, without emitting success events.
+                        let encoded = codec.encode_event(&mut state, LlmResponseChunk::StreamError {
+                            message: error.to_string(),
+                        });
+                        (encoded, Some(error))
+                    }
+                };
                 for value in &mut encoded {
                     if let Some(model) = served_model_for_events.as_deref() {
                         codec.stamp_streamed_response_model(value, model);
@@ -448,6 +459,10 @@ impl TranslationEngine {
                 let terminal = encoded.pop();
                 for value in encoded {
                     yield value;
+                }
+                // The codec's final error frame is replaced by the typed client error.
+                if let Some(error) = client_error {
+                    Err(LlmStreamError::Client(error))?;
                 }
                 match (state.errored, terminal) {
                     (false, Some(value)) => yield value,
@@ -483,8 +498,9 @@ impl TranslationEngine {
     /// buffered across chunks (a partial frame waits for its boundary); the source
     /// stream codec is resolved once and reused for every frame.
     ///
-    /// The decoder tracks the source format's protocol-specific terminal event. If
-    /// EOF arrives without that required event, the stream yields a deferred
+    /// Codecs can opt in to stopping after the decoder yields a terminal JSON event.
+    /// Other codecs keep reading to include trailing events before `[DONE]` or EOF.
+    /// If EOF arrives without a required terminal event, the stream yields a deferred
     /// [`LlmClientError::ResponseTranslation`] error after any valid decoded events.
     pub fn decode_stream<S>(
         &self,
@@ -519,8 +535,17 @@ impl TranslationEngine {
         let mut saw_error = false;
         let stream = Box::pin(try_stream! {
             futures::pin_mut!(lines);
+            let mut first_line = true;
             while let Some(line) = lines.next().await {
                 let line = line.map_err(llm_client_error_from_io)?;
+                // SSE permits one optional BOM at the start of the stream.
+                // https://html.spec.whatwg.org/multipage/server-sent-events.html#parsing-an-event-stream
+                let line = if first_line {
+                    first_line = false;
+                    line.strip_prefix(sse::UTF8_BOM).unwrap_or(&line)
+                } else {
+                    &line
+                };
                 // A blank line (allowing a bare CR for CRLF streams) ends the frame.
                 if line.trim_end().is_empty() {
                     let parsed = sse::parse_json_sse_frame(&frame, marker)
@@ -545,10 +570,13 @@ impl TranslationEngine {
                                 value,
                                 normalized,
                             );
+                            if saw_terminal && codec.stops_at_terminal_event() {
+                                break;
+                            }
                         }
                     }
                 } else {
-                    frame.push_str(&line);
+                    frame.push_str(line);
                     frame.push('\n');
                 }
             }

@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Buffered HTTP-client translation with diagnostic metrics and logs.
+//! Buffered translation with diagnostic metrics and logs.
 
 use std::sync::LazyLock;
 
@@ -14,25 +14,26 @@ use crate::metrics;
 static ENGINE: LazyLock<TranslationEngine> = LazyLock::new(TranslationEngine::default);
 static POLICY: LazyLock<TranslationPolicy> = LazyLock::new(TranslationPolicy::default);
 
-pub(crate) fn decode_request(format: WireFormat, body: &Value) -> Result<LlmRequest> {
-    let decoded = ENGINE.decode_request(format, body, &POLICY)?;
-    metrics::record_translation_diagnostics(&decoded.diagnostics, "request_decode", format);
-    Ok(decoded.request)
-}
-
-pub(crate) fn encode_request(request: &LlmRequest, format: WireFormat) -> Result<Value> {
+pub fn encode_request(request: &LlmRequest, format: WireFormat) -> Result<Value> {
     let encoded = ENGINE.encode_request(format, request, &POLICY)?;
     metrics::record_translation_diagnostics(&encoded.diagnostics, "request_encode", format);
     Ok(encoded.body)
 }
 
-pub(crate) fn decode_response(body: &Value, format: WireFormat) -> Result<AggLlmResponse> {
+pub fn decode_response(body: &Value, format: WireFormat) -> Result<AggLlmResponse> {
     let decoded = ENGINE.decode_response(format, body, &POLICY)?;
     metrics::record_translation_diagnostics(&decoded.diagnostics, "response_decode", format);
     Ok(decoded.response)
 }
 
-pub(crate) fn encode_response(
+pub fn decode_request(body: &Value, format: WireFormat) -> Result<LlmRequest> {
+    let decoded = ENGINE.decode_request(format, body, &POLICY)?;
+    metrics::record_translation_diagnostics(&decoded.diagnostics, "request_decode", format);
+    Ok(decoded.request)
+}
+
+/// Encodes a response and sets `model` to `served_model` when one is given.
+pub fn encode_response(
     response: &AggLlmResponse,
     format: WireFormat,
     served_model: Option<&str>,

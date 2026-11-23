@@ -17,6 +17,21 @@ use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
 
 type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
+// Adds a target prompt the way the router does, then drops exact replay so encoding runs the codec.
+fn prepare_with_prompt(request: &mut LlmRequest, target: &str, prompt: &str) {
+    prepare_request_for_target(request, &target.into());
+    request.instructions.insert(
+        0,
+        InstructionBlock {
+            role: Role::System,
+            content: vec![ContentBlock::Text {
+                text: prompt.to_string(),
+            }],
+        },
+    );
+    request.preservation.requests.clear();
+}
+
 #[test]
 fn responses_assistant_phase_survives_rebuilds() -> TestResult {
     let engine = TranslationEngine::default();
@@ -32,7 +47,9 @@ fn responses_assistant_phase_survives_rebuilds() -> TestResult {
             .request;
         // Force a rebuild with an unrelated edit.
         request.preservation.requests.clear();
-        switchyard_translation::append_note(&mut request, "Check the result.");
+        request
+            .messages
+            .push(Message::text(Role::User, "Check the result."));
         request.model = Some("target".into());
 
         let output = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
@@ -571,91 +588,6 @@ fn native_abuse_identity_is_preserved_but_not_mapped() -> TestResult {
     Ok(())
 }
 
-// Verifies target preparation restamps the model, prepends native instructions, and preserves all
-// other provider fields.
-#[test]
-fn openai_target_prompt_preserves_native_request_fields() -> TestResult {
-    let engine = TranslationEngine::default();
-    let policy = TranslationPolicy::default();
-    for (format, body) in [
-        (
-            WireFormat::OpenAiChat,
-            json!({
-                "model": "route",
-                "messages": [
-                    {"role": "system", "name": "caller", "content": "client prompt"},
-                    {"role": "user", "content": "hi"}
-                ],
-                "moderation": {"policy": "strict"},
-                "stop": ["<END>"],
-                "prompt_cache_options": {"retention": "24h"},
-                "logprobs": true,
-                "top_logprobs": 2,
-                "modalities": ["text", "audio"],
-                "audio": {"voice": "alloy", "format": "wav"},
-                "web_search_options": {"search_context_size": "high"},
-                "n": 2,
-                "logit_bias": {"42": -1},
-                "frequency_penalty": 0.2,
-                "presence_penalty": 0.3,
-                "seed": 7,
-                "prediction": {"type": "content", "content": "prefix"},
-                "verbosity": "low",
-                "functions": [{"name": "legacy", "parameters": {"type": "object"}}],
-                "function_call": {"name": "legacy"}
-            }),
-        ),
-        (
-            WireFormat::OpenAiResponses,
-            json!({
-                "model": "route",
-                "instructions": "caller prompt",
-                "input": "hi",
-                "moderation": {"policy": "strict"},
-                "prompt_cache_options": {"retention": "24h"},
-                "reasoning": {
-                    "effort": "high",
-                    "context": "large",
-                    "mode": "detailed",
-                    "summary": "auto"
-                },
-                "include": ["reasoning.encrypted_content"],
-                "previous_response_id": "resp_previous",
-                "context_management": [{"type": "compaction", "compact_threshold": 1000}],
-                "tools": [
-                    {"type": "web_search_preview"},
-                    {"type": "file_search", "vector_store_ids": ["vs_1"]},
-                    {"type": "mcp", "server_label": "inventory", "server_url": "https://fixture.invalid/mcp"}
-                ]
-            }),
-        ),
-    ] {
-        let mut expected = body.clone();
-        expected["model"] = json!("selected/model");
-        match format {
-            WireFormat::OpenAiChat => expected["messages"]
-                .as_array_mut()
-                .ok_or("expected messages")?
-                .insert(0, json!({"role": "system", "content": "target prompt"})),
-            WireFormat::OpenAiResponses => {
-                expected["instructions"] = json!("target prompt\n\ncaller prompt");
-            }
-            WireFormat::AnthropicMessages => unreachable!(),
-        }
-
-        let mut request = engine.decode_request(format, &body, &policy)?.request;
-        prepare_request_for_target(
-            &mut request,
-            &"selected/model".into(),
-            Some("target prompt"),
-        );
-        let encoded = engine.encode_request(format, &request, &policy)?.body;
-
-        assert_eq!(encoded, expected);
-    }
-    Ok(())
-}
-
 // Rebuilt Responses requests keep reasoning controls when effort is overridden.
 #[test]
 fn responses_reasoning_survives_rebuild() -> TestResult {
@@ -672,11 +604,7 @@ fn responses_reasoning_survives_rebuild() -> TestResult {
         .request;
     request.reasoning.effort = Some("max".to_string());
 
-    prepare_request_for_target(
-        &mut request,
-        &"openai/openai/gpt-5.6-sol".into(),
-        Some("Inspect before editing."),
-    );
+    prepare_request_for_target(&mut request, &"openai/openai/gpt-5.6-sol".into());
     request.preservation.requests.clear();
 
     let output = engine
@@ -810,140 +738,18 @@ fn anthropic_reconstruction_preserves_thinking() -> TestResult {
         let mut request = engine
             .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
             .request;
-        prepare_request_for_target(&mut request, &"target/model".into(), Some("target prompt"));
+        prepare_request_for_target(&mut request, &"target/model".into());
         let output = engine
             .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
             .body;
 
         body["model"] = json!("target/model");
-        body["system"] = json!("target prompt");
         assert_eq!(output, body);
     }
     Ok(())
 }
 
-#[test]
-fn anthropic_target_prompt_preserves_native_request_fields() -> TestResult {
-    let engine = TranslationEngine::default();
-    let policy = TranslationPolicy::default();
-    for thinking in [
-        Some(json!({"type": "enabled", "budget_tokens": 2048})),
-        Some(json!({"type": "adaptive"})),
-        Some(json!({"type": "disabled"})),
-        None,
-    ] {
-        let mut body = json!({
-            "model": "route",
-            "max_tokens": 32,
-            "system": [{
-                "type": "text",
-                "text": "caller prompt",
-                "cache_control": {"type": "ephemeral"}
-            }],
-            "messages": [{"role": "user", "content": "hi"}],
-            "mcp_servers": [{
-                "type": "url",
-                "name": "inventory",
-                "url": "https://fixture.invalid/mcp",
-                "authorization_token": "fixture-token-not-a-secret",
-                "tool_configuration": {
-                    "enabled": true,
-                    "allowed_tools": ["lookup_sku"]
-                }
-            }],
-            "container": {
-                "id": "container_fixture",
-                "skills": [{
-                    "type": "custom",
-                    "skill_id": "skill_fixture_qa",
-                    "version": "latest"
-                }]
-            },
-            "output_config": {
-                "effort": "low",
-                "format": {
-                    "type": "json_schema",
-                    "schema": {
-                        "type": "object",
-                        "properties": {"marker": {"type": "string"}},
-                        "required": ["marker"],
-                        "additionalProperties": false
-                    }
-                }
-            },
-            "stop_sequences": ["<END>"]
-        });
-        if let Some(thinking) = thinking {
-            body["thinking"] = thinking;
-        }
-        let mut expected = body.clone();
-        expected["model"] = json!("target/model");
-        expected["system"]
-            .as_array_mut()
-            .ok_or("expected system blocks")?
-            .insert(0, json!({"type": "text", "text": "target prompt"}));
-
-        let mut request = engine
-            .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
-            .request;
-        prepare_request_for_target(&mut request, &"target/model".into(), Some("target prompt"));
-        let output = engine
-            .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
-            .body;
-
-        assert_eq!(output, expected);
-    }
-
-    let fields = json!({
-        "inference_geo": "us",
-        "service_tier": "standard_only",
-        "stop_sequences": ["END"],
-        "metadata": {"user_id": "opaque-user"},
-        "cache_control": {"type": "ephemeral", "ttl": "1h"},
-        "container": {"id": "container_1"},
-        "speed": "fast",
-        "diagnostics": {"previous_message_id": "msg_previous"}
-    });
-    for source in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
-        for has_fields in [true, false] {
-            let mut body = match source {
-                WireFormat::OpenAiChat => json!({
-                    "model": "route",
-                    "messages": [{"role": "user", "content": "hi"}]
-                }),
-                WireFormat::OpenAiResponses => json!({"model": "route", "input": "hi"}),
-                WireFormat::AnthropicMessages => unreachable!(),
-            };
-            if has_fields {
-                for (key, value) in fields.as_object().ok_or("expected fields object")? {
-                    body[key] = value.clone();
-                }
-            }
-            // Caller-supplied extensions must not spoof Anthropic provenance.
-            body["switchyard_anthropic_request"] = json!(true);
-            body["stop"] = json!(["FALLBACK"]);
-            let mut request = engine.decode_request(source, &body, &policy)?.request;
-            prepare_request_for_target(&mut request, &"target/model".into(), Some("target prompt"));
-            let output = engine
-                .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
-                .body;
-
-            assert_eq!(output["model"], "target/model");
-            assert_eq!(output["system"], "target prompt");
-            for (key, _value) in fields.as_object().ok_or("expected fields object")? {
-                if key == "stop_sequences" {
-                    assert_eq!(output[key], json!(["FALLBACK"]));
-                } else {
-                    assert!(output.get(key).is_none(), "{source:?}: {key}");
-                }
-            }
-            assert!(output.get("switchyard_anthropic_request").is_none());
-        }
-    }
-    Ok(())
-}
-
-// Rebuilding for target instructions must preserve the Responses conversation link.
+// Normalized encoding with a target prompt must keep the Responses conversation link.
 #[test]
 fn responses_previous_response_id_survives_target_prompt() -> TestResult {
     let engine = TranslationEngine::default();
@@ -953,7 +759,7 @@ fn responses_previous_response_id_survives_target_prompt() -> TestResult {
         .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
         .request;
 
-    prepare_request_for_target(&mut request, &"target".into(), Some("target prompt"));
+    prepare_with_prompt(&mut request, "target", "target prompt");
 
     let output = engine
         .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
@@ -964,7 +770,7 @@ fn responses_previous_response_id_survives_target_prompt() -> TestResult {
     Ok(())
 }
 
-// Target preparation must preserve Anthropic's explicit tool failure signal.
+// Normalized encoding with a target prompt must keep Anthropic's explicit tool failure signal.
 #[test]
 fn anthropic_tool_result_error_survives_target_prompt() -> TestResult {
     let engine = TranslationEngine::default();
@@ -991,7 +797,7 @@ fn anthropic_tool_result_error_survives_target_prompt() -> TestResult {
     let mut request = engine
         .decode_request(WireFormat::AnthropicMessages, &body, &policy)?
         .request;
-    prepare_request_for_target(&mut request, &"target".into(), Some("target prompt"));
+    prepare_with_prompt(&mut request, "target", "target prompt");
 
     let output = engine
         .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
@@ -1001,7 +807,7 @@ fn anthropic_tool_result_error_survives_target_prompt() -> TestResult {
     Ok(())
 }
 
-// Target prompts force normalized re-encoding; built-in tool history must retain its wire shape.
+// Normalized encoding with a target prompt must keep the wire shape of built-in tool history.
 #[test]
 fn responses_builtin_tool_history_survives_target_prompt() -> TestResult {
     use switchyard_translation::Role;
@@ -1050,7 +856,7 @@ fn responses_builtin_tool_history_survives_target_prompt() -> TestResult {
         .collect();
     assert_eq!(roles, [Role::Assistant, Role::Tool].repeat(3));
 
-    prepare_request_for_target(&mut request, &"target".into(), Some("target prompt"));
+    prepare_with_prompt(&mut request, "target", "target prompt");
 
     let output = engine
         .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
@@ -1113,7 +919,7 @@ fn preparing_without_a_prompt_preserves_exact_replay() -> TestResult {
         .decode_request(WireFormat::OpenAiChat, &body, &policy)?
         .request;
 
-    prepare_request_for_target(&mut request, &"selected/model".into(), None);
+    prepare_request_for_target(&mut request, &"selected/model".into());
 
     assert_eq!(request.model.as_deref(), Some("selected/model"));
     let preserved = &request.preservation.requests[&WireFormat::OpenAiChat.into()];
@@ -1130,7 +936,7 @@ fn preparing_without_a_prompt_preserves_exact_replay() -> TestResult {
         .preservation
         .requests
         .insert(custom_format.clone(), json!({"vendor_model": "route"}));
-    prepare_request_for_target(&mut request, &"fallback/model".into(), None);
+    prepare_request_for_target(&mut request, &"fallback/model".into());
     assert_eq!(
         request.preservation.requests[&WireFormat::OpenAiChat.into()]["model"],
         "fallback/model"
@@ -2018,7 +1824,7 @@ fn responses_prompt_injection_preserves_namespace_description() -> TestResult {
         .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
         .request;
 
-    prepare_request_for_target(&mut request, &"gpt-5.6-sol".into(), Some("Plan first."));
+    prepare_with_prompt(&mut request, "gpt-5.6-sol", "Plan first.");
     let output = engine
         .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
         .body;
@@ -2190,6 +1996,81 @@ fn responses_rebuild_preserves_inline_instructions() -> TestResult {
     assert_eq!(
         engine
             .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+            .body,
+        expected
+    );
+    Ok(())
+}
+
+#[test]
+fn chat_rebuild_preserves_inline_instructions() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let body = json!({
+        "model": "gpt-4",
+        "messages": [
+            {"role": "system", "content": "Initial system."},
+            {"role": "developer", "content": "Initial developer."},
+            {"role": "user", "content": "Hello."},
+            {"role": "system", "content": "Later system."},
+            {"role": "developer", "content": "Later developer."},
+            {"role": "developer", "content": "Separate message."},
+            {"role": "user", "content": "Original suffix."}
+        ]
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiChat, &body, &policy)?
+        .request;
+    request.preservation.requests.clear();
+
+    // Leading instructions stay top-level. Later ones stay in place.
+    assert_eq!(request.instructions.len(), 2);
+    assert_eq!(request.messages[1].role, Role::System);
+    assert_eq!(request.messages[2].role, Role::Developer);
+
+    assert_eq!(
+        engine
+            .encode_request(WireFormat::OpenAiChat, &request, &policy)?
+            .body,
+        body
+    );
+
+    let responses = engine
+        .encode_request(WireFormat::OpenAiResponses, &request, &policy)?
+        .body;
+    assert_eq!(
+        responses,
+        json!({
+            "model": "gpt-4",
+            "instructions": "Initial system.\n\nInitial developer.",
+            "input": [
+                {"type": "message", "role": "user", "content": "Hello."},
+                {"type": "message", "role": "system", "content": "Later system."},
+                {"type": "message", "role": "developer", "content": "Later developer."},
+                {"type": "message", "role": "developer", "content": "Separate message."},
+                {"type": "message", "role": "user", "content": "Original suffix."}
+            ]
+        })
+    );
+
+    let anthropic = engine
+        .encode_request(WireFormat::AnthropicMessages, &request, &policy)?
+        .body;
+    assert_eq!(
+        anthropic["system"],
+        "Initial system.\n\nInitial developer.\n\nLater system.\n\nLater developer.\n\nSeparate message."
+    );
+    assert_eq!(anthropic["messages"].as_array().map(Vec::len), Some(2));
+
+    // A suffix-only edit leaves earlier messages unchanged.
+    request.messages.last_mut().ok_or("missing suffix")?.content = vec![ContentBlock::Text {
+        text: "Edited suffix.".into(),
+    }];
+    let mut expected = body.clone();
+    expected["messages"][6]["content"] = json!("Edited suffix.");
+    assert_eq!(
+        engine
+            .encode_request(WireFormat::OpenAiChat, &request, &policy)?
             .body,
         expected
     );
@@ -3027,8 +2908,8 @@ fn responses_reasoning_items_round_trip_through_decode_and_encode() -> TestResul
     Ok(())
 }
 
-// Verifies Codex-style encrypted reasoning remains replayable after a prompt
-// mutation drops exact replay, without synthesizing invalid reasoning content.
+// Verifies Codex-style encrypted reasoning survives normalized encoding with a target prompt,
+// without synthesizing invalid reasoning content.
 #[test]
 fn responses_encrypted_reasoning_replays_without_input_content() -> TestResult {
     let engine = TranslationEngine::default();
@@ -3056,10 +2937,10 @@ fn responses_encrypted_reasoning_replays_without_input_content() -> TestResult {
     let mut request = engine
         .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
         .request;
-    prepare_request_for_target(
+    prepare_with_prompt(
         &mut request,
-        &"openai/openai/gpt-5.6-sol".into(),
-        Some("[router-guidance] Continue from the current state."),
+        "openai/openai/gpt-5.6-sol",
+        "[router-guidance] Continue from the current state.",
     );
 
     let output = engine
@@ -3679,6 +3560,72 @@ fn openai_data_uri_images_translate_to_anthropic_sources() -> TestResult {
     Ok(())
 }
 
+#[test]
+fn anthropic_output_schema_preserves_keyword_names_and_literal_values() -> TestResult {
+    let engine = TranslationEngine::default();
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "minimum": {"type": "integer"},
+            "maximum": {"type": "integer"},
+            "minLength": {"type": "string"},
+            "maxLength": {"type": "string"},
+            "nested": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"minimum": {"type": "integer"}},
+                    "required": ["minimum"],
+                    "additionalProperties": false
+                }
+            },
+            "literal": {
+                "enum": [{"minimum": 1, "maximum": 2}],
+                "const": {"minimum": 1, "maximum": 2},
+                "default": {"maxLength": 4}
+            }
+        },
+        "$defs": {"minimum": {"type": "integer"}},
+        "required": ["minimum", "maximum", "minLength", "maxLength"],
+        "additionalProperties": false
+    });
+    for source in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+        let body = if source == WireFormat::OpenAiChat {
+            json!({
+                "model": "route", "messages": [{"role": "user", "content": "Return JSON."}],
+                "response_format": {"type": "json_schema", "json_schema": {
+                    "name": "result", "strict": true, "schema": schema
+                }}
+            })
+        } else {
+            json!({
+                "model": "route", "input": "Return JSON.",
+                "text": {"format": {
+                    "type": "json_schema", "name": "result", "strict": true, "schema": schema
+                }}
+            })
+        };
+        for lossy_conversion_policy in [
+            LossyConversionPolicy::AllowWithDiagnostics,
+            LossyConversionPolicy::Reject,
+        ] {
+            let policy = TranslationPolicy {
+                lossy_conversion_policy,
+                ..TranslationPolicy::default()
+            };
+            let translated =
+                engine.translate_request(source, WireFormat::AnthropicMessages, &body, &policy)?;
+            assert_eq!(translated.body["output_config"]["format"]["schema"], schema);
+            assert!(
+                translated.diagnostics.is_empty(),
+                "{:?}",
+                translated.diagnostics
+            );
+        }
+    }
+    Ok(())
+}
+
 // Verifies Anthropic receives its supported schema subset without mutating the neutral contract.
 #[test]
 fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestResult {
@@ -3695,8 +3642,17 @@ fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestR
                     "type": "object",
                     "properties": {
                         "crux": {"type": "string", "minLength": 1, "maxLength": 80},
-                        "p_solve": {"type": "number", "minimum": 0, "maximum": 1}
+                        "p_solve": {"type": "number", "minimum": 0, "maximum": 1},
+                        "nested": {
+                            "type": "array",
+                            "items": {"anyOf": [
+                                {"type": "number", "minimum": 0},
+                                {"type": "string", "maxLength": 80}
+                            ]}
+                        }
                     },
+                    "$defs": {"maximum": {"type": "number", "maximum": 1}},
+                    "allOf": [{"properties": {"crux": {"minLength": 1}}}],
                     "required": ["crux", "p_solve"],
                     "additionalProperties": false
                 }
@@ -3717,8 +3673,14 @@ fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestR
             "type": "object",
             "properties": {
                 "crux": {"type": "string"},
-                "p_solve": {"type": "number"}
+                "p_solve": {"type": "number"},
+                "nested": {
+                    "type": "array",
+                    "items": {"anyOf": [{"type": "number"}, {"type": "string"}]}
+                }
             },
+            "$defs": {"maximum": {"type": "number"}},
+            "allOf": [{"properties": {"crux": {}}}],
             "required": ["crux", "p_solve"],
             "additionalProperties": false
         })
@@ -3733,6 +3695,20 @@ fn openai_schema_constraints_are_removed_from_anthropic_output_format() -> TestR
         body["response_format"]["json_schema"]["schema"]["properties"]["p_solve"]["minimum"],
         0
     );
+    let strict = TranslationPolicy {
+        lossy_conversion_policy: LossyConversionPolicy::Reject,
+        ..TranslationPolicy::default()
+    };
+    let error = engine
+        .translate_request(
+            WireFormat::OpenAiChat,
+            WireFormat::AnthropicMessages,
+            &body,
+            &strict,
+        )
+        .err()
+        .ok_or("unsupported schema constraints should be rejected")?;
+    assert_eq!(error.kind(), "LossyConversion");
     Ok(())
 }
 
@@ -3774,25 +3750,56 @@ fn openai_tool_strictness_is_preserved_for_anthropic() -> TestResult {
     Ok(())
 }
 
-// Verifies Anthropic-bound OpenAI requests get the required max_tokens fallback.
+// Verifies Anthropic defaults and the policy for discarded non-default temperatures.
 #[test]
-fn openai_request_to_anthropic_adds_required_default_max_tokens() -> TestResult {
+fn openai_request_to_anthropic_parameters() -> TestResult {
     let engine = TranslationEngine::default();
     let body = json!({
         "model": "gpt-5",
         "messages": [{"role": "user", "content": "hi"}]
     });
 
-    let output = engine
-        .translate_request(
-            WireFormat::OpenAiChat,
-            WireFormat::AnthropicMessages,
-            &body,
-            &TranslationPolicy::default(),
-        )?
-        .body;
-
-    assert_eq!(output["max_tokens"], 64_000);
+    for (temperature, is_lossy) in [
+        (None, false),
+        (Some(1.0), true),
+        (Some(0.5), true),
+        (Some(2.0), false),
+    ] {
+        let mut body = body.clone();
+        if let Some(temperature) = temperature {
+            body["temperature"] = json!(temperature);
+        }
+        for lossy_conversion_policy in [
+            LossyConversionPolicy::AllowWithDiagnostics,
+            LossyConversionPolicy::Reject,
+        ] {
+            let policy = TranslationPolicy {
+                lossy_conversion_policy,
+                ..normalized_policy()
+            };
+            let result = engine.translate_request(
+                WireFormat::OpenAiChat,
+                WireFormat::AnthropicMessages,
+                &body,
+                &policy,
+            );
+            if is_lossy && lossy_conversion_policy == LossyConversionPolicy::Reject {
+                assert!(
+                    matches!(result, Err(TranslationError::LossyConversion(message))
+                    if message.contains("temperature"))
+                );
+                continue;
+            }
+            let output = result?;
+            assert_eq!(output.body["max_tokens"], 64_000);
+            assert!(output.body.get("temperature").is_none());
+            assert_eq!(output.diagnostics.len(), usize::from(is_lossy));
+            if is_lossy {
+                assert_eq!(output.diagnostics[0].code, "lossy_conversion");
+                assert!(output.diagnostics[0].message.contains("temperature"));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -3932,6 +3939,32 @@ fn json_contains_content_type(value: &Value, expected: &str) -> bool {
             .any(|child| json_contains_content_type(child, expected)),
         _ => false,
     }
+}
+
+#[test]
+fn openai_chat_request_rejects_multi_choice() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = TranslationPolicy::default();
+    let mut body = json!({
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hello"}],
+    });
+    engine.decode_request(WireFormat::OpenAiChat, &body, &policy)?;
+    body["n"] = json!(1);
+    engine.decode_request(WireFormat::OpenAiChat, &body, &policy)?;
+
+    for n in [json!(2), json!("1")] {
+        body["n"] = n;
+        assert!(
+            matches!(
+                engine.decode_request(WireFormat::OpenAiChat, &body, &policy),
+                Err(TranslationError::InvalidValue { path, .. }) if path == "$.n"
+            ),
+            "expected InvalidValue for n={}",
+            body["n"]
+        );
+    }
+    Ok(())
 }
 
 // Malformed provider fields must fail before normalization can change their meaning.
@@ -4609,6 +4642,77 @@ fn responses_request_round_trips_custom_tools_and_custom_tool_calls() -> TestRes
     Ok(())
 }
 
+#[test]
+fn forced_custom_tool_choice_translates_to_named_tool() -> TestResult {
+    let engine = TranslationEngine::default();
+    for stream in [false, true] {
+        let body = json!({
+            "model": "route",
+            "input": "Use optional_lookup.",
+            "tools": [
+                {"type": "custom", "name": "required_lookup", "format": {"type": "text"}},
+                {"type": "function", "name": "optional_lookup", "parameters": {"type": "object"}}
+            ],
+            "tool_choice": {"type": "custom", "name": "required_lookup"},
+            "stream": stream
+        });
+        for (target, expected) in [
+            (
+                WireFormat::OpenAiChat,
+                json!({"type": "function", "function": {"name": "required_lookup"}}),
+            ),
+            (
+                WireFormat::AnthropicMessages,
+                json!({"type": "tool", "name": "required_lookup"}),
+            ),
+        ] {
+            let output = engine.translate_request(
+                WireFormat::OpenAiResponses,
+                target,
+                &body,
+                &TranslationPolicy::default(),
+            )?;
+            assert_eq!(output.body["tool_choice"], expected, "{target:?}");
+            assert_eq!(output.body["stream"].as_bool().unwrap_or(false), stream);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn forced_custom_tool_choice_survives_responses_rebuild() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    let body = json!({
+        "model": "route",
+        "input": "Use optional_lookup.",
+        "tools": [
+            {"type": "custom", "name": "required_lookup", "format": {"type": "text"}},
+            {"type": "function", "name": "optional_lookup", "parameters": {"type": "object"}}
+        ],
+        "tool_choice": {"type": "custom", "name": "required_lookup"}
+    });
+    let mut request = engine
+        .decode_request(WireFormat::OpenAiResponses, &body, &policy)?
+        .request;
+    request
+        .messages
+        .push(Message::text(Role::User, "Check the result."));
+    let output = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+    assert_eq!(output.body["tool_choice"], body["tool_choice"]);
+    assert_eq!(output.body["tools"][0], body["tools"][0]);
+
+    request.tool_choice = Some(switchyard_protocol::ToolChoice::Tool {
+        name: "optional_lookup".into(),
+    });
+    let output = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+    assert_eq!(
+        output.body["tool_choice"],
+        json!({"type": "function", "name": "optional_lookup"})
+    );
+    Ok(())
+}
+
 // Codex sends GPT-5 requests in the Responses-lite shape: no top-level `tools`, empty
 // `instructions`, the tool definitions inside `input[0]` as an `additional_tools` developer
 // item, and the base instructions as a developer message. Those definitions are the request's
@@ -5092,5 +5196,91 @@ fn responses_stored_tool_outputs_stay_tool_results() -> TestResult {
         )?
         .body;
     assert_eq!(output["input"], outputs);
+    Ok(())
+}
+
+#[test]
+fn chat_tool_images_survive_normalization_and_responses_translation() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    let image_url = "data:image/png;base64,aGVsbG8=";
+    let body = json!({"model": "route", "messages": [
+        {"role": "user", "content": "Read the screenshot."},
+        {"role": "assistant", "tool_calls": [{"id": "shot", "type": "function",
+         "function": {"name": "screenshot", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "shot", "content": [
+            {"type": "text", "text": "Screenshot follows"},
+            {"type": "image_url", "image_url": {"url": image_url}}
+        ]}
+    ]});
+    let request = engine
+        .decode_request(WireFormat::OpenAiChat, &body, &policy)?
+        .request;
+    let ContentBlock::ToolResult(result) = &request.messages[2].content[0] else {
+        panic!("expected a normalized tool result");
+    };
+    assert!(matches!(result.content[1], ContentBlock::Image { .. }));
+    let encoded = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+    let output = encoded.body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "function_call_output")
+        .unwrap();
+    assert_eq!(output["call_id"], "shot");
+    assert_eq!(output["output"][0]["text"], "Screenshot follows");
+    assert_eq!(output["output"][1]["image_url"], image_url);
+    assert_eq!(output["output"][1]["type"], "input_image");
+    Ok(())
+}
+
+#[test]
+fn anthropic_pdf_titles_produce_openai_pdf_filenames() -> TestResult {
+    let engine = TranslationEngine::default();
+    for (title, filename) in [
+        (None, "document.pdf"),
+        (Some(""), "document.pdf"),
+        (Some("   "), "document.pdf"),
+        (Some("Invoice"), "Invoice.pdf"),
+        (Some("invoice.v2"), "invoice.v2.pdf"),
+        (Some("invoice.pdf"), "invoice.pdf"),
+        (Some("invoice.PDF"), "invoice.PDF"),
+    ] {
+        let mut document = json!({"type": "document", "source": {
+            "type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQK"
+        }});
+        if let Some(title) = title {
+            document["title"] = json!(title);
+        }
+        let body = json!({"model": "route", "max_tokens": 64, "messages": [{
+            "role": "user", "content": [{"type": "text", "text": "Read this invoice"}, document]
+        }]});
+        for policy in [TranslationPolicy::default(), normalized_policy()] {
+            for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+                let output = engine
+                    .translate_request(WireFormat::AnthropicMessages, target, &body, &policy)?
+                    .body;
+                let file = if target == WireFormat::OpenAiChat {
+                    &output["messages"][0]["content"][1]["file"]
+                } else {
+                    &output["input"][0]["content"][1]
+                };
+                assert_eq!(file["filename"], filename, "{title:?}, {target:?}");
+                assert_eq!(
+                    file["file_data"],
+                    "data:application/pdf;base64,JVBERi0xLjQK"
+                );
+            }
+            let native = engine
+                .translate_request(
+                    WireFormat::AnthropicMessages,
+                    WireFormat::AnthropicMessages,
+                    &body,
+                    &policy,
+                )?
+                .body;
+            assert_eq!(native["messages"], body["messages"]);
+        }
+    }
     Ok(())
 }

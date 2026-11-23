@@ -392,7 +392,7 @@ fn client_error(py: Python<'_>, error: LlmClientError) -> PyErr {
             "ContextWindowExceeded",
             json!({"model": model, "message": message}),
         ),
-        LlmClientError::UpstreamHttp { status, body } => (
+        LlmClientError::UpstreamHttp { status, body, .. } => (
             "UpstreamHttp",
             json!({"status": status.as_u16(), "body": body}),
         ),
@@ -439,7 +439,6 @@ fn error_details(error: &CoreTranslationError) -> Value {
         CoreTranslationError::LossyConversion(message) | CoreTranslationError::Other(message) => {
             json!({"message": message})
         }
-        CoreTranslationError::UnknownField { path } => json!({"path": path}),
         CoreTranslationError::InvalidValue { path, message } => {
             json!({"path": path, "message": message})
         }

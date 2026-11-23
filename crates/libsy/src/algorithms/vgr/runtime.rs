@@ -154,8 +154,10 @@ impl Classifier for VgrClassifier {
             Some("turn_verification_latched")
         } else if turn_budget_spent {
             Some("efficient_turn_budget")
-        } else if !self.config.efficient_supports_images && request_has_image(request) {
-            Some("efficient_image_unsupported")
+        } else if !self.config.efficient_supports_attachments
+            && !text::attachments(request).is_empty()
+        {
+            Some("efficient_attachment_unsupported")
         } else if text::newest_prompt_is_blank(request) {
             Some("empty_prompt")
         } else {
@@ -171,6 +173,23 @@ impl Classifier for VgrClassifier {
         let Some(trial) = self.breaker.attempt() else {
             return Ok(self.escalate(driver, "breaker_open", None, request, state, None));
         };
+        let typed = if text::ToolRecord::from_request(request).errors > 0 {
+            let context = RequestContext {
+                driver,
+                request,
+                started,
+            };
+            Some(self.type_task(&context).await)
+        } else {
+            None
+        };
+        if typed == Some(Some(TaskType::Chat)) {
+            let reason = "chat_after_tool_error";
+            return Ok(self.escalate(driver, reason, Some(Branch::Chat), request, state, None));
+        }
+        if self.config.bounded_efficient && self.remaining(started).is_none() {
+            return Ok(self.escalate(driver, "efficient_timed_out", None, request, state, None));
+        }
         let attempted = self
             .within_budget(started, async {
                 let response = driver
@@ -185,10 +204,11 @@ impl Classifier for VgrClassifier {
                 buffered
             }
             Some(Err(error)) => {
+                driver.record_model_failure(efficient.clone());
                 if endpoint_failure(&error) {
                     trial.failure();
                 }
-                if !fallback_eligible(&error) {
+                if !fallback_eligible(&error, !text::attachments(request).is_empty()) {
                     return Err(error);
                 }
                 return Ok(self.escalate(
@@ -201,6 +221,7 @@ impl Classifier for VgrClassifier {
                 ));
             }
             None => {
+                driver.record_model_failure(efficient.clone());
                 trial.failure();
                 return Ok(self.escalate(
                     driver,
@@ -255,8 +276,16 @@ impl Classifier for VgrClassifier {
         }
 
         let attempt = rungs::response_text(&buffered.agg).unwrap_or_default();
-        let task_type = self.type_task(&context).await;
-        let caps = derive_capabilities(request, &attempt, task_type);
+        let task_type = match typed {
+            Some(task_type) => task_type,
+            None => self.type_task(&context).await,
+        };
+        let caps = derive_capabilities(
+            request,
+            &attempt,
+            task_type,
+            self.config.efficient_supports_attachments,
+        );
         let signals = self.gather(&context, &caps).await;
         let route = decide::decide(&caps, &signals, self.config.confirmed_min_clean_tail());
         if route == Route::Capable {
@@ -310,7 +339,7 @@ impl VgrClassifier {
                 .as_ref()
                 .is_some_and(|switch| switch.is_engaged())
             && !self.breaker.is_open()
-            && (self.config.efficient_supports_images || !request_has_image(request))
+            && (self.config.efficient_supports_attachments || text::attachments(request).is_empty())
     }
 
     fn escalate(
@@ -377,7 +406,7 @@ impl VgrClassifier {
         set_flag(state, EFFICIENT_SERVED_KEY, false);
         let note = handoff_note(unverified_final);
         if !(self.config.compact_handoff && super::compaction::compact(request, state, &note)) {
-            append_note(request, &note);
+            append_note(&mut request.llm_request, &note);
         }
     }
 
@@ -428,6 +457,24 @@ impl VgrClassifier {
         if !self.config.task_typing {
             return None;
         }
+        // Without a textual task, keep the default verification regime.
+        if context
+            .request
+            .llm_request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == switchyard_protocol::Role::User)
+            .is_some_and(|message| {
+                message.content.iter().all(|block| match block {
+                    ContentBlock::Text { text } => text.trim().is_empty(),
+                    ContentBlock::Image { .. } => true,
+                    _ => false,
+                })
+            })
+        {
+            return None;
+        }
         let (turns, _) = text::turns(context.request);
         let task = text::user_task_text(&turns);
         if task.trim().is_empty() {
@@ -446,7 +493,10 @@ impl VgrClassifier {
         let run = (branch == Branch::Agentic).then(|| decide::agentic_run(caps, confirmed));
         let (Some(judged), false) = (
             caps.transcript.as_deref(),
-            branch == Branch::Unknown || run == Some(AgenticRun::Vetoed),
+            branch == Branch::Unknown
+                || run == Some(AgenticRun::Vetoed)
+                || (matches!(branch, Branch::Chat | Branch::DefaultVerified)
+                    && caps.tools.is_some_and(|tools| tools.errors > 0)),
         ) else {
             return signals;
         };
@@ -566,9 +616,20 @@ impl VgrClassifier {
     async fn call(
         &self,
         context: &RequestContext<'_>,
-        call: Request,
+        mut call: Request,
         target: &ModelId,
     ) -> Option<Result<AggLlmResponse>> {
+        if self.config.efficient_supports_attachments
+            && let Some(message) = call.llm_request.messages.last_mut()
+        {
+            let attachments = text::attachments(context.request);
+            if !attachments.is_empty() {
+                message.content.push(ContentBlock::Text {
+                    text: "[request attachments, in conversation order]".into(),
+                });
+                message.content.extend(attachments.into_iter().cloned());
+            }
+        }
         self.within_budget(context.started, async {
             let response = context
                 .driver
@@ -681,23 +742,6 @@ fn tool_use_is_complete(response: &AggLlmResponse) -> bool {
                 !matches!(block, ContentBlock::ToolCall(call) if call.arguments.is_string())
             })
     })
-}
-
-/// Whether a request carries image content directly or inside a tool result.
-fn request_has_image(request: &Request) -> bool {
-    fn has_image(block: &ContentBlock) -> bool {
-        match block {
-            ContentBlock::Image { .. } => true,
-            ContentBlock::ToolResult(result) => result.content.iter().any(has_image),
-            _ => false,
-        }
-    }
-    let llm = &request.llm_request;
-    llm.instructions
-        .iter()
-        .flat_map(|instruction| &instruction.content)
-        .chain(llm.messages.iter().flat_map(|message| &message.content))
-        .any(has_image)
 }
 
 #[cfg(test)]

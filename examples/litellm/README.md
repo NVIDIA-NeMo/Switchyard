@@ -202,7 +202,7 @@ efficient_system_prompt = "Handle this request as the efficient tier."
 | `algorithm` | yes | `"stage"` |
 | `picker` | yes | `"capable_first"` or `"efficient_first"` |
 | `confidence_threshold` | yes | finite number from `0` through `1` |
-| `recent_window` | no | nonnegative integer; omitted means no fixed recent window |
+| `recent_window` | no | nonnegative integer; defaults to 3 trailing tool results when omitted |
 | `only_on_wrong_signal_escalation` | no | Boolean; defaults to `true` |
 | `escalation_note` | no | nonempty text appended when Stage hands work to the capable tier |
 | `deescalation_note` | no | nonempty text appended when Stage hands work back; requires `escalation_note` |
@@ -360,5 +360,5 @@ production deployment guidance before exposing the service.
 - [LiteLLM routing plugins](https://docs.litellm.ai/docs/routing_plugins)
 - [Switchyard decision-only API PR #459](https://github.com/NVIDIA-NeMo/Switchyard/pull/459)
 - [Switchyard Python binding updates PR #479](https://github.com/NVIDIA-NeMo/Switchyard/pull/479)
-- [Switchyard Stage routing](../../../docs/routing_algorithms/stage_router_routing.md)
-- [Switchyard Random routing](../../../docs/routing_algorithms/random_routing.md)
+- [Switchyard Stage routing](../../docs/routing_algorithms/stage_router_routing.md)
+- [Switchyard Random routing](../../docs/routing_algorithms/random_routing.md)

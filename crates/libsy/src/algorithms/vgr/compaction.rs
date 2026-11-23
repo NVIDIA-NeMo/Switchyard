@@ -125,7 +125,7 @@ fn rewrite(request: &mut Request, head: usize, cut: usize, summary: &str) {
         text: summary.to_string(),
     });
     messages.drain(head..cut);
-    drop_exact_replay(request);
+    drop_exact_replay(&mut request.llm_request);
 }
 
 fn is_task_message(message: &Message) -> bool {

@@ -23,17 +23,17 @@ prefill-router = ["switchyard-runner/prefill-router"]
 switchyard-costs.workspace = true
 async-stream.workspace = true
 async-trait.workspace = true
-axum = "0.8"
+axum.workspace = true
 axum-server = { version = "0.8", default-features = false, features = ["tls-rustls"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12"] }
-clap = { version = "4", features = ["derive", "env"] }
+clap = { workspace = true, features = ["derive", "env"] }
 futures-util.workspace = true
 http.workspace = true
 libsy = { package = "switchyard-libsy", path = "../libsy", version = "0.3.0" }
-opentelemetry = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
+opentelemetry = { workspace = true, features = ["metrics", "trace"] }
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["http-proto", "metrics", "reqwest-blocking-client", "reqwest-rustls", "trace"] }
 opentelemetry-prometheus = "0.32"
-opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics", "trace"] }
+opentelemetry_sdk = { workspace = true, features = ["metrics", "trace"] }
 parking_lot.workspace = true
 prometheus = "0.14"
 reqwest.workspace = true
@@ -43,7 +43,7 @@ switchyard-protocol.workspace = true
 switchyard-runner.workspace = true
 serde_json.workspace = true
 switchyard-translation.workspace = true
-humantime = "2.4"
+humantime.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-opentelemetry.workspace = true
@@ -52,7 +52,7 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 async-trait.workspace = true
 http-body-util = "0.1"
-opentelemetry_sdk = { version = "0.32", default-features = false, features = ["testing"] }
-tempfile = "3"
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
+tempfile.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tower = { version = "0.5", features = ["util"] }
