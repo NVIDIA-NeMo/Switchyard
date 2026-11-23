@@ -6,10 +6,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use libsy::{Algorithm, Call, LibsyError, RuntimeModels};
 use switchyard_protocol::{
-    Category, ContentBlock, LlmRequest, Message, ModelId, Request, Role, ToolResult, text_request,
+    Category, ContentBlock, LlmRequest, Message, Metadata, ModelId, Request, Role, ToolResult,
+    text_request,
 };
 
-use crate::{PrefillForward, PrefillRouterAlgo, Result};
+use crate::{PrefillForward, PrefillRouterAlgo, PrefillRouterError, Result};
 
 struct RecordingForward {
     calls: Arc<AtomicUsize>,
@@ -23,6 +24,9 @@ impl PrefillForward for RecordingForward {
 
     fn forward(&mut self, prompts: &[String]) -> Result<Vec<Vec<f32>>> {
         self.calls.fetch_add(1, Ordering::Relaxed);
+        if prompts.iter().any(|prompt| prompt == "fail inference") {
+            return Err(PrefillRouterError::InvalidRequest("test failure".into()));
+        }
         self.prompts
             .lock()
             .expect("test prompts lock")
@@ -109,6 +113,90 @@ fn request(messages: Vec<Message>) -> Request {
         raw_request: None,
         metadata: None,
     }
+}
+
+#[tokio::test]
+async fn final_request_releases_its_own_retained_assignment() -> libsy::Result<()> {
+    let (forward, _, _) = forward();
+    let route: Arc<dyn Algorithm> = Arc::new(
+        PrefillRouterAlgo::from_forward(target_set(), forward).map_err(|error| {
+            LibsyError::AlgorithmError {
+                message: error.to_string(),
+            }
+        })?,
+    );
+    let with_session = |id: &str, final_request: bool, messages| {
+        let mut req = request(messages);
+        req.metadata = Some(Metadata {
+            session_id: Some(id.to_string()),
+            session_final: Some(final_request),
+            ..Metadata::default()
+        });
+        req
+    };
+    for id in ["one", "two"] {
+        assert_eq!(
+            selected(
+                Arc::clone(&route),
+                with_session(id, false, vec![Message::text(Role::User, "follow-up task")])
+            )
+            .await?,
+            "large"
+        );
+    }
+    assert_eq!(
+        selected(Arc::clone(&route), with_session("one", true, vec![])).await?,
+        "large"
+    );
+    assert_eq!(
+        selected(Arc::clone(&route), with_session("two", false, vec![])).await?,
+        "large"
+    );
+    assert_eq!(
+        selected(route, with_session("one", false, vec![])).await?,
+        "small"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn failed_final_request_releases_retained_assignment() -> libsy::Result<()> {
+    let (forward, _, _) = forward();
+    let route: Arc<dyn Algorithm> = Arc::new(
+        PrefillRouterAlgo::from_forward(target_set(), forward).map_err(|error| {
+            LibsyError::AlgorithmError {
+                message: error.to_string(),
+            }
+        })?,
+    );
+    let with_session = |final_request: bool, messages| {
+        let mut req = request(messages);
+        req.metadata = Some(Metadata {
+            session_id: Some("one".into()),
+            session_final: Some(final_request),
+            ..Metadata::default()
+        });
+        req
+    };
+    assert_eq!(
+        selected(
+            Arc::clone(&route),
+            with_session(false, vec![Message::text(Role::User, "follow-up task")])
+        )
+        .await?,
+        "large"
+    );
+    let failed = with_session(
+        true,
+        vec![
+            Message::text(Role::User, "initial"),
+            Message::text(Role::Assistant, "done"),
+            Message::text(Role::User, "fail inference"),
+        ],
+    );
+    assert!(selected(Arc::clone(&route), failed).await.is_err());
+    assert_eq!(selected(route, with_session(false, vec![])).await?, "small");
+    Ok(())
 }
 
 #[tokio::test]

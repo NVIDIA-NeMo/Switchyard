@@ -179,6 +179,13 @@ impl AffinityRouter {
         self
     }
 
+    /// Releases the assignment associated with a completed request.
+    pub fn release_for_request(&self, request: &Request) {
+        if let Some(key) = self.affinity_key(request) {
+            self.assignments.lock().remove(&key);
+        }
+    }
+
     /// Whether a decision for `model` should be retained.
     fn should_latch(&self, model: &str) -> bool {
         self.latch_only

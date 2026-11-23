@@ -138,14 +138,9 @@ fn latest_user_prompt(messages: &[Message]) -> Option<String> {
     None
 }
 
-#[async_trait]
-impl Algorithm for PrefillRouterAlgo {
-    fn name(&self) -> &str {
-        ALGORITHM_NAME
-    }
-
-    async fn route(
-        self: Arc<Self>,
+impl PrefillRouterAlgo {
+    async fn route_request(
+        &self,
         driver: Driver,
         mut request: Request,
     ) -> libsy::Result<RoutingOutcome> {
@@ -220,6 +215,30 @@ impl Algorithm for PrefillRouterAlgo {
                 .collect(),
             request,
         ))
+    }
+}
+
+#[async_trait]
+impl Algorithm for PrefillRouterAlgo {
+    fn name(&self) -> &str {
+        ALGORITHM_NAME
+    }
+
+    async fn route(
+        self: Arc<Self>,
+        driver: Driver,
+        request: Request,
+    ) -> libsy::Result<RoutingOutcome> {
+        let final_request = request
+            .metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.session_final == Some(true))
+            .then(|| request.clone());
+        let result = self.route_request(driver, request).await;
+        if let Some(request) = final_request {
+            self.affinity.release_for_request(&request);
+        }
+        result
     }
 }
 
