@@ -56,7 +56,7 @@
 <a href=#56 id=56 data-nosnippet>56</a>        })
 <a href=#57 id=57 data-nosnippet>57</a>}
 <a href=#58 id=58 data-nosnippet>58</a>
-<a href=#59 id=59 data-nosnippet>59</a><span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn </span>is_environment_context(block: <span class="kw-2">&amp;</span>ContentBlock) -&gt; bool {
+<a href=#59 id=59 data-nosnippet>59</a><span class="kw">fn </span>is_environment_context(block: <span class="kw-2">&amp;</span>ContentBlock) -&gt; bool {
 <a href=#60 id=60 data-nosnippet>60</a>    <span class="macro">matches!</span>(block, ContentBlock::Text { text } <span class="kw">if </span>text.trim()
 <a href=#61 id=61 data-nosnippet>61</a>        .strip_prefix(<span class="string">"&lt;environment_context&gt;"</span>)
 <a href=#62 id=62 data-nosnippet>62</a>        .and_then(|context| context.split_once(<span class="string">"&lt;/environment_context&gt;"</span>))
