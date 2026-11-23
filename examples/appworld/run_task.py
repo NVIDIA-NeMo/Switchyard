@@ -10,10 +10,10 @@ import time
 from uuid import uuid4
 
 import _jsonnet
+import appworld_agents.code.simplified.full_code_agent  # noqa: F401
 from appworld.common.path_store import path_store
 from appworld.evaluator import evaluate_task
 from appworld_agents.code.simplified.agent import Agent
-import appworld_agents.code.simplified.full_code_agent  # noqa: F401
 from appworld_agents.configs._generator.run import make_experiment_config
 
 

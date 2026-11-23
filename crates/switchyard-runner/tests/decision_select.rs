@@ -118,12 +118,21 @@ top_k = 1
             .collect::<Vec<_>>();
         assert_eq!(calls, [true]);
     }
-    drop(success);
     Mock::given(method("POST")).and(path("/v1/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id":"chat", "model":"llm", "choices":[{"index":0,"message":{"role":"assistant","content":"ordinary answer"},"finish_reason":"stop"}]
-        }))).expect(5).mount(&server).await;
+        }))).expect(7).mount(&server).await;
+    let mut capped = request("Choose names", catalog, false);
+    capped.llm_request.output.max_output_tokens = Some(1);
+    let mut multiple = request("Choose names", catalog, false);
+    multiple
+        .llm_request
+        .extensions
+        .fields
+        .insert("n".into(), json!(2));
     for (route, input) in [
+        (agent, capped),
+        (agent, multiple),
         (agent, request("Write code", catalog, false)),
         (agent, request("Choose names", "invalid: [", false)),
         (
@@ -137,6 +146,7 @@ top_k = 1
             "ordinary answer"
         );
     }
+    drop(success);
     for response in [
         ResponseTemplate::new(503),
         ResponseTemplate::new(200).set_body_json(json!({

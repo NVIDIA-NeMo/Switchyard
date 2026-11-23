@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use reqwest::{Url, header::HeaderValue};
-use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use switchyard_protocol::{
     BooleanEstimate, DecisionAnswer, DecisionKind, DecisionRequest, DecisionResponse,
@@ -170,31 +170,12 @@ impl RoutedDecisionClient for SystemOneClient {
     }
 }
 
-#[derive(Serialize)]
-struct WireRequest<'a> {
-    model: &'a ModelId,
-    state: &'a Value,
-    questions: WireQuestions,
-}
-
-struct WireQuestions(Vec<(String, Value)>);
-
-impl Serialize for WireQuestions {
-    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        let mut map = serializer.serialize_map(Some(self.0.len()))?;
-        for (id, question) in &self.0 {
-            map.serialize_entry(id, question)?;
-        }
-        map.end()
-    }
-}
-
 fn numbered_id(id: &str) -> Option<(&str, usize)> {
     let prefix = id.trim_end_matches(|c: char| c.is_ascii_digit());
     Some((prefix, id[prefix.len()..].parse().ok()?))
 }
 
-fn encode(request: &DecisionRequest) -> Result<WireRequest<'_>> {
+fn encode(request: &DecisionRequest) -> Result<Value> {
     let model = request
         .model
         .as_ref()
@@ -248,11 +229,8 @@ fn encode(request: &DecisionRequest) -> Result<WireRequest<'_>> {
     {
         questions.sort_by_key(|(id, _)| numbered_id(id).map(|(_, n)| n));
     }
-    Ok(WireRequest {
-        model,
-        state: &request.input,
-        questions: WireQuestions(questions),
-    })
+    let questions: serde_json::Map<_, _> = questions.into_iter().collect();
+    Ok(json!({"model": model, "state": request.input, "questions": questions}))
 }
 
 #[derive(Deserialize)]

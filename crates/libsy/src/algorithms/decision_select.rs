@@ -92,6 +92,28 @@ impl DecisionSelect {
             || !request.tools.is_empty()
             || request.tool_choice.is_some()
             || request.output.response_format.is_some()
+            || request.output.max_output_tokens.is_some()
+            || request
+                .extensions
+                .fields
+                .get("n")
+                .and_then(|n| n.as_u64())
+                .is_some_and(|n| n != 1)
+            || request
+                .extensions
+                .fields
+                .get("logprobs")
+                .and_then(|v| v.as_bool())
+                == Some(true)
+            || ["stop", "stop_sequences", "modalities", "audio"]
+                .iter()
+                .any(|key| {
+                    request
+                        .extensions
+                        .fields
+                        .get(*key)
+                        .is_some_and(|v| !v.is_null())
+                })
             || request.is_compaction
         {
             return None;
@@ -191,11 +213,11 @@ fn shortlist(
     let mut ranked: Vec<_> = documents
         .into_iter()
         .map(|(option, length, counts)| {
-            let norm = 1.5 * (0.25 + 0.75 * length as f64 / average);
             let score: f64 = query
                 .iter()
                 .filter_map(|word| {
                     let count = f64::from(*counts.get(word)?);
+                    let norm = 1.5 * (0.25 + 0.75 * length as f64 / average);
                     let df = f64::from(document_counts[word]);
                     let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
                     Some(idf * count * 2.5 / (count + norm))
