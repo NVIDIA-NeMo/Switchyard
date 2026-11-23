@@ -87,8 +87,8 @@ jobs:
           # Map published Switchyard URLs to the site built in this run for offline checking.
           docs_url='^https://nvidia-nemo\.github\.io/Switchyard'
           remap_flags=(
-            --remap "${docs_url}"'(?:/([^?#]*/)?)?([?#].*)?$ '"file://$PWD/site/"'${1}index.html${2}'
-            --remap "${docs_url}"'/(.*) '"file://$PWD/site/"'$1'
+            --remap "${docs_url}(?:/([^?#]*/)?)?([?#].*)?$ file://$PWD/site/\${1}index.html\${2}"
+            --remap "${docs_url}/(.*) file://$PWD/site/\$1"
           )
 
           # Lychee reports valid Rustdoc source-line ranges and fragment-preserving redirects as broken anchors.
