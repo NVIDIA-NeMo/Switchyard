@@ -330,6 +330,10 @@ descriptions. A grouped catalog yields names such as `music.search`. BM25 shortl
 The decision model scores them in one request. Switchyard returns up to `top_k` names, one per line, ranked by
 probability. Original catalog order breaks ties during shortlisting. Shortlist order breaks ties between scores.
 
+Set optional `stop_words` to a list of lowercase words to ignore in the query and catalog during shortlisting.
+The default list is empty. Set optional `question_prefix` to name the numbered questions sent to the model.
+The default prefix is `q`, giving IDs such as `q0` and `q1`. The rule preserves the task text sent to the model.
+
 Set `enabled = false` and reload the configuration to send every call to the LLM. A prompt mismatch, unsupported
 catalog or unusable decision response also sends the original request to the LLM.
 

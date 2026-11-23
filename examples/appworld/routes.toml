@@ -32,5 +32,17 @@ catalog_prefix = "App-wise API Descriptions:\n"
 task_prefix = "# Task Instruction\n"
 task_suffix = "\n\n\nList all APIs that may be needed to complete this task. If you are unsure whether a certain API is useful, include it (prioritize high recall). However, do not include APIs that are clearly irrelevant or unrelated.\n\nOnly generate one API per line in the output. Each line should be in the format <app_name>.<api_name>. Example:\n\nspotify.login\nspotify.search_songs\n\nNow, list the APIs for the above task."
 question = "List all APIs that may be needed to complete this task."
+question_prefix = "required_apis_"
+stop_words = [
+    "a", "about", "after", "all", "also", "an", "and", "any", "are", "as", "at", "be",
+    "been", "before", "being", "by", "can", "could", "did", "do", "does", "done",
+    "down", "each", "etc", "every", "for", "from", "had", "has", "have", "he", "her",
+    "his", "how", "i", "if", "in", "into", "is", "it", "its", "just", "may", "me",
+    "might", "must", "my", "no", "not", "of", "on", "or", "our", "out", "over", "per",
+    "please", "s", "shall", "she", "should", "so", "some", "t", "than", "that", "the",
+    "their", "them", "then", "these", "they", "this", "those", "to", "up", "via", "vs",
+    "was", "we", "were", "what", "when", "where", "which", "who", "whom", "why", "will",
+    "with", "would", "you", "your",
+]
 shortlist = 100
 top_k = 20

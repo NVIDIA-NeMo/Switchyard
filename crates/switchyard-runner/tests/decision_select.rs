@@ -24,7 +24,7 @@ fn request(system: &str, catalog: &str, stream: bool) -> Request {
             messages: vec![
                 Message::text(Role::User, format!("Catalog\n{catalog}")),
                 Message::text(Role::Assistant, "Ready"),
-                Message::text(Role::User, "Task: find a song. List names."),
+                Message::text(Role::User, "Task: find a song . List names."),
             ],
             stream,
             ..Default::default()
@@ -66,6 +66,7 @@ catalog_prefix = "Catalog\n"
 task_prefix = "Task: "
 task_suffix = ". List names."
 question = "Which names are relevant?"
+question_prefix = "required_apis_"
 shortlist = 4
 top_k = 1
 "#
@@ -81,13 +82,13 @@ top_k = 1
     let post = || Mock::given(method("POST")).and(path("/v1/systemone"));
     let success = post()
         .and(body_partial_json(json!({
-            "model":"decision", "state":"find a song", "questions":{
-                "q0":{"type":"noul"}, "q1":{"type":"noul"}
+            "model":"decision", "state":"find a song ", "questions":{
+                "required_apis_0":{"type":"noul"}, "required_apis_1":{"type":"noul"}
             }
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id":"ranked", "model":"decision", "answers":{
-                "q0":{"type":"noul","noul":0.1}, "q1":{"type":"noul","noul":0.9}
+                "required_apis_0":{"type":"noul","noul":0.1}, "required_apis_1":{"type":"noul","noul":0.9}
             }, "usage":{"input_tokens":20,"output_tokens":2}
         })))
         .expect(2)
@@ -139,7 +140,7 @@ top_k = 1
     for response in [
         ResponseTemplate::new(503),
         ResponseTemplate::new(200).set_body_json(json!({
-            "model":"decision","answers":{"q0":{"type":"noul","noul":0.5}}
+            "model":"decision","answers":{"required_apis_0":{"type":"noul","noul":0.5}}
         })),
     ] {
         let failure = post()

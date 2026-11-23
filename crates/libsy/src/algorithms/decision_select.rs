@@ -33,10 +33,20 @@ pub struct SelectionRule {
     pub task_suffix: String,
     /// Instruction for assessing one option against the task.
     pub question: String,
+    /// Omit these lowercase words from both the query and documents during shortlisting.
+    #[serde(default)]
+    pub stop_words: BTreeSet<String>,
+    /// Prefix for numbered question IDs. Defaults to `q`.
+    #[serde(default = "default_question_prefix")]
+    pub question_prefix: String,
     /// Maximum number of options to score in one decision call.
     pub shortlist: usize,
     /// Maximum number of names returned to the caller.
     pub top_k: usize,
+}
+
+fn default_question_prefix() -> String {
+    "q".into()
 }
 
 /// Replaces matching LLM requests with one batched decision call.
@@ -94,10 +104,9 @@ impl DecisionSelect {
         }
         let task = plain_text(&last.content)?
             .strip_prefix(&self.rule.task_prefix)?
-            .strip_suffix(&self.rule.task_suffix)?
-            .trim();
+            .strip_suffix(&self.rule.task_suffix)?;
         let catalog = plain_text(&first.content)?.strip_prefix(&self.rule.catalog_prefix)?;
-        if task.is_empty() || catalog.len() > 256 * 1024 {
+        if task.trim().is_empty() || catalog.len() > 256 * 1024 {
             return None;
         }
         let groups: yaml_serde::Mapping = yaml_serde::from_str(catalog).ok()?;
@@ -142,20 +151,32 @@ fn words(text: &str) -> impl Iterator<Item = String> + '_ {
 }
 
 // Rank by BM25. Stable ties preserve the order in the caller's catalog.
-fn shortlist(task: &str, options: &mut Vec<Candidate>, limit: usize) {
+fn shortlist(
+    task: &str,
+    options: &mut Vec<Candidate>,
+    limit: usize,
+    stop_words: &BTreeSet<String>,
+) {
     if options.len() <= limit {
         return;
     }
-    let query: BTreeSet<_> = words(task).collect();
+    // Sum in query order so rounding does not reorder nearly tied documents.
+    let mut seen = BTreeSet::new();
+    let query: Vec<_> = words(task)
+        .filter(|w| !stop_words.contains(w) && seen.insert(w.clone()))
+        .collect();
     let mut document_counts = BTreeMap::new();
     let documents: Vec<_> = options
         .drain(..)
         .map(|option| {
             let mut counts = BTreeMap::new();
             let mut length = 0;
-            for word in words(&option.name).chain(words(&option.description)) {
+            for word in words(&option.name)
+                .chain(words(&option.description))
+                .filter(|w| !stop_words.contains(w))
+            {
                 length += 1;
-                if query.contains(&word) {
+                if seen.contains(&word) {
                     *counts.entry(word).or_insert(0u32) += 1;
                 }
             }
@@ -170,13 +191,14 @@ fn shortlist(task: &str, options: &mut Vec<Candidate>, limit: usize) {
     let mut ranked: Vec<_> = documents
         .into_iter()
         .map(|(option, length, counts)| {
-            let norm = 1.5 * (0.25 + 0.75 * length as f64 / average.max(1.0));
-            let score: f64 = counts
-                .into_iter()
-                .map(|(word, count)| {
-                    let df = f64::from(document_counts[&word]);
-                    let idf = ((n - df + 0.5) / (df + 0.5)).ln_1p();
-                    idf * 2.5 * f64::from(count) / (f64::from(count) + norm)
+            let norm = 1.5 * (0.25 + 0.75 * length as f64 / average);
+            let score: f64 = query
+                .iter()
+                .filter_map(|word| {
+                    let count = f64::from(*counts.get(word)?);
+                    let df = f64::from(document_counts[word]);
+                    let idf = (1.0 + (n - df + 0.5) / (df + 0.5)).ln();
+                    Some(idf * count * 2.5 / (count + norm))
                 })
                 .sum();
             (option, score)
@@ -188,6 +210,7 @@ fn shortlist(task: &str, options: &mut Vec<Candidate>, limit: usize) {
 
 fn select_names(
     response: &DecisionResponse,
+    prefix: &str,
     options: &[Candidate],
     limit: usize,
 ) -> Option<String> {
@@ -196,7 +219,7 @@ fn select_names(
     }
     let mut scores = Vec::with_capacity(options.len());
     for (i, option) in options.iter().enumerate() {
-        let answer = response.answers.get(&format!("q{i}"))?;
+        let answer = response.answers.get(&format!("{prefix}{i}"))?;
         let DecisionValue::Boolean(BooleanEstimate::ProbabilityTrue(p)) = answer.value else {
             return None;
         };
@@ -242,9 +265,15 @@ impl Algorithm for DecisionSelect {
             return fallback(request, "unmatched");
         };
         let catalog_size = options.len();
-        shortlist(task, &mut options, self.rule.shortlist);
+        shortlist(
+            task,
+            &mut options,
+            self.rule.shortlist,
+            &self.rule.stop_words,
+        );
+        let prefix = &self.rule.question_prefix;
         let questions = options.iter().enumerate().map(|(i, option)| (
-            format!("q{i}"),
+            format!("{prefix}{i}"),
             DecisionQuestion {
                 instructions: json!(format!("{}\nConsider one option only: {} ({})\nDoes this option belong to the answer?", self.rule.question, option.name, option.description)),
                 kind: DecisionKind::Boolean { true_description: None, false_description: None },
@@ -266,7 +295,7 @@ impl Algorithm for DecisionSelect {
             }
             Err(error) => return Err(error),
         };
-        let Some(names) = select_names(&response, &options, self.rule.top_k) else {
+        let Some(names) = select_names(&response, prefix, &options, self.rule.top_k) else {
             return fallback(request, "invalid_selection");
         };
         let mut answer = text_response(Some(driver.provider_model(model).to_string()), names);
@@ -301,6 +330,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn stop_words_apply_to_query_and_document_lengths() {
+        let mut options = [
+            ("second", "the the the song"),
+            ("first", "song"),
+            ("other", "the the the"),
+        ]
+        .into_iter()
+        .map(|(name, description)| Candidate {
+            name: name.into(),
+            description: description.into(),
+        })
+        .collect();
+        shortlist("the song", &mut options, 2, &BTreeSet::from(["the".into()]));
+        assert_eq!(options[0].name, "second");
+        assert_eq!(options[1].name, "first");
+    }
+
+    #[test]
     fn shortlist_scores_task_terms_before_applying_the_limit() {
         let mut options = [
             ("music.play", "play a track"),
@@ -313,7 +360,12 @@ mod tests {
             description: description.into(),
         })
         .collect();
-        shortlist("approve a payment request", &mut options, 2);
+        shortlist(
+            "approve a payment request",
+            &mut options,
+            2,
+            &BTreeSet::new(),
+        );
         assert_eq!(
             options
                 .iter()
@@ -321,7 +373,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["wallet.approve", "wallet.reject"]
         );
-        shortlist("unrelated", &mut options, 1);
+        shortlist("unrelated", &mut options, 1, &BTreeSet::new());
         assert_eq!(options[0].name, "wallet.approve");
     }
 }

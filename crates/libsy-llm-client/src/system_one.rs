@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use reqwest::{Url, header::HeaderValue};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize, Serializer, ser::SerializeMap};
 use serde_json::{Value, json};
 use switchyard_protocol::{
     BooleanEstimate, DecisionAnswer, DecisionKind, DecisionRequest, DecisionResponse,
@@ -170,14 +170,38 @@ impl RoutedDecisionClient for SystemOneClient {
     }
 }
 
-fn encode(request: &DecisionRequest) -> Result<Value> {
+#[derive(Serialize)]
+struct WireRequest<'a> {
+    model: &'a ModelId,
+    state: &'a Value,
+    questions: WireQuestions,
+}
+
+struct WireQuestions(Vec<(String, Value)>);
+
+impl Serialize for WireQuestions {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        let mut map = serializer.serialize_map(Some(self.0.len()))?;
+        for (id, question) in &self.0 {
+            map.serialize_entry(id, question)?;
+        }
+        map.end()
+    }
+}
+
+fn numbered_id(id: &str) -> Option<(&str, usize)> {
+    let prefix = id.trim_end_matches(|c: char| c.is_ascii_digit());
+    Some((prefix, id[prefix.len()..].parse().ok()?))
+}
+
+fn encode(request: &DecisionRequest) -> Result<WireRequest<'_>> {
     let model = request
         .model
         .as_ref()
         .ok_or_else(|| LlmClientError::InvalidRequest {
             message: "System One requires a selected model".into(),
         })?;
-    let mut questions = serde_json::Map::new();
+    let mut questions = Vec::with_capacity(request.questions.len());
     for (id, question) in &request.questions {
         let (kind, criteria) = match &question.kind {
             DecisionKind::Boolean {
@@ -210,14 +234,25 @@ fn encode(request: &DecisionRequest) -> Result<Value> {
             }
             DecisionKind::Score { levels } => ("score", json!(levels)),
         };
-        questions.insert(
-            id.clone(),
-            json!({
-                "type": kind, "instructions": question.instructions, "criteria": criteria,
-            }),
-        );
+        let mut wire = json!({"type":kind, "instructions":question.instructions});
+        if kind != "noul" || criteria.as_object().is_some_and(|c| !c.is_empty()) {
+            wire["criteria"] = criteria;
+        }
+        questions.push((id.clone(), wire));
     }
-    Ok(json!({"model": model, "state": request.input, "questions": questions}))
+    // Indexed batches retain numeric order on the wire, including after question 9.
+    if let Some((prefix, _)) = questions.first().and_then(|(id, _)| numbered_id(id))
+        && questions
+            .iter()
+            .all(|(id, _)| numbered_id(id).is_some_and(|(p, _)| p == prefix))
+    {
+        questions.sort_by_key(|(id, _)| numbered_id(id).map(|(_, n)| n));
+    }
+    Ok(WireRequest {
+        model,
+        state: &request.input,
+        questions: WireQuestions(questions),
+    })
 }
 
 #[derive(Deserialize)]
@@ -250,4 +285,43 @@ enum WireValue {
         score: ScoreValue,
         probabilities: Option<BTreeMap<String, Probability>>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use switchyard_protocol::DecisionQuestion;
+
+    #[test]
+    fn numbered_questions_keep_numeric_order_and_optional_criteria() {
+        let request = DecisionRequest {
+            model: Some("selector".into()),
+            input: json!("task"),
+            questions: (0..12)
+                .map(|i| {
+                    (
+                        format!("pick_{i}"),
+                        DecisionQuestion {
+                            instructions: json!("Choose"),
+                            kind: DecisionKind::Boolean {
+                                true_description: (i == 2).then(|| json!("relevant")),
+                                false_description: None,
+                            },
+                        },
+                    )
+                })
+                .collect(),
+        };
+        let wire = serde_json::to_string(&encode(&request).unwrap()).unwrap();
+        let positions: Vec<_> = (0..12)
+            .map(|i| wire.find(&format!(r#""pick_{i}":"#)).unwrap())
+            .collect();
+        assert!(positions.windows(2).all(|p| p[0] < p[1]));
+        let parsed: Value = serde_json::from_str(&wire).unwrap();
+        assert!(parsed["questions"]["pick_0"].get("criteria").is_none());
+        assert_eq!(
+            parsed["questions"]["pick_2"]["criteria"],
+            json!({"true":"relevant"})
+        );
+    }
 }
