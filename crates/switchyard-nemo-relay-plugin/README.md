@@ -161,7 +161,8 @@ the [routing overview](../../docs/routing_algorithms/overview.md) for the
 algorithms.
 
 To keep the deployment in the Relay configuration, nest the same version-1
-Switchyard configuration under `switchyard_config`:
+Switchyard configuration under `switchyard_config`. Keep the manifest path that
+`plugins add` wrote. In the samples, replace the example path with that path:
 
 ```toml
 [[plugins.dynamic]]
