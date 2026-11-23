@@ -48,7 +48,9 @@ def test_go_publication_keeps_preview_defaults_without_extra_approval() -> None:
             setting = workflow["on"][trigger]["inputs"][name]
             assert setting["type"] == "boolean" and setting["default"] == "false"
     assert "push" not in workflow["on"]
-    assert workflow["concurrency"]["group"] == "go-distributions-${{ github.ref }}"
+    assert workflow["concurrency"]["group"] == (
+        "${{ github.workflow }}-go-distributions-${{ github.ref }}"
+    )
     job = workflow["jobs"]["publish"]
     assert job["needs"] == ["version", "consumer"]
     assert "environment" not in job
