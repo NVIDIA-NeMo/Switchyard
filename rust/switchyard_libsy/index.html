@@ -27,7 +27,7 @@ makes no network calls itself — <code>switchyard-llm-client</code>’s <code>r
 drives the stream and performs the terminal answer call, retries, and fallback over HTTP.</p>
 <p>The provider-neutral <a href="../switchyard_protocol/envelope/struct.Request.html" title="struct switchyard_protocol::envelope::Request"><code>Request</code></a>, <a href="../switchyard_protocol/envelope/struct.Response.html" title="struct switchyard_protocol::envelope::Response"><code>Response</code></a>, <a href="../switchyard_protocol/llm/struct.Usage.html" title="struct switchyard_protocol::llm::Usage"><code>Usage</code></a>, and <a href="../switchyard_protocol/stream/enum.LlmResponse.html" title="enum switchyard_protocol::stream::LlmResponse"><code>LlmResponse</code></a>
 contracts come from <code>switchyard-protocol</code>.</p>
-<p>The <a href="../../examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/main/examples/dynamo-preproc/README.md">Dynamo PreProc example</a>
 adds an optional queue-depth check after task classification.</p>
 <h3 id="concurrent-calls-and-cancellation"><a class="doc-anchor" href="#concurrent-calls-and-cancellation">§</a>Concurrent calls and cancellation</h3>
 <p>An algorithm can poll several <code>Driver::call_model</code> or <code>Driver::call_decision</code> futures
