@@ -6,7 +6,7 @@
 mod anthropic;
 pub mod api;
 
-use api::observed_spend::CallCost;
+use api::CallCost;
 use std::collections::HashMap;
 use std::path::Path;
 
