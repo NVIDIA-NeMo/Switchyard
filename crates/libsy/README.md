@@ -41,7 +41,7 @@ drives the stream and performs the terminal answer call, retries, and fallback o
 The provider-neutral [`Request`], [`Response`], [`Usage`], and [`LlmResponse`]
 contracts come from `switchyard-protocol`.
 
-The [Dynamo PreProc example](../../examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing)
+The [Dynamo PreProc example](https://github.com/NVIDIA-NeMo/Switchyard/blob/main/examples/dynamo-preproc/README.md)
 adds an optional queue-depth check after task classification.
 
 ## Concurrent calls and cancellation

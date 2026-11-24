@@ -354,7 +354,7 @@ impl TranslatingLlmClient {
         let provider_model_id = self.provider_model(target_name);
         set_json_model(&mut body, provider_model_id);
         if matches!(backend, Backend::OpenAiResponses(_)) {
-            sanitize_openai_responses_provider_body(&mut body);
+            switchyard_translation::flatten_codex_namespaces_for_provider(&mut body);
         }
         // Strip before `merge_extra_body` so a target can reinstate either field
         // deliberately via `extra_body`.
@@ -857,6 +857,9 @@ impl AttemptFailure {
 }
 
 fn is_transient_failure(error: &LlmClientError) -> bool {
+    if error.is_attachment_rejection() {
+        return false;
+    }
     match error {
         LlmClientError::Transport { .. } | LlmClientError::Timeout { .. } => true,
         LlmClientError::UpstreamHttp { status, .. } => {
@@ -1101,126 +1104,6 @@ fn rejects_template_options(error: &LlmClientError) -> bool {
             ]
             .iter()
             .any(|phrase| message.contains(phrase)))
-}
-
-const CODEX_NAMESPACE_SEPARATOR: &str = "__";
-
-/// Rewrites a Responses body into the shape OpenAI-compatible providers accept.
-///
-/// Codex extends Responses with namespace containers and namespaced function calls, and
-/// OpenAI-compatible providers expect a flat Responses tool namespace.
-fn sanitize_openai_responses_provider_body(body: &mut Value) {
-    let Value::Object(object) = body else {
-        return;
-    };
-    sanitize_openai_responses_input_for_provider(object.get_mut("input"));
-    sanitize_openai_responses_tools_for_provider(object.get_mut("tools"));
-    sanitize_openai_responses_tool_choice_for_provider(object.get_mut("tool_choice"));
-}
-
-fn sanitize_openai_responses_input_for_provider(input: Option<&mut Value>) {
-    let Some(Value::Array(items)) = input else {
-        return;
-    };
-    for item in items {
-        let Some(object) = item.as_object_mut() else {
-            continue;
-        };
-        if object.get("type").and_then(Value::as_str) == Some("function_call") {
-            qualify_responses_function_name(object);
-        }
-    }
-}
-
-fn sanitize_openai_responses_tools_for_provider(tools: Option<&mut Value>) {
-    let Some(Value::Array(tools)) = tools else {
-        return;
-    };
-    let mut flat_tools = Vec::with_capacity(tools.len());
-    for tool in std::mem::take(tools) {
-        push_sanitized_openai_responses_tool(&mut flat_tools, tool);
-    }
-    *tools = flat_tools;
-}
-
-fn push_sanitized_openai_responses_tool(out: &mut Vec<Value>, tool: Value) {
-    let Value::Object(mut object) = tool else {
-        out.push(tool);
-        return;
-    };
-    if object.get("type").and_then(Value::as_str) == Some("namespace") {
-        let namespace = object
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let Some(Value::Array(children)) = object.remove("tools") else {
-            out.push(Value::Object(object));
-            return;
-        };
-        for child in children {
-            push_sanitized_namespaced_tool(out, &namespace, child);
-        }
-        return;
-    }
-    ensure_responses_function_tool_description(&mut object);
-    out.push(Value::Object(object));
-}
-
-fn push_sanitized_namespaced_tool(out: &mut Vec<Value>, namespace: &str, tool: Value) {
-    let Value::Object(mut object) = tool else {
-        out.push(tool);
-        return;
-    };
-    if object.get("type").and_then(Value::as_str) == Some("function") {
-        qualify_responses_function_name_with_namespace(&mut object, namespace);
-        ensure_responses_function_tool_description(&mut object);
-    }
-    out.push(Value::Object(object));
-}
-
-fn sanitize_openai_responses_tool_choice_for_provider(tool_choice: Option<&mut Value>) {
-    let Some(Value::Object(object)) = tool_choice else {
-        return;
-    };
-    if object.get("type").and_then(Value::as_str) == Some("function") {
-        qualify_responses_function_name(object);
-    }
-}
-
-fn qualify_responses_function_name(object: &mut Map<String, Value>) {
-    let namespace = object
-        .remove("namespace")
-        .and_then(|value| value.as_str().map(ToOwned::to_owned));
-    let Some(namespace) = namespace.as_deref() else {
-        return;
-    };
-    qualify_responses_function_name_with_namespace(object, namespace);
-}
-
-fn qualify_responses_function_name_with_namespace(
-    object: &mut Map<String, Value>,
-    namespace: &str,
-) {
-    if namespace.is_empty() {
-        return;
-    }
-    let Some(name) = object.get("name").and_then(Value::as_str) else {
-        return;
-    };
-    let prefix = format!("{namespace}{CODEX_NAMESPACE_SEPARATOR}");
-    if name.starts_with(&prefix) {
-        return;
-    }
-    object.insert("name".to_string(), Value::String(format!("{prefix}{name}")));
-}
-
-fn ensure_responses_function_tool_description(object: &mut Map<String, Value>) {
-    if object.get("type").and_then(Value::as_str) == Some("function")
-        && !matches!(object.get("description"), Some(Value::String(_)))
-    {
-        object.insert("description".to_string(), Value::String(String::new()));
-    }
 }
 
 // Drops fields accepted by OpenAI-like APIs but rejected by Anthropic Messages.
@@ -4257,6 +4140,59 @@ mod tests {
                 Some(&ModelId::from("gpt")),
             )
             .await?;
+        Ok(())
+    }
+    #[tokio::test]
+    async fn bad_media_does_not_retry_or_cool_down_the_backend()
+    -> std::result::Result<(), Box<dyn Error + Sync + Send + 'static>> {
+        use switchyard_protocol::{ContentBlock, ImageSource};
+        for retries in [0, 2] {
+            let server = MockServer::start().await;
+            let calls = Arc::new(AtomicUsize::new(0));
+            let seen = calls.clone();
+            Mock::given(method("POST"))
+                .respond_with(move |request: &wiremock::Request| {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    if String::from_utf8_lossy(&request.body).contains("image_url") {
+                        ResponseTemplate::new(500).set_body_json(json!({"error": {
+                            "message": "cannot make GET request to image URL", "type": "server_error"
+                        }}))
+                    } else { chat_success_response() }
+                }).mount(&server).await;
+            let backend = HttpBackendConfig {
+                failure_cooldown: Duration::from_secs(60),
+                ..config_with_retries(&format!("{}/v1", server.uri()), retries)
+            };
+            let client = TranslatingLlmClient::new(&[ModelConfig::new(
+                "gpt",
+                Backend::OpenAiChat(backend),
+                None,
+            )])?;
+            let mut broken = request_for(Some("gpt"), false);
+            broken.llm_request.messages[0]
+                .content
+                .push(ContentBlock::Image {
+                    source: ImageSource::Url {
+                        url: "https://example.invalid/missing.png".into(),
+                        detail: None,
+                    },
+                });
+            assert!(matches!(
+                client.call_rewrite_model(broken, None).await,
+                Err(LlmClientError::UpstreamHttp {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    ..
+                })
+            ));
+            let response = client
+                .call_rewrite_model(request_for(Some("gpt"), false), None)
+                .await?;
+            assert_eq!(
+                completion_text(&response.llm_response.into_agg().await?),
+                "recovered"
+            );
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+        }
         Ok(())
     }
 }

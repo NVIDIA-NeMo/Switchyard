@@ -1673,7 +1673,7 @@ dependencies = [
 
 [[package]]
 name = "prefill-router"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "pyo3",
@@ -2500,7 +2500,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-costs"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2512,7 +2512,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-ffi"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "parking_lot",
@@ -2528,7 +2528,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-libsy"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -2555,7 +2555,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-llm-client"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -2581,7 +2581,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-nemo-relay-plugin"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures-util",
  "http",
@@ -2602,7 +2602,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-node"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "http",
@@ -2646,7 +2646,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-protocol"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "futures",
@@ -2659,7 +2659,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-py"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "futures",
  "http",
@@ -2678,7 +2678,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-runner"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -2700,7 +2700,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-server"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-stream",
  "async-trait",
@@ -2737,7 +2737,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-soak"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "axum",
  "clap",
@@ -2754,7 +2754,7 @@ dependencies = [
 
 [[package]]
 name = "switchyard-translation"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "async-stream",
  "base64",

@@ -11,8 +11,8 @@ use axum::response::{IntoResponse, Response as HttpResponse};
 use switchyard_protocol::{LlmResponse, ProviderExtensions, Response as AlgorithmResponse};
 use switchyard_translation::{WireFormat, encode_stream_with_extensions};
 
-use crate::observed_translation;
 use crate::sse::frame_stream;
+use switchyard_llm_client::observed_translation;
 
 type BoxError = Box<dyn Error + Send + Sync>;
 

@@ -477,17 +477,29 @@ mod tests {
 
     #[test]
     fn decode_stream_reassembles_frames_split_across_chunks() -> Result<(), BoxError> {
-        // A multi-byte codepoint and the frame boundaries are split across
-        // one-byte chunks; the BufReader must reassemble them losslessly.
-        let payload = json!({"choices": [{"delta": {"content": "café"}}]});
-        let sse = format!("data: {payload}\n\ndata: [DONE]\n\n");
-        let bytes = stream::iter(
-            sse.into_bytes()
-                .into_iter()
-                .map(|byte| Ok::<Vec<u8>, LlmClientError>(vec![byte])),
-        );
-        let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
-        assert_eq!(text_of(&chunks), "café");
+        let payloads = [
+            (
+                r#"data: {"choices":[{"delta":{"content":"café"}}]}"#,
+                "café",
+            ),
+            (
+                concat!(
+                    "\u{FEFF}",
+                    r#"data: {"choices":[{"delta":{"content":"Hello"}}]}"#
+                ),
+                "Hello",
+            ),
+        ];
+        for (payload, expected) in payloads {
+            let sse = format!("{payload}\n\ndata: [DONE]\n\n");
+            let bytes = stream::iter(
+                sse.into_bytes()
+                    .into_iter()
+                    .map(|byte| Ok::<Vec<u8>, LlmClientError>(vec![byte])),
+            );
+            let chunks = decode_all(bytes, WireFormat::OpenAiChat)?;
+            assert_eq!(text_of(&chunks), expected);
+        }
         Ok(())
     }
 

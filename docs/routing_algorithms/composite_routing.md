@@ -158,8 +158,9 @@ settings. Add a `[routes.switchyard.classifier.decision]` table to change them.
 See the [decision client reference](../reference/toml_schema.md#decision_clientsname)
 for OpenAI Decisions configuration.
 
-The judge receives the conversation messages and one choice question. The
-default choices are `capable` (start with the capable model) and `efficient`
+The judge receives the opening task, the recent conversation window, and one choice
+question. Composite excludes inline system and developer messages from this input.
+The default choices are `capable` (start with the capable model) and `efficient`
 (start with the efficient model). The classifier selects capable when
 `probabilities.capable` is above `cutoff`. The Composite default cutoff is `0.92`.
 Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as

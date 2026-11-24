@@ -6,13 +6,13 @@ Start with a local routing decision. Then add tool history or send the selected 
 
 ## Install
 
-You need Rust 1.96.1+ with Cargo and a native build toolchain. See [installation requirements](../INSTALLATION.md#requirements). These examples use the development API, pinned to one Git revision. The released `0.3.0` crates do not include `Step::CallDecision` and use a different `respond` API.
+You need Rust 1.96.1+ with Cargo and a native build toolchain. See [installation requirements](../INSTALLATION.md#requirements). These examples use the Switchyard 0.4.0 Rust API.
 
 ```bash
 cargo new switchyard-demo
 cd switchyard-demo
 # Keep libsy and its protocol types on the same API revision.
-cargo add switchyard-libsy switchyard-protocol --git https://github.com/NVIDIA-NeMo/Switchyard.git --rev ef958a9a8099bb0493b3d42862273e09eced0f52
+cargo add switchyard-libsy@0.4.0 switchyard-protocol@0.4.0
 # futures reads the step stream; Tokio runs the asynchronous routing tasks.
 cargo add futures@0.3
 cargo add tokio@1 --features macros,rt
@@ -139,7 +139,7 @@ Add the dependencies:
 
 ```bash
 # Translation converts neutral protocol types to and from provider JSON.
-cargo add switchyard-translation --git https://github.com/NVIDIA-NeMo/Switchyard.git --rev ef958a9a8099bb0493b3d42862273e09eced0f52
+cargo add switchyard-translation@0.4.0
 # reqwest handles HTTPS and JSON; serde_json represents the provider's reply.
 cargo add reqwest@0.13 --no-default-features --features json,rustls
 cargo add serde_json@1

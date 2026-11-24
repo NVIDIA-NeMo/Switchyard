@@ -5207,3 +5207,89 @@ fn responses_stored_tool_outputs_stay_tool_results() -> TestResult {
     assert_eq!(output["input"], outputs);
     Ok(())
 }
+
+#[test]
+fn chat_tool_images_survive_normalization_and_responses_translation() -> TestResult {
+    let engine = TranslationEngine::default();
+    let policy = normalized_policy();
+    let image_url = "data:image/png;base64,aGVsbG8=";
+    let body = json!({"model": "route", "messages": [
+        {"role": "user", "content": "Read the screenshot."},
+        {"role": "assistant", "tool_calls": [{"id": "shot", "type": "function",
+         "function": {"name": "screenshot", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "shot", "content": [
+            {"type": "text", "text": "Screenshot follows"},
+            {"type": "image_url", "image_url": {"url": image_url}}
+        ]}
+    ]});
+    let request = engine
+        .decode_request(WireFormat::OpenAiChat, &body, &policy)?
+        .request;
+    let ContentBlock::ToolResult(result) = &request.messages[2].content[0] else {
+        panic!("expected a normalized tool result");
+    };
+    assert!(matches!(result.content[1], ContentBlock::Image { .. }));
+    let encoded = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy)?;
+    let output = encoded.body["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "function_call_output")
+        .unwrap();
+    assert_eq!(output["call_id"], "shot");
+    assert_eq!(output["output"][0]["text"], "Screenshot follows");
+    assert_eq!(output["output"][1]["image_url"], image_url);
+    assert_eq!(output["output"][1]["type"], "input_image");
+    Ok(())
+}
+
+#[test]
+fn anthropic_pdf_titles_produce_openai_pdf_filenames() -> TestResult {
+    let engine = TranslationEngine::default();
+    for (title, filename) in [
+        (None, "document.pdf"),
+        (Some(""), "document.pdf"),
+        (Some("   "), "document.pdf"),
+        (Some("Invoice"), "Invoice.pdf"),
+        (Some("invoice.v2"), "invoice.v2.pdf"),
+        (Some("invoice.pdf"), "invoice.pdf"),
+        (Some("invoice.PDF"), "invoice.PDF"),
+    ] {
+        let mut document = json!({"type": "document", "source": {
+            "type": "base64", "media_type": "application/pdf", "data": "JVBERi0xLjQK"
+        }});
+        if let Some(title) = title {
+            document["title"] = json!(title);
+        }
+        let body = json!({"model": "route", "max_tokens": 64, "messages": [{
+            "role": "user", "content": [{"type": "text", "text": "Read this invoice"}, document]
+        }]});
+        for policy in [TranslationPolicy::default(), normalized_policy()] {
+            for target in [WireFormat::OpenAiChat, WireFormat::OpenAiResponses] {
+                let output = engine
+                    .translate_request(WireFormat::AnthropicMessages, target, &body, &policy)?
+                    .body;
+                let file = if target == WireFormat::OpenAiChat {
+                    &output["messages"][0]["content"][1]["file"]
+                } else {
+                    &output["input"][0]["content"][1]
+                };
+                assert_eq!(file["filename"], filename, "{title:?}, {target:?}");
+                assert_eq!(
+                    file["file_data"],
+                    "data:application/pdf;base64,JVBERi0xLjQK"
+                );
+            }
+            let native = engine
+                .translate_request(
+                    WireFormat::AnthropicMessages,
+                    WireFormat::AnthropicMessages,
+                    &body,
+                    &policy,
+                )?
+                .body;
+            assert_eq!(native["messages"], body["messages"]);
+        }
+    }
+    Ok(())
+}

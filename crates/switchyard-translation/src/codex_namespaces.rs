@@ -130,6 +130,103 @@ pub fn restore_qualified_tool_names(body: &mut Value, origins: &HashMap<String, 
     }
 }
 
+/// Flattens Codex namespaces in an outbound Responses body for an OpenAI-compatible provider.
+///
+/// The Responses encoder rebuilds `namespace` containers and `namespace` fields on
+/// calls for the client, and a replayed preserved body still holds them as sent.
+/// Providers accept only flat function tools, so this pass runs on every body sent
+/// to a Responses upstream. It names each child `<namespace>__<tool>`, moves the
+/// `namespace` field of `function_call` items and a `tool_choice` into the name,
+/// and gives each function tool a string `description`.
+pub fn flatten_codex_namespaces_for_provider(body: &mut Value) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    if let Some(Value::Array(items)) = object.get_mut("input") {
+        for item in items.iter_mut().filter_map(Value::as_object_mut) {
+            if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                move_namespace_into_name(item);
+            }
+        }
+    }
+    if let Some(Value::Array(tools)) = object.get_mut("tools") {
+        let mut flat = Vec::with_capacity(tools.len());
+        for tool in std::mem::take(tools) {
+            push_flat_tool(&mut flat, tool);
+        }
+        *tools = flat;
+    }
+    if let Some(Value::Object(choice)) = object.get_mut("tool_choice")
+        && choice.get("type").and_then(Value::as_str) == Some("function")
+    {
+        move_namespace_into_name(choice);
+    }
+}
+
+fn push_flat_tool(out: &mut Vec<Value>, tool: Value) {
+    let Value::Object(mut object) = tool else {
+        out.push(tool);
+        return;
+    };
+    if object.get("type").and_then(Value::as_str) == Some("namespace") {
+        let namespace = object
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let Some(Value::Array(children)) = object.remove("tools") else {
+            out.push(Value::Object(object));
+            return;
+        };
+        for child in children {
+            let Value::Object(mut child) = child else {
+                out.push(child);
+                continue;
+            };
+            if child.get("type").and_then(Value::as_str) == Some("function") {
+                qualify_name(&mut child, &namespace);
+                ensure_function_description(&mut child);
+            }
+            out.push(Value::Object(child));
+        }
+        return;
+    }
+    ensure_function_description(&mut object);
+    out.push(Value::Object(object));
+}
+
+fn move_namespace_into_name(object: &mut Map<String, Value>) {
+    if let Some(Value::String(namespace)) = object.remove("namespace") {
+        qualify_name(object, &namespace);
+    }
+}
+
+// Leaves a name that already carries the namespace prefix unchanged.
+fn qualify_name(object: &mut Map<String, Value>, namespace: &str) {
+    if namespace.is_empty() {
+        return;
+    }
+    let Some(name) = object.get("name").and_then(Value::as_str) else {
+        return;
+    };
+    if name
+        .strip_prefix(namespace)
+        .is_some_and(|rest| rest.starts_with(NAMESPACE_SEPARATOR))
+    {
+        return;
+    }
+    let qualified = qualified_tool_name(namespace, name);
+    object.insert("name".to_string(), Value::String(qualified));
+}
+
+fn ensure_function_description(object: &mut Map<String, Value>) {
+    if object.get("type").and_then(Value::as_str) == Some("function")
+        && !matches!(object.get("description"), Some(Value::String(_)))
+    {
+        object.insert("description".to_string(), Value::String(String::new()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::{Map, json};

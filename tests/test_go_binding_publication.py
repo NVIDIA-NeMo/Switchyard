@@ -11,6 +11,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
+import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts/release"))
 try:
@@ -18,6 +19,51 @@ try:
     publication = importlib.import_module("publish_go_bindings")
 finally:
     sys.path.pop(0)
+
+
+def test_stable_release_starts_go_publication() -> None:
+    root = Path(__file__).resolve().parents[1]
+    workflow = yaml.load(
+        (root / ".github/workflows/publish.yml").read_text(), Loader=yaml.BaseLoader
+    )
+    job = workflow["jobs"]["publish-go-bindings"]
+    assert job["needs"] == ["validate-release-ref", "publish"]
+    assert job["if"] == (
+        "${{ github.event_name == 'push' && "
+        "github.repository == 'NVIDIA-NeMo/Switchyard' && "
+        "needs.validate-release-ref.outputs.is_alpha == 'false' }}"
+    )
+    assert job["uses"] == "./.github/workflows/go-packaging.yml"
+    assert job["with"] == {"release_candidate": "true", "publish": "true"}
+    assert job["permissions"] == {"contents": "write"}
+    assert "secrets" not in job
+
+
+def test_go_publication_keeps_preview_defaults_without_extra_approval() -> None:
+    root = Path(__file__).resolve().parents[1]
+    source = (root / ".github/workflows/go-packaging.yml").read_text()
+    workflow = yaml.load(source, Loader=yaml.BaseLoader)
+    for trigger in ("workflow_dispatch", "workflow_call"):
+        for name in ("release_candidate", "publish"):
+            setting = workflow["on"][trigger]["inputs"][name]
+            assert setting["type"] == "boolean" and setting["default"] == "false"
+    assert "push" not in workflow["on"]
+    assert workflow["concurrency"]["group"] == (
+        "${{ github.workflow }}-go-distributions-${{ github.ref }}"
+    )
+    job = workflow["jobs"]["publish"]
+    assert job["needs"] == ["version", "consumer"]
+    assert "environment" not in job
+    assert "go-release" not in source
+    assert job["permissions"] == {"contents": "write"}
+    assert (
+        job["if"].split()
+        == (
+            "${{ inputs.publish && github.repository == 'NVIDIA-NeMo/Switchyard' && "
+            "(github.event_name == 'workflow_dispatch' || "
+            "(github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))) }}"
+        ).split()
+    )
 
 
 def git(root: Path, *args: str) -> str:

@@ -200,24 +200,26 @@ publish packages. Source builds still use the steps above.
 
 ### Publishing
 
-Go releases use the same stable version as Switchyard. Before the first release,
-maintainers must create a GitHub environment named `go-release` with required
-reviewers and allow the publisher to create `bindings/go/v*` tags. An environment
-without required reviewers is rejected. The Python release path is unchanged.
+Go releases use the same stable version as Switchyard. The publishing job needs
+permission to create `bindings/go/v*` tags. The Python release path is unchanged.
 The source release tag must contain this workflow and its helpers. Confirm that
 the shipped Rust libraries have the required third-party license notices before
-approving publication.
+cutting the release.
 
-After an approved root release such as `v0.4.0` is published on GitHub, run:
+Stable root-tag releases call **Go distributions** automatically after PyPI publication and
+GitHub Release creation succeed. Alpha releases and manual Python development builds do not
+publish Go bindings. No separate Go approval is required.
+
+To publish an existing stable release manually, or retry separately from the Python workflow, run:
 
 ```sh
 gh workflow run go-packaging.yml --ref v0.4.0 \
   -f release_candidate=true -f publish=true
 ```
 
-Both consumer checks must pass before environment approval can release the
-publishing job. It commits the exact tested module files, including the WASM
-guest and Linux amd64/arm64 native archives, on a child of the source release.
+Both consumer checks must pass before the publishing job runs. It commits the
+exact tested module files, including the WASM guest and Linux amd64/arm64 native
+archives, on a child of the source release.
 Only `bindings/go/v0.4.0` is pushed. Neither `main` nor the root tag changes.
 Re-running with identical contents is a no-op; a different package for an
 existing Go tag is rejected. The binaries remain in Git at the release commit.

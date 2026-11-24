@@ -13,9 +13,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 
 use super::fall_through::FallThrough;
-use super::llm_class::{
-    CustomClassifierConfig, LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
-};
+use super::llm_class::{CustomClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 use super::stage::{StageRouterConfig, build_stage_route};
 use super::util::affinity::{ClassifyTrigger, evict_if_full, has_new_user_turn, retention_key};
 use super::util::stage::{PickerMode, Tier, fall_open_tier, set_fall_open};
@@ -177,13 +175,14 @@ impl CompositeRouter {
         let judge: Arc<dyn Classifier> = match judge {
             CompositeJudgeConfig::Capability(judge) => {
                 // Composite owns the trigger and retained verdict.
-                Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
-                    config: TaskClassifierConfig {
+                Arc::new(LlmTaskClassifier::build_capability(
+                    TaskClassifierConfig {
                         classify_trigger: ClassifyTrigger::EveryRequest,
                         message_hash_fallback: false,
                         ..judge
                     },
-                })?)
+                    true,
+                )?)
             }
             CompositeJudgeConfig::Custom(config) => {
                 LlmTaskClassifier::custom_classifier(&config, true)?
@@ -326,6 +325,40 @@ mod tests {
 
     fn router() -> Result<Arc<CompositeRouter>> {
         router_with_trigger(ClassifyTrigger::UserTurn)
+    }
+
+    #[tokio::test]
+    async fn decision_input_omits_inline_instructions() -> Result<()> {
+        let mut opening = turn_request(false);
+        opening.llm_request.messages.truncate(1);
+        for (classify_trigger, mut request) in [
+            (ClassifyTrigger::NewSession, opening),
+            (ClassifyTrigger::UserTurn, user_turn_request()),
+        ] {
+            let messages = &mut request.llm_request.messages;
+            let expected = serde_json::json!(messages);
+            messages.insert(0, Message::text(Role::Developer, "Permissions"));
+            messages.insert(0, Message::text(Role::System, "Instructions"));
+            let judge = CompositeJudgeConfig::Capability(TaskClassifierConfig {
+                judge: CapabilityJudgeConfig::Decision(Default::default()),
+                classify_trigger,
+                ..Default::default()
+            });
+            let router = router_with_judge(judge, None)?;
+            let models = Arc::new(runtime_models().into());
+            let outcome = crate::drive(router, request.clone(), models, |call| async {
+                let crate::Call::Decision(call) = call else {
+                    panic!("expected a decision")
+                };
+                assert_eq!(call.request.input, expected);
+                crate::core::testing::serve_decision(*call).await
+            })
+            .await?;
+            assert_eq!(outcome.metadata.unwrap().judgments.len(), 1);
+            let solver = outcome.request.llm_request.messages;
+            assert_eq!(solver, request.llm_request.messages);
+        }
+        Ok(())
     }
 
     #[tokio::test]

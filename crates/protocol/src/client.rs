@@ -132,6 +132,49 @@ pub enum LlmClientError {
     General(String),
 }
 
+impl LlmClientError {
+    /// Whether the provider reports unreadable or unsupported input media.
+    ///
+    /// Some providers report these deterministic request failures as HTTP 500.
+    /// They must not make a healthy backend unavailable to other requests.
+    pub fn is_attachment_rejection(&self) -> bool {
+        let Self::UpstreamHttp { status, body, .. } = self else {
+            return false;
+        };
+        if !matches!(status.as_u16(), 400 | 422 | 500) {
+            return false;
+        }
+        let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
+        let error = parsed.as_ref().and_then(|value| value.get("error"));
+        if error
+            .and_then(|error| error.get("code"))
+            .and_then(|code| code.as_str())
+            == Some("content_policy_violation")
+        {
+            return false;
+        }
+        let message = error
+            .and_then(|error| error.get("message"))
+            .and_then(|message| message.as_str())
+            .unwrap_or(body)
+            .to_ascii_lowercase();
+        [
+            "unsupported content[].type",
+            "image input is not supported",
+            "does not support image input",
+            "failed to load image or audio file",
+            "cannot make get request",
+            "failed to download file",
+            "invalid image",
+            "does not represent a valid image",
+            "unsupported image format",
+            "unsupported file format",
+        ]
+        .iter()
+        .any(|pattern| message.contains(pattern))
+    }
+}
+
 /// Why routing replaced a selected target with another eligible target.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RoutingFallbackReason {
