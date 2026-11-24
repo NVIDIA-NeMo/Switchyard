@@ -473,7 +473,7 @@ the signals work and for tuning.
 |---|:---:|---|---|
 | `capable_target` | Yes | — | Capable tier. |
 | `efficient_target` | Yes | — | Efficient tier. |
-| `picker` | Yes | — | `efficient_first`, or `capable_first` (experimental, unbenchmarked). Tier used when the signals are not confident. |
+| `picker` | Yes | — | `efficient_first`, or `capable_first` (experimental; requires workload calibration). Tier used when the signals are not confident. See [benchmark and calibration status](../routing_algorithms/stage_router_routing.md#pickers). |
 | `confidence_threshold` | Yes | — | Corroboration a decisive pick needs. In `[0, 1]`. `efficient_first_threshold` is accepted as an alias. |
 | `capable_first_threshold` | No | `0.0` | Threshold used after an outer classifier selects the capable tier. Only a [composite](#composite) route sets that tier, so this key has no effect on a standalone `stage_router` route. |
 | `capable_system_prompt` | No | unset | System prompt prepended for capable requests. |
