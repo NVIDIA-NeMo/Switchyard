@@ -257,4 +257,28 @@ mod tests {
         assert_eq!(model, "Qwen/Qwen3-1.7B");
         assert_eq!(output, direct);
     }
+
+    #[tokio::test]
+    async fn compaction_escalates_stage_router_without_rewriting_payload() {
+        let body = serde_json::to_vec(&json!({
+            "model": "auto",
+            "messages": [{
+                "role": "user",
+                "content": "This session is being continued from a previous conversation that ran out of context. Continue fixing the bug."
+            }],
+            "stream": true
+        }))
+        .unwrap();
+        let (output, model, _) = router()
+            .decide(&body, &session("compacted-session"))
+            .await
+            .unwrap();
+        assert_eq!(model, "Qwen/Qwen3-1.7B");
+        let parsed: Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(parsed["model"], "Qwen/Qwen3-1.7B");
+        assert_eq!(
+            parsed["messages"][0]["content"],
+            "This session is being continued from a previous conversation that ran out of context. Continue fixing the bug."
+        );
+    }
 }

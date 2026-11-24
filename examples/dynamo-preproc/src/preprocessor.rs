@@ -17,23 +17,31 @@ use crate::{router::MODEL_HEADER, server::Error};
 
 pub const MAX_BODY: usize = 2 * 1024 * 1024;
 
+pub(crate) const RESERVED_GATEWAY_HEADERS: [&str; 8] = [
+    MODEL_HEADER,
+    "x-gateway-destination-endpoint",
+    "x-worker-instance-id",
+    "x-prefill-instance-id",
+    "x-prefiller-host-port",
+    "x-dp-rank",
+    "x-data-parallel-rank",
+    "x-prefill-dp-rank",
+];
+
+pub(crate) fn is_reserved_gateway_header(name: &str) -> bool {
+    name.starts_with("x-dynamo-")
+        || name.starts_with("x-gateway-")
+        || RESERVED_GATEWAY_HEADERS.contains(&name)
+}
+
 pub fn headers(input: &[(String, String)]) -> anyhow::Result<(http::HeaderMap, Vec<String>)> {
     let mut map = http::HeaderMap::new();
     let mut method = None;
     let mut path = None;
-    let mut remove = [
-        MODEL_HEADER,
-        "x-gateway-destination-endpoint",
-        "x-worker-instance-id",
-        "x-prefill-instance-id",
-        "x-prefiller-host-port",
-        "x-dp-rank",
-        "x-data-parallel-rank",
-        "x-prefill-dp-rank",
-    ]
-    .into_iter()
-    .map(str::to_owned)
-    .collect::<Vec<_>>();
+    let mut remove = RESERVED_GATEWAY_HEADERS
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
     for (key, value) in input {
         let key = key.to_ascii_lowercase();
         if key == ":method" {

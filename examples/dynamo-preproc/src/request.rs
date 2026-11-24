@@ -48,10 +48,23 @@ pub fn decode(raw: &Value, headers: &http::HeaderMap) -> Result<Request> {
         deterministic_ids: DeterministicIdPolicy::Preserve,
         ..Default::default()
     };
+    let mut llm_request = OpenAiChatCodec.decode_request(raw, &policy)?.request;
+    switchyard_translation::normalize_compaction(&mut llm_request, Some(headers));
+    let mut metadata = Metadata::from_headers(headers);
+    let mut forwarded = headers.clone();
+    let blocked: Vec<_> = forwarded
+        .keys()
+        .filter(|name| crate::preprocessor::is_reserved_gateway_header(name.as_str()))
+        .cloned()
+        .collect();
+    for name in blocked {
+        forwarded.remove(name);
+    }
+    metadata.http_headers = Some(forwarded);
     Ok(Request {
-        llm_request: OpenAiChatCodec.decode_request(raw, &policy)?.request,
+        llm_request,
         raw_request: None,
-        metadata: Some(Metadata::from_headers(headers)),
+        metadata: Some(metadata),
     })
 }
 
@@ -107,6 +120,13 @@ mod tests {
         });
         let mut headers = http::HeaderMap::new();
         headers.insert("x-switchyard-session-id", "session-1".parse().unwrap());
+        headers.insert("x-dynamo-worker-id", "forged-worker".parse().unwrap());
+        headers.insert(
+            "x-gateway-destination-endpoint",
+            "forged:8000".parse().unwrap(),
+        );
+        headers.insert("x-worker-instance-id", "42".parse().unwrap());
+        headers.insert("x-initiator", "agent".parse().unwrap());
         let request = decode(&raw, &headers).unwrap();
         let ir = request.llm_request;
         assert_eq!(ir.instructions.len(), 1);
@@ -130,10 +150,46 @@ mod tests {
         }
         assert!(ir.preservation.requests.is_empty());
         assert!(request.raw_request.is_none());
+        let metadata = request.metadata.unwrap();
+        assert_eq!(metadata.session_id.as_deref(), Some("session-1"));
+        let retained = metadata.http_headers.as_ref().unwrap();
         assert_eq!(
-            request.metadata.unwrap().session_id.as_deref(),
+            retained.get("x-initiator").and_then(|v| v.to_str().ok()),
+            Some("agent")
+        );
+        assert_eq!(
+            retained
+                .get("x-switchyard-session-id")
+                .and_then(|v| v.to_str().ok()),
             Some("session-1")
         );
+        assert!(!retained.contains_key("x-dynamo-worker-id"));
+        assert!(!retained.contains_key("x-gateway-destination-endpoint"));
+        assert!(!retained.contains_key("x-worker-instance-id"));
+    }
+
+    #[test]
+    fn normalizes_body_and_header_compaction_signals() {
+        let summary = json!({
+            "model": "auto",
+            "messages": [{
+                "role": "user",
+                "content": "This session is being continued from a previous conversation that ran out of context. Summary follows."
+            }]
+        });
+        let decoded = decode(&summary, &http::HeaderMap::new()).unwrap();
+        assert!(decoded.llm_request.has_compaction);
+        assert!(decoded.llm_request.is_compaction);
+
+        let mut codex_headers = http::HeaderMap::new();
+        codex_headers.insert(
+            "x-codex-turn-metadata",
+            r#"{"request_kind":"compaction"}"#.parse().unwrap(),
+        );
+        let plain = json!({"model": "auto", "messages": [{"role": "user", "content": "Summarize prior turns"}]});
+        let codex = decode(&plain, &codex_headers).unwrap();
+        assert!(codex.llm_request.is_compaction);
+        assert!(!codex.llm_request.has_compaction);
     }
 
     #[test]
