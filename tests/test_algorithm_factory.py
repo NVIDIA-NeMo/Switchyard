@@ -153,6 +153,68 @@ async def test_alternatives_and_task_requirements_use_the_trusted_task_id() -> N
         }
 
 
+async def test_configured_algorithm_carries_state_across_handles() -> None:
+    """Configured handles forward caller-managed state and return updated state."""
+    toml = """
+schema_version = 1
+[llm_clients.standard]
+format = "openai_chat"
+base_url = "https://standard.invalid/v1"
+api_key_env = "SWITCHYARD_PYTHON_FACTORY_UNUSED_KEY"
+[targets]
+fast = { id = "provider/fast", llm_client = "standard" }
+capable = { id = "provider/capable", llm_client = "standard" }
+[routes.coding]
+id = "switchyard/coding"
+type = "stage_router"
+efficient_target = "fast"
+capable_target = "capable"
+picker = "capable_first"
+confidence_threshold = 0.0
+efficient_hold_turns = -1
+"""
+    pod_a = AlgorithmFactory.from_toml(toml).build_configured()["switchyard/coding"]
+    pod_b = AlgorithmFactory.from_toml(toml).build_configured()["switchyard/coding"]
+    headers = {"x-switchyard-session-id": "sess-99"}
+    edited_req = {
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_call",
+                        "id": "edit_1",
+                        "name": "apply_patch",
+                        "arguments": {},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_call_id": "edit_1",
+                        "content": [{"type": "text", "text": "Applied patch"}],
+                        "is_error": False,
+                    }
+                ],
+            },
+        ],
+    }
+    opening = await finish(pod_a.run_stream(request_body(), headers=headers, state={}))
+    assert opening.selected_model_ids[0] == "capable"
+
+    switched = await finish(pod_a.run_stream(edited_req, headers=headers, state=opening.state))
+    assert switched.selected_model_ids[0] == "fast"
+
+    fresh = await finish(pod_b.run_stream(request_body(), headers=headers, state={}))
+    assert fresh.selected_model_ids[0] == "capable"
+
+    resumed = await finish(pod_b.run_stream(request_body(), headers=headers, state=switched.state))
+    assert resumed.selected_model_ids[0] == "fast"
+
+
 @pytest.mark.parametrize("judge", ["llm", "decision"])
 async def test_approved_judge_calls_are_executed_by_the_python_host(
     judge: Literal["llm", "decision"],

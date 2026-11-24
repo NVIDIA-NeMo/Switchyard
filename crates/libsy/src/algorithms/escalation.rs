@@ -223,6 +223,7 @@ impl Classifier for EscalationClassifier {
             .and_then(|metadata| metadata.session_id.as_deref())
             .is_some_and(|session_id| !session_id.is_empty());
         if (self.deescalation.is_some() || self.confirmations > 1)
+            && !driver.is_host_managed()
             && !has_session_id
             && !self
                 .missing_session_warning_emitted
@@ -1024,6 +1025,97 @@ mod tests {
             response.llm_response.as_agg().map(completion_text),
             Some("capable answer".to_string())
         );
+        Ok(())
+    }
+
+    /// Caller-managed state carries confirmation streaks and de-escalation counters across pods.
+    #[tokio::test]
+    async fn caller_state_carries_escalation_and_deescalation_across_pods() -> Result<()> {
+        use crate::core::testing::test_drive_with_host_state;
+
+        let make_pod = || {
+            Ok::<_, LibsyError>(Arc::new(LlmTaskClassifier::new(
+                LlmClassifierConfig::Escalation {
+                    contract: ClassifierContractConfig::default(),
+                    config: EscalationJudgeConfig {
+                        confirmations: 2,
+                        deescalation: Some(DeescalationConfig {
+                            strong_min_calls: 2,
+                            confirmations: 1,
+                            strong_max_calls: None,
+                            weak_cooldown_calls: 0,
+                        }),
+                        ..EscalationJudgeConfig::default()
+                    },
+                    max_output_tokens: DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+                    judge_deadline_ms: None,
+                },
+            )?))
+        };
+        let pod_a = make_pod()?;
+        let pod_b = make_pod()?;
+        let models = crate::core::algorithm::RuntimeModels::new(runtime_models());
+        let judge = Queue::new([
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"r1"}"#,
+            r#"{"escalate":true,"category":"repetition","new_evidence":true,"reason":"r2"}"#,
+            r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"recovered"}"#,
+            r#"{"escalate":false,"category":"none","new_evidence":false,"reason":"steady"}"#,
+        ]);
+        let model = Queue::new(["eff t1", "eff t2", "cap t3", "eff t4"]);
+
+        // Turn 1 on pod_a (even without session_id): first escalate verdict stays on efficient,
+        // serving the buffered efficient answer while recording streak = 1 in outcome.state.
+        let t1 = test_drive_with_host_state(
+            pod_a.clone(),
+            classify_request(),
+            models.clone(),
+            State::default(),
+            queued(Arc::clone(&model), Arc::clone(&judge)),
+        )
+        .await?;
+        assert_eq!(t1.selected_model_id()?, &ModelId::from("efficient"));
+        assert!(t1.response.is_some());
+        assert_eq!(count(&t1.state, STREAK_KEY), 1);
+
+        // Turn 2 on pod_b: second escalate verdict confirms and routes to capable (strong_calls = 1).
+        let t2 = test_drive_with_host_state(
+            pod_b.clone(),
+            classify_session_request(),
+            models.clone(),
+            t1.state,
+            queued(Arc::clone(&model), Arc::clone(&judge)),
+        )
+        .await?;
+        assert_eq!(t2.selected_model_id()?, &ModelId::from("capable"));
+        assert_eq!(count(&t2.state, STRONG_CALLS_KEY), 1);
+
+        // Turn 3 on pod_a: reaches strong_min_calls = 2, buffers capable answer, judge releases.
+        let t3 = test_drive_with_host_state(
+            pod_a,
+            classify_session_request(),
+            models.clone(),
+            t2.state,
+            queued(Arc::clone(&model), Arc::clone(&judge)),
+        )
+        .await?;
+        assert_eq!(t3.selected_model_id()?, &ModelId::from("capable"));
+        assert!(t3.response.is_some());
+        assert_eq!(count(&t3.state, STRONG_CALLS_KEY), 0);
+
+        // Turn 4 (session_final = true) on pod_b: released back to efficient and clears state.extra.
+        let final_req = Request {
+            metadata: Some(Metadata {
+                session_id: Some("session-1".to_string()),
+                session_final: Some(true),
+                ..Metadata::default()
+            }),
+            ..classify_request()
+        };
+        let t4 =
+            test_drive_with_host_state(pod_b, final_req, models, t3.state, queued(model, judge))
+                .await?;
+        assert_eq!(t4.selected_model_id()?, &ModelId::from("efficient"));
+        assert!(t4.state.extra.is_empty());
         Ok(())
     }
 

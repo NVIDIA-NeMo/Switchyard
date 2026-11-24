@@ -114,6 +114,25 @@ pub(crate) async fn test_drive_with_state(
     .await
 }
 
+/// Drive one request with caller-managed session `state` and return the routing outcome.
+pub(crate) async fn test_drive_with_host_state(
+    algorithm: Arc<dyn Algorithm>,
+    request: Request,
+    models: impl Into<RuntimeModels>,
+    state: State,
+    serve: impl Serve,
+) -> Result<RoutingOutcome> {
+    let serve = Arc::new(serve);
+    crate::core::algorithm::drive_with_host_state(
+        algorithm,
+        request,
+        Arc::new(models.into()),
+        state,
+        move |call| fulfill(Arc::clone(&serve), call),
+    )
+    .await
+}
+
 pub(crate) async fn serve_decision(call: CallDecision) -> Result<()> {
     let response = DecisionResponse {
         id: None,
