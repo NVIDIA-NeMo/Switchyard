@@ -11,7 +11,7 @@ use serde_json::json;
 use switchyard_protocol::{
     BooleanEstimate, Category, ContentBlock, DecisionKind, DecisionQuestion, DecisionRequest,
     DecisionResponse, DecisionValue, LlmRequest, LlmResponse, Request, Response, Role, StopReason,
-    text_response,
+    WireFormat, text_response,
 };
 
 use crate::{Algorithm, Driver, LibsyError, OutcomeMetadata, Result, RoutingOutcome};
@@ -84,6 +84,18 @@ impl DecisionSelect {
     }
 
     fn extract<'a>(&self, request: &'a LlmRequest) -> Option<(&'a str, Vec<Candidate>)> {
+        // A chat target must own Responses state so it can serve later turns.
+        let fields = &request.extensions.fields;
+        if fields.contains_key("previous_response_id")
+            || fields.contains_key("conversation")
+            || (request
+                .preservation
+                .requests
+                .contains_key(&WireFormat::OpenAiResponses.into())
+                && fields.get("store").and_then(serde_json::Value::as_bool) != Some(false))
+        {
+            return None;
+        }
         let [system] = request.instructions.as_slice() else {
             return None;
         };
@@ -93,27 +105,14 @@ impl DecisionSelect {
             || request.tool_choice.is_some()
             || request.output.response_format.is_some()
             || request.output.max_output_tokens.is_some()
-            || request
-                .extensions
-                .fields
+            || fields
                 .get("n")
                 .and_then(|n| n.as_u64())
                 .is_some_and(|n| n != 1)
-            || request
-                .extensions
-                .fields
-                .get("logprobs")
-                .and_then(|v| v.as_bool())
-                == Some(true)
+            || fields.get("logprobs").and_then(|v| v.as_bool()) == Some(true)
             || ["stop", "stop_sequences", "modalities", "audio"]
                 .iter()
-                .any(|key| {
-                    request
-                        .extensions
-                        .fields
-                        .get(*key)
-                        .is_some_and(|v| !v.is_null())
-                })
+                .any(|key| fields.get(*key).is_some_and(|v| !v.is_null()))
             || request.is_compaction
         {
             return None;

@@ -6,7 +6,7 @@ use std::sync::{Arc, mpsc};
 use serde_json::json;
 use switchyard_llm_client::RunObservation;
 use switchyard_protocol::{
-    ContentBlock, InstructionBlock, LlmRequest, Message, Request, Role, completion_text,
+    ContentBlock, InstructionBlock, LlmRequest, Message, Request, Role, WireFormat, completion_text,
 };
 use switchyard_runner::Runner;
 use wiremock::matchers::{body_partial_json, method, path};
@@ -91,7 +91,7 @@ top_k = 1
                 "required_apis_0":{"type":"noul","noul":0.1}, "required_apis_1":{"type":"noul","noul":0.9}
             }, "usage":{"input_tokens":20,"output_tokens":2}
         })))
-        .expect(2)
+        .expect(3)
         .mount_as_scoped(&server)
         .await;
     for stream in [false, true] {
@@ -121,7 +121,7 @@ top_k = 1
     Mock::given(method("POST")).and(path("/v1/chat/completions"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "id":"chat", "model":"llm", "choices":[{"index":0,"message":{"role":"assistant","content":"ordinary answer"},"finish_reason":"stop"}]
-        }))).expect(7).mount(&server).await;
+        }))).expect(9).mount(&server).await;
     let mut capped = request("Choose names", catalog, false);
     capped.llm_request.output.max_output_tokens = Some(1);
     let mut multiple = request("Choose names", catalog, false);
@@ -146,6 +146,35 @@ top_k = 1
             "ordinary answer"
         );
     }
+    let mut seed = request("Choose names", catalog, false);
+    seed.llm_request
+        .preservation
+        .requests
+        .insert(WireFormat::OpenAiResponses.into(), json!({}));
+    let mut stateless = seed.clone();
+    stateless
+        .llm_request
+        .extensions
+        .fields
+        .insert("store".into(), json!(false));
+    let stored = agent.execute(seed, None).await?;
+    let stored = stored.response.llm_response.into_agg().await?;
+    let mut follow = request("Choose names", catalog, false);
+    follow.llm_request.extensions.fields.insert(
+        "previous_response_id".into(),
+        json!(stored.id.as_ref().unwrap()),
+    );
+    let next = agent.execute(follow, None).await?;
+    assert_eq!(
+        completion_text(&next.response.llm_response.into_agg().await?),
+        "ordinary answer"
+    );
+    assert_eq!(completion_text(&stored), "ordinary answer");
+    let selected = agent.execute(stateless, None).await?;
+    assert_eq!(
+        completion_text(&selected.response.llm_response.into_agg().await?),
+        "music.search"
+    );
     drop(success);
     for response in [
         ResponseTemplate::new(503),

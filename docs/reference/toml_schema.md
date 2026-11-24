@@ -328,7 +328,7 @@ The operator supplies three things.
 - **What to score.** Switchyard extracts the task between `task_prefix` and `task_suffix` in the final user message. It uses BM25 to shortlist up to `shortlist` choices, then sends the task as shared input and one Boolean question per choice to `decision_target`. Set `question` to the selection instruction. Optional `stop_words` excludes the supplied lowercase words during shortlisting. Optional `question_prefix` sets the numbered question IDs, which default to `q0`, `q1`, and so on.
 - **What to return.** `top_k` is the maximum number of names in the chat reply. Switchyard ranks them by probability. Catalog order breaks ties during shortlisting and shortlist order breaks ties between model scores.
 
-The chat `target` handles ordinary requests, unsupported catalogs, and failed or unusable decision responses. It also handles requests with output token limits, multiple completions, stop sequences, log probabilities or explicit modalities. Set `enabled = false` and reload the route to send every request to the chat target.
+The chat `target` handles ordinary requests, unsupported catalogs, and failed or unusable decision responses. It also handles requests with output token limits, multiple completions, stop sequences, log probabilities or explicit modalities. Responses requests that store or continue a conversation use the chat target. A standalone Responses request can use decision selection with `store = false`. Set `enabled = false` and reload the route to send every request to the chat target.
 
 The [AppWorld walkthrough](../../examples/appworld/README.md) and [complete gateway configuration](../../examples/appworld/routes.toml) apply the same SDK feature to a catalog of APIs.
 
