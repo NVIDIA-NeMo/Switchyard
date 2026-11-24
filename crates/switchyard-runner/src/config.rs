@@ -121,7 +121,10 @@ pub fn route_targets(source: &str) -> Result<Vec<RouteTargets>, RunnerError> {
 
 type RunnerResult<T> = Result<T, RunnerError>;
 
-pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
+fn load_runner_with(
+    path: impl AsRef<Path>,
+    parse: fn(&str) -> RunnerResult<Runner>,
+) -> RunnerResult<Runner> {
     let path = path.as_ref();
     let source = fs::read_to_string(path).map_err(|error| {
         RunnerError::configuration_source(
@@ -129,7 +132,7 @@ pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
             error,
         )
     })?;
-    runner_from_toml(&source).map_err(|error| {
+    parse(&source).map_err(|error| {
         RunnerError::configuration_source(
             format!("invalid server config {}: {error}", path.display()),
             error,
@@ -137,8 +140,22 @@ pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
     })
 }
 
+pub(crate) fn load_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
+    load_runner_with(path, runner_from_toml)
+}
+
 pub(crate) fn runner_from_toml(source: &str) -> RunnerResult<Runner> {
     AlgorithmFactory::from_toml(source)?.config.build()
+}
+
+pub(crate) fn load_decision_only_runner(path: impl AsRef<Path>) -> RunnerResult<Runner> {
+    load_runner_with(path, decision_only_runner_from_toml)
+}
+
+pub(crate) fn decision_only_runner_from_toml(source: &str) -> RunnerResult<Runner> {
+    let factory = AlgorithmFactory::from_toml(source)?;
+    factory.config.validate_decision_only()?;
+    factory.config.build()
 }
 
 #[derive(Debug, Deserialize)]
@@ -796,12 +813,14 @@ impl DeploymentConfig {
                     .collect(),
             );
             if let Some(infra) = &config.infra {
-                if !matches!(&config.algorithm, AlgorithmSpec::LlmClassifier { config }
-                    if matches!(config.mode, None | Some(crate::ClassifierMode::Capability))
-                        && config.escalation.is_none())
-                {
+                if !config.algorithm.supports_infra() {
                     return Err(RunnerError::configuration(format!(
-                        "route {route_name}: infra requires capability llm_classifier without escalation"
+                        "route {route_name}: infra requires capability llm_classifier without escalation, auto, or rewrite-free stage_router"
+                    )));
+                }
+                if self.route_has_answer_target_system_prompt(config) {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name}: infra cannot be combined with target system_prompt"
                     )));
                 }
                 infra.validate().map_err(|error| {
@@ -827,6 +846,39 @@ impl DeploymentConfig {
             {
                 return Err(RunnerError::configuration(format!(
                     "targets {first_name} and {target_name} share a model and llm client but disagree on approval labels"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn route_has_answer_target_system_prompt(&self, config: &RouteConfig) -> bool {
+        let routing_names: BTreeSet<&str> = config.routing_target_names().into_iter().collect();
+        let alt_names = config
+            .eligibility
+            .iter()
+            .flat_map(|elig| &elig.target_alternatives)
+            .filter(|(source, _)| routing_names.contains(source.as_str()))
+            .flat_map(|(_, targets)| targets.iter().map(String::as_str));
+        routing_names.iter().copied().chain(alt_names).any(|name| {
+            self.targets
+                .get(name)
+                .is_some_and(|t| t.system_prompt.is_some())
+        })
+    }
+
+    fn validate_decision_only(&self) -> RunnerResult<()> {
+        for (route_name, config) in &self.routes {
+            if let Some(reason) = config.algorithm.decision_only_incompatibility() {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} ({}) is incompatible with decision-only routing: {reason}",
+                    config.id
+                )));
+            }
+            if self.route_has_answer_target_system_prompt(config) {
+                return Err(RunnerError::configuration(format!(
+                    "route {route_name} ({}) is incompatible with decision-only routing: answer target sets system_prompt",
+                    config.id
                 )));
             }
         }

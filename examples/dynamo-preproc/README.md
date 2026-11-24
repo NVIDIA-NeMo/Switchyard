@@ -80,13 +80,16 @@ AND both pools' samples are within max_signal_age_ms
 ```
 
 Once the queue drains, requests use the original task choice again. EPP selects the
-worker. This rule does not estimate waiting time or cache reuse. Removing `infra`
-or `METRICS_CONFIG` disables the override; StageRouter is unaffected.
+worker. This rule does not estimate waiting time or cache reuse. Rewrite-free
+`stage_router` and `auto` routes also accept `[routes.<name>.infra]`. Removing
+`infra` or `METRICS_CONFIG` disables the override.
 
-PreProc polls `sglang:num_queue_reqs` and `sglang:num_running_reqs` through the
-Prometheus endpoint in [metrics.toml](config/metrics.toml). Select every engine in
-each pool exactly once. Duplicate rank series or missing workers distort the counts;
-this example does not detect those cases or check worker health.
+PreProc polls `sglang:num_queue_reqs` and `sglang:num_running_reqs` by default.
+Setting `engine = "vllm"` on a `[[models]]` entry polls
+`vllm:num_requests_waiting` and `vllm:num_requests_running` instead. Queries run
+through the Prometheus endpoint in [metrics.toml](config/metrics.toml).
+Select every engine in each pool exactly once. Duplicate rank series or missing workers
+distort the counts; this example does not detect those cases or check worker health.
 
 Failed queries, missing aggregates or stale samples keep the task choice. Freshness
 uses the oldest original scrape time, not the time of the Prometheus query.

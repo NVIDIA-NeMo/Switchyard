@@ -23,12 +23,31 @@ struct Config {
     models: Vec<Model>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum Engine {
+    #[default]
+    Sglang,
+    Vllm,
+}
+
+impl Engine {
+    const fn metric_names(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Sglang => ("sglang:num_queue_reqs", "sglang:num_running_reqs"),
+            Self::Vllm => ("vllm:num_requests_waiting", "vllm:num_requests_running"),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Model {
     model: ModelId,
     /// Prometheus labels selecting the model pool.
     selector: String,
+    #[serde(default)]
+    engine: Engine,
 }
 
 #[derive(Deserialize)]
@@ -116,8 +135,9 @@ impl Collector {
             .as_secs_f64()
             .to_string();
         let selector = &model.selector;
-        let queue = format!("sglang:num_queue_reqs{{{selector}}}");
-        let running = format!("sglang:num_running_reqs{{{selector}}}");
+        let (queue_metric, running_metric) = model.engine.metric_names();
+        let queue = format!("{queue_metric}{{{selector}}}");
+        let running = format!("{running_metric}{{{selector}}}");
         // Aggregated samples carry query time; freshness needs the original scrape times.
         let (min_waiting, max_waiting, running, queue_age, running_age) = tokio::try_join!(
             self.query(format!("min({queue})"), &time),
@@ -185,7 +205,7 @@ impl Metrics {
     ) -> anyhow::Result<InFlight> {
         let mut signals = self.state.lock().unwrap_or_else(|p| p.into_inner());
         route.apply_infra(outcome, &signals)?;
-        let model = outcome.selected_model_id()?.clone();
+        let model = route.provider_model(outcome.selected_model_id()?).clone();
         signals.entry(model.clone()).or_default().local_inflight += 1;
         Ok(InFlight {
             state: self.state.clone(),
@@ -225,6 +245,28 @@ impl Metrics {
         }
     }
 
+    pub fn seeded_for_test(small: (&str, u64, u64), large: (&str, u64, u64)) -> Self {
+        let mut signals = InfraSignals::new();
+        for (name, waiting, running) in [small, large] {
+            signals.insert(
+                ModelId::from(name),
+                switchyard_protocol::ModelInfraSignals {
+                    load: Some(PoolLoad {
+                        sampled_at: Instant::now(),
+                        min_waiting: waiting,
+                        max_waiting: waiting,
+                        running,
+                    }),
+                    local_inflight: 0,
+                },
+            );
+        }
+        Self {
+            state: Arc::new(Mutex::new(signals)),
+            poller: tokio::spawn(std::future::pending()),
+        }
+    }
+
     pub fn inflight_for_test(&self) -> u64 {
         self.state
             .lock()
@@ -232,6 +274,16 @@ impl Metrics {
             .values()
             .map(|v| v.local_inflight)
             .sum()
+    }
+
+    pub fn min_waiting_for_test(&self, model: &str) -> Option<u64> {
+        self.state
+            .lock()
+            .unwrap()
+            .get(model)?
+            .load
+            .as_ref()
+            .map(|load| load.min_waiting)
     }
 }
 #[cfg(test)]
@@ -312,6 +364,84 @@ mod tests {
                 );
             }
         }
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn vllm_and_sglang_engines_query_their_own_prometheus_metrics() {
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let recorded = seen.clone();
+        let app = Router::new().route(
+            "/api/v1/query",
+            get(move |Query(query): Query<BTreeMap<String, String>>| {
+                let recorded = recorded.clone();
+                async move {
+                    let q = query["query"].clone();
+                    recorded.lock().unwrap().push(q.clone());
+                    let value = if q.starts_with("time()") { "0.01" } else { "3" };
+                    Json(json!({
+                        "status": "success",
+                        "data": {"resultType": "vector", "result": [{"metric": {}, "value": [1, value]}]}
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let config: Config = toml::from_str(&format!(
+            r#"
+endpoint = "http://{address}/api/v1/query"
+poll_interval_ms = 1000
+timeout_ms = 500
+
+[[models]]
+model = "small-sglang"
+selector = 'pool="small"'
+
+[[models]]
+model = "large-vllm"
+selector = 'pool="large"'
+engine = "vllm"
+"#
+        ))
+        .unwrap();
+        let collector = Collector {
+            config,
+            client: reqwest::Client::new(),
+        };
+        let sglang_load = collector
+            .collect(&collector.config.models[0])
+            .await
+            .unwrap();
+        let vllm_load = collector
+            .collect(&collector.config.models[1])
+            .await
+            .unwrap();
+        assert_eq!((sglang_load.min_waiting, vllm_load.min_waiting), (3, 3));
+        let queries = seen.lock().unwrap().clone();
+        assert!(
+            queries
+                .iter()
+                .any(|q| q.contains("sglang:num_queue_reqs{pool=\"small\"}"))
+        );
+        assert!(
+            queries
+                .iter()
+                .any(|q| q.contains("sglang:num_running_reqs{pool=\"small\"}"))
+        );
+        assert!(
+            queries
+                .iter()
+                .any(|q| q.contains("vllm:num_requests_waiting{pool=\"large\"}"))
+        );
+        assert!(
+            queries
+                .iter()
+                .any(|q| q.contains("vllm:num_requests_running{pool=\"large\"}"))
+        );
         server.abort();
     }
 }
