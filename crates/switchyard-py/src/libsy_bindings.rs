@@ -90,7 +90,11 @@ fn request_from_python(
     Ok(Request {
         llm_request,
         raw_request: None,
-        metadata: headers.map(|headers| Metadata::from_headers(&headers)),
+        metadata: headers.map(|headers| {
+            let mut metadata = Metadata::from_headers(&headers);
+            metadata.http_headers = Some(headers);
+            metadata
+        }),
     })
 }
 

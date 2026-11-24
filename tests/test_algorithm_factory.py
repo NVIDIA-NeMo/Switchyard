@@ -56,7 +56,9 @@ def deployment(*, scope: str = "request", judge: Literal["llm", "decision"] | No
     if judge is not None:
         is_decision = judge == "decision"
         judge_target = "judge_decision" if is_decision else "judge"
-        settings = "[routes.coding.decision]\ncutoff = 0.7" if is_decision else "base_threshold = 0.5"
+        settings = (
+            "[routes.coding.decision]\ncutoff = 0.7" if is_decision else "base_threshold = 0.5"
+        )
         algorithm = (
             f'type = "llm_classifier"\nclassifier_target = "{judge_target}"\n'
             f'strong_target = "capable"\nweak_target = "fast"\nfail_open = false\n{settings}'
@@ -201,3 +203,37 @@ async def test_approved_judge_calls_are_executed_by_the_python_host(
     outcome = await finish(stream)
     assert outcome.selected_model_ids == ["both_fast", "both_capable"]
     assert all(targets[key]["client"] == "approved" for key in outcome.selected_model_ids)
+
+
+async def test_configured_route_retains_http_headers_for_x_initiator() -> None:
+    source = (
+        deployment(judge="decision")
+        .split("[routes.coding.eligibility]")[0]
+        .replace(
+            "[routes.coding.decision]", 'classify_trigger = "user_turn"\n[routes.coding.decision]'
+        )
+    )
+    route = AlgorithmFactory.from_toml(source).build()["switchyard/coding"]
+    choice = {
+        "type": "choice",
+        "data": {"selected": "capable", "probabilities": {"capable": 0.9, "efficient": 0.1}},
+    }
+    calls = 0
+
+    async def reply() -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"answers": {"route": {"value": choice}}}
+
+    for initiator in ("user", "agent"):
+        stream = route.run_stream(
+            request_body(),
+            headers={"x-switchyard-session-id": "sess-1", "x-initiator": initiator},
+        )
+        step = await anext(stream)
+        if isinstance(step, Step.CallDecision):
+            await step.call.respond(reply())
+            step = await anext(stream)
+        assert isinstance(step, Step.Done)
+        assert step.outcome.selected_model_ids == ["capable", "fast"]
+    assert calls == 1
