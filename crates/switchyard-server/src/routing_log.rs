@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 use humantime::format_rfc3339_millis;
@@ -17,7 +18,7 @@ use switchyard_protocol::{Metadata, ModelId, Usage};
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
-use switchyard_costs::report::{CallCost, CostReport, CostRow, GroupBy};
+use switchyard_costs::report::{CallCost, CostReport, CostRoute, CostRow, GroupBy};
 use switchyard_costs::{CostTotals, Pricing};
 
 const LEGACY_SESSION_ID_HEADER: &str = "proxy_x_session_id";
@@ -71,8 +72,13 @@ impl RoutingLog {
             outcome: None,
             spend,
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
-            route_id: context.route_id.into(),
-            algorithm: context.algorithm.into(),
+            routing: CostRoute {
+                route_id: context.route_id,
+                algorithm: context.algorithm,
+                target: target.to_owned(),
+                reasoning_effort: context.reasoning_effort,
+            },
+            outcome_id: context.outcome_id.get().cloned(),
             origin: context.origin.map(Cow::Owned),
             task: context.task.map(Cow::Owned),
             trial_id: context.trial_id.map(Cow::Owned),
@@ -85,8 +91,6 @@ impl RoutingLog {
             agent_role: context.agent.role.map(Cow::Owned),
             subagent_identity_unsupported: context.agent.identity_unsupported,
             model: model.into(),
-            target: target.into(),
-            reasoning_effort: context.reasoning_effort.map(Cow::Owned),
             tier: tier.unwrap_or("").into(),
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
@@ -99,10 +103,11 @@ impl RoutingLog {
         self.append_record(&record)?;
         crate::metrics::export_cost(
             &record.model,
-            &record.target,
+            &record.routing,
             record.call_kind(),
             record.session_id.as_deref(),
             record.turn_id.as_deref(),
+            record.outcome_id.as_deref(),
             spend,
         );
         Ok(())
@@ -201,6 +206,7 @@ impl AgentIdentity {
 pub(crate) struct RoutingLogContext {
     route_id: String,
     algorithm: String,
+    outcome_id: Arc<OnceLock<String>>,
     origin: Option<String>,
     task: Option<String>,
     trial_id: Option<String>,
@@ -217,6 +223,7 @@ impl RoutingLogContext {
         Self {
             route_id: String::new(),
             algorithm: String::new(),
+            outcome_id: Arc::default(),
             origin: headers
                 .and_then(|headers| nonempty_header(headers, ORIGIN_HEADER))
                 .map(str::to_string),
@@ -235,6 +242,11 @@ impl RoutingLogContext {
             agent: AgentIdentity::from_metadata(metadata),
             reasoning_effort: None,
         }
+    }
+
+    /// Answer streams and candidate observers share the outcome of this request.
+    pub(crate) fn observe_outcome(&self, metadata: &OutcomeMetadata) {
+        let _ = self.outcome_id.set(metadata.outcome_id().to_owned());
     }
 
     /// Captures configured effort for this particular target's call.
@@ -262,8 +274,10 @@ struct RoutingRecord<'a> {
     #[serde(flatten)]
     spend: CallCost,
     ts: Cow<'a, str>,
-    route_id: Cow<'a, str>,
-    algorithm: Cow<'a, str>,
+    #[serde(flatten)]
+    routing: CostRoute,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome_id: Option<String>,
     #[serde(borrow)]
     origin: Option<Cow<'a, str>>,
     #[serde(borrow)]
@@ -290,11 +304,6 @@ struct RoutingRecord<'a> {
     subagent_identity_unsupported: bool,
     /// Provider model that served the call, which is what cost tools price.
     model: Cow<'a, str>,
-    /// Configured target that served the call. Targets may share a model.
-    #[serde(default, borrow)]
-    target: Cow<'a, str>,
-    #[serde(borrow, skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<Cow<'a, str>>,
     tier: Cow<'a, str>,
     prompt_tokens: u64,
     cached_tokens: u64,
@@ -411,17 +420,18 @@ impl SessionStatsSnapshot {
                 model,
                 record.call_kind(),
                 record.spend,
+                &record.routing,
             );
         }
         let stats = self.models.entry(ModelId::from(model)).or_default();
         stats.add_record(&record);
         // Older logs have no target identity; keep them only in the model aggregate.
-        if !record.target.is_empty() {
+        if !record.routing.target.is_empty() {
             self.targets
-                .entry(ModelId::from(record.target.as_ref()))
+                .entry(ModelId::from(record.routing.target.as_str()))
                 .or_insert_with(|| SessionTargetStats {
                     model: model.to_string(),
-                    reasoning_effort: record.reasoning_effort.as_deref().map(str::to_owned),
+                    reasoning_effort: record.routing.reasoning_effort.clone(),
                     stats: SessionModelStats::default(),
                 })
                 .stats
@@ -584,9 +594,17 @@ mod tests {
         let path = dir.path().join("routing.jsonl");
         let priced = serde_json::json!({"session_id":"s","turn_id":"t1","model":"m",
             "cost":{"usd":0.25,"source":"provider_reported"},"cache_read_usd":0.01,"cache_write_usd":0.0});
+        let mut other_route = priced.clone();
+        other_route["route_id"] = "route-b".into();
+        let mut priced = priced;
+        priced["route_id"] = "route-a".into();
         let decision = serde_json::json!({"session_id":"s","turn_id":"t1","model":"judge","tier":"classifier"});
         let legacy = serde_json::json!({"session_id":"s","model":"m"});
-        fs::write(&path, format!("{priced}\n{decision}\n{priced}\n{legacy}\n")).expect("write log");
+        fs::write(
+            &path,
+            format!("{priced}\n{decision}\n{other_route}\n{legacy}\n"),
+        )
+        .expect("write log");
         let rows = |group| {
             snapshot(&path, "s", Some(group))
                 .unwrap()
@@ -601,6 +619,14 @@ mod tests {
             .find(|r| r.key.turn_id.as_deref() == Some("t1") && r.key.call_kind == "answer")
             .unwrap();
         assert_eq!(answer.key.turn_index, Some(0));
+        assert_eq!(
+            answer
+                .routes
+                .iter()
+                .map(|r| r.route_id.as_str())
+                .collect::<Vec<_>>(),
+            ["route-a", "route-b"]
+        );
         assert_eq!(answer.cost.total_usd, Some(0.5));
         assert_eq!(
             (answer.cache_read_usd, answer.cache_write_usd),

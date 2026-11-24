@@ -132,7 +132,9 @@ routing logging is disabled.
 To report observed spend, add `group_by=turn`, `model`, or `session` to the session
 stats request. For example, `GET /v1/routing/session-stats?session_id=demo&group_by=turn`
 adds `cost_rows` for each turn and served model. All three views separate answer calls
-from routing decisions. `turn_id` is the host's ID and `turn_index` is its zero-based
+from routing decisions. Each row lists the distinct `routes` that contributed to it,
+with the route ID, configured algorithm, target and optional reasoning effort.
+Older log entries contribute whatever routing fields they contain. `turn_id` is the host's ID and `turn_index` is its zero-based
 position in the session's completed-call log. Calls without a turn ID share an
 unattributed group per model. Each row includes the existing cost totals plus
 `cache_read_usd` and `cache_write_usd`, estimated at the rates in effect when the

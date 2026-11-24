@@ -3,7 +3,7 @@
 
 //! Group completed calls within a session without repricing them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use switchyard_protocol::Usage;
@@ -55,10 +55,23 @@ pub struct CostKey {
     pub call_kind: String,
 }
 
+/// Configured routing identities that contributed to a cost row.
+#[derive(Clone, Debug, Default, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(default)]
+pub struct CostRoute {
+    pub route_id: String,
+    pub algorithm: String,
+    pub target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+}
+
 #[derive(Serialize)]
 pub struct CostRow {
     #[serde(flatten)]
     pub key: CostKey,
+    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
+    pub routes: BTreeSet<CostRoute>,
     #[serde(flatten)]
     pub cost: CostTotals,
     pub cache_read_usd: Option<f64>,
@@ -81,7 +94,14 @@ impl CostReport {
         }
     }
 
-    pub fn record(&mut self, turn_id: Option<&str>, model: &str, call_kind: &str, call: CallCost) {
+    pub fn record(
+        &mut self,
+        turn_id: Option<&str>,
+        model: &str,
+        call_kind: &str,
+        call: CallCost,
+        route: &CostRoute,
+    ) {
         let turn = turn_id.filter(|_| matches!(self.group_by, GroupBy::Turn));
         let next = self.turns.len();
         let key = CostKey {
@@ -92,10 +112,14 @@ impl CostReport {
         };
         let row = self.rows.entry(key.clone()).or_insert_with(|| CostRow {
             key,
+            routes: BTreeSet::new(),
             cost: CostTotals::default(),
             cache_read_usd: Some(0.0),
             cache_write_usd: Some(0.0),
         });
+        if !route.route_id.is_empty() || !route.target.is_empty() || !route.algorithm.is_empty() {
+            row.routes.insert(route.clone());
+        }
         row.cost.add(call.cost);
         row.cache_read_usd = row
             .cache_read_usd

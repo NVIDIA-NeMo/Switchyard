@@ -174,10 +174,11 @@ pub(crate) fn encode(registry: &Registry) -> Result<Vec<u8>, String> {
 /// Export the same priced call that feeds the session report. Keep request IDs off counters.
 pub(crate) fn export_cost(
     model: &str,
-    target: &str,
+    routing: &switchyard_costs::report::CostRoute,
     kind: &str,
     session: Option<&str>,
     turn: Option<&str>,
+    outcome_id: Option<&str>,
     call: switchyard_costs::report::CallCost,
 ) {
     use opentelemetry::metrics::Counter;
@@ -185,7 +186,9 @@ pub(crate) fn export_cost(
     static CACHE: OnceLock<Counter<f64>> = OnceLock::new();
     let labels = [
         KeyValue::new("gen_ai.request.model", model.to_owned()),
-        KeyValue::new("switchyard.target", target.to_owned()),
+        KeyValue::new("switchyard.target", routing.target.clone()),
+        KeyValue::new("switchyard.route", routing.route_id.clone()),
+        KeyValue::new("switchyard.algorithm", routing.algorithm.clone()),
         KeyValue::new("switchyard.call.kind", kind.to_owned()),
     ];
     if let Some(cost) = call.cost {
@@ -218,7 +221,11 @@ pub(crate) fn export_cost(
     let _span = tracing::info_span!(
         "switchyard.cost.observed",
         gen_ai.request.model = model,
-        switchyard.target = target,
+        switchyard.target = routing.target.as_str(),
+        switchyard.route = routing.route_id.as_str(),
+        switchyard.algorithm = routing.algorithm.as_str(),
+        gen_ai.request.reasoning.level = routing.reasoning_effort.as_deref(),
+        outcome_id = outcome_id,
         switchyard.call.kind = kind,
         gen_ai.conversation.id = session,
         switchyard.turn.id = turn,

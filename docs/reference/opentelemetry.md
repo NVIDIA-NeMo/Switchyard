@@ -86,13 +86,16 @@ that result. Existing model-call spans continue to report tokens and latency.
 
 | Span attribute | Meaning |
 |---|---|
-| `gen_ai.request.model`, `switchyard.target` | Physical model and configured target that served this call. |
+| `switchyard.route`, `switchyard.algorithm` | Requested route and its configured routing algorithm. |
+| `gen_ai.request.model`, `switchyard.target` | Physical model and configured target for this call. |
+| `gen_ai.request.reasoning.level` | Reasoning effort configured for this target, when set. |
+| `outcome_id` | Join to the matching `libsy.run` span for decision evidence. Present once the router publishes an outcome. |
 | `gen_ai.conversation.id`, `switchyard.turn.id` | Host session and turn IDs when available. |
 | `switchyard.call.kind` | `answer` or `decision`. |
 | `switchyard.cost.usd`, `switchyard.cost.source` | Known total and its source, `provider_reported` or `estimated`. |
 | `switchyard.cache.read_usd`, `switchyard.cache.write_usd` | Estimated USD for cache reads and writes when both the count and rate are available. |
 
-A metrics exporter can sum `switchyard.spend` (USD) by model, target and call kind.
+A metrics exporter can sum `switchyard.spend` (USD) by route, algorithm, model, target and call kind.
 `switchyard.cache.spend` (USD) also labels each sample with `switchyard.cache.operation`
 (`read` or `write`). Counters sum known values. For a session or turn, use the spans or
 the [session stats endpoint](../../crates/switchyard-server/README.md). Cache amounts

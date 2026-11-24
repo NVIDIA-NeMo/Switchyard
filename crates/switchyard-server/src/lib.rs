@@ -499,6 +499,7 @@ fn stats_observer(
     Arc::new(move |observation| match observation {
         RunObservation::Outcome(metadata) => {
             if let Some((log, context)) = classifier_log.as_ref() {
+                context.observe_outcome(&metadata);
                 log.append_outcome(context, metadata);
             }
         }
