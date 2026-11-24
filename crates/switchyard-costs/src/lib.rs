@@ -3,9 +3,9 @@
 
 //! This module prices observed calls and keeps missing usage or rates unknown.
 
-pub mod report;
+pub mod api;
 
-use report::CallCost;
+use api::observed_spend::CallCost;
 use std::collections::HashMap;
 use std::path::Path;
 

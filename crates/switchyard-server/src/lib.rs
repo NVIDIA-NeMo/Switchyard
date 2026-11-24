@@ -231,7 +231,7 @@ impl SharedRoutingLog {
     fn snapshot_session(
         &self,
         session_id: &str,
-        group_by: Option<switchyard_costs::report::GroupBy>,
+        group_by: Option<switchyard_costs::api::observed_spend::GroupBy>,
     ) -> std::io::Result<Option<routing_log::SessionStatsSnapshot>> {
         routing_log::snapshot(&self.path, session_id, group_by)
     }
@@ -1627,7 +1627,7 @@ async fn reset_stats(State(state): State<ServerState>) -> Json<Value> {
 #[derive(Deserialize)]
 struct SessionStatsQuery {
     session_id: String,
-    group_by: Option<switchyard_costs::report::GroupBy>,
+    group_by: Option<switchyard_costs::api::observed_spend::GroupBy>,
 }
 
 async fn get_session_stats(

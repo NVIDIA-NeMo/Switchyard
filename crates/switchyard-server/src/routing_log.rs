@@ -18,7 +18,7 @@ use switchyard_protocol::{Metadata, ModelId, Usage};
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
-use switchyard_costs::report::{CallCost, CostReport, CostRoute, CostRow, GroupBy};
+use switchyard_costs::api::observed_spend::{CallCost, CostReport, CostRoute, CostRow, GroupBy};
 use switchyard_costs::{CostTotals, Pricing};
 
 const LEGACY_SESSION_ID_HEADER: &str = "proxy_x_session_id";

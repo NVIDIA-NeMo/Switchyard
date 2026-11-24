@@ -176,12 +176,12 @@ pub(crate) fn encode(registry: &Registry) -> Result<Vec<u8>, String> {
 /// Export the same priced call that feeds the session report. Keep request IDs off counters.
 pub(crate) fn export_cost(
     model: &str,
-    routing: &switchyard_costs::report::CostRoute,
+    routing: &switchyard_costs::api::observed_spend::CostRoute,
     kind: &str,
     session: Option<&str>,
     turn: Option<&str>,
     outcome_id: Option<&str>,
-    call: switchyard_costs::report::CallCost,
+    call: switchyard_costs::api::observed_spend::CallCost,
 ) {
     static SPEND: LazyLock<Counter<f64>> = LazyLock::new(|| usd_counter("switchyard.spend"));
     static CACHE: LazyLock<Counter<f64>> = LazyLock::new(|| usd_counter("switchyard.cache.spend"));
