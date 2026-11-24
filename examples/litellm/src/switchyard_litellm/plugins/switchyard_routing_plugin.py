@@ -198,13 +198,13 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
                 "efficient": candidates,
             }
         )
+        intermediate_steps: tuple[type, ...] = (
+            (Step.CallModel, Step.CallDecision)
+            if hasattr(Step, "CallDecision")
+            else (Step.CallModel,)
+        )
         async for step in self._algorithm.run_stream(request, models):
             match step:
-                case Step.CallModel(_):
-                    raise ValueError(
-                        "Switchyard algorithm requested an intermediate model call, "
-                        "which a LiteLLM routing plugin cannot serve"
-                    )
                 case Step.Done(outcome):
                     if outcome.response is not None:
                         raise ValueError(
@@ -232,6 +232,11 @@ class SwitchyardRoutingPlugin(LiteLLMRequestRewriter):
                     if request_patch["set"] or request_patch.get("remove"):
                         context.signals["switchyard"]["request_patch"] = request_patch
                     return context
+                case _ if isinstance(step, intermediate_steps):
+                    raise ValueError(
+                        "Switchyard algorithm requested an intermediate model call, "
+                        "which a LiteLLM routing plugin cannot serve"
+                    )
 
         raise ValueError("Switchyard algorithm stream ended without a routing outcome")
 

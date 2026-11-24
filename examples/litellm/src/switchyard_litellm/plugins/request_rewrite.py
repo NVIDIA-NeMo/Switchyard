@@ -24,6 +24,7 @@ _REQUEST_FIELDS = frozenset(
         "preservation",
     }
 )
+_COMPACTION_FIELDS = frozenset({"is_compaction", "has_compaction"})
 _EXTENSION_FIELDS = {
     "parallel_tool_calls": "parallel_tool_calls",
     "prompt_cache_key": "prompt_cache_key",
@@ -126,7 +127,9 @@ def _messages(value: object) -> list[dict[str, object]]:
         text_blocks: list[dict[str, object]] = []
         tool_calls: list[dict[str, object]] = []
         tool_results: list[dict[str, object]] = []
-        for block_index, raw_block in enumerate(_sequence(message.get("content"), f"{path}.content")):
+        for block_index, raw_block in enumerate(
+            _sequence(message.get("content"), f"{path}.content")
+        ):
             block_path = f"{path}.content[{block_index}]"
             block = _mapping(raw_block, block_path)
             block_type = block.get("type")
@@ -213,7 +216,15 @@ def build_request_patch(
     selected_model_id: str,
 ) -> dict[str, object]:
     """Build a LiteLLM argument patch for fields explicitly changed by Switchyard."""
-    if set(original_request) != _REQUEST_FIELDS or set(rewritten_request) != _REQUEST_FIELDS:
+    if (
+        (set(original_request) - _COMPACTION_FIELDS) != _REQUEST_FIELDS
+        or (set(rewritten_request) - _COMPACTION_FIELDS) != _REQUEST_FIELDS
+        or any(
+            field in candidate and not isinstance(candidate[field], bool)
+            for candidate in (original_request, rewritten_request)
+            for field in _COMPACTION_FIELDS
+        )
+    ):
         raise ValueError("Switchyard request shape changed and cannot safely apply to LiteLLM")
     if rewritten_request.get("model") != selected_model_id:
         raise ValueError("Switchyard request model cannot safely apply to the selected deployment")
@@ -240,6 +251,8 @@ def build_request_patch(
 
     original_output = _mapping(original_request.get("output"), "original.output")
     rewritten_output = _mapping(rewritten_request.get("output"), "request.output")
+    if original_output.get("is_schema_enforced") != rewritten_output.get("is_schema_enforced"):
+        raise ValueError("Switchyard schema enforcement rewrite cannot safely apply to LiteLLM")
     if original_output.get("max_output_tokens") != rewritten_output.get("max_output_tokens"):
         set_values["max_completion_tokens"] = rewritten_output.get("max_output_tokens")
         remove_values.append("max_tokens")
@@ -269,9 +282,7 @@ def build_request_patch(
             continue
         litellm_field = _EXTENSION_FIELDS.get(field)
         if litellm_field is None:
-            raise ValueError(
-                f"Switchyard extension {field!r} cannot safely apply to LiteLLM"
-            )
+            raise ValueError(f"Switchyard extension {field!r} cannot safely apply to LiteLLM")
         if field in rewritten_fields:
             set_values[litellm_field] = rewritten_fields[field]
         else:
