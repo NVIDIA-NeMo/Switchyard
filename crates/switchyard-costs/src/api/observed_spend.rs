@@ -7,7 +7,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{CostTotals, RecordedCost};
+use switchyard_protocol::Usage;
+
+use crate::{CostSource, CostTotals, Pricing, RecordedCost};
 
 /// The cache portions use catalog rates. A provider may independently report the total charge.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -15,6 +17,23 @@ pub struct CallCost {
     pub cost: Option<RecordedCost>,
     pub cache_read_usd: Option<f64>,
     pub cache_write_usd: Option<f64>,
+}
+
+impl Pricing {
+    /// Prices the existing normalized usage for one served model, including available cache costs.
+    pub fn observed_spend(&self, model: &str, usage: &Usage) -> CallCost {
+        let mut call = self.estimate_call(model, usage);
+        if let Some(usd) = usage
+            .provider_cost
+            .filter(|usd| usd.is_finite() && *usd >= 0.0)
+        {
+            call.cost = Some(RecordedCost {
+                usd,
+                source: CostSource::ProviderReported,
+            });
+        }
+        call
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]

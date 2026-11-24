@@ -61,7 +61,7 @@ impl RoutingLog {
         tier: Option<&str>,
         usage: &Usage,
     ) -> std::io::Result<()> {
-        let spend = self.pricing.call_cost(model, usage);
+        let spend = self.pricing.observed_spend(model, usage);
         let cache_creation_1h_tokens = usage
             .cache
             .as_ref()
@@ -99,15 +99,7 @@ impl RoutingLog {
             total_tokens: usage.prompt_tokens.saturating_add(usage.completion_tokens),
         };
         self.append_record(&record)?;
-        crate::metrics::export_cost(
-            &record.model,
-            &record.routing,
-            record.call_kind(),
-            record.session_id.as_deref(),
-            record.turn_id.as_deref(),
-            record.outcome_id.as_deref(),
-            spend,
-        );
+        crate::metrics::export_cost(&record);
         Ok(())
     }
 
@@ -215,25 +207,21 @@ pub(crate) struct RoutingLogContext {
 impl RoutingLogContext {
     /// Captures the normalized session ID, with the legacy log-only header as a fallback.
     pub(crate) fn from_metadata(metadata: &Metadata) -> Self {
-        let headers = metadata.http_headers.as_ref();
+        let header = |name: &str| {
+            let value = metadata.http_headers.as_ref()?.get(name)?.to_str().ok()?;
+            (!value.is_empty()).then(|| value.to_owned())
+        };
         Self {
             routing: CostRoute::default(),
             outcome_id: Arc::default(),
-            origin: headers
-                .and_then(|headers| nonempty_header(headers, ORIGIN_HEADER))
-                .map(str::to_string),
-            task: headers
-                .and_then(|headers| nonempty_header(headers, TASK_HEADER))
-                .map(str::to_string),
-            trial_id: headers
-                .and_then(|headers| nonempty_header(headers, TRIAL_ID_HEADER))
-                .map(str::to_string),
+            origin: header(ORIGIN_HEADER),
+            task: header(TASK_HEADER),
+            trial_id: header(TRIAL_ID_HEADER),
             turn_id: metadata.turn_id.clone(),
-            session_id: metadata.session_id.clone().or_else(|| {
-                headers
-                    .and_then(|headers| nonempty_header(headers, LEGACY_SESSION_ID_HEADER))
-                    .map(str::to_string)
-            }),
+            session_id: metadata
+                .session_id
+                .clone()
+                .or_else(|| header(LEGACY_SESSION_ID_HEADER)),
             agent: AgentIdentity::from_metadata(metadata),
         }
     }
@@ -262,16 +250,16 @@ impl RoutingLogContext {
 /// default so a record from an older schema still contributes what it has.
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default)]
-struct RoutingRecord<'a> {
+pub(super) struct RoutingRecord<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     outcome: Option<LoggedOutcome>,
     #[serde(flatten)]
-    spend: CallCost,
+    pub(super) spend: CallCost,
     ts: Cow<'a, str>,
     #[serde(flatten)]
-    routing: CostRoute,
+    pub(super) routing: CostRoute,
     #[serde(skip_serializing_if = "Option::is_none")]
-    outcome_id: Option<String>,
+    pub(super) outcome_id: Option<String>,
     #[serde(borrow)]
     origin: Option<Cow<'a, str>>,
     #[serde(borrow)]
@@ -279,9 +267,9 @@ struct RoutingRecord<'a> {
     #[serde(borrow)]
     trial_id: Option<Cow<'a, str>>,
     #[serde(borrow)]
-    session_id: Option<Cow<'a, str>>,
+    pub(super) session_id: Option<Cow<'a, str>>,
     #[serde(borrow)]
-    turn_id: Option<Cow<'a, str>>,
+    pub(super) turn_id: Option<Cow<'a, str>>,
     // Most calls carry no agent identity, so these fields are written only when
     // set. Records without them still parse through `serde(default)`.
     #[serde(borrow, skip_serializing_if = "Option::is_none")]
@@ -297,7 +285,7 @@ struct RoutingRecord<'a> {
     #[serde(skip_serializing_if = "is_false")]
     subagent_identity_unsupported: bool,
     /// Provider model that served the call, which is what cost tools price.
-    model: Cow<'a, str>,
+    pub(super) model: Cow<'a, str>,
     tier: Cow<'a, str>,
     prompt_tokens: u64,
     cached_tokens: u64,
@@ -315,8 +303,8 @@ fn is_zero(value: &u64) -> bool {
 }
 
 impl RoutingRecord<'_> {
-    fn call_kind(&self) -> &'static str {
-        if self.tier == "classifier" {
+    pub(super) fn call_kind(&self) -> &'static str {
+        if self.tier == crate::CLASSIFIER_TIER {
             "decision"
         } else {
             "answer"
@@ -427,7 +415,7 @@ impl SessionStatsSnapshot {
                 .add_record(&record);
         }
         self.cost.add(record.spend.cost);
-        if record.tier == "classifier" {
+        if record.tier == crate::CLASSIFIER_TIER {
             self.routing_cost.add(record.spend.cost);
         } else {
             self.answer_cost.add(record.spend.cost);
@@ -454,14 +442,6 @@ impl SessionStatsSnapshot {
 /// Lets serde leave out a `false` flag, so it is written only when set.
 fn is_false(flag: &bool) -> bool {
     !flag
-}
-
-/// Returns a header value only when it is present, non-empty, and valid text.
-fn nonempty_header<'a>(headers: &'a http::HeaderMap, name: &str) -> Option<&'a str> {
-    headers
-        .get(name)
-        .filter(|value| !value.is_empty())
-        .and_then(|v| v.to_str().ok())
 }
 
 fn routing_log_error(path: &Path, error: std::io::Error) -> ServerError {
@@ -622,14 +602,9 @@ mod tests {
         for group in [GroupBy::Session, GroupBy::Model] {
             let rows = rows(group);
             let answer = rows.iter().find(|r| r.key.call_kind == "answer").unwrap();
-            assert_eq!(
-                (
-                    answer.cost.total_usd,
-                    answer.cost.known_usd,
-                    answer.cost.unknown_calls
-                ),
-                (None, 0.5, 1)
-            );
+            assert_eq!(answer.cost.total_usd, None);
+            assert_eq!(answer.cost.known_usd, 0.5);
+            assert_eq!(answer.cost.unknown_calls, 1);
             assert_eq!(answer.cache_read_usd, None);
             assert_eq!(rows.len(), 2);
         }

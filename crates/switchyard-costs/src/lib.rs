@@ -3,6 +3,7 @@
 
 //! This module prices observed calls and keeps missing usage or rates unknown.
 
+mod anthropic;
 pub mod api;
 
 use api::observed_spend::CallCost;
@@ -52,25 +53,6 @@ struct Rates {
     cache_read: f64,
     cache_write: f64,
     cache_write_1h: Option<f64>,
-}
-
-impl Rates {
-    /// Weighted cache-write tokens before converting the per-million rate to USD.
-    fn cache_write_cost(&self, usage: &Usage) -> Option<f64> {
-        let Some(cache) = &usage.cache else {
-            return Some(0.0);
-        };
-        let one_hour = cache.cache_creation_1h_input_tokens.unwrap_or(0);
-        let five_minute = cache
-            .cache_creation_input_tokens
-            .unwrap_or(0)
-            .checked_sub(one_hour)?;
-        let mut cost = five_minute as f64 * self.cache_write;
-        if one_hour > 0 {
-            cost += one_hour as f64 * self.cache_write_1h?;
-        }
-        Some(cost)
-    }
 }
 
 #[derive(Deserialize)]
@@ -210,22 +192,7 @@ impl Pricing {
 
     /// Provider charges take precedence because token rates may omit provider surcharges.
     pub fn cost(&self, model: &str, usage: &Usage) -> Option<RecordedCost> {
-        self.call_cost(model, usage).cost
-    }
-
-    /// Returns the charge and available catalog-priced cache components for one call.
-    pub fn call_cost(&self, model: &str, usage: &Usage) -> CallCost {
-        let mut call = self.estimate_call(model, usage);
-        if let Some(usd) = usage
-            .provider_cost
-            .filter(|usd| usd.is_finite() && *usd >= 0.0)
-        {
-            call.cost = Some(RecordedCost {
-                usd,
-                source: CostSource::ProviderReported,
-            });
-        }
-        call
+        self.observed_spend(model, usage).cost
     }
 
     /// Uses catalog rates even when the provider supplies a charge.
@@ -240,7 +207,7 @@ impl Pricing {
         let read = usage
             .cached_input_tokens()
             .map(|n| n as f64 * rate.cache_read);
-        let write = rate.cache_write_cost(usage);
+        let write = anthropic::cache_write_cost(usage, rate.cache_write, rate.cache_write_1h);
         let cost = match (usage.input_tokens, usage.output_tokens, write) {
             (Some(input), Some(output), Some(write)) => Some(RecordedCost {
                 usd: (input as f64 * rate.input

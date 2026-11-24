@@ -6,7 +6,6 @@
 use std::sync::{LazyLock, OnceLock};
 
 use opentelemetry::metrics::Counter;
-
 use opentelemetry::{KeyValue, global};
 use opentelemetry_sdk::metrics::{Aggregation, Instrument, SdkMeterProvider, Stream};
 use prometheus::{Encoder, Registry, TextEncoder};
@@ -174,19 +173,14 @@ pub(crate) fn encode(registry: &Registry) -> Result<Vec<u8>, String> {
 }
 
 /// Export the same priced call that feeds the session report. Keep request IDs off counters.
-pub(crate) fn export_cost(
-    model: &str,
-    routing: &switchyard_costs::api::observed_spend::CostRoute,
-    kind: &str,
-    session: Option<&str>,
-    turn: Option<&str>,
-    outcome_id: Option<&str>,
-    call: switchyard_costs::api::observed_spend::CallCost,
-) {
+pub(super) fn export_cost(record: &crate::routing_log::RoutingRecord<'_>) {
     static SPEND: LazyLock<Counter<f64>> = LazyLock::new(|| usd_counter("switchyard.spend"));
     static CACHE: LazyLock<Counter<f64>> = LazyLock::new(|| usd_counter("switchyard.cache.spend"));
+    let routing = &record.routing;
+    let call = record.spend;
+    let kind = record.call_kind();
     let labels = [
-        KeyValue::new("gen_ai.request.model", model.to_owned()),
+        KeyValue::new("gen_ai.request.model", record.model.to_string()),
         KeyValue::new("switchyard.target", routing.target.clone()),
         KeyValue::new("switchyard.route", routing.route_id.clone()),
         KeyValue::new("switchyard.algorithm", routing.algorithm.clone()),
@@ -207,15 +201,15 @@ pub(crate) fn export_cost(
     }
     let _span = tracing::info_span!(
         "switchyard.cost.observed",
-        gen_ai.request.model = model,
+        gen_ai.request.model = record.model.as_ref(),
         switchyard.target = routing.target.as_str(),
         switchyard.route = routing.route_id.as_str(),
         switchyard.algorithm = routing.algorithm.as_str(),
         gen_ai.request.reasoning.level = routing.reasoning_effort.as_deref(),
-        outcome_id = outcome_id,
+        outcome_id = record.outcome_id.as_deref(),
         switchyard.call.kind = kind,
-        gen_ai.conversation.id = session,
-        switchyard.turn.id = turn,
+        gen_ai.conversation.id = record.session_id.as_deref(),
+        switchyard.turn.id = record.turn_id.as_deref(),
         switchyard.cost.source = call.cost.map(|c| match c.source {
             switchyard_costs::CostSource::Estimated => "estimated",
             switchyard_costs::CostSource::ProviderReported => "provider_reported",

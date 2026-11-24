@@ -72,7 +72,7 @@ fn grouped_and_keyed_files_price_the_same_usage() -> TestResult {
             let cost = prices.estimate(model, &usage).ok_or("missing estimate")?;
             assert!((cost.usd - 13.05).abs() < 1e-9, "{name}: {model}");
             assert_eq!(cost.source, CostSource::Estimated);
-            let observed = prices.call_cost(model, &usage);
+            let observed = prices.observed_spend(model, &usage);
             assert_eq!(observed.cost, Some(cost));
             assert_eq!(observed.cache_read_usd, Some(0.3));
             assert_eq!(observed.cache_write_usd, Some(7.75));
