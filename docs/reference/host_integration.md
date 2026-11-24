@@ -48,11 +48,10 @@ The shared client traits below are optional.
 <details markdown="1">
 <summary>Optional: adapt the shared client traits</summary>
 
-### Development API
+### Rust API
 
-These adapters use the [quickstart's development dependencies](../getting_started.md#install).
-Their asynchronous reply method differs from the synchronous callback API in
-the released `v0.3.0` crates.
+These adapters use the asynchronous reply API in Switchyard v0.4.0.
+Follow the [Rust quickstart](../getting_started.md#install) for dependencies.
 
 When using
 <a href="../../rust/switchyard_protocol/client/trait.RoutedLlmClient.html"><code>RoutedLlmClient</code></a>
@@ -84,10 +83,9 @@ async fn serve_decision(call: CallDecision, client: &dyn RoutedDecisionClient) -
 
 ## Python bindings
 
-The bindings run the same Rust algorithms. The local routing example below works
-with the released package. For the asynchronous callbacks and cleanup described
-after it, build matching [development bindings](../../INSTALLATION.md#development)
-and follow the complete [Python host example](../../examples/libsy.py).
+The bindings run the same Rust algorithms. Install `nemo-switchyard==0.4.0`
+for the asynchronous callbacks, target requirements, and cleanup described below.
+See the complete [Python host example](../../examples/libsy.py).
 
 <details markdown="1">
 <summary>Python setup, callbacks, and metadata</summary>
@@ -98,7 +96,7 @@ create a project and install the released package:
 ```bash
 uv init --bare switchyard-python-demo
 cd switchyard-python-demo
-uv add "nemo-switchyard==0.3.0"
+uv add "nemo-switchyard==0.4.0"
 ```
 
 Save as `route.py`:
@@ -123,9 +121,9 @@ asyncio.run(main())
 
 `uv run route.py` prints `Selected: Efficient` without making a network call.
 
-### Target requirements (development)
+### Target requirements
 
-With matching development bindings, load deployment TOML that declares target
+With the v0.4.0 bindings, load deployment TOML that declares target
 labels and route eligibility. Build once and reuse the returned handles:
 
 ```python
