@@ -6,7 +6,7 @@
 use serde_json::{Map, Value, json};
 use switchyard_protocol::MAX_IR_TEMPERATURE;
 
-use super::{DEFAULT_TEMPERATURE, MAX_TEMPERATURE};
+use super::{DEFAULT_TEMPERATURE, DEFAULT_TOP_P, MAX_TEMPERATURE};
 use crate::codecs::common::{
     is_anthropic_request, is_known_role_name, provider_extensions, scale_temperature,
     text_from_blocks,
@@ -347,11 +347,25 @@ impl FormatCodec for AnthropicMessagesCodec {
                 ),
             )?;
         }
-        if let Some(value) = request.sampling.top_p {
-            body.insert("top_p".to_string(), json!(value));
+        if let Some(value) = request.sampling.top_p
+            && value != DEFAULT_TOP_P
+        {
+            push_lossy(
+                &mut diagnostics,
+                policy,
+                format!(
+                    "deprecated top_p parameter with non-default value {value} is omitted from Anthropic Messages requests"
+                ),
+            )?;
         }
         if let Some(value) = request.sampling.top_k {
-            body.insert("top_k".to_string(), json!(value));
+            push_lossy(
+                &mut diagnostics,
+                policy,
+                format!(
+                    "deprecated top_k parameter with value {value} is omitted from Anthropic Messages requests"
+                ),
+            )?;
         }
         if request.stream {
             body.insert("stream".to_string(), Value::Bool(true));
