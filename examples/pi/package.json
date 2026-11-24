@@ -12,6 +12,7 @@
     "test": "node --experimental-strip-types --test test/*.test.mjs"
   },
   "dependencies": {
+    "@opentelemetry/api": "1.9.0",
     "@switchyard/libsy": "file:../../bindings/typescript"
   },
   "peerDependencies": {

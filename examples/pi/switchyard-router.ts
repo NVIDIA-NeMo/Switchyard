@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+import { metrics } from "@opentelemetry/api";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -8,7 +9,7 @@ import {
   type DecisionResponse, type RoutingContent, type RoutingMessage,
 } from "@switchyard/libsy";
 import type {
-  ClassifierApi, ClassifierContext, ClassifierModel, ClassifierResult, JsonValue, Message,
+  ClassifierApi, ClassifierContext, ClassifierModel, ClassifierResult, JsonValue, Message, Usage,
 } from "@earendil-works/pi-ai";
 import { getAgentDir, type ContextWithSystemEvent, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
@@ -126,6 +127,26 @@ function routingMessages(messages: readonly Message[]): RoutingMessage[] {
 }
 
 export default function (pi: ExtensionAPI) {
+  const spend = metrics.getMeter("switchyard.pi").createCounter("switchyard.pi.spend", {
+    description: "Cost of observed Switchyard calls at Pi catalog prices",
+    unit: "USD",
+  });
+  function recordSpend(kind: "answer" | "decision", call: { provider: string; model: string; usage?: Usage }) {
+    const usd = call.usage?.cost?.total;
+    if (usd !== undefined && Number.isFinite(usd) && usd > 0) {
+      spend.add(usd, {
+        "switchyard.call.kind": kind, "gen_ai.provider.name": call.provider, "gen_ai.request.model": call.model,
+      });
+    }
+  }
+  // Pi can change its selected model while tools are running. Attribute the answer at routing time.
+  let routedAnswer = false;
+  pi.on("turn_start", () => { routedAnswer = false; });
+  pi.on("turn_end", ({ message }) => {
+    if (routedAnswer && message.role === "assistant") recordSpend("answer", message);
+    routedAnswer = false;
+  });
+
   let loaded: ReturnType<typeof loadRouter> | undefined;
   let classifierModel: ClassifierModel<ClassifierApi> | undefined;
   // Pi builds the request context after routing, so the routed prompt waits for that event.
@@ -149,9 +170,11 @@ export default function (pi: ExtensionAPI) {
       const selection = await router.route(routingMessages(request.messages), {
         state: request.state,
         signal: request.signal,
-        decide: async (decision) => decisionResponse(decision, await ctx.modelRegistry.classify(
-          judge, classifierContext(decision), { signal: request.signal },
-        )),
+        decide: async (decision) => {
+          const result = await ctx.modelRegistry.classify(judge, classifierContext(decision), { signal: request.signal });
+          recordSpend("decision", result);
+          return decisionResponse(decision, result);
+        },
       }).catch((error) => {
         // The binding wraps classifier errors as routing failures; preserve cancellation for Pi.
         if (error.cause?.name === "AbortError") throw error.cause;
@@ -160,7 +183,10 @@ export default function (pi: ExtensionAPI) {
       const identity = modelIdentity(selection.model);
       const model = ctx.modelRegistry.find(identity.provider, identity.id);
       if (!model) throw new Error(`Model ${identity.reference} is not in the catalog`);
-      if (request.reason !== "direct") pendingPrompt = selection.systemPrompt;
+      if (request.reason !== "direct") {
+        pendingPrompt = selection.systemPrompt;
+        routedAnswer = true;
+      }
       return { model, thinkingLevel: "medium", state: selection.state };
     },
   });
