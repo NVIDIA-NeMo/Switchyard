@@ -743,7 +743,7 @@ impl LlmTaskClassifier {
             LlmClassifierConfig::Direct {
                 default_target,
                 config,
-            } => Self::build_direct(default_target, config),
+            } => Self::build_direct(default_target, config, false),
         }
     }
 
@@ -800,7 +800,11 @@ impl LlmTaskClassifier {
         )
     }
 
-    fn build_direct(default_target: Category, config: DirectClassifierConfig) -> Result<Self> {
+    fn build_direct(
+        default_target: Category,
+        config: DirectClassifierConfig,
+        needs_native_input: bool,
+    ) -> Result<Self> {
         if !config.options.contains(&default_target) {
             return Err(LibsyError::AlgorithmError {
                 message: "direct default_target must be one of the options".into(),
@@ -811,28 +815,23 @@ impl LlmTaskClassifier {
             classify_trigger: config.classify_trigger,
             message_hash_fallback: config.message_hash_fallback,
         };
-        Self::from_classifier(Arc::new(DirectClassifier::new(config, false)?), route)
+        Self::from_classifier(
+            Arc::new(DirectClassifier::new(config, needs_native_input)?),
+            route,
+        )
     }
 
-    /// Builds a direct route whose decision checks the native request and qualifies only its winner.
-    pub fn new_native_direct(config: DirectClassifierConfig) -> Result<Self> {
-        if config.fail_open
-            || config.classify_trigger != ClassifyTrigger::EveryRequest
-            || config.message_hash_fallback
-            || config.recent_turn_window.is_some()
-        {
+    /// Builds a direct route that supplies the original request instead of a transcript.
+    pub fn new_direct_with_native_input(
+        default_target: Category,
+        config: DirectClassifierConfig,
+    ) -> Result<Self> {
+        if config.recent_turn_window.is_some() {
             return Err(LibsyError::AlgorithmError {
-                message: "native direct mode requires fail-closed routing on every request".into(),
+                message: "direct mode with native input does not use recent_turn_window".into(),
             });
         }
-        let inner: Arc<dyn Classifier> = Arc::new(DirectClassifier::new(config, true)?);
-        Ok(Self {
-            route: FallThrough::new()
-                .with_name(ALGORITHM_NAME)
-                .with_winner_only()
-                .with_classifier(Arc::clone(&inner)),
-            inner,
-        })
+        Self::build_direct(default_target, config, true)
     }
 
     /// The judge face alone, for composite's own trigger and retained tier.

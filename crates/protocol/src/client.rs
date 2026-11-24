@@ -215,7 +215,7 @@ pub trait RoutedLlmClient: Send + Sync {
     async fn call(&self, request: Request) -> Result<Response, LlmClientError>;
 }
 
-/// Original inference input for decision services that need native payloads.
+/// The original inference body in its incoming API format, rather than a prepared transcript.
 pub struct NativeDecisionInput {
     /// The ingress API format.
     pub format: WireFormat,
@@ -230,7 +230,7 @@ pub trait RoutedDecisionClient: Send + Sync {
     /// Evaluate the request using its selected model.
     async fn call(&self, request: DecisionRequest) -> Result<DecisionResponse, LlmClientError>;
 
-    /// Whether the host should retain native input for this client.
+    /// Whether the host should supply the original inference body in its incoming API format.
     fn needs_native_input(&self) -> bool {
         false
     }

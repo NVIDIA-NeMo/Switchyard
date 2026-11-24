@@ -1865,7 +1865,7 @@ async fn foundry_rank_preserves_native_formats_and_stops_on_no_usable_model() ->
 }
 
 #[tokio::test]
-async fn foundry_rank_does_not_fall_back_after_generation_failure() -> TestResult {
+async fn foundry_rank_uses_configured_fallback_after_generation_failure() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let token = tempfile::NamedTempFile::new()?;
     std::fs::write(token.path(), "mock-token")?;
@@ -1886,33 +1886,40 @@ async fn foundry_rank_does_not_fall_back_after_generation_failure() -> TestResul
         })),
     )
     .await?;
-    assert_eq!(decision.json()?["fallbacks"], json!([]));
+    let decision = decision.json()?;
+    assert_eq!(decision["fallbacks"][0]["model"], "deployment/large");
+    assert_eq!(decision["fallbacks"][1]["model"], "deployment/other");
     let response = send(&app, "POST", "/v1/chat/completions", Some(body)).await?;
-    assert_eq!(response.status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(upstream.models().await, ["model/weak"]);
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+    assert_eq!(
+        response.headers["x-model-router-selected-model"],
+        "deployment/large"
+    );
+    assert_eq!(upstream.models().await, ["model/weak", "deployment/large"]);
+    let calls = upstream.calls.lock().await;
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call.get("rank").is_some())
+            .count(),
+        2
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn foundry_rank_rejects_unmapped_and_fail_open_routes() -> TestResult {
+async fn foundry_rank_rejects_invalid_mappings_and_transcript_window() -> TestResult {
     let upstream = MockUpstream::start().await?;
     let token = tempfile::NamedTempFile::new()?;
     let config = foundry_rank_config(&upstream, token.path());
     for (config, message) in [
         (
-            config.replace("fail_open = false", "fail_open = true"),
-            "requires fail_open = false",
+            config.replace("fail_open = false", "recent_turn_window = 2"),
+            "does not use recent_turn_window",
         ),
         (
             config.replace("gpt-5-mini = \"test-version\", ", ""),
             "with configured versions",
-        ),
-        (
-            config.replace(
-                "fail_open = false",
-                "fail_open = false\nclassify_trigger = \"new_session\"",
-            ),
-            "requires classify_trigger = every_request",
         ),
         (
             config.replace("deployment/large", "deployment/mini"),
@@ -1924,6 +1931,50 @@ async fn foundry_rank_rejects_unmapped_and_fail_open_routes() -> TestResult {
             .ok_or("invalid Rank route loaded")?;
         assert!(error.to_string().contains(message), "{error}");
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn foundry_rank_uses_direct_mode_decision_recovery_and_affinity() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let token = tempfile::NamedTempFile::new()?;
+    std::fs::write(token.path(), "mock-token")?;
+    let config = foundry_rank_config(&upstream, token.path())
+        .replace("fail_open = false", "classify_trigger = \"new_session\"");
+    let app = build_switchyard_router(load_test_config(&config)?);
+    for (index, expected_model) in ["deployment/large", "deployment/large"]
+        .into_iter()
+        .enumerate()
+    {
+        let mut body = json!({
+            "model": ROUTE_MODEL,
+            "messages": [{"role": "user", "content": "Give a color."}],
+        });
+        if index == 0 {
+            body["metadata"] = json!({"rank_test": "no_models"});
+        }
+        let response = send_with_headers(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(body),
+            &[("x-switchyard-session-id", "rank-affinity-session")],
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+        assert_eq!(
+            response.headers["x-model-router-selected-model"],
+            expected_model
+        );
+    }
+    let calls = upstream.calls.lock().await;
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call.get("rank").is_some())
+            .count(),
+        1
+    );
     Ok(())
 }
 

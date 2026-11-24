@@ -292,20 +292,20 @@ pub(super) struct DirectClassifier {
     config: DirectClassifierConfig,
     input: TaskInput,
     question: DecisionQuestion,
-    is_native: bool,
+    needs_native_input: bool,
 }
 
 impl DirectClassifier {
-    pub(super) fn new(config: DirectClassifierConfig, is_native: bool) -> Result<Self> {
-        if config.options.len() < if is_native { 1 } else { 2 }
+    pub(super) fn new(config: DirectClassifierConfig, needs_native_input: bool) -> Result<Self> {
+        if config.options.len() < if needs_native_input { 1 } else { 2 }
             || config
                 .options
                 .iter()
                 .any(|option| matches!(option, Category::Judge | Category::Any))
         {
             return Err(LibsyError::AlgorithmError {
-                message: if is_native {
-                    "native direct mode needs at least one option other than judge and any"
+                message: if needs_native_input {
+                    "direct mode with native input needs at least one option other than judge and any"
                 } else {
                     "direct mode needs at least two options other than judge and any"
                 }
@@ -329,7 +329,7 @@ impl DirectClassifier {
             },
             config,
             question,
-            is_native,
+            needs_native_input,
         })
     }
 
@@ -367,7 +367,7 @@ impl Classifier for DirectClassifier {
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
         let judge = driver.first_model_for(&Category::Judge)?;
-        let decision = if self.is_native {
+        let decision = if self.needs_native_input {
             DecisionRequest {
                 model: None,
                 input: Value::Null,

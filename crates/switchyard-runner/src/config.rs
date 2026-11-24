@@ -424,7 +424,7 @@ impl DeploymentConfig {
             route
                 .algorithm
                 .infer_decision_judges(|name| self.decision_targets.contains_key(name));
-            let is_native = route.algorithm.decision_target_names().iter().any(|name| {
+            let needs_native_input = route.algorithm.decision_target_names().iter().any(|name| {
                 self.decision_targets.get(*name).is_some_and(|target| {
                     matches!(
                         self.decision_clients.get(&target.decision_client),
@@ -433,7 +433,7 @@ impl DeploymentConfig {
                 })
             });
             if let AlgorithmSpec::LlmClassifier { config } = &mut route.algorithm {
-                config.is_native_direct = is_native;
+                config.needs_native_input = needs_native_input;
             }
         }
     }
@@ -814,14 +814,6 @@ impl DeploymentConfig {
                 "requires one judge and does not support route eligibility",
             ));
         }
-        if config.fail_open != Some(false) || config.recent_turn_window.is_some() {
-            return Err(invalid(
-                "requires fail_open = false and the full request (no recent_turn_window)",
-            ));
-        }
-        if config.classify_trigger != Default::default() || config.message_hash_fallback {
-            return Err(invalid("requires classify_trigger = every_request"));
-        }
         let mut mapped_targets = BTreeSet::new();
         let mut mapped_bindings = BTreeSet::new();
         for (category, targets) in models.groups() {
@@ -842,6 +834,7 @@ impl DeploymentConfig {
             let [target] = targets.as_slice() else {
                 return Err(invalid("requires one execution target per model group"));
             };
+            // Different target aliases can still point to the same upstream deployment.
             let binding = self.targets.get(target).ok_or_else(|| {
                 RunnerError::configuration(format!(
                     "route {name} references unknown target {target}"

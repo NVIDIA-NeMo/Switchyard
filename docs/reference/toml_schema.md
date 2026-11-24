@@ -261,8 +261,7 @@ System One and OpenAI Decisions receive conversation messages, question
 instructions, and choice descriptions.
 
 Foundry Rank requires a standalone [direct route](../routing_algorithms/llm_classifier_routing.md#direct-selection)
-with one judge, `fail_open = false`, `classify_trigger = "every_request"`
-(the default), and no `recent_turn_window` or target
+with one judge and no `recent_turn_window` or target
 eligibility settings. Name each choice group after a lowercase canonical
 model ID and give it one distinct execution target. Include every `models.any`
 target in those mappings. A returned version must match `model_versions` when
@@ -272,9 +271,15 @@ Configure the full HTTPS Rank URL, including any required API-version query.
 This client sends the preview header and the full native Chat Completions,
 Responses, or Messages request to Foundry. Only enable the route for requests
 you are allowed to send there. It requests strict parameter matching, disables
-Foundry affinity, and makes no Rank retries or outcome reports. A Rank error
-stops routing. Rank can check a pool of one or more models. Only the winner
-can generate; if it fails, Switchyard does not try another model. A Responses
+Foundry affinity, and makes no Rank retries or outcome reports. Rank can check a
+pool of one or more models. As with other direct clients, `fail_open` defaults
+to `true`: a Rank error selects `default_target` without a compatibility check.
+Set `fail_open = false` to return the Rank error instead. Switchyard ranks every
+request by default; a retaining `classify_trigger` can reuse a choice without
+checking the new payload. If generation
+fails with an error that allows fallback, Switchyard tries the remaining
+targets in `models.any` order without calling Rank again. A fallback may be
+a model that Rank excluded for the request. A Responses
 request with a recorded state owner still goes to that owner. Rank evaluates
 the incoming request, before generation-specific translation or target overrides.
 For Messages, a 422 with `x-switchyard-error-code: no_supported_models` indicates
