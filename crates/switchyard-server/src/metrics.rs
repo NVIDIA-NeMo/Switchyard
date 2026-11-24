@@ -170,3 +170,64 @@ pub(crate) fn encode(registry: &Registry) -> Result<Vec<u8>, String> {
         .map_err(|error| format!("failed to encode Prometheus metrics: {error}"))?;
     Ok(body)
 }
+
+/// Export the same priced call that feeds the session report. Keep request IDs off counters.
+pub(crate) fn export_cost(
+    model: &str,
+    target: &str,
+    kind: &str,
+    session: Option<&str>,
+    turn: Option<&str>,
+    call: switchyard_costs::report::CallCost,
+) {
+    use opentelemetry::metrics::Counter;
+    static SPEND: OnceLock<Counter<f64>> = OnceLock::new();
+    static CACHE: OnceLock<Counter<f64>> = OnceLock::new();
+    let labels = [
+        KeyValue::new("gen_ai.request.model", model.to_owned()),
+        KeyValue::new("switchyard.target", target.to_owned()),
+        KeyValue::new("switchyard.call.kind", kind.to_owned()),
+    ];
+    if let Some(cost) = call.cost {
+        SPEND
+            .get_or_init(|| {
+                global::meter("switchyard")
+                    .f64_counter("switchyard.spend")
+                    .with_unit("USD")
+                    .build()
+            })
+            .add(cost.usd, &labels);
+    }
+    for (op, usd) in [
+        ("read", call.cache_read_usd),
+        ("write", call.cache_write_usd),
+    ] {
+        if let Some(usd) = usd {
+            let mut attrs = labels.to_vec();
+            attrs.push(KeyValue::new("switchyard.cache.operation", op));
+            CACHE
+                .get_or_init(|| {
+                    global::meter("switchyard")
+                        .f64_counter("switchyard.cache.spend")
+                        .with_unit("USD")
+                        .build()
+                })
+                .add(usd, &attrs);
+        }
+    }
+    let _span = tracing::info_span!(
+        "switchyard.cost.observed",
+        gen_ai.request.model = model,
+        switchyard.target = target,
+        switchyard.call.kind = kind,
+        gen_ai.conversation.id = session,
+        switchyard.turn.id = turn,
+        switchyard.cost.source = call.cost.map(|c| match c.source {
+            switchyard_costs::CostSource::Estimated => "estimated",
+            switchyard_costs::CostSource::ProviderReported => "provider_reported",
+        }),
+        switchyard.cost.usd = call.cost.map(|c| c.usd),
+        switchyard.cache.read_usd = call.cache_read_usd,
+        switchyard.cache.write_usd = call.cache_write_usd
+    );
+}

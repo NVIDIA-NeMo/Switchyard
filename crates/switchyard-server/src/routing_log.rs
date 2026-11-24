@@ -17,7 +17,8 @@ use switchyard_protocol::{Metadata, ModelId, Usage};
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
-use switchyard_costs::{CostTotals, Pricing, RecordedCost};
+use switchyard_costs::report::{CallCost, CostReport, CostRow, GroupBy};
+use switchyard_costs::{CostTotals, Pricing};
 
 const LEGACY_SESSION_ID_HEADER: &str = "proxy_x_session_id";
 const ORIGIN_HEADER: &str = "x-switchyard-origin";
@@ -59,7 +60,7 @@ impl RoutingLog {
         tier: Option<&str>,
         usage: &Usage,
     ) -> std::io::Result<()> {
-        let cost = self.pricing.cost(model, usage);
+        let spend = self.pricing.call_cost(model, usage);
         let cache_creation_1h_tokens = usage
             .cache
             .as_ref()
@@ -68,7 +69,7 @@ impl RoutingLog {
         let usage = token_usage(usage);
         let record = RoutingRecord {
             outcome: None,
-            cost,
+            spend,
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
             route_id: context.route_id.into(),
             algorithm: context.algorithm.into(),
@@ -95,7 +96,16 @@ impl RoutingLog {
             reasoning_tokens: usage.reasoning_tokens,
             total_tokens: usage.prompt_tokens.saturating_add(usage.completion_tokens),
         };
-        self.append_record(&record)
+        self.append_record(&record)?;
+        crate::metrics::export_cost(
+            &record.model,
+            &record.target,
+            record.call_kind(),
+            record.session_id.as_deref(),
+            record.turn_id.as_deref(),
+            spend,
+        );
+        Ok(())
     }
 
     pub(crate) fn append_outcome(
@@ -128,9 +138,11 @@ impl RoutingLog {
 pub(crate) fn snapshot(
     path: &Path,
     session_id: &str,
+    group_by: Option<GroupBy>,
 ) -> std::io::Result<Option<SessionStatsSnapshot>> {
     let mut reader = BufReader::with_capacity(64 * 1024, fs::File::open(path)?);
     let mut line = Vec::new();
+    let mut report = group_by.map(CostReport::new);
     let mut snapshot = SessionStatsSnapshot {
         session_id: session_id.to_string(),
         ..Default::default()
@@ -146,8 +158,9 @@ pub(crate) fn snapshot(
         let Ok(record) = serde_json::from_slice::<RoutingRecord>(&line) else {
             continue;
         };
-        snapshot.add_record(record, session_id);
+        snapshot.add_record(record, session_id, report.as_mut());
     }
+    snapshot.cost_rows = report.map(CostReport::into_rows);
     snapshot.sum_totals();
     Ok((snapshot.total_calls > 0 || !snapshot.outcomes.is_empty()).then_some(snapshot))
 }
@@ -246,8 +259,8 @@ impl RoutingLogContext {
 struct RoutingRecord<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     outcome: Option<LoggedOutcome>,
-    #[serde(default)]
-    cost: Option<RecordedCost>,
+    #[serde(flatten)]
+    spend: CallCost,
     ts: Cow<'a, str>,
     route_id: Cow<'a, str>,
     algorithm: Cow<'a, str>,
@@ -298,11 +311,23 @@ fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
+impl RoutingRecord<'_> {
+    fn call_kind(&self) -> &'static str {
+        if self.tier == "classifier" {
+            "decision"
+        } else {
+            "answer"
+        }
+    }
+}
+
 /// Session totals returned by the routing stats endpoint.
 #[derive(Default, Serialize)]
 pub(crate) struct SessionStatsSnapshot {
     session_id: String,
     cost: CostTotals,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cost_rows: Option<Vec<CostRow>>,
     answer_cost: CostTotals,
     routing_cost: CostTotals,
     total_calls: u64,
@@ -349,7 +374,7 @@ struct SessionTargetStats {
 
 impl SessionModelStats {
     fn add_record(&mut self, record: &RoutingRecord<'_>) {
-        self.cost.add(record.cost);
+        self.cost.add(record.spend.cost);
         self.calls = self.calls.saturating_add(1);
         self.prompt_tokens = self.prompt_tokens.saturating_add(record.prompt_tokens);
         self.cached_tokens = self.cached_tokens.saturating_add(record.cached_tokens);
@@ -363,7 +388,12 @@ impl SessionModelStats {
 }
 
 impl SessionStatsSnapshot {
-    fn add_record(&mut self, mut record: RoutingRecord<'_>, session_id: &str) {
+    fn add_record(
+        &mut self,
+        mut record: RoutingRecord<'_>,
+        session_id: &str,
+        report: Option<&mut CostReport>,
+    ) {
         if record.session_id.as_deref() != Some(session_id) {
             return;
         }
@@ -375,6 +405,14 @@ impl SessionStatsSnapshot {
             "" => "unknown",
             model => model,
         };
+        if let Some(report) = report {
+            report.record(
+                record.turn_id.as_deref(),
+                model,
+                record.call_kind(),
+                record.spend,
+            );
+        }
         let stats = self.models.entry(ModelId::from(model)).or_default();
         stats.add_record(&record);
         // Older logs have no target identity; keep them only in the model aggregate.
@@ -389,11 +427,11 @@ impl SessionStatsSnapshot {
                 .stats
                 .add_record(&record);
         }
-        self.cost.add(record.cost);
+        self.cost.add(record.spend.cost);
         if record.tier == "classifier" {
-            self.routing_cost.add(record.cost);
+            self.routing_cost.add(record.spend.cost);
         } else {
-            self.answer_cost.add(record.cost);
+            self.answer_cost.add(record.spend.cost);
         }
     }
 
@@ -524,13 +562,63 @@ mod tests {
         )
         .expect("write log");
 
-        let stats = snapshot(&path, "a").expect("read log").expect("session a");
+        let stats = snapshot(&path, "a", None)
+            .expect("read log")
+            .expect("session a");
         assert_eq!(stats.total_calls, 2);
         assert_eq!(stats.total_prompt_tokens, 15);
         assert_eq!(stats.total_completion_tokens, 2);
         assert_eq!(stats.models["m1"].calls, 1);
         assert!(stats.targets.is_empty());
         assert_eq!(stats.models["unknown"].prompt_tokens, 5);
-        assert!(snapshot(&path, "missing").expect("read log").is_none());
+        assert!(
+            snapshot(&path, "missing", None)
+                .expect("read log")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cost_report_groups_completed_calls_and_keeps_unpriced_fields_unknown() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("routing.jsonl");
+        let priced = serde_json::json!({"session_id":"s","turn_id":"t1","model":"m",
+            "cost":{"usd":0.25,"source":"provider_reported"},"cache_read_usd":0.01,"cache_write_usd":0.0});
+        let decision = serde_json::json!({"session_id":"s","turn_id":"t1","model":"judge","tier":"classifier"});
+        let legacy = serde_json::json!({"session_id":"s","model":"m"});
+        fs::write(&path, format!("{priced}\n{decision}\n{priced}\n{legacy}\n")).expect("write log");
+        let rows = |group| {
+            snapshot(&path, "s", Some(group))
+                .unwrap()
+                .unwrap()
+                .cost_rows
+                .unwrap()
+        };
+        let turns = rows(GroupBy::Turn);
+        assert_eq!(turns.len(), 3);
+        let answer = turns
+            .iter()
+            .find(|r| r.key.turn_id.as_deref() == Some("t1") && r.key.call_kind == "answer")
+            .unwrap();
+        assert_eq!(answer.key.turn_index, Some(0));
+        assert_eq!(answer.cost.total_usd, Some(0.5));
+        assert_eq!(
+            (answer.cache_read_usd, answer.cache_write_usd),
+            (Some(0.02), Some(0.0))
+        );
+        for group in [GroupBy::Session, GroupBy::Model] {
+            let rows = rows(group);
+            let answer = rows.iter().find(|r| r.key.call_kind == "answer").unwrap();
+            assert_eq!(
+                (
+                    answer.cost.total_usd,
+                    answer.cost.known_usd,
+                    answer.cost.unknown_calls
+                ),
+                (None, 0.5, 1)
+            );
+            assert_eq!(answer.cache_read_usd, None);
+            assert_eq!(rows.len(), 2);
+        }
     }
 }

@@ -67,35 +67,6 @@ are in your catalog. Then:
 pi -e ./examples/pi/switchyard-router.ts --model switchyard/auto
 ```
 
-## Export observed spend with OpenTelemetry
-
-The `switchyard.pi.spend` counter records USD from Pi's `usage.cost.total`. Pi prices
-observed input, output, cache reads, and cache writes at the model's catalog rates.
-Use provider billing records for invoiced charges.
-
-Group the counter by `switchyard.call.kind` to see routed agent answers (`answer`)
-and routing classifier calls (`decision`) separately. Each observation also has
-`gen_ai.provider.name` and `gen_ai.request.model` for the physical model.
-Chargeable retries contribute their own costs, including classifier failures that
-return usage. Missing or zero charges add nothing. Pi exposes answer usage at the
-end of an agent turn. Direct helper answers, such as compaction summaries, fall
-outside that event.
-
-A host with an OpenTelemetry meter provider can export this counter through its
-existing metrics pipeline. For a standalone Pi process, the following example
-uses the Node SDK preload and a local OTLP/HTTP collector. Run from `examples/pi`
-after local setup:
-
-```bash
-npm install --no-save --package-lock=false @opentelemetry/auto-instrumentations-node
-otel_register=$(node -p 'require.resolve("@opentelemetry/auto-instrumentations-node/register")')
-OTEL_SERVICE_NAME=switchyard-pi \
-OTEL_METRICS_EXPORTER=otlp OTEL_TRACES_EXPORTER=none OTEL_LOGS_EXPORTER=none \
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 \
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf \
-node --require "$otel_register" "$(command -v pi)" -e ./switchyard-router.ts --model switchyard/auto
-```
-
 ## Conversation handling
 
 The extension passes visible text, tool-call arguments, paired tool results, and

@@ -77,6 +77,30 @@ The LLM client driver records these on `libsy.client_call`:
 reliably identify the provider. Usage fields are omitted when unavailable, not
 invented as zero. Available counts are capped at OTel's signed integer maximum.
 
+### Observed spend
+
+With server routing logging enabled, each completed call written to the log also emits
+a separate `switchyard.cost.observed` span. The server passes the served model and
+normalized usage to `switchyard-costs`. The log, session stats and OTel export use
+that result. Existing model-call spans continue to report tokens and latency.
+
+| Span attribute | Meaning |
+|---|---|
+| `gen_ai.request.model`, `switchyard.target` | Physical model and configured target that served this call. |
+| `gen_ai.conversation.id`, `switchyard.turn.id` | Host session and turn IDs when available. |
+| `switchyard.call.kind` | `answer` or `decision`. |
+| `switchyard.cost.usd`, `switchyard.cost.source` | Known total and its source, `provider_reported` or `estimated`. |
+| `switchyard.cache.read_usd`, `switchyard.cache.write_usd` | Estimated USD for cache reads and writes when both the count and rate are available. |
+
+A metrics exporter can sum `switchyard.spend` (USD) by model, target and call kind.
+`switchyard.cache.spend` (USD) also labels each sample with `switchyard.cache.operation`
+(`read` or `write`). Counters sum known values. For a session or turn, use the spans or
+the [session stats endpoint](../../crates/switchyard-server/README.md). Cache amounts
+overlap total spend. Adding them to the total would double count them.
+
+A four-call synthetic session is shown in the [Grafana dashboard](../assets/observed-spend-grafana.png)
+and [single-span detail](../assets/observed-spend-span.png).
+
 ## Metrics
 
 Metrics use the `switchyard` meter scope. The tables use OTel instrument names.

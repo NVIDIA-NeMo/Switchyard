@@ -4,6 +4,7 @@
 //! This module prices observed calls and keeps missing usage or rates unknown.
 
 mod anthropic;
+pub mod report;
 
 use std::collections::HashMap;
 use std::path::Path;

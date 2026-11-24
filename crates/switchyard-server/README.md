@@ -129,6 +129,16 @@ served model. The legacy `proxy_x_session_id` remains a fallback when no normali
 present. The endpoint returns `404` when the session has no records and is not registered when
 routing logging is disabled.
 
+To report observed spend, add `group_by=turn`, `model`, or `session` to the session
+stats request. For example, `GET /v1/routing/session-stats?session_id=demo&group_by=turn`
+adds `cost_rows` for each turn and served model. All three views separate answer calls
+from routing decisions. `turn_id` is the host's ID and `turn_index` is its zero-based
+position in the session's completed-call log. Calls without a turn ID share an
+unattributed group per model. Each row includes the existing cost totals plus
+`cache_read_usd` and `cache_write_usd`, estimated at the rates in effect when the
+call finished. A missing split stays null for the group. Cache estimates are shown
+alongside the total. A provider charge may use different rates.
+
 The routing log saves each call's reported charge in USD. When the upstream reports no
 charge, the server estimates it using [bundled rates](../switchyard-costs/prices.toml).
 A reported charge, including zero, takes precedence over the bundled rates.

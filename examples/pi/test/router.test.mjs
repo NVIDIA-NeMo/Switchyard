@@ -6,7 +6,6 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { metrics } from "@opentelemetry/api";
 import { CompositeRouter } from "@switchyard/libsy";
 import extension from "../switchyard-router.ts";
 
@@ -49,7 +48,7 @@ function setup(t, answer = result()) {
     on: (event, handler) => { handlers[event] = handler; },
   });
   return {
-    definition, registry, path, handlers, route: (req) => definition.route(req, { modelRegistry: registry }),
+    definition, registry, path, route: (req) => definition.route(req, { modelRegistry: registry }),
     context: (messages) => handlers.context_with_system({ type: "context_with_system", messages }),
   };
 }
@@ -239,44 +238,4 @@ test("message and classifier adapters preserve content and model identities", as
       type: "choice", instructions: "Choose a model", criteria: { capable: "Complex work", efficient: "Simple work" },
     } },
   });
-});
-
-test("spend counts each observed decision and routed answer once at Pi's catalog price", async (t) => {
-  const add = t.mock.fn();
-  const createCounter = t.mock.fn(() => ({ add }));
-  t.mock.method(metrics, "getMeter", () => ({ createCounter }));
-  const decision = { ...result(), usage: { cost: { total: 0.003 } } };
-  const { handlers, route, registry } = setup(t, decision);
-  const message = {
-    role: "assistant", provider: "openai-codex", model: "gpt-6.1-sol",
-    usage: { cost: { input: 0.010, output: 0.020, cacheRead: 0.001, cacheWrite: 0.002, total: 0.033 } },
-  };
-  handlers.turn_start({});
-  await route(request());
-  handlers.turn_end({ message });
-  handlers.turn_end({ message });
-  // A direct helper can run between agent turns without owning the next answer.
-  registry.classify.mock.mockImplementation(async () => result());
-  await route(request({ reason: "direct" }));
-  handlers.turn_start({});
-  handlers.turn_end({ message });
-  assert.equal(createCounter.mock.calls[0].arguments[0], "switchyard.pi.spend");
-  assert.equal(createCounter.mock.calls[0].arguments[1].unit, "USD");
-  assert.deepEqual(add.mock.calls.map((call) => call.arguments), [
-    [0.003, { "switchyard.call.kind": "decision", "gen_ai.provider.name": decision.provider, "gen_ai.request.model": decision.model }],
-    [0.033, { "switchyard.call.kind": "answer", "gen_ai.provider.name": message.provider, "gen_ai.request.model": message.model }],
-  ]);
-});
-
-test("a charged classifier error counts even when routing fails; unusable totals add nothing", async (t) => {
-  const add = t.mock.fn();
-  t.mock.method(metrics, "getMeter", () => ({ createCounter: () => ({ add }) }));
-  const { route, registry } = setup(t);
-  for (const total of [0.004, 0, -1, NaN, Infinity, undefined]) {
-    registry.classify.mock.mockImplementation(async () => ({
-      ...result(), stopReason: "error", errorMessage: "failed", usage: { cost: { total } },
-    }));
-    await assert.rejects(route(request()));
-  }
-  assert.deepEqual(add.mock.calls.map((call) => call.arguments[0]), [0.004]);
 });

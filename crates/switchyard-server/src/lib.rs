@@ -231,8 +231,9 @@ impl SharedRoutingLog {
     fn snapshot_session(
         &self,
         session_id: &str,
+        group_by: Option<switchyard_costs::report::GroupBy>,
     ) -> std::io::Result<Option<routing_log::SessionStatsSnapshot>> {
-        routing_log::snapshot(&self.path, session_id)
+        routing_log::snapshot(&self.path, session_id, group_by)
     }
 
     fn append_outcome(
@@ -1625,6 +1626,7 @@ async fn reset_stats(State(state): State<ServerState>) -> Json<Value> {
 #[derive(Deserialize)]
 struct SessionStatsQuery {
     session_id: String,
+    group_by: Option<switchyard_costs::report::GroupBy>,
 }
 
 // TODO: This loads the entire file. It should stream the JSONL instead.
@@ -1650,13 +1652,16 @@ async fn get_session_stats(
     };
     let session_id = query.session_id.clone();
     // Loading and de-serializing a large file is a time consuming blocking operation
-    let snapshot =
-        match task::spawn_blocking(move || routing_log.snapshot_session(&session_id)).await {
-            Ok(s) => s,
-            Err(err) => {
-                return server_error(format!("failed to snapshot: {err}"));
-            }
-        };
+    let snapshot = match task::spawn_blocking(move || {
+        routing_log.snapshot_session(&session_id, query.group_by)
+    })
+    .await
+    {
+        Ok(s) => s,
+        Err(err) => {
+            return server_error(format!("failed to snapshot: {err}"));
+        }
+    };
 
     match snapshot {
         Ok(Some(snapshot)) => (StatusCode::OK, Json(snapshot)).into_response(),
@@ -1984,7 +1989,7 @@ target = "judge"
         }
 
         let snapshot = log
-            .snapshot_session("session-1")
+            .snapshot_session("session-1", None)
             .expect("read log")
             .expect("session recorded");
         let snapshot = serde_json::to_value(&snapshot).expect("serializable snapshot");
@@ -2000,7 +2005,7 @@ target = "judge"
             "efficient"
         );
         assert_eq!(snapshot["outcomes"][1]["turn_id"], "turn-1");
-        assert!(log.snapshot_session("another-session")?.is_none());
+        assert!(log.snapshot_session("another-session", None)?.is_none());
         let contents = std::fs::read_to_string(&log.path)?;
         assert_eq!(contents.lines().count(), 3);
         let record: serde_json::Value =
