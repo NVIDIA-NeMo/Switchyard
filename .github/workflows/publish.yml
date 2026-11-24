@@ -200,7 +200,7 @@ jobs:
             rust_target: x86_64-apple-darwin
             smoke: true
           - label: macos-arm64
-            os: macos-14
+            os: macos-15
             rust_target: aarch64-apple-darwin
             smoke: true
           - label: windows-x86_64
@@ -510,6 +510,7 @@ jobs:
 
           for crate in \
             switchyard-protocol \
+            switchyard-costs \
             switchyard-translation \
             switchyard-libsy \
             switchyard-llm-client \
@@ -548,6 +549,7 @@ jobs:
           }
 
           publish_crate switchyard-protocol
+          publish_crate switchyard-costs
           publish_crate switchyard-translation
           publish_crate switchyard-libsy
           publish_crate switchyard-llm-client

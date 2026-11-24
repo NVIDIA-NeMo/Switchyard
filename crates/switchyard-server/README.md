@@ -67,7 +67,7 @@ new = ["send_message"]
 ```bash
 export API_KEY="..."
 cargo install --locked switchyard-server
-switchyard-server --config routes.toml
+switchyard-server --config routes.toml --host 127.0.0.1
 ```
 
 Ctrl+C and Unix `SIGTERM` stop new connections and allow active requests to drain for up to

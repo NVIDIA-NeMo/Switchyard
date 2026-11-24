@@ -25,8 +25,8 @@ def test_getting_started_documents_current_paths() -> None:
     assert not any(line.startswith("use ") for line in readme_example.splitlines())
     for placeholder in ("call_model(", "call_decision(", "handle_outcome("):
         assert placeholder not in readme_example
-    assert "cargo add switchyard-libsy switchyard-protocol --git" in guide
-    assert "--rev ef958a9a8099bb0493b3d42862273e09eced0f52" in guide
+    assert "cargo add switchyard-libsy@0.4.0 switchyard-protocol@0.4.0" in guide
+    assert "cargo add switchyard-translation@0.4.0" in guide
     assert "call.respond(client.call(request)).await?" in guide
     assert "struct OpenRouterClient" in guide
     assert '.post("https://openrouter.ai/api/v1/chat/completions")' in guide
@@ -41,7 +41,7 @@ def test_getting_started_documents_current_paths() -> None:
     assert "switchyard launch" not in guide
     assert "nemo-switchyard[cli]" not in guide
     assert "cargo install --locked switchyard-server" not in guide
-    assert "cargo install --locked switchyard-server --version 0.3.0" in server
+    assert "cargo install --locked switchyard-server --version 0.4.0" in server
     assert "switchyard-server --config routes.toml --dry-run" in server
     assert "not a supported production deployment path" in server
     assert (

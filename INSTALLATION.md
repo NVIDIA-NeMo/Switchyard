@@ -27,10 +27,13 @@ the libsy and server implementations.
 Install the native Rust proxy from crates.io:
 
 ```bash
-cargo install --locked switchyard-server
+cargo install --locked --version 0.4.0 switchyard-server
 switchyard-server --config routes.toml --dry-run
-switchyard-server --config routes.toml --port 4000
+switchyard-server --config routes.toml --host 127.0.0.1 --port 4000
 ```
+
+Switchyard 0.4.0 listens on `127.0.0.1` by default. If a deployment
+accepts remote clients, set `--host` to the intended listening address.
 
 See [Local Evaluation](docs/operations/local_evaluation.md) for a complete TOML
 example and [`switchyard-server`](crates/switchyard-server/README.md) for the
@@ -52,10 +55,10 @@ Add the crates needed by an embedded application:
 
 ```toml
 [dependencies]
-switchyard-libsy = "0.2.0"
-switchyard-protocol = "0.2.0"
-switchyard-llm-client = "0.2.0"
-switchyard-translation = "0.2.0"
+switchyard-libsy = "0.4.0"
+switchyard-protocol = "0.4.0"
+switchyard-llm-client = "0.4.0"
+switchyard-translation = "0.4.0"
 ```
 
 `switchyard-libsy` owns algorithms, `switchyard-protocol` owns provider-neutral
