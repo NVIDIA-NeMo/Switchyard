@@ -3,9 +3,9 @@
 
 //! This module prices observed calls and keeps missing usage or rates unknown.
 
-mod anthropic;
 pub mod report;
 
+use report::CallCost;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -52,6 +52,25 @@ struct Rates {
     cache_read: f64,
     cache_write: f64,
     cache_write_1h: Option<f64>,
+}
+
+impl Rates {
+    /// Weighted cache-write tokens before converting the per-million rate to USD.
+    fn cache_write_cost(&self, usage: &Usage) -> Option<f64> {
+        let Some(cache) = &usage.cache else {
+            return Some(0.0);
+        };
+        let one_hour = cache.cache_creation_1h_input_tokens.unwrap_or(0);
+        let five_minute = cache
+            .cache_creation_input_tokens
+            .unwrap_or(0)
+            .checked_sub(one_hour)?;
+        let mut cost = five_minute as f64 * self.cache_write;
+        if one_hour > 0 {
+            cost += one_hour as f64 * self.cache_write_1h?;
+        }
+        Some(cost)
+    }
 }
 
 #[derive(Deserialize)]
@@ -191,33 +210,56 @@ impl Pricing {
 
     /// Provider charges take precedence because token rates may omit provider surcharges.
     pub fn cost(&self, model: &str, usage: &Usage) -> Option<RecordedCost> {
+        self.call_cost(model, usage).cost
+    }
+
+    /// Returns the charge and available catalog-priced cache components for one call.
+    pub fn call_cost(&self, model: &str, usage: &Usage) -> CallCost {
+        let mut call = self.estimate_call(model, usage);
         if let Some(usd) = usage
             .provider_cost
-            .filter(|value| value.is_finite() && *value >= 0.0)
+            .filter(|usd| usd.is_finite() && *usd >= 0.0)
         {
-            return Some(RecordedCost {
+            call.cost = Some(RecordedCost {
                 usd,
                 source: CostSource::ProviderReported,
             });
         }
-        self.estimate(model, usage)
+        call
     }
 
-    /// This method uses token rates alone so baseline estimates exclude provider charges.
+    /// Uses catalog rates even when the provider supplies a charge.
     pub fn estimate(&self, model: &str, usage: &Usage) -> Option<RecordedCost> {
-        let rate = self.0.get(model)?;
-        let input = usage.input_tokens?;
-        let output = usage.output_tokens?;
-        let read = usage.cached_input_tokens().unwrap_or(0);
-        let usd = (input as f64 * rate.input
-            + output as f64 * rate.output
-            + read as f64 * rate.cache_read
-            + anthropic::cache_write_cost(usage, rate.cache_write, rate.cache_write_1h)?)
-            / 1_000_000.0;
-        Some(RecordedCost {
-            usd,
-            source: CostSource::Estimated,
-        })
+        self.estimate_call(model, usage).cost
+    }
+
+    fn estimate_call(&self, model: &str, usage: &Usage) -> CallCost {
+        let Some(rate) = self.0.get(model) else {
+            return CallCost::default();
+        };
+        let read = usage
+            .cached_input_tokens()
+            .map(|n| n as f64 * rate.cache_read);
+        let write = rate.cache_write_cost(usage);
+        let cost = match (usage.input_tokens, usage.output_tokens, write) {
+            (Some(input), Some(output), Some(write)) => Some(RecordedCost {
+                usd: (input as f64 * rate.input
+                    + output as f64 * rate.output
+                    + read.unwrap_or(0.0)
+                    + write)
+                    / 1_000_000.0,
+                source: CostSource::Estimated,
+            }),
+            _ => None,
+        };
+        CallCost {
+            cost,
+            cache_read_usd: read.map(|value| value / 1_000_000.0),
+            cache_write_usd: usage
+                .cache_creation_input_tokens()
+                .and(write)
+                .map(|value| value / 1_000_000.0),
+        }
     }
 }
 

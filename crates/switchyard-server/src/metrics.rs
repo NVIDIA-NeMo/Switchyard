@@ -3,7 +3,9 @@
 
 //! Process-wide Prometheus export for Switchyard's OpenTelemetry metrics.
 
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
+
+use opentelemetry::metrics::Counter;
 
 use opentelemetry::{KeyValue, global};
 use opentelemetry_sdk::metrics::{Aggregation, Instrument, SdkMeterProvider, Stream};
@@ -181,9 +183,8 @@ pub(crate) fn export_cost(
     outcome_id: Option<&str>,
     call: switchyard_costs::report::CallCost,
 ) {
-    use opentelemetry::metrics::Counter;
-    static SPEND: OnceLock<Counter<f64>> = OnceLock::new();
-    static CACHE: OnceLock<Counter<f64>> = OnceLock::new();
+    static SPEND: LazyLock<Counter<f64>> = LazyLock::new(|| usd_counter("switchyard.spend"));
+    static CACHE: LazyLock<Counter<f64>> = LazyLock::new(|| usd_counter("switchyard.cache.spend"));
     let labels = [
         KeyValue::new("gen_ai.request.model", model.to_owned()),
         KeyValue::new("switchyard.target", routing.target.clone()),
@@ -192,14 +193,7 @@ pub(crate) fn export_cost(
         KeyValue::new("switchyard.call.kind", kind.to_owned()),
     ];
     if let Some(cost) = call.cost {
-        SPEND
-            .get_or_init(|| {
-                global::meter("switchyard")
-                    .f64_counter("switchyard.spend")
-                    .with_unit("USD")
-                    .build()
-            })
-            .add(cost.usd, &labels);
+        SPEND.add(cost.usd, &labels);
     }
     for (op, usd) in [
         ("read", call.cache_read_usd),
@@ -208,14 +202,7 @@ pub(crate) fn export_cost(
         if let Some(usd) = usd {
             let mut attrs = labels.to_vec();
             attrs.push(KeyValue::new("switchyard.cache.operation", op));
-            CACHE
-                .get_or_init(|| {
-                    global::meter("switchyard")
-                        .f64_counter("switchyard.cache.spend")
-                        .with_unit("USD")
-                        .build()
-                })
-                .add(usd, &attrs);
+            CACHE.add(usd, &attrs);
         }
     }
     let _span = tracing::info_span!(
@@ -237,4 +224,11 @@ pub(crate) fn export_cost(
         switchyard.cache.read_usd = call.cache_read_usd,
         switchyard.cache.write_usd = call.cache_write_usd
     );
+}
+
+fn usd_counter(name: &'static str) -> Counter<f64> {
+    global::meter("switchyard")
+        .f64_counter(name)
+        .with_unit("USD")
+        .build()
 }

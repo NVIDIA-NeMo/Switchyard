@@ -1630,8 +1630,6 @@ struct SessionStatsQuery {
     group_by: Option<switchyard_costs::report::GroupBy>,
 }
 
-// TODO: This loads the entire file. It should stream the JSONL instead.
-// Huge files will crash the demo server.
 async fn get_session_stats(
     State(state): State<ServerState>,
     query: std::result::Result<Query<SessionStatsQuery>, QueryRejection>,
@@ -1651,28 +1649,20 @@ async fn get_session_stats(
         // Should be unreachable
         return not_found().await;
     };
-    let session_id = query.session_id.clone();
-    // Loading and de-serializing a large file is a time consuming blocking operation
-    let snapshot = match task::spawn_blocking(move || {
-        routing_log.snapshot_session(&session_id, query.group_by)
+    let snapshot = task::spawn_blocking(move || {
+        routing_log.snapshot_session(&query.session_id, query.group_by)
     })
-    .await
-    {
-        Ok(s) => s,
-        Err(err) => {
-            return server_error(format!("failed to snapshot: {err}"));
-        }
-    };
-
+    .await;
     match snapshot {
-        Ok(Some(snapshot)) => (StatusCode::OK, Json(snapshot)).into_response(),
-        Ok(None) => error_response(
+        Ok(Ok(Some(snapshot))) => (StatusCode::OK, Json(snapshot)).into_response(),
+        Ok(Ok(None)) => error_response(
             StatusCode::NOT_FOUND,
             "Routing session not found",
             "not_found",
             "routing_session_not_found",
         ),
-        Err(error) => server_error(format!("failed to read routing log: {error}")),
+        Ok(Err(error)) => server_error(format!("failed to read routing log: {error}")),
+        Err(error) => server_error(format!("failed to snapshot: {error}")),
     }
 }
 

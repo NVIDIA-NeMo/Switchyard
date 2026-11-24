@@ -6,9 +6,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
-use switchyard_protocol::Usage;
 
-use crate::{CostTotals, Pricing, RecordedCost, anthropic};
+use crate::{CostTotals, RecordedCost};
 
 /// The cache portions use catalog rates. A provider may independently report the total charge.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -16,24 +15,6 @@ pub struct CallCost {
     pub cost: Option<RecordedCost>,
     pub cache_read_usd: Option<f64>,
     pub cache_write_usd: Option<f64>,
-}
-
-impl Pricing {
-    pub fn call_cost(&self, model: &str, usage: &Usage) -> CallCost {
-        let rate = self.0.get(model);
-        CallCost {
-            cost: self.cost(model, usage),
-            cache_read_usd: rate
-                .zip(usage.cached_input_tokens())
-                .map(|(rate, tokens)| tokens as f64 * rate.cache_read / 1_000_000.0),
-            cache_write_usd: rate
-                .zip(usage.cache_creation_input_tokens())
-                .and_then(|(rate, _)| {
-                    anthropic::cache_write_cost(usage, rate.cache_write, rate.cache_write_1h)
-                })
-                .map(|amount| amount / 1_000_000.0),
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -110,8 +91,8 @@ impl CostReport {
             model: (!matches!(self.group_by, GroupBy::Session)).then(|| model.to_owned()),
             call_kind: call_kind.to_owned(),
         };
-        let row = self.rows.entry(key.clone()).or_insert_with(|| CostRow {
-            key,
+        let row = self.rows.entry(key).or_insert_with_key(|key| CostRow {
+            key: key.clone(),
             routes: BTreeSet::new(),
             cost: CostTotals::default(),
             cache_read_usd: Some(0.0),
@@ -121,17 +102,16 @@ impl CostReport {
             row.routes.insert(route.clone());
         }
         row.cost.add(call.cost);
-        row.cache_read_usd = row
-            .cache_read_usd
-            .zip(call.cache_read_usd)
-            .map(|(a, b)| a + b);
-        row.cache_write_usd = row
-            .cache_write_usd
-            .zip(call.cache_write_usd)
-            .map(|(a, b)| a + b);
+        row.cache_read_usd = add_known(row.cache_read_usd, call.cache_read_usd);
+        row.cache_write_usd = add_known(row.cache_write_usd, call.cache_write_usd);
     }
 
     pub fn into_rows(self) -> Vec<CostRow> {
         self.rows.into_values().collect()
     }
+}
+
+/// A missing component in any call leaves its group total unknown.
+fn add_known(total: Option<f64>, amount: Option<f64>) -> Option<f64> {
+    Some(total? + amount?)
 }

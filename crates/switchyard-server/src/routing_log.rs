@@ -73,10 +73,8 @@ impl RoutingLog {
             spend,
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
             routing: CostRoute {
-                route_id: context.route_id,
-                algorithm: context.algorithm,
                 target: target.to_owned(),
-                reasoning_effort: context.reasoning_effort,
+                ..context.routing
             },
             outcome_id: context.outcome_id.get().cloned(),
             origin: context.origin.map(Cow::Owned),
@@ -122,7 +120,7 @@ impl RoutingLog {
             "session_id": context.session_id,
             "outcome": LoggedOutcome {
                 ts: format_rfc3339_millis(SystemTime::now()).to_string(),
-                route_id: context.route_id.clone(),
+                route_id: context.routing.route_id.clone(),
                 turn_id: context.turn_id.clone(),
                 agent_id: context.agent.agent_id.clone(),
                 parent_agent_id: context.agent.parent_agent_id.clone(),
@@ -163,7 +161,7 @@ pub(crate) fn snapshot(
         let Ok(record) = serde_json::from_slice::<RoutingRecord>(&line) else {
             continue;
         };
-        snapshot.add_record(record, session_id, report.as_mut());
+        snapshot.add_record(record, report.as_mut());
     }
     snapshot.cost_rows = report.map(CostReport::into_rows);
     snapshot.sum_totals();
@@ -204,8 +202,7 @@ impl AgentIdentity {
 /// Holds request metadata until route resolution attaches the durable route identity.
 #[derive(Clone)]
 pub(crate) struct RoutingLogContext {
-    route_id: String,
-    algorithm: String,
+    routing: CostRoute,
     outcome_id: Arc<OnceLock<String>>,
     origin: Option<String>,
     task: Option<String>,
@@ -213,7 +210,6 @@ pub(crate) struct RoutingLogContext {
     session_id: Option<String>,
     turn_id: Option<String>,
     agent: AgentIdentity,
-    reasoning_effort: Option<String>,
 }
 
 impl RoutingLogContext {
@@ -221,8 +217,7 @@ impl RoutingLogContext {
     pub(crate) fn from_metadata(metadata: &Metadata) -> Self {
         let headers = metadata.http_headers.as_ref();
         Self {
-            route_id: String::new(),
-            algorithm: String::new(),
+            routing: CostRoute::default(),
             outcome_id: Arc::default(),
             origin: headers
                 .and_then(|headers| nonempty_header(headers, ORIGIN_HEADER))
@@ -240,7 +235,6 @@ impl RoutingLogContext {
                     .map(str::to_string)
             }),
             agent: AgentIdentity::from_metadata(metadata),
-            reasoning_effort: None,
         }
     }
 
@@ -251,14 +245,14 @@ impl RoutingLogContext {
 
     /// Captures configured effort for this particular target's call.
     pub(crate) fn with_reasoning_effort(mut self, effort: Option<&str>) -> Self {
-        self.reasoning_effort = effort.map(str::to_owned);
+        self.routing.reasoning_effort = effort.map(str::to_owned);
         self
     }
 
     /// Attaches the resolved route identity shared by every log entry for this request.
     pub(crate) fn with_route(mut self, route_id: impl Into<String>, algorithm: &str) -> Self {
-        self.route_id = route_id.into();
-        self.algorithm = algorithm.to_string();
+        self.routing.route_id = route_id.into();
+        self.routing.algorithm = algorithm.to_string();
         self
     }
 }
@@ -397,13 +391,8 @@ impl SessionModelStats {
 }
 
 impl SessionStatsSnapshot {
-    fn add_record(
-        &mut self,
-        mut record: RoutingRecord<'_>,
-        session_id: &str,
-        report: Option<&mut CostReport>,
-    ) {
-        if record.session_id.as_deref() != Some(session_id) {
+    fn add_record(&mut self, mut record: RoutingRecord<'_>, report: Option<&mut CostReport>) {
+        if record.session_id.as_deref() != Some(&self.session_id) {
             return;
         }
         if let Some(outcome) = record.outcome.take() {
@@ -592,12 +581,10 @@ mod tests {
     fn cost_report_groups_completed_calls_and_keeps_unpriced_fields_unknown() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("routing.jsonl");
-        let priced = serde_json::json!({"session_id":"s","turn_id":"t1","model":"m",
+        let priced = serde_json::json!({"session_id":"s","turn_id":"t1","model":"m","route_id":"route-a",
             "cost":{"usd":0.25,"source":"provider_reported"},"cache_read_usd":0.01,"cache_write_usd":0.0});
         let mut other_route = priced.clone();
         other_route["route_id"] = "route-b".into();
-        let mut priced = priced;
-        priced["route_id"] = "route-a".into();
         let decision = serde_json::json!({"session_id":"s","turn_id":"t1","model":"judge","tier":"classifier"});
         let legacy = serde_json::json!({"session_id":"s","model":"m"});
         fs::write(
