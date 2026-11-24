@@ -558,55 +558,38 @@ mod tests {
     }
 
     #[test]
-    fn cost_report_groups_completed_calls_and_keeps_unpriced_fields_unknown() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("routing.jsonl");
-        let priced = serde_json::json!({"session_id":"s","turn_id":"t1","model":"m","route_id":"route-a",
-            "cost":{"usd":0.25,"source":"provider_reported"},"cache_read_usd":0.01,"cache_write_usd":0.0});
-        let mut other_route = priced.clone();
-        other_route["route_id"] = "route-b".into();
-        let decision = serde_json::json!({"session_id":"s","turn_id":"t1","model":"judge","tier":"classifier"});
-        let legacy = serde_json::json!({"session_id":"s","model":"m"});
-        fs::write(
-            &path,
-            format!("{priced}\n{decision}\n{other_route}\n{legacy}\n"),
-        )
-        .expect("write log");
-        let rows = |group| {
-            snapshot(&path, "s", Some(group))
-                .unwrap()
-                .unwrap()
-                .cost_rows
-                .unwrap()
-        };
-        let turns = rows(GroupBy::Turn);
-        assert_eq!(turns.len(), 3);
-        let answer = turns
-            .iter()
-            .find(|r| r.key.turn_id.as_deref() == Some("t1") && r.key.call_kind == "answer")
-            .unwrap();
-        assert_eq!(answer.key.turn_index, Some(0));
-        assert_eq!(
-            answer
-                .routes
-                .iter()
-                .map(|r| r.route_id.as_str())
-                .collect::<Vec<_>>(),
-            ["route-a", "route-b"]
-        );
-        assert_eq!(answer.cost.total_usd, Some(0.5));
-        assert_eq!(
-            (answer.cache_read_usd, answer.cache_write_usd),
-            (Some(0.02), Some(0.0))
-        );
-        for group in [GroupBy::Session, GroupBy::Model] {
-            let rows = rows(group);
-            let answer = rows.iter().find(|r| r.key.call_kind == "answer").unwrap();
-            assert_eq!(answer.cost.total_usd, None);
-            assert_eq!(answer.cost.known_usd, 0.5);
-            assert_eq!(answer.cost.unknown_calls, 1);
-            assert_eq!(answer.cache_read_usd, None);
-            assert_eq!(rows.len(), 2);
+    fn grouped_costs_include_routes_and_unpriced_calls() -> std::io::Result<()> {
+        let mut log = tempfile::NamedTempFile::new()?;
+        for route in ["a", "b"] {
+            let call = serde_json::json!({"session_id":"s","turn_id":"t1","model":"m","route_id":route,
+                "cost":{"usd":0.25,"source":"provider_reported"},"cache_read_usd":0.01,"cache_write_usd":0.0});
+            writeln!(log, "{call}")?;
         }
+        log.write_all(
+            br#"{"session_id":"s","turn_id":"t1","model":"judge","tier":"classifier"}
+{"session_id":"s","model":"m"}
+"#,
+        )?;
+        for group in [GroupBy::Turn, GroupBy::Model, GroupBy::Session] {
+            let per_turn = matches!(group, GroupBy::Turn);
+            let stats = snapshot(log.path(), "s", Some(group))?.unwrap();
+            let rows = stats.cost_rows.unwrap();
+            assert_eq!(rows.len(), if per_turn { 3 } else { 2 });
+            let answer = rows.iter().find(|r| r.cost.known_usd > 0.0).unwrap();
+            assert_eq!(answer.key.call_kind, "answer");
+            assert_eq!(answer.cost.known_usd, 0.5);
+            let routes: Vec<_> = answer.routes.iter().map(|r| r.route_id.as_str()).collect();
+            assert_eq!(routes, ["a", "b"]);
+            // The legacy unpriced call has no turn ID, but shares the model and session.
+            assert_eq!(answer.key.turn_id.as_deref(), per_turn.then_some("t1"));
+            assert_eq!(answer.key.turn_index, per_turn.then_some(0));
+            assert_eq!(answer.cost.total_usd, per_turn.then_some(0.5));
+            assert_eq!(answer.cost.unknown_calls, if per_turn { 0 } else { 1 });
+            assert_eq!(answer.cache_read_usd, per_turn.then_some(0.02));
+            assert_eq!(answer.cache_write_usd, per_turn.then_some(0.0));
+            let model = (!matches!(group, GroupBy::Session)).then_some("m");
+            assert_eq!(answer.key.model.as_deref(), model);
+        }
+        Ok(())
     }
 }

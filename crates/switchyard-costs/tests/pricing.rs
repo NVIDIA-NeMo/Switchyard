@@ -83,29 +83,6 @@ fn grouped_and_keyed_files_price_the_same_usage() -> TestResult {
     Ok(())
 }
 
-#[test]
-fn provider_charge_survives_missing_rates_and_preserves_cache_estimates() -> TestResult {
-    let prices = Pricing::parse(br#"{"m":{"input":1,"output":1,"cache_read":2,"cache_write":3}}"#)?;
-    let usage = Usage {
-        provider_cost: Some(0.0),
-        input_tokens: Some(1_000_000),
-        output_tokens: Some(0),
-        cache: Usage::cache_details(Some(1_000_000), Some(1_000_000)),
-        ..Usage::default()
-    };
-    for (model, cache) in [("m", (Some(2.0), Some(3.0))), ("unknown", (None, None))] {
-        let spend = prices.observed_spend(model, &usage);
-        assert_eq!(
-            spend.cost.map(|c| (c.usd, c.source)),
-            Some((0.0, CostSource::ProviderReported))
-        );
-        assert_eq!(prices.cost(model, &usage), spend.cost);
-        assert_eq!((spend.cache_read_usd, spend.cache_write_usd), cache);
-    }
-    assert_eq!(prices.estimate("m", &usage).map(|c| c.usd), Some(6.0));
-    Ok(())
-}
-
 // These fixtures keep repeated fields in JSON text so decoding cannot erase them first.
 #[test]
 fn rejects_invalid_groups_and_preserved_raw_json_fields() {
@@ -189,6 +166,7 @@ fn every_grouped_rate_must_be_finite_and_in_range() -> TestResult {
 fn bundled_aliases_keep_all_cache_rates() -> TestResult {
     let prices = Pricing::bundled()?;
     let usage = Usage {
+        provider_cost: Some(0.0),
         input_tokens: Some(1_000_000),
         output_tokens: Some(1_000_000),
         cache: Some(Box::new(InputCacheUsage {
@@ -206,6 +184,16 @@ fn bundled_aliases_keep_all_cache_rates() -> TestResult {
     ] {
         let cost = prices.estimate(model, &usage).ok_or("missing alias")?;
         assert!((cost.usd - 9.35).abs() < 1e-9, "{model}");
+    }
+    for (model, read, write) in [
+        ("claude-haiku-4-5", Some(0.1), Some(3.25)),
+        ("unknown", None, None),
+    ] {
+        let spend = prices.observed_spend(model, &usage);
+        let cost = spend.cost.ok_or("missing provider charge")?;
+        assert_eq!((cost.usd, cost.source), (0.0, CostSource::ProviderReported));
+        assert_eq!(prices.cost(model, &usage), Some(cost));
+        assert_eq!((spend.cache_read_usd, spend.cache_write_usd), (read, write));
     }
     Ok(())
 }
