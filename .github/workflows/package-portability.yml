@@ -103,8 +103,6 @@ jobs:
               assert files(package).joinpath("py.typed").is_file(), package
 
           print("switchyard", switchyard.__version__)
-          print("runner", Runner)
-          print("trajectory", Trajectory)
           print("switchyard_rust", switchyard_rust.__file__)
           print("rust extension", _switchyard_rust.__name__)
           PY
@@ -136,8 +134,6 @@ jobs:
               assert files(package).joinpath("py.typed").is_file(), package
 
           print("switchyard", switchyard.__version__)
-          print("runner", Runner)
-          print("trajectory", Trajectory)
           print("switchyard_rust", switchyard_rust.__file__)
           print("rust extension", _switchyard_rust.__name__)
           PY

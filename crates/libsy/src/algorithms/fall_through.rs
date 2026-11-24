@@ -134,7 +134,7 @@ impl FallThrough {
         let _final_session = if session_final {
             self.session_states
                 .as_deref()
-                .zip(session_id(&request))
+                .zip(session)
                 .map(|(states, session)| FinalSession { states, session })
         } else {
             None

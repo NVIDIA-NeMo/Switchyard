@@ -83,87 +83,51 @@ Known recorded model IDs must match configured IDs. Pass
 model. Missing identities remain visible as unverified coverage. Different target
 keys may share a provider model ID.
 
-## Use ATIF or custom recordings
+## Recordings and coverage
 
-`Trajectory.from_dict` copies an ATIF document; `to_dict` returns an independent
-copy. `to_trial` extracts initial input and accepts explicit outcome metadata:
+`load_harbor` accepts a trial, a job, or a downloaded `jobs/` directory containing
+`result.json` and `agent/trajectory.json`. ATIF 1.5 and 1.7 text inputs are supported.
+For custom formats, use `Trajectory.from_dict(atif).to_trial(...)` with explicit
+`task_id`, `trial_id`, `target`, outcome measurements, and whole-run model identity.
+Collect trials in a `Run` and pass it to `Dataset.from_runs`.
 
-```python
-from switchyard.sim import Run, Trajectory
-
-record = {"task": "sum-1", "attempt": "1", "prompt": "What is 2 + 2?", "reward": 1}
-trajectory = Trajectory.from_dict({
-    "schema_version": "ATIF-v1.7",
-    "steps": [{"source": "user", "message": record["prompt"]}],
-})
-trial = trajectory.to_trial(
-    task_id=record["task"], trial_id=record["attempt"], target="fast",
-    reward=record["reward"], model="fast-model",
-)
-fast = Run((trial,))
-```
-
-Convert each target's recordings into a `Run`, then use `Dataset.from_runs` and
-`evaluate` as above. Supply model identity for the complete recorded run;
-per-step models may differ. Optional measurements include `cost_usd`,
-`cost_source`, `duration_seconds`, and `usage`. Missing values stay unknown.
-
-Projection reads initial system and user messages before the first agent step.
-It checks the ATIF version and fields it consumes, rather than the full schema.
-Supply `task_input` when the initial task text is missing. Copied continuation
-context requires the original task text, which replaces that context. Unmarked
-summaries cannot reliably be detected. Keep rejected records in `Run.issues` as
-`LoadIssue(source, message, task_id)` so failed repeats remain visible.
-
-## Import rules and coverage
-
-`load_harbor` accepts a trial, a job, or a downloaded `jobs/` directory. It reads
-`result.json` and `agent/trajectory.json`; ATIF 1.5 and 1.7 text recordings are
-covered. Use `dataset="benchmark-v1"` to namespace task IDs.
-
-- Task checksums must agree. Without checksums, initial user messages must match.
-  `input_target` chooses the routing input, using the first string-sorted trial ID.
+- Only initial system/user messages before the first agent step become routing input.
+  Supply `task_inputs={task_id: original_text}` for missing input or copied continuation
+  context. Malformed trajectories and multimodal input are rejected.
+- Task checksums must agree; otherwise initial user messages must match. `input_target`
+  chooses the input from its first string-sorted trial ID. `dataset="benchmark-v1"`
+  namespaces task IDs.
 - Repeats are averaged within each task and target; tasks receive equal weight.
-  A measurement is unknown if any repeat lacks it. Zero is an observed value.
-- Imports are strict. To retain errors and evaluate the common valid subset, use
-  `load_harbor(..., on_error="record")` and `Dataset.from_runs(..., intersection=True)`.
-  Invalid or missing tasks are excluded across all targets and listed in coverage.
-- Rejections without a task ID and job trial-count mismatches must be repaired
-  before pairing. Missing or malformed summaries cannot prove archive completeness.
-- `task_inputs={task_id: original_text}` supplies missing input or replaces copied
-  continuation context. Malformed trajectories and multimodal input still fail.
+  A measurement is unknown if any repeat lacks it. Zero remains an observed value.
+- Imports are strict. Use `on_error="record"` and `intersection=True` to evaluate the
+  common valid subset, with exclusions in coverage. Preserve custom import failures
+  as `LoadIssue` entries in `Run.issues`. Unidentified failures and job trial-count
+  mismatches must be repaired before pairing.
 
-## Interpret and compare results
+## Results and costs
 
-`report.to_dict()` includes coverage, selection counts, recorded reward/cost,
-routing latency, call counts, usage, and routing cost. `complete` requires a scored
-reward for every expected task and no evaluation errors; cost coverage is separate.
-Unknown totals and means are `null`; `observed_total` retains the known portion.
-A missing reward is unscored. A failed decision or rejected selection is an error.
+`report.to_dict()` includes coverage, selection counts, recorded reward/cost, and
+routing measurements. `complete` requires a scored reward for every expected task
+and no evaluation errors; cost coverage is separate. Unknown totals and means are
+`null`; `observed_total` retains known measurements.
 
-Reward comparisons use tasks with observed rewards for the routed choice and
-all fixed targets. The recorded-outcome oracle takes the best target mean per
-task; it does not establish future policy performance. Cost comparisons use their
-own common cohort. Compare the same task IDs across policies, not just equal counts.
-Use separate development and held-out task sets when tuning policies.
+Reward and cost comparisons each use tasks where that measurement is known for
+all targets. The reward oracle chooses the best recorded target mean per task.
+Compare identical task IDs across policies and keep tuning and held-out tasks separate.
 
 Recorded cost prefers `result.agent_result.cost_usd`, then ATIF
 `final_metrics.total_cost_usd`; `cost_source="trajectory"` reverses the preference.
-Coverage records the source. Costs are not repriced, and duration covers agent
-execution only. Signed rewards are supported; unrepresentable aggregates raise
-`ValueError`.
+Coverage records the source. Duration covers agent execution only.
 
-Judge calls are live work, separate from recorded task cost. Supply
-`price_call(call) -> float | None` for routing USD estimates. Return `None` for
-unknown usage or prices. Without pricing, zero-call routes cost zero and other
-routing costs stay unknown. Native usage separates cache tokens from other input;
+Live judge calls add routing cost. Supply `price_call(call) -> float | None` to
+`evaluate`; missing usage or prices remain unknown. Without pricing, only zero-call
+routes have known routing cost (zero). Cache tokens are separate from other input;
 reasoning detail can overlap output tokens. Retries may incur unreported spend.
 
-The runner preserves the configured failure policy. Default `fail_open = true`
-may select the capable target after a judge failure; the failed call remains in
-the observations. Use `fail_open = false` for evaluation error rows instead.
-Failures expose safe kind/status/target fields. Whole-decision timeouts have
-unknown call counts and cost, since the provider may already have done work.
+`fail_open = true` can select a fallback after a judge failure. Transport failures
+remain in call observations; invalid verdicts can instead appear in outcome evidence.
+Use `fail_open = false` to surface routing failures as evaluation errors.
+Whole-decision timeouts leave call counts and cost unknown.
 
 ## Save progressive results
 
@@ -193,34 +157,17 @@ drain local workers. Already submitted provider calls may still finish or be bil
 
 ## Use the Python decision API
 
-Applications with their own scheduler can use `Runner.decide`,
-`score(task, decision)`, and `Report.add`. Requests use normalized, typed content:
+Custom schedulers can use `Runner.decide(request)`, `score(task, decision)`, and
+`Report.add`. Requests use normalized IR messages with typed content blocks.
+`selected.target` and fallback targets are configuration keys; `selected.model`
+and `call.model` are provider model IDs. Calls expose success, duration including
+retries, and optional usage. `outcome` is the existing `RoutingOutcome` binding.
 
-```python
-import asyncio
-from switchyard.runner import Runner
-
-async def decide():
-    runner = Runner.load("routes.toml")
-    return await runner.decide({
-        "model": "auto",
-        "messages": [{"role": "user", "content": [{"type": "text", "text": "Fix the parser."}]}],
-    }, headers={"x-switchyard-session-id": "task-1", "x-switchyard-session-final": "true"})
-
-decision = asyncio.run(decide())
-print(decision.selected.target, decision.selected.model, decision.calls)
-```
-
-`selected.target`, fallback targets, and outcome model IDs use target keys;
-`selected.model` and `call.model` use provider model IDs. Completed calls include
-success, duration (including retries), and optional usage. `outcome` is the existing
-`RoutingOutcome` binding. Execution failures raise `DecisionError` with safe
-`kind`, `upstream_status`, `target`, `calls`, and `duration_seconds` fields.
-Invalid configuration or request values raise `ValueError` or `TypeError`.
-
-Keep requests unchanged while awaiting them. Use distinct sessions for independent
-tasks; process turns within a session in order and mark only its last turn final.
-Response-based routing needs `allow_response=True`; task simulation rejects it.
+`DecisionError` exposes safe `kind`, `upstream_status`, `target`, `calls`, and
+`duration_seconds` fields. Invalid inputs raise `ValueError` or `TypeError`.
+Keep requests unchanged while awaiting them. Give independent tasks distinct
+sessions, serialize turns within a session, and mark its last turn final.
+Response-based routing requires `allow_response=True`; task simulation rejects it.
 
 ## Library boundaries
 

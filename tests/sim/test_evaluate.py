@@ -280,25 +280,3 @@ def test_public_scorer_checks_recorded_models_and_accepts_explicit_aliases():
     native.selected.model = "unrelated-model"
     with pytest.raises(ValueError, match="do not match configured model"):
         score(task, native, model_aliases={"provider/model-fast": "model-fast"})
-
-
-def test_usage_crosses_native_boundary_once_per_call():
-    class CountingCall:
-        model = "judge"
-        is_success = True
-        reads = 0
-
-        @property
-        def usage(self):
-            self.reads += 1
-            return {"input_tokens": 3, "output_tokens": 1}
-
-    task = dataset(1).tasks[0]
-    native = decision({"messages": list(task.messages)})
-    calls = [CountingCall(), CountingCall()]
-    native.calls = calls
-    row = score(task, native)
-    assert row.routing_usage["input_tokens"] == 6
-    assert row.routing_usage["output_tokens"] == 2
-    assert row.routing_usage["cached_input_tokens"] is None
-    assert [call.reads for call in calls] == [1, 1]

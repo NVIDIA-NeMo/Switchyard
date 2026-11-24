@@ -15,10 +15,7 @@ where
     T: Deserialize<'de>,
     D: Deserializer<'de>,
 {
-    T::deserialize(Limited {
-        inner: deserializer,
-        remaining: MAX_DEPTH,
-    })
+    T::deserialize(Limited::new(deserializer, MAX_DEPTH))
 }
 
 // The budget belongs to each branch. Wide containers do not consume the depth
@@ -26,6 +23,12 @@ where
 struct Limited<T> {
     inner: T,
     remaining: usize,
+}
+
+impl<T> Limited<T> {
+    fn new(inner: T, remaining: usize) -> Self {
+        Self { inner, remaining }
+    }
 }
 
 macro_rules! deserialize_methods {
@@ -100,41 +103,28 @@ impl<'de, V: de::Visitor<'de>> de::Visitor<'de> for Limited<V> {
     }
 
     fn visit_some<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
-        self.inner.visit_some(Limited {
-            inner: deserializer,
-            remaining: self.remaining,
-        })
+        self.inner
+            .visit_some(Limited::new(deserializer, self.remaining))
     }
 
     fn visit_newtype_struct<D: Deserializer<'de>>(
         self,
         deserializer: D,
     ) -> Result<Self::Value, D::Error> {
-        self.inner.visit_newtype_struct(Limited {
-            inner: deserializer,
-            remaining: self.remaining,
-        })
+        self.inner
+            .visit_newtype_struct(Limited::new(deserializer, self.remaining))
     }
 
     fn visit_seq<A: de::SeqAccess<'de>>(self, access: A) -> Result<Self::Value, A::Error> {
-        self.inner.visit_seq(Limited {
-            inner: access,
-            remaining: self.remaining,
-        })
+        self.inner.visit_seq(Limited::new(access, self.remaining))
     }
 
     fn visit_map<A: de::MapAccess<'de>>(self, access: A) -> Result<Self::Value, A::Error> {
-        self.inner.visit_map(Limited {
-            inner: access,
-            remaining: self.remaining,
-        })
+        self.inner.visit_map(Limited::new(access, self.remaining))
     }
 
     fn visit_enum<A: de::EnumAccess<'de>>(self, access: A) -> Result<Self::Value, A::Error> {
-        self.inner.visit_enum(Limited {
-            inner: access,
-            remaining: self.remaining,
-        })
+        self.inner.visit_enum(Limited::new(access, self.remaining))
     }
 }
 
@@ -142,10 +132,8 @@ impl<'de, S: de::DeserializeSeed<'de>> de::DeserializeSeed<'de> for Limited<S> {
     type Value = S::Value;
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
-        self.inner.deserialize(Limited {
-            inner: deserializer,
-            remaining: self.remaining,
-        })
+        self.inner
+            .deserialize(Limited::new(deserializer, self.remaining))
     }
 }
 
@@ -156,10 +144,8 @@ impl<'de, A: de::SeqAccess<'de>> de::SeqAccess<'de> for Limited<A> {
         &mut self,
         seed: S,
     ) -> Result<Option<S::Value>, Self::Error> {
-        self.inner.next_element_seed(Limited {
-            inner: seed,
-            remaining: self.remaining,
-        })
+        self.inner
+            .next_element_seed(Limited::new(seed, self.remaining))
     }
 
     fn size_hint(&self) -> Option<usize> {
@@ -174,20 +160,15 @@ impl<'de, A: de::MapAccess<'de>> de::MapAccess<'de> for Limited<A> {
         &mut self,
         seed: S,
     ) -> Result<Option<S::Value>, Self::Error> {
-        self.inner.next_key_seed(Limited {
-            inner: seed,
-            remaining: self.remaining,
-        })
+        self.inner.next_key_seed(Limited::new(seed, self.remaining))
     }
 
     fn next_value_seed<S: de::DeserializeSeed<'de>>(
         &mut self,
         seed: S,
     ) -> Result<S::Value, Self::Error> {
-        self.inner.next_value_seed(Limited {
-            inner: seed,
-            remaining: self.remaining,
-        })
+        self.inner
+            .next_value_seed(Limited::new(seed, self.remaining))
     }
 
     fn size_hint(&self) -> Option<usize> {
@@ -203,17 +184,10 @@ impl<'de, A: de::EnumAccess<'de>> de::EnumAccess<'de> for Limited<A> {
         self,
         seed: S,
     ) -> Result<(S::Value, Self::Variant), Self::Error> {
-        let (value, variant) = self.inner.variant_seed(Limited {
-            inner: seed,
-            remaining: self.remaining,
-        })?;
-        Ok((
-            value,
-            Limited {
-                inner: variant,
-                remaining: self.remaining,
-            },
-        ))
+        let (value, variant) = self
+            .inner
+            .variant_seed(Limited::new(seed, self.remaining))?;
+        Ok((value, Limited::new(variant, self.remaining)))
     }
 }
 
@@ -228,10 +202,8 @@ impl<'de, A: de::VariantAccess<'de>> de::VariantAccess<'de> for Limited<A> {
         self,
         seed: S,
     ) -> Result<S::Value, Self::Error> {
-        self.inner.newtype_variant_seed(Limited {
-            inner: seed,
-            remaining: self.remaining,
-        })
+        self.inner
+            .newtype_variant_seed(Limited::new(seed, self.remaining))
     }
 
     fn tuple_variant<V: de::Visitor<'de>>(
@@ -239,13 +211,8 @@ impl<'de, A: de::VariantAccess<'de>> de::VariantAccess<'de> for Limited<A> {
         len: usize,
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        self.inner.tuple_variant(
-            len,
-            Limited {
-                inner: visitor,
-                remaining: self.remaining,
-            },
-        )
+        self.inner
+            .tuple_variant(len, Limited::new(visitor, self.remaining))
     }
 
     fn struct_variant<V: de::Visitor<'de>>(
@@ -253,13 +220,8 @@ impl<'de, A: de::VariantAccess<'de>> de::VariantAccess<'de> for Limited<A> {
         fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error> {
-        self.inner.struct_variant(
-            fields,
-            Limited {
-                inner: visitor,
-                remaining: self.remaining,
-            },
-        )
+        self.inner
+            .struct_variant(fields, Limited::new(visitor, self.remaining))
     }
 }
 

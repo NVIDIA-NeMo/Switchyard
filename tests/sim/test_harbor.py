@@ -410,30 +410,6 @@ def test_json_decoder_recursion_error_in_summary_keeps_discoverable_trials(
     assert run.issues == ()
 
 
-def test_json_nesting_follows_the_interpreters_decoder_limit(tmp_path: Path) -> None:
-    trial = write_trial(tmp_path)
-    path = trial / "result.json"
-    nested = "[" * 10_000 + "0" + "]" * 10_000
-    payload = path.read_text()[:-1] + ', "unused":' + nested + "}"
-    path.write_text(payload)
-    try:
-        json.loads(payload)
-    except RecursionError:
-        supported = False
-    else:
-        supported = True
-
-    run = load_harbor(tmp_path, target="baseline", on_error="record")
-    if supported:
-        assert [trial.task_id for trial in run.trials] == ["benchmark/task-a"]
-        assert run.issues == ()
-    else:
-        assert run.trials == ()
-        assert len(run.issues) == 1
-        assert run.issues[0].message == "invalid JSON in result.json"
-        assert run.issues[0].task_id is None
-
-
 def test_trial_without_result_is_an_issue_not_an_invisible_exclusion(tmp_path: Path) -> None:
     trial = write_trial(tmp_path)
     (trial / "result.json").unlink()

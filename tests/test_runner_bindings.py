@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Event, Thread
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -132,12 +132,14 @@ def judge(monkeypatch: pytest.MonkeyPatch) -> Iterator[JudgeStub]:
         thread.join(timeout=5)
 
 
-def deployment(url: str, *, escalation: bool = False) -> str:
+def deployment(url: str, *, escalation: bool = False, fail_open: bool | None = None) -> str:
     classifier = (
         'mode = "escalation"\nescalation = { confirmations = 2 }'
         if escalation
         else 'base_threshold = 0.5\nclassify_trigger = "new_session"'
     )
+    if fail_open is not None:
+        classifier += f"\nfail_open = {str(fail_open).lower()}"
     return f"""
 schema_version = 1
 [llm_clients.provider]
@@ -644,9 +646,7 @@ async def test_in_flight_decisions_own_nested_requests_and_independent_outcomes(
 async def test_caller_headers_are_request_scoped_and_respect_configured_auth(
     judge: JudgeStub, forward_auth: bool
 ) -> None:
-    source = deployment(judge.url).replace(
-        "base_threshold = 0.5", "base_threshold = 0.5\nfail_open = false"
-    )
+    source = deployment(judge.url, fail_open=False)
     if forward_auth:
         source = source.replace('api_key_env = "SWITCHYARD_RUNNER_TEST_KEY"', "forward_auth = true")
     runner = Runner.from_toml(source)
@@ -767,11 +767,7 @@ async def test_invalid_verdict_preserves_fail_open_evidence_and_call_cost(judge:
 
 async def test_provider_failure_keeps_observations_and_safe_diagnostics(judge: JudgeStub) -> None:
     judge.status = 503
-    runner = Runner.from_toml(
-        deployment(judge.url).replace(
-            "base_threshold = 0.5", "base_threshold = 0.5\nfail_open = false"
-        )
-    )
+    runner = Runner.from_toml(deployment(judge.url, fail_open=False))
     with pytest.raises(DecisionError) as caught:
         await runner.decide(request())
     error = caught.value
@@ -1055,6 +1051,17 @@ async def test_cancellation_before_first_step_does_not_start_native_work(judge: 
     assert [call["model"] for call in judge.calls] == ["judge/model"]
 
 
+def bridge_runner(bridge, wait, *, cancel=pytest.fail, started=None):
+    handle = SimpleNamespace(wait=wait, cancel=cancel, is_finished=lambda: False)
+
+    def start(*args, **kwargs):
+        if started is not None:
+            started.set()
+        return bridge, handle
+
+    return SimpleNamespace(_start_decision=start)
+
+
 @pytest.mark.parametrize("completion_error", [False, True])
 async def test_repeated_cancellation_drains_bridge_before_propagating(
     completion_error: bool,
@@ -1063,21 +1070,11 @@ async def test_repeated_cancellation_drains_bridge_before_propagating(
     started = asyncio.Event()
     cancelled = asyncio.Event()
 
-    class PendingRunner:
-        def _start_decision(self, *args: object, **kwargs: object) -> tuple[object, object]:
-            started.set()
-            return bridge, self
+    def wait():
+        assert bridge.done()
 
-        def cancel(self) -> None:
-            cancelled.set()
-
-        def wait(self) -> None:
-            assert bridge.done()
-
-        def is_finished(self) -> bool:
-            return False
-
-    task = asyncio.create_task(_decide(PendingRunner(), request(), None, False))
+    runner = bridge_runner(bridge, wait, cancel=cancelled.set, started=started)
+    task = asyncio.create_task(_decide(runner, request(), None, False))
     await started.wait()
     task.cancel("original cancellation")
     await cancelled.wait()
@@ -1108,11 +1105,7 @@ async def test_decision_waits_for_completion_worker_to_exit(
     judge.release = Event()
     if outcome == "error":
         judge.status = 503
-    runner = Runner.from_toml(
-        deployment(judge.url).replace(
-            "base_threshold = 0.5", "base_threshold = 0.5\nfail_open = false"
-        )
-    )
+    runner = Runner.from_toml(deployment(judge.url, fail_open=False))
     task = asyncio.create_task(runner.decide(request()))
     assert await asyncio.to_thread(judge.started.wait, 5)
 
@@ -1169,21 +1162,11 @@ async def test_cancellation_first_arriving_during_bridge_join_is_drained() -> No
     joining = Event()
     release = Event()
 
-    class CompletedRunner:
-        def _start_decision(self, *args: object, **kwargs: object) -> tuple[object, object]:
-            return bridge, self
+    def wait():
+        joining.set()
+        assert release.wait(5)
 
-        def cancel(self) -> None:
-            pytest.fail("routing was already complete when cancellation arrived")
-
-        def wait(self) -> None:
-            joining.set()
-            assert release.wait(5)
-
-        def is_finished(self) -> bool:
-            return False
-
-    task = asyncio.create_task(_decide(CompletedRunner(), request(), None, False))
+    task = asyncio.create_task(_decide(bridge_runner(bridge, wait), request(), None, False))
     try:
         assert await asyncio.to_thread(joining.wait, 5)
         task.cancel("cancel during join")
@@ -1211,19 +1194,12 @@ def test_asyncio_shutdown_keeps_an_existing_bridge_join_alive() -> None:
         bridge: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         bridge.set_result(None)
 
-        class CompletedRunner:
-            def _start_decision(self, *args: object, **kwargs: object) -> tuple[object, object]:
-                return bridge, self
+        def wait():
+            joining.set()
+            assert release.wait(5)
+            joined.set()
 
-            def wait(self) -> None:
-                joining.set()
-                assert release.wait(5)
-                joined.set()
-
-            def is_finished(self) -> bool:
-                return False
-
-        task = asyncio.create_task(_decide(CompletedRunner(), request(), None, False))
+        task = asyncio.create_task(_decide(bridge_runner(bridge, wait), request(), None, False))
         task.add_done_callback(lambda _: returned.set())
         assert await asyncio.to_thread(joining.wait, 5)
         asyncio.get_running_loop().call_soon(shutdown_started.set)

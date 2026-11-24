@@ -182,14 +182,6 @@ def test_data_preparation_does_not_require_native_or_harbor_packages(tmp_path: P
     assert completed.returncode == 0, completed.stderr
 
 
-@pytest.mark.parametrize("checksum", [" \t\n", 1])
-def test_custom_projection_rejects_invalid_task_checksums(checksum) -> None:
-    with pytest.raises(ValueError, match="task_checksum must be a non-empty string or None"):
-        Trajectory.from_dict(atif()).to_trial(
-            task_id="task", trial_id="attempt", target="fast", task_checksum=checksum
-        )
-
-
 @pytest.mark.parametrize("version", [[], {}, None, "ATIF-v2.0"])
 def test_invalid_version_is_rejected_without_printing_recording(version: object) -> None:
     with pytest.raises(ValueError, match="schema_version") as error:

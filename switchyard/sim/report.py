@@ -9,7 +9,7 @@ import math
 from collections import Counter
 from collections.abc import Mapping
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from fractions import Fraction
 
 from .models import Result
@@ -23,37 +23,18 @@ def _as_float(value: Fraction) -> float:
 
 
 @dataclass
-class _Sum:
-    """Exact sum of finite ints/floats; binary denominators are powers of two."""
-
-    numerator: int = 0
-    denominator: int = 1
-
-    def add(self, value: float) -> None:
-        numerator, denominator = value.as_integer_ratio()
-        if denominator > self.denominator:
-            self.numerator *= denominator // self.denominator
-            self.denominator = denominator
-        self.numerator += numerator * (self.denominator // denominator)
-
-    @property
-    def fraction(self) -> Fraction:
-        return Fraction(self.numerator, self.denominator)
-
-
-@dataclass
 class _Measurement:
     known: int = 0
-    total: _Sum = field(default_factory=_Sum)
+    total: Fraction = Fraction()
 
     def add(self, value: float | None) -> None:
         if value is not None:
             self.known += 1
-            self.total.add(value)
+            self.total += Fraction(value)
 
     def summary(self, count: int) -> dict[str, int | float | None]:
         complete = count > 0 and self.known == count
-        total = self.total.fraction
+        total = self.total
         return {
             "known_tasks": self.known,
             "observed_total": _as_float(total) if self.known else None,
@@ -123,12 +104,12 @@ class Report:
         self._routing_usage: dict[str, _Measurement] = {}
         self._estimated_cost = _Measurement()
         self._comparison_tasks = 0
-        self._comparison_routed = _Sum()
-        self._comparison_targets = {target: _Sum() for target in targets}
-        self._comparison_best = _Sum()
+        self._comparison_routed = Fraction()
+        self._comparison_targets = {target: Fraction() for target in targets}
+        self._comparison_best = Fraction()
         self._cost_comparison_tasks = 0
-        self._cost_comparison_routed = _Sum()
-        self._cost_comparison_targets = {target: _Sum() for target in targets}
+        self._cost_comparison_routed = Fraction()
+        self._cost_comparison_targets = {target: Fraction() for target in targets}
         self._cost_comparison_routing = _Measurement()
 
     @property
@@ -200,7 +181,7 @@ class Report:
             and result.routing_cost_usd is not None
         ):
             self._estimated_cost.add(outcome.cost_usd)
-            self._estimated_cost.total.add(result.routing_cost_usd)
+            self._estimated_cost.total += Fraction(result.routing_cost_usd)
 
         if outcome is not None and outcome.reward is not None:
             rewards = [
@@ -210,10 +191,10 @@ class Report:
             if all(reward is not None for reward in rewards):
                 known_rewards = [reward for reward in rewards if reward is not None]
                 self._comparison_tasks += 1
-                self._comparison_routed.add(outcome.reward)
+                self._comparison_routed += Fraction(outcome.reward)
                 for target, reward in zip(self.targets, known_rewards, strict=True):
-                    self._comparison_targets[target].add(reward)
-                self._comparison_best.add(max(known_rewards))
+                    self._comparison_targets[target] += Fraction(reward)
+                self._comparison_best += Fraction(max(known_rewards))
 
         if outcome is not None and outcome.cost_usd is not None:
             costs = [
@@ -222,19 +203,17 @@ class Report:
             ]
             if all(cost is not None for cost in costs):
                 self._cost_comparison_tasks += 1
-                self._cost_comparison_routed.add(outcome.cost_usd)
+                self._cost_comparison_routed += Fraction(outcome.cost_usd)
                 for target, cost in zip(self.targets, costs, strict=True):
                     assert cost is not None
-                    self._cost_comparison_targets[target].add(cost)
+                    self._cost_comparison_targets[target] += Fraction(cost)
                 self._cost_comparison_routing.add(result.routing_cost_usd)
 
     def to_dict(self) -> dict[str, object]:
         """Return an independent JSON-compatible snapshot with explicit coverage."""
         count = self._comparison_tasks
         cost_count = self._cost_comparison_tasks
-        routed_cost = (
-            _as_float(self._cost_comparison_routed.fraction / cost_count) if cost_count else None
-        )
+        routed_cost = _as_float(self._cost_comparison_routed / cost_count) if cost_count else None
         routing_cost = self._cost_comparison_routing.summary(cost_count)["mean"]
         estimated = self._estimated_cost.summary(self.processed)
         if self.processed != self.expected:
@@ -262,10 +241,10 @@ class Report:
                 "seconds": self._routing_seconds.summary(self.processed),
                 "calls": self._routing_calls.summary(self.processed)["total"],
                 "known_call_tasks": self._routing_calls.known,
-                "observed_calls": _as_float(self._routing_calls.total.fraction),
+                "observed_calls": _as_float(self._routing_calls.total),
                 "failed_calls": self._routing_failed_calls.summary(self.processed)["total"],
                 "known_failed_call_tasks": self._routing_failed_calls.known,
-                "observed_failed_calls": _as_float(self._routing_failed_calls.total.fraction),
+                "observed_failed_calls": _as_float(self._routing_failed_calls.total),
                 "cost_usd": self._routing_cost.summary(self.processed),
                 "usage": {
                     name: value.summary(self.processed)
@@ -275,14 +254,12 @@ class Report:
             "estimated_cost_usd": estimated,
             "comparison": {
                 "tasks": count,
-                "routed_mean_reward": _as_float(self._comparison_routed.fraction / count)
-                if count
-                else None,
+                "routed_mean_reward": _as_float(self._comparison_routed / count) if count else None,
                 "targets": {
-                    target: _as_float(total.fraction / count) if count else None
+                    target: _as_float(total / count) if count else None
                     for target, total in self._comparison_targets.items()
                 },
-                "empirical_oracle_mean_reward": _as_float(self._comparison_best.fraction / count)
+                "empirical_oracle_mean_reward": _as_float(self._comparison_best / count)
                 if count
                 else None,
             },
@@ -290,15 +267,12 @@ class Report:
                 "tasks": cost_count,
                 "routed_mean_cost_usd": routed_cost,
                 "targets": {
-                    target: _as_float(total.fraction / cost_count) if cost_count else None
+                    target: _as_float(total / cost_count) if cost_count else None
                     for target, total in self._cost_comparison_targets.items()
                 },
                 "routing_mean_cost_usd": routing_cost,
                 "routed_mean_cost_with_routing_usd": _as_float(
-                    (
-                        self._cost_comparison_routed.fraction
-                        + self._cost_comparison_routing.total.fraction
-                    )
+                    (self._cost_comparison_routed + self._cost_comparison_routing.total)
                     / cost_count
                 )
                 if routed_cost is not None and routing_cost is not None

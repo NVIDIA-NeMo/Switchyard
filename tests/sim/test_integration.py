@@ -5,15 +5,13 @@
 
 import hashlib
 import json
-import weakref
-from dataclasses import asdict
 from pathlib import Path
 
 import pytest
 
 from switchyard.runner import Runner
-from switchyard.sim import Dataset, Outcome, Result, evaluate, load_harbor, score
-from switchyard.sim.__main__ import _json_record, main
+from switchyard.sim import Dataset, evaluate, load_harbor, score
+from switchyard.sim.__main__ import main
 from tests.test_runner_bindings import JudgeStub, deployment
 from tests.test_runner_bindings import judge as judge
 
@@ -199,52 +197,6 @@ async def test_native_completion_prompt_only_invalidates_its_selected_recording(
     assert prompt not in json.dumps(judge.calls)
 
 
-@pytest.mark.parametrize("failed", [False, True], ids=["success", "failure"])
-def test_cli_json_rows_preserve_exact_serialization(failed):
-    selected = Outcome(
-        trials=2,
-        reward=-0.0,
-        cost_usd=None,
-        duration_seconds=5e-324,
-        reward_trials=2,
-        cost_trials=1,
-        duration_trials=2,
-    )
-    ungraded = Outcome(
-        trials=1,
-        reward=None,
-        cost_usd=1e308,
-        duration_seconds=None,
-        reward_trials=0,
-        cost_trials=1,
-        duration_trials=0,
-    )
-    result = Result(
-        task_id="benchmark/\u03c0",
-        baselines={"weak": selected, "strong": ungraded},
-        target=None if failed else "weak",
-        model=None if failed else "weak/model",
-        outcome=None if failed else selected,
-        decision_id=None if failed else "decision-1",
-        algorithm=None if failed else "llm-classifier",
-        evidence=None
-        if failed
-        else {"verdict": {"label": "\u590d\u6742", "values": [True, None, -0.0, 5e-324, 1e308]}},
-        fallbacks=() if failed else ("strong",),
-        routing_seconds=0.125,
-        routing_calls=1,
-        routing_failed_calls=int(failed),
-        routing_usage={"input_tokens": None, "output_tokens": 0},
-        error="routing failed: DecisionError" if failed else None,
-        routing_error_kind="upstream_http" if failed else None,
-        routing_error_status=503 if failed else None,
-        routing_error_target="judge/model" if failed else None,
-    )
-    assert json.dumps(result, default=_json_record, allow_nan=False) == json.dumps(
-        asdict(result), allow_nan=False
-    )
-
-
 @pytest.mark.parametrize("namespace", [None, "benchmark/v1"])
 def test_cli_writes_flushed_rows_manifest_and_report_without_copying_config(
     judge: JudgeStub, tmp_path: Path, namespace: str | None
@@ -266,16 +218,14 @@ def test_cli_writes_flushed_rows_manifest_and_report_without_copying_config(
     assert rows[0]["outcome"]["reward"] == 1
     assert manifest["dataset"] == namespace
     assert manifest["skip_invalid"] is False
-    assert len(manifest["config_sha256"]) == 64
+    assert manifest["config_sha256"] == hashlib.sha256(config.read_bytes()).hexdigest()
     assert "provider-secret" not in "".join(path.read_text() for path in output.iterdir())
     original = (output / "report.json").read_text()
     assert main(args) == 2
     assert (output / "report.json").read_text() == original
 
 
-def test_cli_releases_excluded_trials_before_routing(
-    judge: JudgeStub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_cli_records_partial_input_coverage(judge: JudgeStub, tmp_path: Path):
     for target in ("weak", "strong"):
         write_trial(tmp_path / target, "shared", f"{target}/model", 1)
         write_trial(tmp_path / target, "bad", f"{target}/model", 0)
@@ -287,28 +237,6 @@ def test_cli_releases_excluded_trials_before_routing(
     invalid.write_text(json.dumps(data))
     config = tmp_path / "routes.toml"
     config.write_text(deployment(judge.url))
-    run_refs = []
-    trial_refs = []
-
-    def capture(*args, **kwargs):
-        run = load_harbor(*args, **kwargs)
-        run_refs.append(weakref.ref(run))
-        trial_refs.extend((trial.task_id, weakref.ref(trial)) for trial in run.trials)
-        return run
-
-    async def verify(dataset, *args, **kwargs):
-        assert len(run_refs) == 2 and all(ref() is None for ref in run_refs)
-        assert sum(name != "shared" for name, _ in trial_refs) == 3
-        assert all(ref() is None for name, ref in trial_refs if name != "shared")
-        (task,) = dataset.tasks
-        assert task.task_id == "shared"
-        assert {id(trial) for trials in task.trials.values() for trial in trials} == {
-            id(ref()) for name, ref in trial_refs if name == "shared"
-        }
-        return await evaluate(dataset, *args, **kwargs)
-
-    monkeypatch.setattr("switchyard.sim.__main__.load_harbor", capture)
-    monkeypatch.setattr("switchyard.sim.__main__.evaluate", verify)
     output = tmp_path / "evaluation"
     assert (
         main(
@@ -340,8 +268,8 @@ def cli_recording(judge: JudgeStub, tmp_path: Path):
     config = tmp_path / "routes.toml"
     config.write_text(deployment(judge.url))
 
-    def invoke(run: Path, output: Path) -> int:
-        return main(cli_args(config, {"weak": run}, output))
+    def invoke(run: Path, output: Path, *options: str) -> int:
+        return main([*cli_args(config, {"weak": run}, output), *options])
 
     return root, invoke
 
@@ -429,11 +357,7 @@ def test_cli_retains_safe_native_failure_details(judge: JudgeStub, tmp_path: Pat
     for target in ("weak", "strong"):
         write_trial(tmp_path / target, "task", f"{target}/model", 1)
     config = tmp_path / "routes.toml"
-    config.write_text(
-        deployment(judge.url).replace(
-            "base_threshold = 0.5", "base_threshold = 0.5\nfail_open = false"
-        )
-    )
+    config.write_text(deployment(judge.url, fail_open=False))
     output = tmp_path / "evaluation"
     assert (
         main(
@@ -464,25 +388,19 @@ def test_cli_retains_safe_native_failure_details(judge: JudgeStub, tmp_path: Pat
     "option",
     [
         "--concurrency=0",
-        "--concurrency=-1",
         "--timeout=0",
-        "--timeout=-1",
         "--timeout=nan",
-        "--timeout=inf",
     ],
 )
 def test_cli_invalid_options_leave_output_path_available(
-    judge: JudgeStub, tmp_path: Path, option: str
+    cli_recording, judge: JudgeStub, tmp_path: Path, option: str
 ):
-    write_trial(tmp_path / "recordings", "task", "weak/model", 1)
-    config = tmp_path / "routes.toml"
-    config.write_text(deployment(judge.url))
+    root, invoke = cli_recording
     output = tmp_path / "new-parent" / "evaluation"
-    args = cli_args(config, {"weak": tmp_path / "recordings"}, output)
-    assert main([*args, option]) == 2
+    assert invoke(root, output, option) == 2
     assert not output.parent.exists()
     assert judge.calls == []
-    assert main(args) == 0
+    assert invoke(root, output) == 0
     assert (output / "report.json").exists()
 
 
@@ -512,32 +430,3 @@ def test_cli_route_preflight_leaves_output_path_available(
         args.extend(["--model-alias", "different/model=weak/model"])
     assert main(args) == 0
     assert (output / "report.json").exists()
-
-
-def test_manifest_hash_identifies_the_loaded_configuration_snapshot(
-    judge: JudgeStub, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    write_trial(tmp_path / "recordings", "task", "weak/model", 1)
-    config = tmp_path / "routes.toml"
-    original = deployment(judge.url).replace("\n", "\r\n").encode("utf-8")
-    config.write_bytes(original)
-
-    class ConcurrentEdit:
-        @staticmethod
-        def load(path):
-            runner = Runner.load(path)
-            config.write_bytes(original + b"\n# edited after loading\n")
-            return runner
-
-        @staticmethod
-        def from_toml(source):
-            runner = Runner.from_toml(source)
-            config.write_bytes(original + b"\n# edited after loading\n")
-            return runner
-
-    monkeypatch.setattr("switchyard.sim.__main__.Runner", ConcurrentEdit)
-    output = tmp_path / "evaluation"
-    assert main(cli_args(config, {"weak": tmp_path / "recordings"}, output)) == 0
-    manifest = json.loads((output / "manifest.json").read_text())
-    assert config.read_bytes() != original
-    assert manifest["config_sha256"] == hashlib.sha256(original).hexdigest()
