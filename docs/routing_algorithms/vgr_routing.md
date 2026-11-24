@@ -261,100 +261,58 @@ client.
 
 ### Check a local configuration
 
-From a repository checkout, copy the
-[local-server example](../../examples/vgr-local-servers.toml):
-
-```bash
-cp examples/vgr-local-servers.toml vgr-smoke.toml
-```
-
-Edit both clients and model IDs for endpoints you have approved for this check.
-Qualify the verifier against the prerequisites above. Set the VGR route's
-`mode = "off"` first. Keep `bounded_efficient = true` and
-`deadline_seconds = 30`. Remove `context_discovery` when the efficient client
-is not llama.cpp, and set `context_window` to its serving limit if needed.
-
-Validate the file, then start the installed
-[`switchyard-server`](../../INSTALLATION.md#standalone-server):
+Save an edited copy of the [local-server example](../../examples/vgr-local-servers.toml)
+as `vgr-smoke.toml`. Configure approved endpoints, model IDs and authentication,
+and check the verifier prerequisites above. Start with `mode = "off"` on the VGR
+route; keep `bounded_efficient = true` and `deadline_seconds = 30`.
+With the [server installed](../../INSTALLATION.md#standalone-server):
 
 ```bash
 switchyard-server --config vgr-smoke.toml --dry-run
-RUST_LOG=info,libsy=info switchyard-server --config vgr-smoke.toml --host 127.0.0.1 --port 4000
+RUST_LOG=libsy=info switchyard-server --config vgr-smoke.toml
 ```
 
-In another terminal, send one request. This caps the returned answer at 64 tokens
-and the client's wait at 120 seconds:
+In another terminal, send one request without a session ID. It requests a
+64-token output limit; curl waits at most 120 seconds and prints the headers:
 
 ```bash
-curl --fail-with-body --connect-timeout 5 --max-time 120 \
-  --dump-header vgr-headers.txt \
+curl --fail-with-body --include --connect-timeout 5 --max-time 120 \
   http://127.0.0.1:4000/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  --data-binary @- <<'JSON'
-{
-  "model": "switchyard/vgr",
-  "messages": [{"role": "user", "content": "What is 2 + 2? Reply briefly."}],
-  "max_tokens": 64,
-  "stream": false
-}
-JSON
-cat vgr-headers.txt
+  --data '{"model":"switchyard/vgr","messages":[{"role":"user","content":"What is 2 + 2? Reply briefly."}],"max_tokens":64,"stream":false}'
 ```
 
-Stop the server with Ctrl-C, change `mode` to `shadow`, and repeat the validation,
-start and single request. Repeat once more with `evaluate`. These requests omit a
-session ID so a previous request's hold does not affect the next check.
-
-| Mode | Expected result with healthy configured endpoints |
-|---|---|
-| `off` | The header identifies the capable target. No efficient candidate or verifier call runs. |
-| `shadow` | The header identifies the capable target. VGR may generate an efficient candidate and make typing, verifier or deliberation calls before the capable answer. |
-| `evaluate` | The header identifies the target whose answer is served: efficient when the policy permits it, otherwise capable. This prompt does not guarantee an efficient choice. |
-
-Shadow work adds provider calls beyond the returned answer. The answer token cap
-does not cap the total tokens across those calls. This three-request check covers
-configuration and reporting; measure quality and savings on a separate workload.
-Use `active` only after the prospective validation and canary approval required
-by that mode.
+Stop the server, change `mode` to `shadow`, and repeat; then repeat with `evaluate`.
+With healthy configured endpoints, `off` and `shadow` report the capable model.
+In `evaluate`, either model may serve, according to the policy. This prompt does
+not guarantee an efficient choice. Shadow can generate an efficient candidate
+and make typing or verification calls before serving the capable answer.
+The requested output limit does not bound that total work. This checks setup
+and reporting; quality and savings require a separate evaluation workload.
 
 ## Inspect decisions
 
-`x-model-router-selected-model` identifies the model that served the HTTP
-response. It does not establish that an efficient candidate passed verification.
-For example, a capable response in shadow mode does not identify the policy's
-hypothetical served tier.
+`x-model-router-selected-model` reports the provider model ID that served the
+HTTP response. It does not prove that an efficient candidate passed verification.
 
-With `libsy=info`, the server emits `vgr decision` events. An off-mode event has
-fields such as this illustrative excerpt:
-
-```text
-vgr decision reason="mode_off" branch=None served=Capable policy_version="1.3"
-```
-
-`reason` explains the VGR choice, `branch` identifies the verification regime
-when one was selected, and `served` records the tier selected by VGR. For example,
-`reason="decided"` means the policy finished; it does not by itself mean the
-efficient candidate passed. Shadow mode records `served=Capable` even when the
-policy would allow the efficient candidate. Upstream fallback can also affect the
-model that ultimately serves a response; use the HTTP header to check delivery.
-
-Rust hosts can inspect `RoutingOutcome.metadata.evidence`. VGR sets `source` to
-`"vgr"`, with `reason_code`, `verdict`, `branch` and `policy_version`.
-`verdict` records the VGR tier choice as `"efficient"` or `"capable"`; it is not a
-verifier score. These are host outcome fields, not additional HTTP response
-headers. See the [decision logger](../../crates/libsy/src/algorithms/vgr/runtime.rs).
+The `vgr decision` info event records `reason`, `branch`, `served` and
+`policy_version`. Rust hosts can also read `RoutingOutcome.metadata.evidence`:
+`source = "vgr"`, `reason_code`, `verdict`, `branch` and `policy_version`.
+`served` and `verdict` describe VGR's tier choice; upstream fallback can affect
+the model that ultimately serves. In shadow mode they report capable even when
+the policy would allow efficient. Neither those values nor the HTTP header
+identify that hypothetical choice. See the
+[decision logger](../../crates/libsy/src/algorithms/vgr/runtime.rs).
 
 ## Stop efficient attempts
 
 For TOML deployments, set `mode = "off"`, validate the file and restart the server
-or redeploy the host with that configuration. Later requests serve the capable
-tier without generating an efficient candidate. The
-[VGR TOML schema](../reference/toml_schema.md#vgr) has no kill-switch setting.
+or redeploy the host. Later requests use capable without an efficient candidate.
+The [VGR TOML schema](../reference/toml_schema.md#vgr) has no kill-switch setting.
 
-Rust embeddings can create `KillSwitch::new()`, set
-`VgrConfig.kill_switch = Some(switch.clone())` before constructing VGR, and keep
-the original handle. Call `switch.engage()` to stop subsequent efficient attempts
-and disable the active-mode unverified efficient fallback. Call `switch.release()`
-to allow attempts again under the configured mode and policy. Engaging the handle
-does not cancel an in-flight provider call. This Rust handle is not a server CLI
-flag. See the [kill-switch API](../../crates/libsy/src/algorithms/vgr/safety.rs).
+Rust hosts can create `switch = KillSwitch::new()` and set
+`config.kill_switch = Some(switch.clone())` on their `VgrConfig` before constructing
+VGR. Keep the original handle. `engage()` stops subsequent efficient attempts and
+disables the active-mode unverified efficient fallback; `release()` allows attempts
+under the configured policy again. It does not cancel an in-flight provider call.
+See the [Rust kill-switch API](../../crates/libsy/src/algorithms/vgr/safety.rs).
