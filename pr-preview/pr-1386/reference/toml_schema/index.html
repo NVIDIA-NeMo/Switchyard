@@ -3374,7 +3374,7 @@ counts. Plain <code>decide</code> and <code>execute</code> retain task routing. 
 </span></code></pre></div>
 <p>All keys are required. Limits must be positive. Missing or stale observations retain
 the task decision. See the
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9fdfd781ceffdad5c40517657618642b81e89767/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/92516e4862c1498885dc59b4afc38a1adc29b70e/examples/dynamo-preproc/README.md#task-classification-and-queue-based-routing">Dynamo PreProc example</a>
 for collection and capacity safeguards.</p>
 <h3 id="noop"><code>noop</code><a class="headerlink" href="#noop" title="Permanent link">&para;</a></h3>
 <p>Returns a buffered assistant response containing <code>OK</code> without calling an
@@ -3421,8 +3421,8 @@ see <a href="../../routing_algorithms/subagent_routing/">Sub-Agent-Aware Routing
 <li><strong>What to score.</strong> Switchyard extracts the task between <code>task_prefix</code> and <code>task_suffix</code> in the final user message. It uses BM25 to shortlist up to <code>shortlist</code> choices, then sends the task as shared input and one Boolean question per choice to <code>decision_target</code>. Set <code>question</code> to the selection instruction. Optional <code>stop_words</code> excludes the supplied lowercase words during shortlisting. Optional <code>question_prefix</code> sets the numbered question IDs, which default to <code>q0</code>, <code>q1</code>, and so on.</li>
 <li><strong>What to return.</strong> <code>top_k</code> is the maximum number of names in the chat reply. Switchyard ranks them by probability. Catalog order breaks ties during shortlisting and shortlist order breaks ties between model scores.</li>
 </ul>
-<p>The chat <code>target</code> handles ordinary requests, unsupported catalogs, and failed or unusable decision responses. It also handles requests with output token limits, multiple completions, stop sequences, log probabilities or explicit modalities. Set <code>enabled = false</code> and reload the route to send every request to the chat target.</p>
-<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9fdfd781ceffdad5c40517657618642b81e89767/examples/appworld/README.md">AppWorld walkthrough</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9fdfd781ceffdad5c40517657618642b81e89767/examples/appworld/routes.toml">complete gateway configuration</a> apply the same SDK feature to a catalog of APIs.</p>
+<p>The chat <code>target</code> handles ordinary requests, unsupported catalogs, and failed or unusable decision responses. It also handles requests with output token limits, multiple completions, stop sequences, log probabilities or explicit modalities. Responses requests that store or continue a conversation use the chat target. A standalone Responses request can use decision selection with <code>store = false</code>. Set <code>enabled = false</code> and reload the route to send every request to the chat target.</p>
+<p>The <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/92516e4862c1498885dc59b4afc38a1adc29b70e/examples/appworld/README.md">AppWorld walkthrough</a> and <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/92516e4862c1498885dc59b4afc38a1adc29b70e/examples/appworld/routes.toml">complete gateway configuration</a> apply the same SDK feature to a catalog of APIs.</p>
 <h3 id="random"><code>random</code><a class="headerlink" href="#random" title="Permanent link">&para;</a></h3>
 <p>Splits traffic across targets. See
 <a href="../../routing_algorithms/random_routing/">Random Routing</a>.</p>
@@ -4591,7 +4591,7 @@ verification policy, tool turns, handoff behavior, and serving modes.</p>
 </tbody>
 </table>
 <p>Start with the <a href="../../routing_algorithms/vgr_routing/#configure-a-route">route configuration</a>
-or the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/9fdfd781ceffdad5c40517657618642b81e89767/examples/vgr-local-servers.toml">complete local-server example</a>.</p>
+or the <a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/92516e4862c1498885dc59b4afc38a1adc29b70e/examples/vgr-local-servers.toml">complete local-server example</a>.</p>
 <h2 id="validation-errors">Validation Errors<a class="headerlink" href="#validation-errors" title="Permanent link">&para;</a></h2>
 <p><code>--dry-run</code> prefixes configuration failures with
 <code>invalid server config &lt;path&gt;:</code>. Within that wrapper, TOML deserialization
