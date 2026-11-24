@@ -53,8 +53,8 @@ jobs:
     name: Build docs
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           python-version: "3.12"
           enable-cache: true
@@ -78,8 +78,32 @@ jobs:
         run: |
           mkdir -p site/rust
           cp -R target/doc/. site/rust/
+      - name: Install lychee
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
+        with:
+          tool: lychee@0.24.2
+      - name: Check Rustdoc and excluded Markdown links
+        run: |
+          # Map published Switchyard URLs to the site built in this run for offline checking.
+          docs_url='^https://nvidia-nemo\.github\.io/Switchyard'
+          remap_flags=(
+            --remap "${docs_url}(?:/([^?#]*/)?)?([?#].*)?$ file://$PWD/site/\${1}index.html\${2}"
+            --remap "${docs_url}/(.*) file://$PWD/site/\$1"
+          )
+
+          # Lychee reports valid Rustdoc source-line ranges and fragment-preserving redirects as broken anchors.
+          lychee --offline --include-fragments=none --no-ignore --extensions html \
+            --root-dir "$PWD/site" --index-files index.html --format detailed \
+            "${remap_flags[@]}" site/rust
+
+          # Keep these paths in sync with exclude_docs in mkdocs.yml.
+          git ls-files -- ':(glob)docs/internal/**/*.md' ':(glob)docs/research/**/*.md' \
+            docs/vllm-serve-hidden-state.md |
+            lychee --offline --include-fragments=full --root-dir "$PWD" \
+              --index-files index.html,README.md,. --format detailed \
+              "${remap_flags[@]}" --files-from -
       - name: Upload site artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: docs-site
           path: site/
@@ -94,12 +118,12 @@ jobs:
       contents: write
     steps:
       - name: Download site artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: docs-site
           path: site/
       - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: ./site
@@ -118,14 +142,14 @@ jobs:
       contents: write
       pull-requests: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Download site artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: docs-site
           path: site/
       - name: Deploy PR preview
-        uses: rossjrw/pr-preview-action@v1
+        uses: rossjrw/pr-preview-action@873417d2df72380da1f3978378fb58560bcde976 # v1
         with:
           source-dir: ./site
           preview-branch: gh-pages

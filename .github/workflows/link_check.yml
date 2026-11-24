@@ -1,0 +1,41 @@
+name: Repository links
+
+on:
+  # Exclude CHANGELOG.md because it is append-only and preserves historical links.
+  pull_request:
+    paths:
+      - "**/*.md"
+      - "!CHANGELOG.md"
+      - ".github/workflows/link_check.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/*.md"
+      - "!CHANGELOG.md"
+      - ".github/workflows/link_check.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  markdown:
+    name: Check repository Markdown links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install lychee
+        uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2
+        with:
+          tool: lychee@0.24.2
+      - name: Check Markdown outside docs
+        run: |
+          # Rustdoc resolves these four intra-doc links when it renders the libsy README.
+          git ls-files -- ':(icase)*.md' ':(exclude)docs/**' ':(exclude)CHANGELOG.md' |
+            lychee --offline --include-fragments=full --root-dir "$PWD" \
+              --index-files index.html,README.md,. --format detailed \
+              --exclude '/crates/libsy/switchyard_protocol::(Request|Response|Usage|LlmResponse)$' \
+              --files-from -
