@@ -151,6 +151,8 @@ pub struct LlmFallback {
 
 /// How a stage router scores turns, and what it hands the model it picks.
 pub struct StageRouterConfig {
+    /// Optional capable and efficient targets for this stage profile.
+    pub tier_targets: Option<[switchyard_protocol::ModelId; 2]>,
     /// Tier a turn falls open to when the scorer is not confident.
     pub mode: PickerMode,
     /// How much corroboration a decisive pick needs, in `[0.0, 1.0]`.
@@ -189,6 +191,7 @@ impl StageRouterConfig {
     pub fn new(mode: PickerMode, confidence_threshold: f64) -> Self {
         Self {
             mode,
+            tier_targets: None,
             confidence_threshold,
             capable_first_threshold: 0.0,
             recent_window: None,
@@ -291,6 +294,7 @@ pub(crate) fn build_stage_route(
         .with_compaction_override(config.compaction_override)
         .with_capable_hold_turns(config.capable_hold_turns);
     classifier.reset_on_user_turn = reset_on_user_turn;
+    classifier.tier_targets = config.tier_targets;
     if let Some(turns) = config.efficient_hold_turns {
         classifier = classifier.with_efficient_hold_turns(turns);
     }

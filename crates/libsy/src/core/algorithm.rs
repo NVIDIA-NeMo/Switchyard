@@ -434,6 +434,7 @@ pub struct Driver {
     /// Which of those groups this driver reads.
     scope: Scope,
     judge: Option<ModelId>,
+    tier_targets: std::sync::OnceLock<[ModelId; 2]>,
 }
 
 impl Driver {
@@ -456,6 +457,7 @@ impl Driver {
                 state: Arc::new(Mutex::new(State::default())),
                 models,
                 scope: Scope::Parent,
+                tier_targets: Default::default(),
                 judge: None,
             },
             step_rx,
@@ -614,8 +616,25 @@ impl Driver {
         self.models.provider_model(target)
     }
 
+    /// Narrows stage selection and completion fallbacks for the rest of this request.
+    pub(crate) fn select_tier_targets(&self, targets: &[ModelId; 2]) -> Result<()> {
+        for target in targets {
+            ensure_model_is_target(self.models_for(&Category::Any), target)?;
+        }
+        self.tier_targets.get_or_init(|| targets.clone());
+        Ok(())
+    }
+
     /// The available models for this category, typically ordered best-first.
     pub fn models_for(&self, category: &Category) -> &[ModelId] {
+        if let Some(pair) = self.tier_targets.get() {
+            match category {
+                Category::Capable => return &pair[..1],
+                Category::Efficient => return &pair[1..],
+                Category::Any => return pair,
+                _ => {}
+            }
+        }
         if *category == Category::Judge
             && let Some(judge) = &self.judge
         {
@@ -653,6 +672,7 @@ impl Driver {
         }
         Ok(Self {
             scope: Scope::Subagent,
+            tier_targets: Default::default(),
             ..self.clone()
         })
     }

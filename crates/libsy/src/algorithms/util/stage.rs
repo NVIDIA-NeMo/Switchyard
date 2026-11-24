@@ -533,6 +533,7 @@ pub struct StageClassifier {
     capable_hold_turns: i64,
     efficient_hold_turns: Option<i64>,
     pub(crate) reset_on_user_turn: bool,
+    pub(crate) tier_targets: Option<[switchyard_protocol::ModelId; 2]>,
     signals: ToolSignalProcessor,
     handoff_notes: Option<HandoffNoteConfig>,
 }
@@ -549,6 +550,7 @@ impl StageClassifier {
             capable_hold_turns: 2,
             efficient_hold_turns: None,
             reset_on_user_turn: false,
+            tier_targets: None,
             signals: ToolSignalProcessor::default(),
             handoff_notes: None,
         }
@@ -657,6 +659,9 @@ impl StageClassifier {
 impl Processor for StageClassifier {
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
         if let Event::Request { request, driver } = event {
+            if let Some(pair) = &self.tier_targets {
+                driver.select_tier_targets(pair)?;
+            }
             if self.reset_on_user_turn && has_new_user_turn(&request.llm_request.messages) {
                 for key in [CAPABLE_HOLD_KEY, EFFICIENT_HOLD_KEY, PREVIOUS_TIER_KEY] {
                     state.extra.remove(&Self::agent_key(request, key));
