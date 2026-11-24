@@ -4,12 +4,12 @@ Use the standalone server to try routing configurations with your own model pool
 
 ## Install the server
 
-You need Rust 1.96.1+, a native build toolchain, `curl`, and an OpenRouter API key. Install Rust using the [official instructions](https://rust-lang.org/tools/install/) and check [platform requirements](../../INSTALLATION.md#requirements). The v0.3.0 server is release-validated on Ubuntu 24.04, Linux x86_64.
+You need Rust 1.96.1+, a native build toolchain, `curl`, and an OpenRouter API key. Install Rust using the [official instructions](https://rust-lang.org/tools/install/) and check [platform requirements](../../INSTALLATION.md#requirements).
 
 Install the released server:
 
 ```bash
-cargo install --locked switchyard-server --version 0.3.0
+cargo install --locked switchyard-server --version 0.4.0
 switchyard-server --help
 ```
 

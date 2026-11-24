@@ -200,7 +200,7 @@ jobs:
             rust_target: x86_64-apple-darwin
             smoke: true
           - label: macos-arm64
-            os: macos-14
+            os: macos-15
             rust_target: aarch64-apple-darwin
             smoke: true
           - label: windows-x86_64
@@ -479,6 +479,17 @@ jobs:
         with:
           prerelease: ${{ needs.validate-release-ref.outputs.is_alpha == 'true' }}
 
+  publish-go-bindings:
+    name: Publish Go bindings
+    needs: [validate-release-ref, publish]
+    if: ${{ github.event_name == 'push' && github.repository == 'NVIDIA-NeMo/Switchyard' && needs.validate-release-ref.outputs.is_alpha == 'false' }}
+    permissions:
+      contents: write
+    uses: ./.github/workflows/go-packaging.yml
+    with:
+      release_candidate: true
+      publish: true
+
   publish-rust-crates:
     name: Publish Rust crates
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.validate-release-ref.outputs.is_alpha == 'false' }}
@@ -499,6 +510,7 @@ jobs:
 
           for crate in \
             switchyard-protocol \
+            switchyard-costs \
             switchyard-translation \
             switchyard-libsy \
             switchyard-llm-client \
@@ -537,6 +549,7 @@ jobs:
           }
 
           publish_crate switchyard-protocol
+          publish_crate switchyard-costs
           publish_crate switchyard-translation
           publish_crate switchyard-libsy
           publish_crate switchyard-llm-client

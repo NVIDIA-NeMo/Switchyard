@@ -47,7 +47,7 @@ Evaluate the complete agent, model pool, and routing configuration against your 
 | --- | --- | --- |
 | **Agent Router** | [Agent Router](https://github.com/tetratelabs/built-on-envoy/blob/main/extensions/switchyard/README.md) | Open-source and self-hosted. It provides an OpenAI-compatible API and runs on Envoy. |
 | **LiteLLM** | [Run the Switchyard routing-plugin example](examples/litellm/README.md#quick-start-with-the-local-proxy) | Experimental and checkout-only. The example pins LiteLLM 1.102.0 and supports Stage routing based on request history, plus Random routing. It cannot service intermediate model calls required by classifier or escalation algorithms. |
-| **NeMo Relay** | [Build and configure the native plugin](crates/switchyard-nemo-relay-plugin/README.md#build-from-source) | Requires Relay `>=0.10.0, <1.0.0`. The source-build path requires a Rust toolchain and Python 3. |
+| **NeMo Relay** | [Build and configure the native plugin](crates/switchyard-nemo-relay-plugin/README.md#build-from-source) | Requires Relay `>=0.10.1, <1.0.0`. The source-build path requires a Rust toolchain and Python 3. |
 | **OpenRouter** | [Use Switchyard through OpenRouter](https://openrouter.ai/docs/guides/routing/routers/switchyard-router) | Hosted by OpenRouter. Set `model` to `nvidia/switchyard` in API requests. |
 
 Relay 0.8.x and 0.9.0 can lose upstream error status and details when the plugin
@@ -117,7 +117,7 @@ Start with Auto. Choose Task, Execution, or Composite when you need more control
 | **[Execution](docs/routing_algorithms/stage_router_routing.md)** | Uses recent tool activity and outcome signals to choose a model as the agent runs. | `type = "stage_router"` |
 | **[Composite](docs/routing_algorithms/composite_routing.md)** | Combines Task and Execution: a classifier sets the default model tier when execution signals are uncertain. | `type = "composite"` |
 
-Auto is a fixed preset in v0.3.0. It does not compare strategies at runtime. The TOML runner supports `type = "auto"`. In Rust, use `StageRouterConfig::new(PickerMode::EfficientFirst, 0.5)` for the same preset.
+Auto is a fixed preset. It does not compare strategies at runtime. The TOML runner supports `type = "auto"`. In Rust, use `StageRouterConfig::new(PickerMode::EfficientFirst, 0.5)` for the same preset.
 
 The [routing overview](docs/routing_algorithms/overview.md) lists all strategies, including the [Plan/Execute configuration for Stage](docs/routing_algorithms/stage_router_routing.md#plan-and-execute), [escalation](docs/routing_algorithms/escalation_router_routing.md), [advisor](docs/routing_algorithms/advisor_gate_routing.md), [sub-agent](docs/routing_algorithms/subagent_routing.md), and [random](docs/routing_algorithms/random_routing.md). Integration support varies: check the gateway guide before choosing an algorithm.
 

@@ -45,9 +45,20 @@ attempts. The 18 execution errors count as failures.
 
 ## Earlier benchmarks
 
-<a id="terminal-bench-21"></a>
+### Terminal-Bench 2.1
 
-[Archived Terminal-Bench 2.1 results for Claude Opus 4.8 and GLM 5.2](https://github.com/NVIDIA-NeMo/Switchyard/blob/f6d736bbd79507401e38c7df0e3b0de31acbdf9b/docs/benchmarks.md#terminal-bench-21)
+**Claude Opus 4.8 and GLM 5.2**
+
+![Terminal-Bench 2.1 task completion versus cost.](assets/switchyard-cost-accuracy.svg)
+
+| Strategy | Tasks solved | Cost per run | Config |
+| --- | ---: | ---: | --- |
+| LLM classifier | 79.40% | $109.04 | |
+| Stage | 79.03% | $109.81 | |
+| Escalation | 79.80% | $122.63 | [TOML](../benchmark/routing-profiles/tb21-escalation-opus-glm-deepseek.toml) |
+| Jev (replay) | 82.02% | ≈$92.12 | [TOML](../benchmark/routing-profiles/tb21-jev-opus-glm.toml) |
+| Opus 4.8 only | 77.15% | $148.83 | |
+| GLM 5.2 only | 74.16% | $71.31 | |
 
 ### DeepSWE
 
