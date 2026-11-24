@@ -58,6 +58,22 @@ configured transient retry budget are preserved. The target's `omit_body_fields`
 can omit the switch from the first call. Custom hosts must handle provider
 compatibility themselves.
 
+### Verifier prerequisites
+
+Before using a target as a scored verifier, check that its endpoint:
+
+- Uses `format = "openai_chat"` and supports `logprobs=true` and `top_logprobs=8`.
+- Returns first-token alternatives at
+  `choices[0].logprobs.content[0].top_logprobs` in the preserved Chat response.
+- Supports the thinking controls above, or their documented compatibility handling.
+
+The readout needs both yes and no alternatives with at least half of the first
+token's probability between them. Missing or unusable alternatives provide no
+scored evidence. An ordinary text reply alone does not qualify a verifier.
+Caller and answer API translation are separate: accepting a Responses or
+Anthropic request does not make those response formats usable for scored readout.
+See the [built-in readout](../../crates/libsy/src/algorithms/vgr/readout.rs).
+
 The server caches the model catalog, including unavailable discovery results,
 for one minute. Discovery probes run concurrently with a two-second total budget
 per refresh. Completed discoveries are retained when that budget expires.
@@ -243,4 +259,60 @@ VGR buffers an efficient candidate before releasing it. A streamed candidate tha
 licensed is replayed as a stream; a rejected candidate is not sent to the
 client.
 
-`x-model-router-selected-model` on each response names the tier that served it.
+### Check a local configuration
+
+Save an edited copy of the [local-server example](../../examples/vgr-local-servers.toml)
+as `vgr-smoke.toml`. Configure approved endpoints, model IDs and authentication,
+and check the verifier prerequisites above. Start with `mode = "off"` on the VGR
+route; keep `bounded_efficient = true` and `deadline_seconds = 30`.
+With the [server installed](../../INSTALLATION.md#standalone-server):
+
+```bash
+switchyard-server --config vgr-smoke.toml --dry-run
+RUST_LOG=libsy=info switchyard-server --config vgr-smoke.toml
+```
+
+In another terminal, send one request without a session ID. It requests a
+64-token output limit; curl waits at most 120 seconds and prints the headers:
+
+```bash
+curl --fail-with-body --include --connect-timeout 5 --max-time 120 \
+  http://127.0.0.1:4000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  --data '{"model":"switchyard/vgr","messages":[{"role":"user","content":"What is 2 + 2? Reply briefly."}],"max_tokens":64,"stream":false}'
+```
+
+Stop the server, change `mode` to `shadow`, and repeat; then repeat with `evaluate`.
+With healthy configured endpoints, `off` and `shadow` report the capable model.
+In `evaluate`, either model may serve, according to the policy. This prompt does
+not guarantee an efficient choice. Shadow can generate an efficient candidate
+and make typing or verification calls before serving the capable answer.
+The requested output limit does not bound that total work. This checks setup
+and reporting; quality and savings require a separate evaluation workload.
+
+## Inspect decisions
+
+`x-model-router-selected-model` reports the provider model ID that served the
+HTTP response. It does not prove that an efficient candidate passed verification.
+
+The `vgr decision` info event records `reason`, `branch`, `served` and
+`policy_version`. Rust hosts can also read `RoutingOutcome.metadata.evidence`:
+`source = "vgr"`, `reason_code`, `verdict`, `branch` and `policy_version`.
+`served` and `verdict` describe VGR's tier choice; upstream fallback can affect
+the model that ultimately serves. In shadow mode they report capable even when
+the policy would allow efficient. Neither those values nor the HTTP header
+identify that hypothetical choice. See the
+[decision logger](../../crates/libsy/src/algorithms/vgr/runtime.rs).
+
+## Stop efficient attempts
+
+For TOML deployments, set `mode = "off"`, validate the file and restart the server
+or redeploy the host. Later requests use capable without an efficient candidate.
+The [VGR TOML schema](../reference/toml_schema.md#vgr) has no kill-switch setting.
+
+Rust hosts can create `switch = KillSwitch::new()` and set
+`config.kill_switch = Some(switch.clone())` on their `VgrConfig` before constructing
+VGR. Keep the original handle. `engage()` stops subsequent efficient attempts and
+disables the active-mode unverified efficient fallback; `release()` allows attempts
+under the configured policy again. It does not cancel an in-flight provider call.
+See the [Rust kill-switch API](../../crates/libsy/src/algorithms/vgr/safety.rs).
