@@ -470,7 +470,11 @@ def test_cli_retains_safe_native_failure_details(judge: JudgeStub, tmp_path: Pat
     for target in ("weak", "strong"):
         write_trial(tmp_path / target, "task", f"{target}/model", 1)
     config = tmp_path / "routes.toml"
-    config.write_text(deployment(judge.url))
+    config.write_text(
+        deployment(judge.url).replace(
+            "base_threshold = 0.5", "base_threshold = 0.5\nfail_open = false"
+        )
+    )
     output = tmp_path / "evaluation"
     assert (
         main(
@@ -494,7 +498,7 @@ def test_cli_retains_safe_native_failure_details(judge: JudgeStub, tmp_path: Pat
     row = json.loads((output / "results.jsonl").read_text())
     assert row["routing_error_kind"] == "upstream_http"
     assert row["routing_error_status"] == status
-    assert row["routing_error_target"] == "judge/model"
+    assert row["routing_error_target"] == "judge"
     assert row["routing_calls"] == row["routing_failed_calls"] == 1
     assert row["routing_cost_usd"] is None
     assert row["error"] == "routing failed: DecisionError"

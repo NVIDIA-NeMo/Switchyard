@@ -959,13 +959,24 @@ mod tests {
                             router.clone(),
                             request,
                             Arc::clone(&models),
-                            |call| async move { call.fail(test_error("provider failure")) },
+                            |call| async move {
+                                match call {
+                                    crate::Call::Model(call) => {
+                                        call.fail(test_error("provider failure"))
+                                    }
+                                    crate::Call::Decision(_) => panic!("expected model call"),
+                                }
+                            },
                         )
                         .await;
                         assert!(result.is_err());
                         None
                     } else {
-                        let mut stream = router.clone().run_stream(request, Arc::clone(&models));
+                        let mut stream = router.clone().run_stream(
+                            request,
+                            Arc::clone(&models),
+                            State::default(),
+                        );
                         let Some(Ok(crate::Step::CallModel(call))) = stream.next().await else {
                             panic!("classifier must request a model call");
                         };
@@ -1016,23 +1027,20 @@ mod tests {
 
     #[tokio::test]
     async fn dropping_a_router_stops_its_cleanup_task() -> Result<()> {
-        #[derive(Default)]
-        struct Payload(Arc<()>);
-
         let metrics = tokio::runtime::Handle::current().metrics();
         let baseline = metrics.num_alive_tasks();
         let stateless = FallThrough::new();
         stateless.start_cleanup_task();
         drop(stateless);
-        drop(FallThrough::<Payload>::new_with_state());
+        drop(FallThrough::new_with_state());
         assert_eq!(metrics.num_alive_tasks(), baseline);
 
         let router = Arc::new(
-            FallThrough::<Payload>::new_with_state()
+            FallThrough::new_with_state()
                 .with_classifier(Arc::new(DefaultCategoryClassifier(Category::Any))),
         );
         let state = router.session_state(&request()).unwrap();
-        let payload = Arc::downgrade(&state.lock().await.0);
+        let payload = Arc::downgrade(&state);
         drop(state);
         run_turn(&router, echo()).await?;
         tokio::time::timeout(Duration::from_secs(1), async {

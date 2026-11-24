@@ -1178,11 +1178,14 @@ pub(crate) fn outcome_to_python(
             request: to_python(py, &outcome.request.llm_request)?,
             candidate_requests: to_python(
                 py,
-                &outcome.candidate_requests.into_iter()
+                &outcome
+                    .candidate_requests
+                    .into_iter()
                     .map(|(id, request)| (id.to_string(), request.llm_request))
                     .collect::<std::collections::HashMap<_, _>>(),
             )?,
-            fallback_request: outcome.fallback_request
+            fallback_request: outcome
+                .fallback_request
                 .map(|request| to_python(py, &request.llm_request))
                 .transpose()?,
             response: outcome

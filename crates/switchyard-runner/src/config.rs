@@ -3005,7 +3005,7 @@ classify_trigger"#,
                 .route("switchyard/classifier")
                 .and_then(Route::routing_answer_target)
                 .map(ModelId::as_str),
-            Some("weak/model")
+            Some("weak")
         );
 
         let reversible = VALID_CONFIG.replace(

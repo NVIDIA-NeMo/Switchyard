@@ -241,8 +241,8 @@ async def test_native_judge_only_decision_preserves_targets_and_usage(
         ("strong", "strong/model")
     ]
     assert isinstance(decision.outcome, RoutingOutcome)
-    assert decision.outcome.selected_model_ids == ["weak/model", "strong/model"]
-    assert decision.outcome.request["model"] == "weak/model"
+    assert decision.outcome.selected_model_ids == ["weak", "strong"]
+    assert decision.outcome.request["model"] == "weak"
     assert decision.outcome.response is None
     assert decision.outcome.metadata.evidence["source"] == "llm-classifier"
     assert [call["model"] for call in judge.calls] == ["judge/model"]
@@ -318,7 +318,7 @@ async def test_provider_formats_preserve_decision_identity_and_usage(
     assert [(target.target, target.model) for target in decision.fallbacks] == [
         ("strong", "strong/model")
     ]
-    assert decision.outcome.selected_model_ids == ["weak/model", "strong/model"]
+    assert decision.outcome.selected_model_ids == ["weak", "strong"]
     assert decision.outcome.response is None
     assert [call["model"] for call in judge.calls] == ["judge/model"]
     (call,) = decision.calls
@@ -346,6 +346,110 @@ async def test_passthrough_decision_never_calls_answer_model(judge: JudgeStub) -
     assert decision.calls == []
     assert decision.outcome.response is None
     assert judge.calls == []
+
+
+@pytest.mark.parametrize("strong", [False, True])
+async def test_same_provider_model_keeps_distinct_target_decisions(
+    judge: JudgeStub, strong: bool
+) -> None:
+    source = deployment(judge.url).replace('id = "strong/model"', 'id = "weak/model"')
+    runner = Runner.from_toml(source)
+    assert {(target.target, target.model) for target in runner.validate_decision_route("auto")} == {
+        ("weak", "weak/model"),
+        ("strong", "weak/model"),
+    }
+    decision = await runner.decide(request("TASK_REQUIRES_STRONG" if strong else "easy task"))
+    selected, fallback = ("strong", "weak") if strong else ("weak", "strong")
+    assert (decision.selected.target, decision.selected.model) == (selected, "weak/model")
+    assert [(target.target, target.model) for target in decision.fallbacks] == [
+        (fallback, "weak/model")
+    ]
+    assert decision.outcome.selected_model_ids == [selected, fallback]
+    assert decision.outcome.request["model"] == selected
+    assert [call["model"] for call in judge.calls] == ["judge/model"]
+
+
+async def test_typed_decision_call_preserves_usage_without_serving_completion(
+    judge: JudgeStub,
+) -> None:
+    decision_model = "decision/model"
+    source = (
+        deployment(judge.url).split("[targets.judge]")[0]
+        + f"""
+[targets.strong]
+id = "strong/model"
+llm_client = "provider"
+[targets.weak]
+id = "weak/model"
+llm_client = "provider"
+[decision_clients.judge]
+format = "openai_decisions"
+endpoint = "{judge.url}/decisions"
+api_key_env = "SWITCHYARD_RUNNER_TEST_KEY"
+timeout_ms = 2000
+[decision_targets.judge]
+id = "{decision_model}"
+decision_client = "judge"
+[routes.classifier]
+id = "auto"
+type = "llm_classifier"
+classifier_target = "judge"
+strong_target = "strong"
+weak_target = "weak"
+fail_open = false
+[routes.classifier.decision]
+cutoff = 0.5
+instructions = "Choose a target."
+apply_cutoff_to = "capable_first"
+choices = [
+    {{ id = "capable_first", description = "Start capable" }},
+    {{ id = "efficient_first", description = "Start efficient" }},
+]
+"""
+    )
+    judge.response_payload = {
+        "model": decision_model,
+        "answers": [
+            {
+                "type": "choice",
+                "name": "route",
+                "choice": "capable_first",
+                "confidence": 0.99,
+                "probabilities": [
+                    {"value": "capable_first", "probability": 0.9},
+                    {"value": "efficient_first", "probability": 0.1},
+                ],
+            }
+        ],
+        "usage": {
+            "input_tokens": 42,
+            "input_tokens_details": {"cached_tokens": 10, "cache_write_tokens": 2},
+            "output_tokens": 3,
+            "output_tokens_details": {"reasoning_tokens": 1},
+            "total_tokens": 45,
+        },
+    }
+    decision = await Runner.from_toml(source).decide(request())
+    assert decision.selected.target == "strong"
+    assert decision.outcome.response is None
+    assert [call["model"] for call in judge.calls] == [decision_model]
+    (call,) = decision.calls
+    assert call.model == decision_model
+    assert call.is_success
+    assert call.usage["input_tokens"] == 30
+    assert call.usage["output_tokens"] == 3
+    assert call.usage["total_tokens"] == 45
+
+
+async def test_default_fail_open_preserves_failed_judge_observation(judge: JudgeStub) -> None:
+    judge.status = 503
+    decision = await Runner.from_toml(deployment(judge.url)).decide(request())
+    assert decision.selected.target == "strong"
+    assert decision.outcome.metadata.evidence["source"] == "fail_open"
+    (call,) = decision.calls
+    assert call.model == "judge/model"
+    assert not call.is_success
+    assert call.usage is None
 
 
 @pytest.mark.parametrize(
@@ -377,7 +481,7 @@ async def test_composite_child_decisions_preserve_target_scope_and_fallback_orde
     assert [(target.target, target.model) for target in parent.fallbacks] == [
         ("strong", "strong/model")
     ]
-    assert parent.outcome.selected_model_ids == ["weak/model", "strong/model"]
+    assert parent.outcome.selected_model_ids == ["weak", "strong"]
     assert [call["model"] for call in judge.calls] == ["judge/model"]
 
     judge.response_text = verdict
@@ -395,9 +499,7 @@ async def test_composite_child_decisions_preserve_target_scope_and_fallback_orde
     assert [(target.target, target.model) for target in child.fallbacks] == [
         (target, f"{target}/model") for target in fallbacks
     ]
-    assert child.outcome.selected_model_ids == [
-        f"{target}/model" for target in (selected, *fallbacks)
-    ]
+    assert child.outcome.selected_model_ids == [selected, *fallbacks]
     assert [call["model"] for call in judge.calls] == ["judge/model", "child_judge/model"]
     assert parent_request == request("parent task")
     assert child_request == request("child task")
@@ -406,7 +508,7 @@ async def test_composite_child_decisions_preserve_target_scope_and_fallback_orde
         (child, child_request, "child_judge/model"),
     ):
         assert decision.outcome.response is None
-        assert decision.outcome.request["model"] == decision.selected.model
+        assert decision.outcome.request["model"] == decision.selected.target
         assert decision.outcome.request["messages"] == original["messages"]
         (call,) = decision.calls
         assert call.model == judge_model
@@ -527,7 +629,9 @@ async def test_in_flight_decisions_own_nested_requests_and_independent_outcomes(
 async def test_caller_headers_are_request_scoped_and_respect_configured_auth(
     judge: JudgeStub, forward_auth: bool
 ) -> None:
-    source = deployment(judge.url)
+    source = deployment(judge.url).replace(
+        "base_threshold = 0.5", "base_threshold = 0.5\nfail_open = false"
+    )
     if forward_auth:
         source = source.replace('api_key_env = "SWITCHYARD_RUNNER_TEST_KEY"', "forward_auth = true")
     runner = Runner.from_toml(source)
@@ -648,13 +752,17 @@ async def test_invalid_verdict_preserves_fail_open_evidence_and_call_cost(judge:
 
 async def test_provider_failure_keeps_observations_and_safe_diagnostics(judge: JudgeStub) -> None:
     judge.status = 503
-    runner = Runner.from_toml(deployment(judge.url))
+    runner = Runner.from_toml(
+        deployment(judge.url).replace(
+            "base_threshold = 0.5", "base_threshold = 0.5\nfail_open = false"
+        )
+    )
     with pytest.raises(DecisionError) as caught:
         await runner.decide(request())
     error = caught.value
     assert error.kind == "upstream_http"
     assert error.upstream_status == 503
-    assert error.target == "judge/model"
+    assert error.target == "judge"
     assert "provider-secret" not in str(error)
     assert "private prompt" not in str(error)
     (call,) = error.calls
@@ -674,16 +782,14 @@ id = "auto"
 type = "advisor"
 executor_target = "weak"
 advisor_target = "judge"
+fail_open = false
 """
     )
     with pytest.raises(DecisionError) as caught:
         await Runner.from_toml(source).decide(request(), allow_response=True)
     error = caught.value
-    assert (error.kind, error.upstream_status, error.target) == (
-        "upstream_http",
-        503,
-        "judge/model",
-    )
+    # Advisor errors are summarized by the algorithm; completed calls retain usage.
+    assert (error.kind, error.upstream_status, error.target) == ("algorithm", None, None)
     assert [call["model"] for call in judge.calls] == ["weak/model", "judge/model"]
     first, failed = error.calls
     assert (first.model, failed.model) == ("weak/model", "judge/model")
@@ -987,7 +1093,11 @@ async def test_decision_waits_for_completion_worker_to_exit(
     judge.release = Event()
     if outcome == "error":
         judge.status = 503
-    runner = Runner.from_toml(deployment(judge.url))
+    runner = Runner.from_toml(
+        deployment(judge.url).replace(
+            "base_threshold = 0.5", "base_threshold = 0.5\nfail_open = false"
+        )
+    )
     task = asyncio.create_task(runner.decide(request()))
     assert await asyncio.to_thread(judge.started.wait, 5)
 

@@ -3,7 +3,7 @@
 
 //! One configured algorithm and the clients that serve its targets.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use libsy::{Algorithm, LibsyError, RoutingOutcome, RuntimeModels};
 use serde_json::Value;
 use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObserver, TranslatingLlmClient};
 use switchyard_protocol::{
-    LlmClientError, ModelId, Request, Response, RoutedLlmClient, WireFormat,
+    Category, LlmClientError, ModelId, Request, Response, RoutedLlmClient, WireFormat,
 };
 use thiserror::Error;
 
@@ -263,7 +263,15 @@ impl Route {
 
     /// Configured completion targets available to routing decisions.
     pub fn decision_targets(&self) -> Vec<DecisionTarget> {
-        self.targets.values().cloned().collect()
+        let models = &self.standard.models;
+        let mut seen = HashSet::new();
+        models
+            .models_for(&Category::Any)
+            .iter()
+            .chain(models.subagent_models_for(&Category::Any))
+            .filter(|target| seen.insert(*target))
+            .filter_map(|target| self.target(target).cloned())
+            .collect()
     }
 
     /// Returns model-list capability metadata.

@@ -16,7 +16,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyMapping, PyString};
 use pyo3_async_runtimes::TaskLocals;
 use pyo3_async_runtimes::generic::{ContextExt, Runtime};
-use switchyard_llm_client::{LlmCallObservation, RunObservation, RunObserver};
+use switchyard_llm_client::{ModelCallObservation, RunObservation, RunObserver};
 use switchyard_protocol::{Metadata, ModelId, Request};
 use switchyard_runner::{DecisionTarget, Route, Runner, RunnerError};
 use tokio::sync::oneshot;
@@ -48,7 +48,7 @@ impl PyDecisionTarget {
 /// A completed logical model call, including backend retries in its duration.
 #[pyclass(name = "RoutingCall", module = "switchyard.runner", frozen)]
 struct PyRoutingCall {
-    inner: LlmCallObservation,
+    inner: ModelCallObservation,
 }
 
 #[pymethods]
@@ -96,7 +96,7 @@ struct PyDecision {
 
 #[derive(Default)]
 struct Observations {
-    calls: Vec<LlmCallObservation>,
+    calls: Vec<ModelCallObservation>,
     duration_seconds: f64,
 }
 
@@ -361,19 +361,23 @@ impl PyRunner {
         let future = async move {
             let observations = Arc::new(Mutex::new(Observations::default()));
             let captured = Arc::clone(&observations);
+            let route = decision_route(&runner, model.as_str(), allow_response)?;
+            let observed_route = route.clone();
             let observer: RunObserver = Arc::new(move |event| {
                 let mut captured = captured.lock().expect("observation lock poisoned");
                 match event {
-                    RunObservation::LlmCall(call) | RunObservation::AnswerCall(call) => {
+                    RunObservation::LlmCall(mut call) | RunObservation::AnswerCall(mut call) => {
+                        call.selected_model =
+                            observed_route.provider_model(&call.selected_model).clone();
                         captured.calls.push(call);
                     }
+                    RunObservation::DecisionCall(call) => captured.calls.push(call),
                     RunObservation::RoutingOverhead(duration) => {
                         captured.duration_seconds = duration.as_secs_f64();
                     }
                     RunObservation::Outcome(_) => {}
                 }
             });
-            let route = decision_route(&runner, model.as_str(), allow_response)?;
             let result = tokio::select! {
                 biased;
                 _ = cancelled => return Ok(None),

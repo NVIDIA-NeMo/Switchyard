@@ -470,8 +470,19 @@ decision = asyncio.run(inspect_decision())
 The fixed route selects target key `fast` and model ID `fast-model`, with no model
 calls. Classifier routes may make judge calls. `calls` contains completed logical
 calls; durations include backend retries. `usage` is a mapping or `None`, and
-missing token fields remain unknown. `DecisionError.target` names the failing
-model, while `decision.selected.target` is the configured target key.
+missing token fields remain unknown. This includes typed decision-model calls.
+`decision.selected.target`, `decision.outcome.selected_model_ids`, and the routed
+request's `model` use configured target keys. `decision.selected.model` and
+`call.model` use provider model IDs. Targets may share a provider model ID while
+keeping distinct names and recorded outcomes. `DecisionError.target` uses the
+native failing-call identity when available: a target key for LLM calls or a
+model ID for typed decision calls.
+
+The runner keeps the configured failure policy. With the default `fail_open = true`,
+a failed classifier call can still produce a scored selection of the capable
+target; the failed call remains in `calls` and the report's routing diagnostics.
+Set `fail_open = false` on the classifier route when provider failures should
+produce evaluation error rows.
 
 A decision starts when its coroutine runs. Keep the request and its nested data
 unchanged until the await completes, and use separate request objects for
