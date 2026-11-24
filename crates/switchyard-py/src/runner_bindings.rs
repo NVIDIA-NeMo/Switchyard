@@ -7,8 +7,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, Condvar, Mutex};
-use std::task::{Context, Poll};
+use std::sync::{Arc, Mutex};
 
 use pyo3::create_exception;
 use pyo3::exceptions::{PyRuntimeError, PyUnicodeError, PyValueError};
@@ -17,12 +16,15 @@ use pyo3::types::{PyDict, PyMapping, PyString};
 use pyo3_async_runtimes::TaskLocals;
 use pyo3_async_runtimes::generic::{ContextExt, Runtime};
 use switchyard_llm_client::{ModelCallObservation, RunObservation, RunObserver};
-use switchyard_protocol::{Metadata, ModelId, Request};
+use switchyard_protocol::ModelId;
 use switchyard_runner::{DecisionTarget, Route, Runner, RunnerError};
 use tokio::sync::oneshot;
+use tokio_util::task::TaskTracker;
 
-use crate::libsy_bindings::{PyRoutingOutcome, header_map_from_python, outcome_to_python};
-use crate::py_serde::{from_python, to_python};
+use crate::libsy_bindings::{
+    PyRoutingOutcome, header_map_from_python, outcome_to_python, request_from_python,
+};
+use crate::py_serde::to_python;
 
 create_exception!(_switchyard_rust, DecisionError, PyRuntimeError);
 
@@ -106,64 +108,8 @@ struct PyRunner {
     inner: Arc<Runner>,
 }
 
-#[derive(Default)]
-struct BridgeTasks {
-    pending: Mutex<usize>,
-    finished: Condvar,
-}
-
-impl BridgeTasks {
-    fn track(self: &Arc<Self>) -> BridgeTask {
-        *self.pending.lock().expect("bridge task lock poisoned") += 1;
-        BridgeTask(Arc::clone(self))
-    }
-
-    fn wait(&self) {
-        let mut pending = self.pending.lock().expect("bridge task lock poisoned");
-        while *pending != 0 {
-            pending = self
-                .finished
-                .wait(pending)
-                .expect("bridge task lock poisoned");
-        }
-    }
-}
-
-struct BridgeTask(Arc<BridgeTasks>);
-
-impl Drop for BridgeTask {
-    fn drop(&mut self) {
-        let mut pending = self.0.pending.lock().expect("bridge task lock poisoned");
-        *pending -= 1;
-        if *pending == 0 {
-            self.0.finished.notify_all();
-        }
-    }
-}
-
-// Field order matters: drop the future/closure and its Python references before
-// announcing that this bridge task is finished, including during unwinding.
-struct Tracked<T> {
-    inner: T,
-    _task: BridgeTask,
-}
-
-impl<F: Future> Future for Tracked<Pin<Box<F>>> {
-    type Output = F::Output;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.inner.as_mut().poll(cx)
-    }
-}
-
-impl<F: FnOnce()> Tracked<F> {
-    fn run(self) {
-        (self.inner)();
-    }
-}
-
 tokio::task_local! {
-    static BRIDGE_TASKS: Arc<BridgeTasks>;
+    static BRIDGE_TASKS: TaskTracker;
     static BRIDGE_LOCALS: TaskLocals;
 }
 
@@ -178,23 +124,20 @@ impl Runtime for BridgeRuntime {
     where
         F: Future<Output = ()> + Send + 'static,
     {
-        let tasks = BRIDGE_TASKS.with(Arc::clone);
-        let task = tasks.track();
-        pyo3_async_runtimes::tokio::get_runtime().spawn(Tracked {
-            inner: Box::pin(BRIDGE_TASKS.scope(tasks, future)),
-            _task: task,
-        })
+        let tasks = BRIDGE_TASKS.with(Clone::clone);
+        tasks.spawn_on(
+            BRIDGE_TASKS.scope(tasks.clone(), future),
+            pyo3_async_runtimes::tokio::get_runtime().handle(),
+        )
     }
 
     fn spawn_blocking<F>(function: F) -> Self::JoinHandle
     where
         F: FnOnce() + Send + 'static,
     {
-        let work = Tracked {
-            inner: function,
-            _task: BRIDGE_TASKS.with(|tasks| tasks.track()),
-        };
-        pyo3_async_runtimes::tokio::get_runtime().spawn_blocking(move || work.run())
+        BRIDGE_TASKS.with(|tasks| {
+            tasks.spawn_blocking_on(function, pyo3_async_runtimes::tokio::get_runtime().handle())
+        })
     }
 }
 
@@ -215,7 +158,7 @@ impl ContextExt for BridgeRuntime {
 #[pyclass]
 struct DecisionCancellation {
     sender: Option<oneshot::Sender<()>>,
-    tasks: Arc<BridgeTasks>,
+    tasks: TaskTracker,
 }
 
 #[pymethods]
@@ -229,16 +172,12 @@ impl DecisionCancellation {
     fn wait(&self, py: Python<'_>) {
         // Called from a Python executor thread after result delivery. Release the
         // GIL while the bridge finishes using Python and drops its references.
-        py.detach(|| self.tasks.wait());
+        self.tasks.close();
+        py.detach(|| pyo3_async_runtimes::tokio::get_runtime().block_on(self.tasks.wait()));
     }
 
     fn is_finished(&self) -> bool {
-        *self
-            .tasks
-            .pending
-            .lock()
-            .expect("bridge task lock poisoned")
-            == 0
+        self.tasks.is_empty()
     }
 }
 
@@ -337,15 +276,10 @@ impl PyRunner {
         allow_response: bool,
     ) -> PyResult<(Bound<'py, PyAny>, DecisionCancellation)> {
         let headers = headers.as_ref().map(header_map_from_python).transpose()?;
-        let request = Request {
-            llm_request: from_python(request)?,
-            raw_request: None,
-            metadata: headers.map(|headers| {
-                let mut metadata = Metadata::from_headers(&headers);
-                metadata.http_headers = Some(headers);
-                metadata
-            }),
-        };
+        let mut request = request_from_python(request, headers.as_ref())?;
+        if let Some(metadata) = &mut request.metadata {
+            metadata.http_headers = headers;
+        }
         let model = request
             .llm_request
             .model
@@ -356,7 +290,7 @@ impl PyRunner {
         let model = ModelId::from(model);
         let runner = Arc::clone(&self.inner);
         let (sender, cancelled) = oneshot::channel();
-        let tasks = Arc::new(BridgeTasks::default());
+        let tasks = TaskTracker::new();
         let locals = pyo3_async_runtimes::tokio::get_current_locals(py)?;
         let future = async move {
             let observations = Arc::new(Mutex::new(Observations::default()));
@@ -426,7 +360,7 @@ impl PyRunner {
             })
             .map(Some)
         };
-        let future = BRIDGE_TASKS.sync_scope(Arc::clone(&tasks), || {
+        let future = BRIDGE_TASKS.sync_scope(tasks.clone(), || {
             pyo3_async_runtimes::generic::future_into_py_with_locals::<BridgeRuntime, _, _>(
                 py, locals, future,
             )
@@ -510,47 +444,43 @@ mod tests {
     use super::*;
 
     struct Payload {
-        tasks: Arc<BridgeTasks>,
+        tasks: TaskTracker,
         dropped: Arc<AtomicBool>,
     }
 
     impl Drop for Payload {
         fn drop(&mut self) {
-            assert_eq!(*self.tasks.pending.lock().unwrap(), 1);
+            assert_eq!(self.tasks.len(), 1);
             self.dropped.store(true, Ordering::SeqCst);
         }
     }
 
-    #[test]
-    fn bridge_completion_follows_payload_drop_when_unpolled_or_panicking() {
+    #[tokio::test]
+    async fn bridge_completion_follows_payload_drop_when_unpolled_or_panicking() {
         for panic in [false, true] {
-            let tasks = Arc::new(BridgeTasks::default());
+            let tasks = TaskTracker::new();
             let dropped = Arc::new(AtomicBool::new(false));
             let payload = Payload {
-                tasks: Arc::clone(&tasks),
+                tasks: tasks.clone(),
                 dropped: Arc::clone(&dropped),
             };
             if panic {
-                let work = Tracked {
-                    inner: move || {
+                let work = BRIDGE_TASKS.sync_scope(tasks.clone(), || {
+                    BridgeRuntime::spawn_blocking(move || {
                         let _payload = payload;
                         panic!("bridge worker failed");
-                    },
-                    _task: tasks.track(),
-                };
-                assert!(std::panic::catch_unwind(|| work.run()).is_err());
+                    })
+                });
+                assert!(work.await.unwrap_err().is_panic());
             } else {
-                let future = Tracked {
-                    inner: Box::pin(async move {
-                        let _payload = payload;
-                        std::future::pending::<()>().await;
-                    }),
-                    _task: tasks.track(),
-                };
+                let future = tasks.track_future(async move {
+                    let _payload = payload;
+                    std::future::pending::<()>().await;
+                });
                 drop(future);
             }
             assert!(dropped.load(Ordering::SeqCst));
-            assert_eq!(*tasks.pending.lock().unwrap(), 0);
+            assert!(tasks.is_empty());
         }
     }
 }

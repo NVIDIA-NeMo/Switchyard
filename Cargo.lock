@@ -2675,6 +2675,7 @@ dependencies = [
  "switchyard-server",
  "switchyard-translation",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

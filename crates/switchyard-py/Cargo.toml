@@ -30,3 +30,4 @@ switchyard-runner.workspace = true
 switchyard-server.workspace = true
 switchyard-translation.workspace = true
 tokio.workspace = true
+tokio-util = { version = "0.7", features = ["rt"] }

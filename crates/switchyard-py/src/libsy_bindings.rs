@@ -82,17 +82,16 @@ pub(crate) fn header_map_from_python(
 }
 
 /// Attach normalized host metadata to a provider-neutral request.
-fn request_from_python(
+pub(crate) fn request_from_python(
     request: &Bound<'_, PyAny>,
-    headers: Option<HashMap<String, String>>,
+    headers: Option<&HeaderMap>,
 ) -> PyResult<Request> {
-    let headers = headers.as_ref().map(header_map_from_python).transpose()?;
     let mut llm_request = from_python(request)?;
-    switchyard_translation::normalize_compaction(&mut llm_request, headers.as_ref());
+    switchyard_translation::normalize_compaction(&mut llm_request, headers);
     Ok(Request {
         llm_request,
         raw_request: None,
-        metadata: headers.map(|headers| Metadata::from_headers(&headers)),
+        metadata: headers.map(Metadata::from_headers),
     })
 }
 
@@ -990,7 +989,8 @@ impl PyAlgorithm {
         subagent_models: Option<HashMap<String, Vec<String>>>,
         headers: Option<HashMap<String, String>>,
     ) -> PyResult<PyRunStream> {
-        let request = request_from_python(request, headers)?;
+        let headers = headers.as_ref().map(header_map_from_python).transpose()?;
+        let request = request_from_python(request, headers.as_ref())?;
         let mut runtime_models = RuntimeModels::new(category_models_from_python(models)?);
         if let Some(subagent_models) = subagent_models {
             runtime_models =
@@ -1111,8 +1111,9 @@ impl PyConfiguredAlgorithm {
         required_labels: Option<Vec<String>>,
         task_id: Option<String>,
     ) -> PyResult<PyRunStream> {
-        let headers = headers.map(from_python).transpose()?;
-        let mut request = request_from_python(request, headers)?;
+        let headers: Option<HashMap<String, String>> = headers.map(from_python).transpose()?;
+        let headers = headers.as_ref().map(header_map_from_python).transpose()?;
+        let mut request = request_from_python(request, headers.as_ref())?;
         if let Some(task_id) = task_id {
             request.metadata.get_or_insert_default().task_id = Some(task_id);
         }

@@ -62,27 +62,8 @@ pub async fn run(
 ) -> Result<(ModelId, Response)> {
     let algorithm_name = algorithm.name().to_string();
     let run_started = Instant::now();
-    let routing_clients = clients.clone();
-    // This says if we have an observer, put Some(..) in routing_observations.
-    // No observer means we don't want any routing_observations.
-    let routing_observations = observer.as_ref().map(|_| Arc::new(Mutex::new(Vec::new())));
-    let outcome = match clients.stored_state_owner(&request) {
-        Some(owner) => Ok(continue_on(owner, &algorithm_name, request)),
-        None => {
-            drive(Arc::clone(&algorithm), request, models, {
-                let routing_observations = routing_observations.clone();
-                move |call| serve(routing_clients.clone(), call, routing_observations.clone())
-            })
-            .await
-        }
-    };
-    let answered_model = outcome
-        .as_ref()
-        .ok()
-        .and_then(|outcome| outcome.response.as_ref())
-        .and_then(Response::served_model);
-    emit_routing_observations(&observer, &routing_observations, answered_model);
-    let outcome = outcome?;
+    let outcome =
+        drive_routing(Arc::clone(&algorithm), &clients, request, models, &observer).await?;
     let overhead = run_started.elapsed();
     metrics::record_routing_overhead(&algorithm_name, overhead);
 
@@ -216,24 +197,7 @@ pub async fn decide_with_observer(
     observer: Option<RunObserver>,
 ) -> Result<RoutingOutcome> {
     let started = Instant::now();
-    let routing_clients = clients.clone();
-    let observations = observer.as_ref().map(|_| Arc::new(Mutex::new(Vec::new())));
-    let outcome = match clients.stored_state_owner(&request) {
-        Some(owner) => Ok(continue_on(owner, algorithm.name(), request)),
-        None => {
-            drive(algorithm, request, models, {
-                let observations = observations.clone();
-                move |call| serve(routing_clients.clone(), call, observations.clone())
-            })
-            .await
-        }
-    };
-    let answered_model = outcome
-        .as_ref()
-        .ok()
-        .and_then(|outcome| outcome.response.as_ref())
-        .and_then(Response::served_model);
-    emit_routing_observations(&observer, &observations, answered_model);
+    let outcome = drive_routing(algorithm, &clients, request, models, &observer).await;
     let outcome = outcome.and_then(|mut outcome| {
         let selected_model_id = outcome.selected_model_id()?.clone();
         outcome.request = clients.prepare_completion_request(outcome.request, &selected_model_id);
@@ -251,6 +215,34 @@ pub async fn decide_with_observer(
         }
         observer(RunObservation::RoutingOverhead(started.elapsed()));
     }
+    outcome
+}
+
+async fn drive_routing(
+    algorithm: Arc<dyn Algorithm>,
+    clients: &ClientRouter,
+    request: Request,
+    models: Arc<RuntimeModels>,
+    observer: &Option<RunObserver>,
+) -> Result<RoutingOutcome> {
+    let routing_clients = clients.clone();
+    let observations = observer.as_ref().map(|_| Arc::new(Mutex::new(Vec::new())));
+    let outcome = match clients.stored_state_owner(&request) {
+        Some(owner) => Ok(continue_on(owner, algorithm.name(), request)),
+        None => {
+            drive(algorithm, request, models, {
+                let observations = observations.clone();
+                move |call| serve(routing_clients.clone(), call, observations.clone())
+            })
+            .await
+        }
+    };
+    let answered_model = outcome
+        .as_ref()
+        .ok()
+        .and_then(|outcome| outcome.response.as_ref())
+        .and_then(Response::served_model);
+    emit_routing_observations(observer, &observations, answered_model);
     outcome
 }
 

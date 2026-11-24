@@ -20,7 +20,7 @@ from typing import Any
 
 import pytest
 
-from switchyard.libsy import RoutingOutcome
+from switchyard.libsy import AlgorithmFactory, RoutingOutcome, Step
 from switchyard.runner import DecisionError, Runner
 from switchyard_rust.runner import _decide
 
@@ -339,9 +339,24 @@ async def test_provider_formats_preserve_decision_identity_and_usage(
         assert all(call.usage.get(field) is None for field in expected)
 
 
-async def test_passthrough_decision_never_calls_answer_model(judge: JudgeStub) -> None:
-    runner = Runner.from_toml(deployment(judge.url))
-    decision = await runner.decide(request(model="fixed"))
+@pytest.mark.parametrize("compaction", [False, True])
+async def test_passthrough_decision_never_calls_answer_model(
+    judge: JudgeStub, compaction: bool
+) -> None:
+    source = deployment(judge.url)
+    runner = Runner.from_toml(source)
+    headers = (
+        {"x-codex-turn-metadata": json.dumps({"request_kind": "compaction"})}
+        if compaction
+        else None
+    )
+    body = request(model="fixed")
+    configured = AlgorithmFactory.from_toml(source).build_configured()["fixed"]
+    step = await anext(configured.run_stream(body, headers=headers))
+    assert isinstance(step, Step.Done)
+    decision = await runner.decide(body, headers=headers)
+    assert decision.outcome.request == step.outcome.request
+    assert decision.outcome.request.get("is_compaction", False) is compaction
     assert decision.selected.target == "weak"
     assert decision.calls == []
     assert decision.outcome.response is None

@@ -18,6 +18,19 @@ from tests.test_runner_bindings import JudgeStub, deployment
 from tests.test_runner_bindings import judge as judge
 
 
+def cli_args(config: Path, runs: dict[str, Path], output: Path, *, route="fixed"):
+    return [
+        "--config",
+        str(config),
+        "--route",
+        route,
+        "--input-target",
+        "weak",
+        "--output",
+        str(output),
+    ] + [arg for target, path in runs.items() for arg in ("--run", f"{target}={path}")]
+
+
 def write_trial(
     root: Path, name: str, model: str, reward: float | None, *, prompt="easy task", codex=False
 ):
@@ -240,18 +253,7 @@ def test_cli_writes_flushed_rows_manifest_and_report_without_copying_config(
     config = tmp_path / "routes.toml"
     config.write_text(deployment(judge.url))
     output = tmp_path / "evaluation"
-    args = [
-        "--config",
-        str(config),
-        "--route",
-        "fixed",
-        "--run",
-        f"weak={tmp_path / 'recordings'}",
-        "--input-target",
-        "weak",
-        "--output",
-        str(output),
-    ]
+    args = cli_args(config, {"weak": tmp_path / "recordings"}, output)
     if namespace is not None:
         args.extend(["--dataset", namespace])
     assert main(args) == 0
@@ -310,22 +312,8 @@ def test_cli_releases_excluded_trials_before_routing(
     output = tmp_path / "evaluation"
     assert (
         main(
-            [
-                "--config",
-                str(config),
-                "--route",
-                "fixed",
-                "--run",
-                f"weak={tmp_path / 'weak'}",
-                "--run",
-                f"strong={tmp_path / 'strong'}",
-                "--input-target",
-                "weak",
-                "--intersection",
-                "--skip-invalid",
-                "--output",
-                str(output),
-            ]
+            cli_args(config, {"weak": tmp_path / "weak", "strong": tmp_path / "strong"}, output)
+            + ["--intersection", "--skip-invalid"]
         )
         == 0
     )
@@ -353,20 +341,7 @@ def cli_recording(judge: JudgeStub, tmp_path: Path):
     config.write_text(deployment(judge.url))
 
     def invoke(run: Path, output: Path) -> int:
-        return main(
-            [
-                "--config",
-                str(config),
-                "--route",
-                "fixed",
-                "--run",
-                f"weak={run}",
-                "--input-target",
-                "weak",
-                "--output",
-                str(output),
-            ]
-        )
+        return main(cli_args(config, {"weak": run}, output))
 
     return root, invoke
 
@@ -444,23 +419,7 @@ def test_cli_exits_incomplete_for_missing_reward(judge: JudgeStub, tmp_path: Pat
     config = tmp_path / "routes.toml"
     config.write_text(deployment(judge.url))
     output = tmp_path / "evaluation"
-    assert (
-        main(
-            [
-                "--config",
-                str(config),
-                "--route",
-                "fixed",
-                "--run",
-                f"weak={tmp_path / 'recordings'}",
-                "--input-target",
-                "weak",
-                "--output",
-                str(output),
-            ]
-        )
-        == 1
-    )
+    assert main(cli_args(config, {"weak": tmp_path / "recordings"}, output)) == 1
     assert json.loads((output / "report.json").read_text())["counts"]["unscored"] == 1
 
 
@@ -478,20 +437,12 @@ def test_cli_retains_safe_native_failure_details(judge: JudgeStub, tmp_path: Pat
     output = tmp_path / "evaluation"
     assert (
         main(
-            [
-                "--config",
-                str(config),
-                "--route",
-                "auto",
-                "--run",
-                f"weak={tmp_path / 'weak'}",
-                "--run",
-                f"strong={tmp_path / 'strong'}",
-                "--input-target",
-                "weak",
-                "--output",
-                str(output),
-            ]
+            cli_args(
+                config,
+                {"weak": tmp_path / "weak", "strong": tmp_path / "strong"},
+                output,
+                route="auto",
+            )
         )
         == 1
     )
@@ -527,18 +478,7 @@ def test_cli_invalid_options_leave_output_path_available(
     config = tmp_path / "routes.toml"
     config.write_text(deployment(judge.url))
     output = tmp_path / "new-parent" / "evaluation"
-    args = [
-        "--config",
-        str(config),
-        "--route",
-        "fixed",
-        "--run",
-        f"weak={tmp_path / 'recordings'}",
-        "--input-target",
-        "weak",
-        "--output",
-        str(output),
-    ]
+    args = cli_args(config, {"weak": tmp_path / "recordings"}, output)
     assert main([*args, option]) == 2
     assert not output.parent.exists()
     assert judge.calls == []
@@ -562,18 +502,7 @@ def test_cli_route_preflight_leaves_output_path_available(
         if problem == "unknown-route"
         else ("auto" if problem in ("missing-target", "response-route") else "fixed")
     )
-    args = [
-        "--config",
-        str(config),
-        "--route",
-        route,
-        "--run",
-        f"weak={tmp_path / 'recordings'}",
-        "--input-target",
-        "weak",
-        "--output",
-        str(output),
-    ]
+    args = cli_args(config, {"weak": tmp_path / "recordings"}, output, route=route)
     assert main(args) == 2
     assert not output.parent.exists()
     assert judge.calls == []
@@ -608,23 +537,7 @@ def test_manifest_hash_identifies_the_loaded_configuration_snapshot(
 
     monkeypatch.setattr("switchyard.sim.__main__.Runner", ConcurrentEdit)
     output = tmp_path / "evaluation"
-    assert (
-        main(
-            [
-                "--config",
-                str(config),
-                "--route",
-                "fixed",
-                "--run",
-                f"weak={tmp_path / 'recordings'}",
-                "--input-target",
-                "weak",
-                "--output",
-                str(output),
-            ]
-        )
-        == 0
-    )
+    assert main(cli_args(config, {"weak": tmp_path / "recordings"}, output)) == 0
     manifest = json.loads((output / "manifest.json").read_text())
     assert config.read_bytes() != original
     assert manifest["config_sha256"] == hashlib.sha256(original).hexdigest()
