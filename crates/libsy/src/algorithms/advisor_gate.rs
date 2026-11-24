@@ -255,7 +255,7 @@ impl AdvisorGate {
         // until a review completes: a refunded consult or a spent budget
         // re-arms it so a later eligible turn is reviewed instead of silently
         // passing through.
-        let stall_key = stall_key(&request);
+        let stall_key = stall_key(scope, &request);
         let stall = decision.fired.is_none()
             && decision.stalled
             && self.budget.try_mark_stall_fired(stall_key);

@@ -160,9 +160,9 @@ pub(super) fn budget_scope(request: &Request) -> ScopeKey {
     ScopeKey::Instance
 }
 
-/// Latches the stall checkpoint per conversation: hash of the first user
-/// message's text, which is constant across a session's turns.
-pub(super) fn stall_key(request: &Request) -> u64 {
+/// Keys the checkpoint by scope and opening text so separate sessions that
+/// start with the same prompt can each receive a review.
+pub(super) fn stall_key(scope: &ScopeKey, request: &Request) -> u64 {
     let text = request
         .llm_request
         .messages
@@ -171,6 +171,7 @@ pub(super) fn stall_key(request: &Request) -> u64 {
         .and_then(|message| message.text_content("\n"))
         .unwrap_or_default();
     let mut hasher = DefaultHasher::new();
+    scope.hash(&mut hasher);
     text.hash(&mut hasher);
     hasher.finish()
 }
@@ -217,11 +218,17 @@ mod tests {
     }
 
     #[test]
-    fn the_stall_latch_admits_one_caller_per_key() {
+    fn the_stall_latch_admits_one_caller_per_scope_for_the_same_opening() {
         let budget = ReviewBudget::new(1);
-        assert!(budget.try_mark_stall_fired(7));
-        assert!(!budget.try_mark_stall_fired(7));
-        assert!(budget.try_mark_stall_fired(8));
+        let request = Request {
+            llm_request: switchyard_protocol::text_request(None, "same opening"),
+            ..Request::default()
+        };
+        let first = stall_key(&scope(), &request);
+        let second = stall_key(&ScopeKey::Session("s2".to_string()), &request);
+        assert!(budget.try_mark_stall_fired(first));
+        assert!(!budget.try_mark_stall_fired(first));
+        assert!(budget.try_mark_stall_fired(second));
     }
 
     #[test]
