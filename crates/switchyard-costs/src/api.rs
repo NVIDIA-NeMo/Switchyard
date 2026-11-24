@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use switchyard_protocol::Usage;
 
-use crate::{CostSource, CostTotals, Pricing, RecordedCost};
+use crate::{CostTotals, Pricing, RecordedCost, provider_charge};
 
 /// The cache portions use catalog rates. A provider may independently report the total charge.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize)]
@@ -23,17 +23,7 @@ pub struct CallCost {
 impl Pricing {
     /// Prices the existing normalized usage for one served model, including available cache costs.
     pub fn observed_spend(&self, model: &str, usage: &Usage) -> CallCost {
-        let mut call = self.estimate_call(model, usage);
-        if let Some(usd) = usage
-            .provider_cost
-            .filter(|usd| usd.is_finite() && *usd >= 0.0)
-        {
-            call.cost = Some(RecordedCost {
-                usd,
-                source: CostSource::ProviderReported,
-            });
-        }
-        call
+        self.price_call(model, usage, provider_charge(usage))
     }
 }
 

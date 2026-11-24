@@ -124,6 +124,16 @@ pub struct RecordedCost {
     pub source: CostSource,
 }
 
+fn provider_charge(usage: &Usage) -> Option<RecordedCost> {
+    let usd = usage
+        .provider_cost
+        .filter(|usd| usd.is_finite() && *usd >= 0.0)?;
+    Some(RecordedCost {
+        usd,
+        source: CostSource::ProviderReported,
+    })
+}
+
 impl Pricing {
     /// This method reports whether the file includes rates for a model.
     pub fn contains(&self, model: &str) -> bool {
@@ -192,33 +202,36 @@ impl Pricing {
 
     /// Provider charges take precedence because token rates may omit provider surcharges.
     pub fn cost(&self, model: &str, usage: &Usage) -> Option<RecordedCost> {
-        self.observed_spend(model, usage).cost
+        provider_charge(usage).or_else(|| self.estimate(model, usage))
     }
 
     /// Uses catalog rates even when the provider supplies a charge.
     pub fn estimate(&self, model: &str, usage: &Usage) -> Option<RecordedCost> {
-        self.estimate_call(model, usage).cost
+        self.price_call(model, usage, None).cost
     }
 
-    fn estimate_call(&self, model: &str, usage: &Usage) -> CallCost {
+    fn price_call(&self, model: &str, usage: &Usage, reported: Option<RecordedCost>) -> CallCost {
         let Some(rate) = self.0.get(model) else {
-            return CallCost::default();
+            return CallCost {
+                cost: reported,
+                ..CallCost::default()
+            };
         };
         let read = usage
             .cached_input_tokens()
             .map(|n| n as f64 * rate.cache_read);
         let write = anthropic::cache_write_cost(usage, rate.cache_write, rate.cache_write_1h);
-        let cost = match (usage.input_tokens, usage.output_tokens, write) {
-            (Some(input), Some(output), Some(write)) => Some(RecordedCost {
-                usd: (input as f64 * rate.input
-                    + output as f64 * rate.output
-                    + read.unwrap_or(0.0)
-                    + write)
-                    / 1_000_000.0,
+        let cost = reported.or_else(|| {
+            let usd = (usage.input_tokens? as f64 * rate.input
+                + usage.output_tokens? as f64 * rate.output
+                + read.unwrap_or(0.0)
+                + write?)
+                / 1_000_000.0;
+            Some(RecordedCost {
+                usd,
                 source: CostSource::Estimated,
-            }),
-            _ => None,
-        };
+            })
+        });
         CallCost {
             cost,
             cache_read_usd: read.map(|value| value / 1_000_000.0),
