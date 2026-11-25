@@ -126,6 +126,57 @@ let response = client.call(request).await?;
 `/v1/decisions` and that provider's key. Each adapter makes one attempt per call;
 its timeout covers the request and reading the response body.
 
+## Generate task or turn metadata
+
+The [standalone assessment example](../../crates/libsy-llm-client/examples/assess.rs)
+sends all questions in one decision-model call and prints JSON containing
+`task_id`, optional `turn_id`, and the typed `assessment` response. The response
+retains available model identity, usage, answer probabilities, and confidence.
+It calls the decision client directly, without a routing algorithm or
+completion model. The IDs only label the output.
+
+Each call takes two files. The questions file holds the rubric. The context file
+holds the evidence for this call. There is one questions file for each kind of
+assessment:
+
+- [Task questions](../../crates/libsy-llm-client/examples/task_questions.json)
+  describe the whole task from its opening request. Use them once per task.
+  There are eight: `task`, `work_scope`, `code_deliverable`, `difficulty`,
+  `precision`, `output_length`, `codebase_integration`, and `visual_quality`.
+- [Turn questions](../../crates/libsy-llm-client/examples/turn_questions.json)
+  describe the state of the work at one turn boundary. Use them on each turn you
+  want to assess. There are eleven: `difficulty` (of the remaining work), `task`,
+  `new_goal`, `repeating_failure`, `false_success`, `user_rejection`, `off_task`,
+  `qa_recovered`, `gave_up`, `next_action`, and `ready_to_finish`.
+
+A questions file has a `preamble` and a `questions` map. The example puts the
+preamble in front of every question's instructions. Edit the questions file to
+change the rubric. These are draft rubrics. Their wording, token-size ranges, and
+score labels are our own definitions and need evaluation on your workload.
+
+The context files are examples: [task context](../../crates/libsy-llm-client/examples/task_context.json)
+and [turn context](../../crates/libsy-llm-client/examples/turn_context.json).
+Replace them with your evidence. The turn context takes a summary of the task
+assessment in `task_anchor`.
+
+Set `DECISION_ENDPOINT` to the full endpoint URL, `DECISION_API_KEY` to its key,
+and `DECISION_MODEL` to the decision model it serves. `DECISION_FORMAT` accepts
+`system_one` (the default) or `openai_decisions`. The call times out after 30
+seconds. Running the example makes one provider call and may incur a charge:
+
+```sh
+cargo run -p switchyard-llm-client --example assess -- \
+  crates/libsy-llm-client/examples/task_questions.json \
+  crates/libsy-llm-client/examples/task_context.json \
+  my-task
+```
+
+For a turn, pass the turn questions, your context, the task ID, and a turn ID as
+the last argument. The caller owns triggering, history selection, and storing the
+output. Each invocation makes one attempt; errors are returned to you.
+
+## Use decisions during routing
+
 For the built-in execution path, register decision clients by model ID with
 <a href="../../rust/switchyard_llm_client/run/struct.ClientRouter.html#method.single_with_decision_clients"><code>ClientRouter::single_with_decision_clients</code></a> or <a href="../../rust/switchyard_llm_client/run/struct.ClientRouter.html#method.new_with_decision_clients"><code>new_with_decision_clients</code></a>, then
 use <a href="../../rust/switchyard_llm_client/run/fn.run.html"><code>switchyard_llm_client::run</code></a>. The algorithm still receives the same typed
