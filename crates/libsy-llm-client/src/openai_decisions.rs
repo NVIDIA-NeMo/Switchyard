@@ -153,12 +153,7 @@ impl RoutedDecisionClient for OpenAiDecisionClient {
                         ),
                     }
                 }
-                (_, WireValue::Refusal) => {
-                    return Err(LlmClientError::ResponseTranslation(format!(
-                        "OpenAI Decisions refused question {:?}",
-                        answer.name,
-                    )));
-                }
+                (_, WireValue::Refusal) => DecisionValue::Refusal,
                 _ => return Err(invalid()),
             };
             answers.insert(

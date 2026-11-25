@@ -110,13 +110,15 @@ pub struct DecisionAnswer {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum DecisionValue {
+    /// The provider declined to answer this question.
+    Refusal,
     /// A Boolean judgment or probability, without an implicit threshold.
     Boolean(BooleanEstimate),
-    /// One selected option with an optional complete distribution.
+    /// One selected option with optional probabilities.
     Choice {
         /// Must name an option in the matching question.
         selected: String,
-        /// Maps every declared option ID to its probability when available.
+        /// Reported probabilities keyed by option ID.
         probabilities: Option<BTreeMap<String, Probability>>,
     },
     /// A fractional position in the matching request's rubric.

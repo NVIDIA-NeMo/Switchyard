@@ -75,8 +75,9 @@ identical or providing an arbitrary JSON round-trip guarantee.
 
 Both adapters return probabilities for Boolean answers. A custom backend that
 returns only true or false can use <a href="../../rust/switchyard_protocol/decision/enum.BooleanEstimate.html#variant.Value"><code>BooleanEstimate::Value</code></a> without inventing
-certainty. Optional distributions remain `None` when absent. The OpenAI adapter
-reports refusals as errors because <a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html"><code>DecisionValue</code></a> has no refusal variant.
+certainty. Optional distributions remain `None` when absent. Both adapters return
+<a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Refusal"><code>DecisionValue::Refusal</code></a>
+for a question the provider declines to answer. Other answers remain available.
 
 ## Own the conversion
 

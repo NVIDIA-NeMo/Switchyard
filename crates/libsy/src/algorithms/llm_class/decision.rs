@@ -10,8 +10,8 @@ use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use switchyard_protocol::{
-    Category, ChoiceOption, DecisionKind, DecisionQuestion, DecisionRequest, DecisionValue,
-    Message, ModelId, Request, Response, Role,
+    Category, ChoiceOption, DecisionKind, DecisionQuestion, DecisionRequest, DecisionResponse,
+    DecisionValue, Message, ModelId, Request, Response, Role,
 };
 
 use crate::algorithms::llm_class::TaskInput;
@@ -72,6 +72,20 @@ fn route_request(messages: &[Message], question: &DecisionQuestion) -> Result<De
             .map_err(|error| LibsyError::external("serializing decision input", error))?,
         questions: BTreeMap::from([(ROUTE.into(), question.clone())]),
     })
+}
+
+fn route_value<'a>(response: &'a DecisionResponse, judge: &ModelId) -> Result<&'a DecisionValue> {
+    match response.answers.get(ROUTE).map(|answer| &answer.value) {
+        Some(DecisionValue::Refusal) => Err(LibsyError::invalid_decision(
+            judge.clone(),
+            "route question was refused",
+        )),
+        Some(value) => Ok(value),
+        None => Err(LibsyError::invalid_decision(
+            judge.clone(),
+            "missing route answer",
+        )),
+    }
 }
 
 /// Question and cutoff policy for a decision judge.
@@ -185,25 +199,18 @@ impl DecisionClassifier {
         judge: &ModelId,
     ) -> Result<f64> {
         let response = driver.call_decision(decision, judge.clone()).await?;
-        let answer = response
-            .answers
-            .get(ROUTE)
-            .ok_or_else(|| LibsyError::invalid_decision(judge.clone(), "missing route answer"))?;
-        let DecisionValue::Choice {
-            probabilities: Some(probabilities),
-            ..
-        } = &answer.value
-        else {
+        let DecisionValue::Choice { probabilities, .. } = route_value(&response, judge)? else {
             return Err(LibsyError::invalid_decision(
                 judge.clone(),
-                "expected a choice with probabilities",
+                "expected a route choice",
             ));
         };
         // The selected option can differ from the cutoff event, so only the
         // configured option's probability is used.
         let score_option = &self.config.apply_cutoff_to;
         let score = probabilities
-            .get(score_option)
+            .as_ref()
+            .and_then(|map| map.get(score_option))
             .map(|p| p.0)
             .ok_or_else(|| {
                 LibsyError::invalid_decision(
@@ -333,9 +340,7 @@ impl DirectClassifier {
         judge: &ModelId,
     ) -> Result<&Category> {
         let response = driver.call_decision(decision, judge.clone()).await?;
-        let Some(DecisionValue::Choice { selected, .. }) =
-            response.answers.get(ROUTE).map(|answer| &answer.value)
-        else {
+        let DecisionValue::Choice { selected, .. } = route_value(&response, judge)? else {
             return Err(LibsyError::invalid_decision(
                 judge.clone(),
                 "expected a route choice",

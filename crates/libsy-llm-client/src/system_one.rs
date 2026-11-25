@@ -97,6 +97,7 @@ impl RoutedDecisionClient for SystemOneClient {
             .into_iter()
             .map(|(id, answer)| {
                 let value = match (request.questions.get(&id).map(|q| &q.kind), answer.value) {
+                    (Some(_), WireValue::Refusal) => DecisionValue::Refusal,
                     (Some(DecisionKind::Boolean { .. }), WireValue::Noul { noul }) => {
                         DecisionValue::Boolean(BooleanEstimate::ProbabilityTrue(noul))
                     }
@@ -239,6 +240,7 @@ struct WireAnswer {
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum WireValue {
+    Refusal,
     Noul {
         noul: Probability,
     },

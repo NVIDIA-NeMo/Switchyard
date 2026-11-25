@@ -13,7 +13,7 @@ values. Each answer separates its value from optional provider confidence.
 | <a href="../../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.id"><code>DecisionResponse.id: Option&lt;String&gt;</code></a> | Provider response identifier, when available. | Optional `id` | The current adapter reads no response ID and returns none |
 | <a href="../../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.model"><code>DecisionResponse.model: Option&lt;ModelId&gt;</code></a> | Provider-reported model identifier. | Optional `model` | `model` |
 | <a href="../../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.answers"><code>DecisionResponse.answers: BTreeMap&lt;String, DecisionAnswer&gt;</code></a> | Answers matched by question ID. | `answers` object | `answers[]`, identified by `name` |
-| <a href="../../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html#structfield.value"><code>DecisionAnswer.value: DecisionValue</code></a> | Typed estimate matching the question's kind. | `noul`, `choice`, or `score` | `probability`, `choice`, or `score` |
+| <a href="../../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html#structfield.value"><code>DecisionAnswer.value: DecisionValue</code></a> | Typed estimate or refusal. | `noul`, `choice`, `score`, or `refusal` | `predicate`, `choice`, `score`, or `refusal` |
 | <a href="../../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html#structfield.provider_confidence"><code>DecisionAnswer.provider_confidence: Option&lt;ProviderConfidence&gt;</code></a> | Provider-specific confidence with its own scale and meaning. | Optional `confidence` | Optional `confidence` |
 | <a href="../../../rust/switchyard_protocol/decision/struct.DecisionResponse.html#structfield.usage"><code>DecisionResponse.usage: Usage</code></a> | Available token counts; absent counts remain unknown. | Deserialized into <a href="../../../rust/switchyard_protocol/llm/struct.Usage.html"><code>Usage</code></a> | Counts normalized into <a href="../../../rust/switchyard_protocol/llm/struct.Usage.html"><code>Usage</code></a>, separating cache reads and writes from aggregate input |
 
@@ -21,9 +21,10 @@ values. Each answer separates its value from optional provider confidence.
 
 | Variant and fields | Contract | System One | OpenAI Decisions |
 |---|---|---|---|
+| <a href="../../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Refusal"><code>DecisionValue::Refusal</code></a> | The provider declined this question. Sibling answers remain available. | `type: "refusal"` | `type: "refusal"` |
 | <a href="../../../rust/switchyard_protocol/decision/enum.BooleanEstimate.html#variant.Value"><code>BooleanEstimate::Value(bool)</code></a> | A Boolean-only judgment with no implied certainty. | The supplied adapter returns a probability instead | The supplied adapter returns a probability instead |
 | <a href="../../../rust/switchyard_protocol/decision/enum.BooleanEstimate.html#variant.ProbabilityTrue"><code>BooleanEstimate::ProbabilityTrue(Probability)</code></a> | Probability of true on a `[0, 1]` scale. The algorithm chooses any threshold. | `type: "noul"`, field `noul` | `type: "predicate"`, field `probability` |
-| <a href="../../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Choice"><code>DecisionValue::Choice</code></a> with `selected: String` and <a href="../../../rust/switchyard_protocol/decision/struct.Probability.html"><code>probabilities: Option&lt;BTreeMap&lt;String, Probability&gt;&gt;</code></a> | Select a declared ID. When supplied, the distribution covers every declared option. | `choice`; optional ID-keyed `probabilities` | `choice`; `probabilities[]` with option `value` and `probability`, converted to a map |
+| <a href="../../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Choice"><code>DecisionValue::Choice</code></a> with `selected: String` and <a href="../../../rust/switchyard_protocol/decision/struct.Probability.html"><code>probabilities: Option&lt;BTreeMap&lt;String, Probability&gt;&gt;</code></a> | Select a declared ID. | `choice`; optional `probabilities` keyed by option ID; some IDs may be absent | `choice`; `probabilities[]` with a `value` and `probability` for every option |
 | <a href="../../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Score"><code>DecisionValue::Score</code></a> with <a href="../../../rust/switchyard_protocol/decision/struct.ScoreValue.html"><code>value: ScoreValue</code></a> and <a href="../../../rust/switchyard_protocol/decision/struct.Probability.html"><code>probabilities: Option&lt;Vec&lt;Probability&gt;&gt;</code></a> | Position in `0..=N-1`; the optional distribution follows the question's level order. | `score`; optional `probabilities` keyed by numeric strings, reordered by level | `score`; numeric `value` / `probability` entries, reordered by level |
 
 <a href="../../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Boolean"><code>DecisionValue::Boolean</code></a> wraps a <a href="../../../rust/switchyard_protocol/decision/enum.BooleanEstimate.html"><code>BooleanEstimate</code></a>. An absent distribution stays
@@ -42,8 +43,11 @@ Both clients match responses against the request and perform format-specific
 checks. An unexpected ID, kind, or malformed supported response can produce
 <a href="../../../rust/switchyard_protocol/client/enum.LlmClientError.html#variant.ResponseTranslation"><code>LlmClientError::ResponseTranslation</code></a>.
 
-The OpenAI adapter treats a refusal as an error because <a href="../../../rust/switchyard_protocol/decision/enum.DecisionValue.html"><code>DecisionValue</code></a> has no
-refusal variant. Transport failures and upstream HTTP errors also surface through
+If the route question was refused or its `apply_cutoff_to` probability is missing,
+the cutoff classifier uses its fallback when `fail_open` is enabled. Otherwise it
+returns an error identifying the refusal or the missing probability.
+
+Transport failures and upstream HTTP errors surface through
 <a href="../../../rust/switchyard_protocol/client/enum.LlmClientError.html"><code>LlmClientError</code></a>. A host converts its work result to <a href="../../../rust/switchyard_libsy/type.Result.html"><code>libsy::Result&lt;DecisionResponse&gt;</code></a>
 when replying through <a href="../../../rust/switchyard_libsy/struct.CallDecision.html#method.respond"><code>CallDecision::respond</code></a>.
 
