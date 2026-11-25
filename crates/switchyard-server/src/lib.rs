@@ -231,8 +231,9 @@ impl SharedRoutingLog {
     fn snapshot_session(
         &self,
         session_id: &str,
+        group_by: Option<switchyard_costs::api::GroupBy>,
     ) -> std::io::Result<Option<routing_log::SessionStatsSnapshot>> {
-        routing_log::snapshot(&self.path, session_id)
+        routing_log::snapshot(&self.path, session_id, group_by)
     }
 
     fn append_outcome(
@@ -498,6 +499,7 @@ fn stats_observer(
     Arc::new(move |observation| match observation {
         RunObservation::Outcome(metadata) => {
             if let Some((log, context)) = classifier_log.as_ref() {
+                context.observe_outcome(&metadata);
                 log.append_outcome(context, metadata);
             }
         }
@@ -1625,10 +1627,9 @@ async fn reset_stats(State(state): State<ServerState>) -> Json<Value> {
 #[derive(Deserialize)]
 struct SessionStatsQuery {
     session_id: String,
+    group_by: Option<switchyard_costs::api::GroupBy>,
 }
 
-// TODO: This loads the entire file. It should stream the JSONL instead.
-// Huge files will crash the demo server.
 async fn get_session_stats(
     State(state): State<ServerState>,
     query: std::result::Result<Query<SessionStatsQuery>, QueryRejection>,
@@ -1648,25 +1649,20 @@ async fn get_session_stats(
         // Should be unreachable
         return not_found().await;
     };
-    let session_id = query.session_id.clone();
-    // Loading and de-serializing a large file is a time consuming blocking operation
-    let snapshot =
-        match task::spawn_blocking(move || routing_log.snapshot_session(&session_id)).await {
-            Ok(s) => s,
-            Err(err) => {
-                return server_error(format!("failed to snapshot: {err}"));
-            }
-        };
-
+    let snapshot = task::spawn_blocking(move || {
+        routing_log.snapshot_session(&query.session_id, query.group_by)
+    })
+    .await;
     match snapshot {
-        Ok(Some(snapshot)) => (StatusCode::OK, Json(snapshot)).into_response(),
-        Ok(None) => error_response(
+        Ok(Ok(Some(snapshot))) => (StatusCode::OK, Json(snapshot)).into_response(),
+        Ok(Ok(None)) => error_response(
             StatusCode::NOT_FOUND,
             "Routing session not found",
             "not_found",
             "routing_session_not_found",
         ),
-        Err(error) => server_error(format!("failed to read routing log: {error}")),
+        Ok(Err(error)) => server_error(format!("failed to read routing log: {error}")),
+        Err(error) => server_error(format!("failed to snapshot: {error}")),
     }
 }
 
@@ -1984,7 +1980,7 @@ target = "judge"
         }
 
         let snapshot = log
-            .snapshot_session("session-1")
+            .snapshot_session("session-1", None)
             .expect("read log")
             .expect("session recorded");
         let snapshot = serde_json::to_value(&snapshot).expect("serializable snapshot");
@@ -2000,7 +1996,7 @@ target = "judge"
             "efficient"
         );
         assert_eq!(snapshot["outcomes"][1]["turn_id"], "turn-1");
-        assert!(log.snapshot_session("another-session")?.is_none());
+        assert!(log.snapshot_session("another-session", None)?.is_none());
         let contents = std::fs::read_to_string(&log.path)?;
         assert_eq!(contents.lines().count(), 3);
         let record: serde_json::Value =

@@ -72,6 +72,10 @@ fn grouped_and_keyed_files_price_the_same_usage() -> TestResult {
             let cost = prices.estimate(model, &usage).ok_or("missing estimate")?;
             assert!((cost.usd - 13.05).abs() < 1e-9, "{name}: {model}");
             assert_eq!(cost.source, CostSource::Estimated);
+            let observed = prices.observed_spend(model, &usage);
+            assert_eq!(observed.cost, Some(cost));
+            assert_eq!(observed.cache_read_usd, Some(0.3));
+            assert_eq!(observed.cache_write_usd, Some(7.75));
         }
         assert!(!prices.contains("provider/typo"));
         assert_eq!(prices.estimate("provider/typo", &usage), None);
@@ -162,6 +166,7 @@ fn every_grouped_rate_must_be_finite_and_in_range() -> TestResult {
 fn bundled_aliases_keep_all_cache_rates() -> TestResult {
     let prices = Pricing::bundled()?;
     let usage = Usage {
+        provider_cost: Some(0.0),
         input_tokens: Some(1_000_000),
         output_tokens: Some(1_000_000),
         cache: Some(Box::new(InputCacheUsage {
@@ -179,6 +184,16 @@ fn bundled_aliases_keep_all_cache_rates() -> TestResult {
     ] {
         let cost = prices.estimate(model, &usage).ok_or("missing alias")?;
         assert!((cost.usd - 9.35).abs() < 1e-9, "{model}");
+    }
+    for (model, read, write) in [
+        ("claude-haiku-4-5", Some(0.1), Some(3.25)),
+        ("unknown", None, None),
+    ] {
+        let spend = prices.observed_spend(model, &usage);
+        let cost = spend.cost.ok_or("missing provider charge")?;
+        assert_eq!((cost.usd, cost.source), (0.0, CostSource::ProviderReported));
+        assert_eq!(prices.cost(model, &usage), Some(cost));
+        assert_eq!((spend.cache_read_usd, spend.cache_write_usd), (read, write));
     }
     Ok(())
 }

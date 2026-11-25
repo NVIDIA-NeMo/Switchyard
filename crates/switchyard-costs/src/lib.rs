@@ -4,7 +4,9 @@
 //! This module prices observed calls and keeps missing usage or rates unknown.
 
 mod anthropic;
+pub mod api;
 
+use api::CallCost;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -122,6 +124,16 @@ pub struct RecordedCost {
     pub source: CostSource,
 }
 
+fn provider_charge(usage: &Usage) -> Option<RecordedCost> {
+    let usd = usage
+        .provider_cost
+        .filter(|usd| usd.is_finite() && *usd >= 0.0)?;
+    Some(RecordedCost {
+        usd,
+        source: CostSource::ProviderReported,
+    })
+}
+
 impl Pricing {
     /// This method reports whether the file includes rates for a model.
     pub fn contains(&self, model: &str) -> bool {
@@ -190,33 +202,44 @@ impl Pricing {
 
     /// Provider charges take precedence because token rates may omit provider surcharges.
     pub fn cost(&self, model: &str, usage: &Usage) -> Option<RecordedCost> {
-        if let Some(usd) = usage
-            .provider_cost
-            .filter(|value| value.is_finite() && *value >= 0.0)
-        {
-            return Some(RecordedCost {
-                usd,
-                source: CostSource::ProviderReported,
-            });
-        }
-        self.estimate(model, usage)
+        provider_charge(usage).or_else(|| self.estimate(model, usage))
     }
 
-    /// This method uses token rates alone so baseline estimates exclude provider charges.
+    /// Uses catalog rates even when the provider supplies a charge.
     pub fn estimate(&self, model: &str, usage: &Usage) -> Option<RecordedCost> {
-        let rate = self.0.get(model)?;
-        let input = usage.input_tokens?;
-        let output = usage.output_tokens?;
-        let read = usage.cached_input_tokens().unwrap_or(0);
-        let usd = (input as f64 * rate.input
-            + output as f64 * rate.output
-            + read as f64 * rate.cache_read
-            + anthropic::cache_write_cost(usage, rate.cache_write, rate.cache_write_1h)?)
-            / 1_000_000.0;
-        Some(RecordedCost {
-            usd,
-            source: CostSource::Estimated,
-        })
+        self.price_call(model, usage, None).cost
+    }
+
+    fn price_call(&self, model: &str, usage: &Usage, reported: Option<RecordedCost>) -> CallCost {
+        let Some(rate) = self.0.get(model) else {
+            return CallCost {
+                cost: reported,
+                ..CallCost::default()
+            };
+        };
+        let read = usage
+            .cached_input_tokens()
+            .map(|n| n as f64 * rate.cache_read);
+        let write = anthropic::cache_write_cost(usage, rate.cache_write, rate.cache_write_1h);
+        let cost = reported.or_else(|| {
+            let usd = (usage.input_tokens? as f64 * rate.input
+                + usage.output_tokens? as f64 * rate.output
+                + read.unwrap_or(0.0)
+                + write?)
+                / 1_000_000.0;
+            Some(RecordedCost {
+                usd,
+                source: CostSource::Estimated,
+            })
+        });
+        CallCost {
+            cost,
+            cache_read_usd: read.map(|value| value / 1_000_000.0),
+            cache_write_usd: usage
+                .cache_creation_input_tokens()
+                .and(write)
+                .map(|value| value / 1_000_000.0),
+        }
     }
 }
 

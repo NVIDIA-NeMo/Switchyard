@@ -3,8 +3,9 @@
 
 //! Process-wide Prometheus export for Switchyard's OpenTelemetry metrics.
 
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
+use opentelemetry::metrics::Counter;
 use opentelemetry::{KeyValue, global};
 use opentelemetry_sdk::metrics::{Aggregation, Instrument, SdkMeterProvider, Stream};
 use prometheus::{Encoder, Registry, TextEncoder};
@@ -169,4 +170,59 @@ pub(crate) fn encode(registry: &Registry) -> Result<Vec<u8>, String> {
         .encode(&registry.gather(), &mut body)
         .map_err(|error| format!("failed to encode Prometheus metrics: {error}"))?;
     Ok(body)
+}
+
+/// Export the same priced call that feeds the session report. Keep request IDs off counters.
+pub(super) fn export_cost(record: &crate::routing_log::RoutingRecord<'_>) {
+    static SPEND: LazyLock<Counter<f64>> = LazyLock::new(|| usd_counter("switchyard.spend"));
+    static CACHE: LazyLock<Counter<f64>> = LazyLock::new(|| usd_counter("switchyard.cache.spend"));
+    let routing = &record.routing;
+    let call = record.spend;
+    let kind = record.call_kind();
+    let labels = [
+        KeyValue::new("gen_ai.request.model", record.model.to_string()),
+        KeyValue::new("switchyard.target", routing.target.clone()),
+        KeyValue::new("switchyard.route", routing.route_id.clone()),
+        KeyValue::new("switchyard.algorithm", routing.algorithm.clone()),
+        KeyValue::new("switchyard.call.kind", kind.to_owned()),
+    ];
+    if let Some(cost) = call.cost {
+        SPEND.add(cost.usd, &labels);
+    }
+    for (op, usd) in [
+        ("read", call.cache_read_usd),
+        ("write", call.cache_write_usd),
+    ] {
+        if let Some(usd) = usd {
+            let mut attrs = labels.to_vec();
+            attrs.push(KeyValue::new("switchyard.cache.operation", op));
+            CACHE.add(usd, &attrs);
+        }
+    }
+    let _span = tracing::info_span!(
+        "switchyard.cost.observed",
+        gen_ai.request.model = record.model.as_ref(),
+        switchyard.target = routing.target.as_str(),
+        switchyard.route = routing.route_id.as_str(),
+        switchyard.algorithm = routing.algorithm.as_str(),
+        gen_ai.request.reasoning.level = routing.reasoning_effort.as_deref(),
+        outcome_id = record.outcome_id.as_deref(),
+        switchyard.call.kind = kind,
+        gen_ai.conversation.id = record.session_id.as_deref(),
+        switchyard.turn.id = record.turn_id.as_deref(),
+        switchyard.cost.source = call.cost.map(|c| match c.source {
+            switchyard_costs::CostSource::Estimated => "estimated",
+            switchyard_costs::CostSource::ProviderReported => "provider_reported",
+        }),
+        switchyard.cost.usd = call.cost.map(|c| c.usd),
+        switchyard.cache.read_usd = call.cache_read_usd,
+        switchyard.cache.write_usd = call.cache_write_usd
+    );
+}
+
+fn usd_counter(name: &'static str) -> Counter<f64> {
+    global::meter("switchyard")
+        .f64_counter(name)
+        .with_unit("USD")
+        .build()
 }

@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
 use std::time::SystemTime;
 
 use humantime::format_rfc3339_millis;
@@ -17,7 +18,8 @@ use switchyard_protocol::{Metadata, ModelId, Usage};
 
 use crate::usage_metrics::token_usage;
 use crate::{ServerError, ServerResult};
-use switchyard_costs::{CostTotals, Pricing, RecordedCost};
+use switchyard_costs::api::{CallCost, CostReport, CostRoute, CostRow, GroupBy};
+use switchyard_costs::{CostTotals, Pricing};
 
 const LEGACY_SESSION_ID_HEADER: &str = "proxy_x_session_id";
 const ORIGIN_HEADER: &str = "x-switchyard-origin";
@@ -59,7 +61,7 @@ impl RoutingLog {
         tier: Option<&str>,
         usage: &Usage,
     ) -> std::io::Result<()> {
-        let cost = self.pricing.cost(model, usage);
+        let spend = self.pricing.observed_spend(model, usage);
         let cache_creation_1h_tokens = usage
             .cache
             .as_ref()
@@ -68,10 +70,13 @@ impl RoutingLog {
         let usage = token_usage(usage);
         let record = RoutingRecord {
             outcome: None,
-            cost,
+            spend,
             ts: format_rfc3339_millis(SystemTime::now()).to_string().into(),
-            route_id: context.route_id.into(),
-            algorithm: context.algorithm.into(),
+            routing: CostRoute {
+                target: target.to_owned(),
+                ..context.routing
+            },
+            outcome_id: context.outcome_id.get().cloned(),
             origin: context.origin.map(Cow::Owned),
             task: context.task.map(Cow::Owned),
             trial_id: context.trial_id.map(Cow::Owned),
@@ -84,8 +89,6 @@ impl RoutingLog {
             agent_role: context.agent.role.map(Cow::Owned),
             subagent_identity_unsupported: context.agent.identity_unsupported,
             model: model.into(),
-            target: target.into(),
-            reasoning_effort: context.reasoning_effort.map(Cow::Owned),
             tier: tier.unwrap_or("").into(),
             prompt_tokens: usage.prompt_tokens,
             cached_tokens: usage.cached_tokens,
@@ -95,7 +98,9 @@ impl RoutingLog {
             reasoning_tokens: usage.reasoning_tokens,
             total_tokens: usage.prompt_tokens.saturating_add(usage.completion_tokens),
         };
-        self.append_record(&record)
+        self.append_record(&record)?;
+        crate::metrics::export_cost(&record);
+        Ok(())
     }
 
     pub(crate) fn append_outcome(
@@ -107,7 +112,7 @@ impl RoutingLog {
             "session_id": context.session_id,
             "outcome": LoggedOutcome {
                 ts: format_rfc3339_millis(SystemTime::now()).to_string(),
-                route_id: context.route_id.clone(),
+                route_id: context.routing.route_id.clone(),
                 turn_id: context.turn_id.clone(),
                 agent_id: context.agent.agent_id.clone(),
                 parent_agent_id: context.agent.parent_agent_id.clone(),
@@ -128,9 +133,11 @@ impl RoutingLog {
 pub(crate) fn snapshot(
     path: &Path,
     session_id: &str,
+    group_by: Option<GroupBy>,
 ) -> std::io::Result<Option<SessionStatsSnapshot>> {
     let mut reader = BufReader::with_capacity(64 * 1024, fs::File::open(path)?);
     let mut line = Vec::new();
+    let mut report = group_by.map(CostReport::new);
     let mut snapshot = SessionStatsSnapshot {
         session_id: session_id.to_string(),
         ..Default::default()
@@ -146,8 +153,9 @@ pub(crate) fn snapshot(
         let Ok(record) = serde_json::from_slice::<RoutingRecord>(&line) else {
             continue;
         };
-        snapshot.add_record(record, session_id);
+        snapshot.add_record(record, report.as_mut());
     }
+    snapshot.cost_rows = report.map(CostReport::into_rows);
     snapshot.sum_totals();
     Ok((snapshot.total_calls > 0 || !snapshot.outcomes.is_empty()).then_some(snapshot))
 }
@@ -186,54 +194,53 @@ impl AgentIdentity {
 /// Holds request metadata until route resolution attaches the durable route identity.
 #[derive(Clone)]
 pub(crate) struct RoutingLogContext {
-    route_id: String,
-    algorithm: String,
+    routing: CostRoute,
+    outcome_id: Arc<OnceLock<String>>,
     origin: Option<String>,
     task: Option<String>,
     trial_id: Option<String>,
     session_id: Option<String>,
     turn_id: Option<String>,
     agent: AgentIdentity,
-    reasoning_effort: Option<String>,
 }
 
 impl RoutingLogContext {
     /// Captures the normalized session ID, with the legacy log-only header as a fallback.
     pub(crate) fn from_metadata(metadata: &Metadata) -> Self {
-        let headers = metadata.http_headers.as_ref();
+        let header = |name: &str| {
+            let value = metadata.http_headers.as_ref()?.get(name)?.to_str().ok()?;
+            (!value.is_empty()).then(|| value.to_owned())
+        };
         Self {
-            route_id: String::new(),
-            algorithm: String::new(),
-            origin: headers
-                .and_then(|headers| nonempty_header(headers, ORIGIN_HEADER))
-                .map(str::to_string),
-            task: headers
-                .and_then(|headers| nonempty_header(headers, TASK_HEADER))
-                .map(str::to_string),
-            trial_id: headers
-                .and_then(|headers| nonempty_header(headers, TRIAL_ID_HEADER))
-                .map(str::to_string),
+            routing: CostRoute::default(),
+            outcome_id: Arc::default(),
+            origin: header(ORIGIN_HEADER),
+            task: header(TASK_HEADER),
+            trial_id: header(TRIAL_ID_HEADER),
             turn_id: metadata.turn_id.clone(),
-            session_id: metadata.session_id.clone().or_else(|| {
-                headers
-                    .and_then(|headers| nonempty_header(headers, LEGACY_SESSION_ID_HEADER))
-                    .map(str::to_string)
-            }),
+            session_id: metadata
+                .session_id
+                .clone()
+                .or_else(|| header(LEGACY_SESSION_ID_HEADER)),
             agent: AgentIdentity::from_metadata(metadata),
-            reasoning_effort: None,
         }
+    }
+
+    /// Answer streams and candidate observers share the outcome of this request.
+    pub(crate) fn observe_outcome(&self, metadata: &OutcomeMetadata) {
+        let _ = self.outcome_id.set(metadata.outcome_id().to_owned());
     }
 
     /// Captures configured effort for this particular target's call.
     pub(crate) fn with_reasoning_effort(mut self, effort: Option<&str>) -> Self {
-        self.reasoning_effort = effort.map(str::to_owned);
+        self.routing.reasoning_effort = effort.map(str::to_owned);
         self
     }
 
     /// Attaches the resolved route identity shared by every log entry for this request.
     pub(crate) fn with_route(mut self, route_id: impl Into<String>, algorithm: &str) -> Self {
-        self.route_id = route_id.into();
-        self.algorithm = algorithm.to_string();
+        self.routing.route_id = route_id.into();
+        self.routing.algorithm = algorithm.to_string();
         self
     }
 }
@@ -243,14 +250,16 @@ impl RoutingLogContext {
 /// default so a record from an older schema still contributes what it has.
 #[derive(Default, Deserialize, Serialize)]
 #[serde(default)]
-struct RoutingRecord<'a> {
+pub(super) struct RoutingRecord<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     outcome: Option<LoggedOutcome>,
-    #[serde(default)]
-    cost: Option<RecordedCost>,
+    #[serde(flatten)]
+    pub(super) spend: CallCost,
     ts: Cow<'a, str>,
-    route_id: Cow<'a, str>,
-    algorithm: Cow<'a, str>,
+    #[serde(flatten)]
+    pub(super) routing: CostRoute,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) outcome_id: Option<String>,
     #[serde(borrow)]
     origin: Option<Cow<'a, str>>,
     #[serde(borrow)]
@@ -258,9 +267,9 @@ struct RoutingRecord<'a> {
     #[serde(borrow)]
     trial_id: Option<Cow<'a, str>>,
     #[serde(borrow)]
-    session_id: Option<Cow<'a, str>>,
+    pub(super) session_id: Option<Cow<'a, str>>,
     #[serde(borrow)]
-    turn_id: Option<Cow<'a, str>>,
+    pub(super) turn_id: Option<Cow<'a, str>>,
     // Most calls carry no agent identity, so these fields are written only when
     // set. Records without them still parse through `serde(default)`.
     #[serde(borrow, skip_serializing_if = "Option::is_none")]
@@ -276,12 +285,7 @@ struct RoutingRecord<'a> {
     #[serde(skip_serializing_if = "is_false")]
     subagent_identity_unsupported: bool,
     /// Provider model that served the call, which is what cost tools price.
-    model: Cow<'a, str>,
-    /// Configured target that served the call. Targets may share a model.
-    #[serde(default, borrow)]
-    target: Cow<'a, str>,
-    #[serde(borrow, skip_serializing_if = "Option::is_none")]
-    reasoning_effort: Option<Cow<'a, str>>,
+    pub(super) model: Cow<'a, str>,
     tier: Cow<'a, str>,
     prompt_tokens: u64,
     cached_tokens: u64,
@@ -298,11 +302,23 @@ fn is_zero(value: &u64) -> bool {
     *value == 0
 }
 
+impl RoutingRecord<'_> {
+    pub(super) fn call_kind(&self) -> &'static str {
+        if self.tier == crate::CLASSIFIER_TIER {
+            "decision"
+        } else {
+            "answer"
+        }
+    }
+}
+
 /// Session totals returned by the routing stats endpoint.
 #[derive(Default, Serialize)]
 pub(crate) struct SessionStatsSnapshot {
     session_id: String,
     cost: CostTotals,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cost_rows: Option<Vec<CostRow>>,
     answer_cost: CostTotals,
     routing_cost: CostTotals,
     total_calls: u64,
@@ -349,7 +365,7 @@ struct SessionTargetStats {
 
 impl SessionModelStats {
     fn add_record(&mut self, record: &RoutingRecord<'_>) {
-        self.cost.add(record.cost);
+        self.cost.add(record.spend.cost);
         self.calls = self.calls.saturating_add(1);
         self.prompt_tokens = self.prompt_tokens.saturating_add(record.prompt_tokens);
         self.cached_tokens = self.cached_tokens.saturating_add(record.cached_tokens);
@@ -363,8 +379,8 @@ impl SessionModelStats {
 }
 
 impl SessionStatsSnapshot {
-    fn add_record(&mut self, mut record: RoutingRecord<'_>, session_id: &str) {
-        if record.session_id.as_deref() != Some(session_id) {
+    fn add_record(&mut self, mut record: RoutingRecord<'_>, report: Option<&mut CostReport>) {
+        if record.session_id.as_deref() != Some(&self.session_id) {
             return;
         }
         if let Some(outcome) = record.outcome.take() {
@@ -375,25 +391,34 @@ impl SessionStatsSnapshot {
             "" => "unknown",
             model => model,
         };
+        if let Some(report) = report {
+            report.record(
+                record.turn_id.as_deref(),
+                model,
+                record.call_kind(),
+                record.spend,
+                &record.routing,
+            );
+        }
         let stats = self.models.entry(ModelId::from(model)).or_default();
         stats.add_record(&record);
         // Older logs have no target identity; keep them only in the model aggregate.
-        if !record.target.is_empty() {
+        if !record.routing.target.is_empty() {
             self.targets
-                .entry(ModelId::from(record.target.as_ref()))
+                .entry(ModelId::from(record.routing.target.as_str()))
                 .or_insert_with(|| SessionTargetStats {
                     model: model.to_string(),
-                    reasoning_effort: record.reasoning_effort.as_deref().map(str::to_owned),
+                    reasoning_effort: record.routing.reasoning_effort.clone(),
                     stats: SessionModelStats::default(),
                 })
                 .stats
                 .add_record(&record);
         }
-        self.cost.add(record.cost);
-        if record.tier == "classifier" {
-            self.routing_cost.add(record.cost);
+        self.cost.add(record.spend.cost);
+        if record.tier == crate::CLASSIFIER_TIER {
+            self.routing_cost.add(record.spend.cost);
         } else {
-            self.answer_cost.add(record.cost);
+            self.answer_cost.add(record.spend.cost);
         }
     }
 
@@ -417,14 +442,6 @@ impl SessionStatsSnapshot {
 /// Lets serde leave out a `false` flag, so it is written only when set.
 fn is_false(flag: &bool) -> bool {
     !flag
-}
-
-/// Returns a header value only when it is present, non-empty, and valid text.
-fn nonempty_header<'a>(headers: &'a http::HeaderMap, name: &str) -> Option<&'a str> {
-    headers
-        .get(name)
-        .filter(|value| !value.is_empty())
-        .and_then(|v| v.to_str().ok())
 }
 
 fn routing_log_error(path: &Path, error: std::io::Error) -> ServerError {
@@ -524,13 +541,55 @@ mod tests {
         )
         .expect("write log");
 
-        let stats = snapshot(&path, "a").expect("read log").expect("session a");
+        let stats = snapshot(&path, "a", None)
+            .expect("read log")
+            .expect("session a");
         assert_eq!(stats.total_calls, 2);
         assert_eq!(stats.total_prompt_tokens, 15);
         assert_eq!(stats.total_completion_tokens, 2);
         assert_eq!(stats.models["m1"].calls, 1);
         assert!(stats.targets.is_empty());
         assert_eq!(stats.models["unknown"].prompt_tokens, 5);
-        assert!(snapshot(&path, "missing").expect("read log").is_none());
+        assert!(
+            snapshot(&path, "missing", None)
+                .expect("read log")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn grouped_costs_include_routes_and_unpriced_calls() -> std::io::Result<()> {
+        let mut log = tempfile::NamedTempFile::new()?;
+        for route in ["a", "b"] {
+            let call = serde_json::json!({"session_id":"s","turn_id":"t1","model":"m","route_id":route,
+                "cost":{"usd":0.25,"source":"provider_reported"},"cache_read_usd":0.01,"cache_write_usd":0.0});
+            writeln!(log, "{call}")?;
+        }
+        log.write_all(
+            br#"{"session_id":"s","turn_id":"t1","model":"judge","tier":"classifier"}
+{"session_id":"s","model":"m"}
+"#,
+        )?;
+        for group in [GroupBy::Turn, GroupBy::Model, GroupBy::Session] {
+            let per_turn = matches!(group, GroupBy::Turn);
+            let stats = snapshot(log.path(), "s", Some(group))?.unwrap();
+            let rows = stats.cost_rows.unwrap();
+            assert_eq!(rows.len(), if per_turn { 3 } else { 2 });
+            let answer = rows.iter().find(|r| r.cost.known_usd > 0.0).unwrap();
+            assert_eq!(answer.key.call_kind, "answer");
+            assert_eq!(answer.cost.known_usd, 0.5);
+            let routes: Vec<_> = answer.routes.iter().map(|r| r.route_id.as_str()).collect();
+            assert_eq!(routes, ["a", "b"]);
+            // The legacy unpriced call has no turn ID, but shares the model and session.
+            assert_eq!(answer.key.turn_id.as_deref(), per_turn.then_some("t1"));
+            assert_eq!(answer.key.turn_index, per_turn.then_some(0));
+            assert_eq!(answer.cost.total_usd, per_turn.then_some(0.5));
+            assert_eq!(answer.cost.unknown_calls, if per_turn { 0 } else { 1 });
+            assert_eq!(answer.cache_read_usd, per_turn.then_some(0.02));
+            assert_eq!(answer.cache_write_usd, per_turn.then_some(0.0));
+            let model = (!matches!(group, GroupBy::Session)).then_some("m");
+            assert_eq!(answer.key.model.as_deref(), model);
+        }
+        Ok(())
     }
 }
