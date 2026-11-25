@@ -6,13 +6,15 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use pythonize::{depythonize, pythonize};
+use pythonize::{Depythonizer, pythonize};
 use serde::{Serialize, de::DeserializeOwned};
+
+use crate::serde_depth;
 
 /// Converts a Python mapping-like object into a Serde-owned Rust value.
 pub(crate) fn from_python<T: DeserializeOwned>(value: &Bound<'_, PyAny>) -> PyResult<T> {
     let normalized = jsonable_python(value)?;
-    depythonize(normalized.bind(value.py()))
+    serde_depth::deserialize(&mut Depythonizer::from_object(normalized.bind(value.py())))
         .map_err(|error| PyValueError::new_err(error.to_string()))
 }
 

@@ -87,6 +87,7 @@ jobs:
           import os
           import sys
           import tempfile
+          from importlib.resources import files
 
           os.chdir(tempfile.mkdtemp(prefix="switchyard-wheel-smoke-"))
           workspace = os.environ.get("GITHUB_WORKSPACE")
@@ -94,7 +95,12 @@ jobs:
 
           import switchyard
           import switchyard_rust
+          from switchyard.runner import Runner
+          from switchyard.sim import Trajectory
           from switchyard_rust import _switchyard_rust
+
+          for package in ("switchyard", "switchyard_rust"):
+              assert files(package).joinpath("py.typed").is_file(), package
 
           print("switchyard", switchyard.__version__)
           print("switchyard_rust", switchyard_rust.__file__)
@@ -112,6 +118,7 @@ jobs:
           import os
           import sys
           import tempfile
+          from importlib.resources import files
 
           os.chdir(tempfile.mkdtemp(prefix="switchyard-wheel-smoke-"))
           workspace = os.environ.get("GITHUB_WORKSPACE")
@@ -119,7 +126,12 @@ jobs:
 
           import switchyard
           import switchyard_rust
+          from switchyard.runner import Runner
+          from switchyard.sim import Trajectory
           from switchyard_rust import _switchyard_rust
+
+          for package in ("switchyard", "switchyard_rust"):
+              assert files(package).joinpath("py.typed").is_file(), package
 
           print("switchyard", switchyard.__version__)
           print("switchyard_rust", switchyard_rust.__file__)

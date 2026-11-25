@@ -3,7 +3,7 @@
 
 //! One configured algorithm and the clients that serve its targets.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 use std::sync::Arc;
 
@@ -11,7 +11,7 @@ use libsy::{Algorithm, LibsyError, RoutingOutcome, RuntimeModels};
 use serde_json::Value;
 use switchyard_llm_client::{AuxiliaryOperation, ClientRouter, RunObserver, TranslatingLlmClient};
 use switchyard_protocol::{
-    LlmClientError, ModelId, Request, Response, RoutedLlmClient, WireFormat,
+    Category, LlmClientError, ModelId, Request, Response, RoutedLlmClient, WireFormat,
 };
 use thiserror::Error;
 
@@ -256,6 +256,24 @@ impl Route {
         self.standard.algorithm.name()
     }
 
+    /// Configured target that may produce an answer during routing.
+    pub fn routing_answer_target(&self) -> Option<&ModelId> {
+        self.standard.clients.routing_answer_target()
+    }
+
+    /// Configured completion targets available to routing decisions.
+    pub fn decision_targets(&self) -> Vec<DecisionTarget> {
+        let models = &self.standard.models;
+        let mut seen = HashSet::new();
+        models
+            .models_for(&Category::Any)
+            .iter()
+            .chain(models.subagent_models_for(&Category::Any))
+            .filter(|target| seen.insert(*target))
+            .filter_map(|target| self.target(target).cloned())
+            .collect()
+    }
+
     /// Returns model-list capability metadata.
     pub fn capabilities(&self) -> ModelCapabilities {
         self.capabilities
@@ -323,12 +341,22 @@ impl Route {
 
     /// Completes routing-time calls without serving a post-routing completion.
     pub async fn decide(&self, request: Request) -> Result<RoutingOutcome, RunnerError> {
+        self.decide_with_observer(request, None).await
+    }
+
+    /// Completes routing-time calls with request-scoped observations.
+    pub async fn decide_with_observer(
+        &self,
+        request: Request,
+        observer: Option<RunObserver>,
+    ) -> Result<RoutingOutcome, RunnerError> {
         let lane = self.select_lane(&request)?;
-        switchyard_llm_client::decide(
+        switchyard_llm_client::decide_with_observer(
             Arc::clone(&lane.algorithm),
             lane.clients.clone(),
             request,
             Arc::clone(&lane.models),
+            observer,
         )
         .await
         .map_err(RunnerError::from)

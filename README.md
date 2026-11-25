@@ -126,6 +126,7 @@ The [routing overview](docs/routing_algorithms/overview.md) lists all strategies
 ## Evaluation and reference
 
 [Compare benchmark results and configs](docs/benchmarks.md) for Terminal-Bench 2.1 and DeepSWE.
+Use the Python [task routing evaluator](docs/simulation.md) to compare routing decisions against ATIF trajectories, custom recordings, or Harbor Claude and Codex runs.
 For latency and routing overhead testing, see [Soak Testing](docs/operations/soak_test.md).
 
 ### Further reading

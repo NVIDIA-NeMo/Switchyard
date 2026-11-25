@@ -65,7 +65,9 @@ fn category_models_from_python(
 }
 
 /// Convert Python-owned headers into the request metadata expected by libsy.
-fn header_map_from_python(headers: &HashMap<String, String>) -> PyResult<http::HeaderMap> {
+pub(crate) fn header_map_from_python(
+    headers: &HashMap<String, String>,
+) -> PyResult<http::HeaderMap> {
     let mut result = http::HeaderMap::new();
     for (name, value) in headers {
         let name = HeaderName::from_bytes(name.as_bytes())
@@ -80,17 +82,16 @@ fn header_map_from_python(headers: &HashMap<String, String>) -> PyResult<http::H
 }
 
 /// Attach normalized host metadata to a provider-neutral request.
-fn request_from_python(
+pub(crate) fn request_from_python(
     request: &Bound<'_, PyAny>,
-    headers: Option<HashMap<String, String>>,
+    headers: Option<&HeaderMap>,
 ) -> PyResult<Request> {
-    let headers = headers.as_ref().map(header_map_from_python).transpose()?;
     let mut llm_request = from_python(request)?;
-    switchyard_translation::normalize_compaction(&mut llm_request, headers.as_ref());
+    switchyard_translation::normalize_compaction(&mut llm_request, headers);
     Ok(Request {
         llm_request,
         raw_request: None,
-        metadata: headers.map(|headers| Metadata::from_headers(&headers)),
+        metadata: headers.map(Metadata::from_headers),
     })
 }
 
@@ -813,7 +814,7 @@ impl PyOutcomeMetadata {
 
 /// The terminal routing selection, rewritten request, optional response, and metadata.
 #[pyclass(name = "RoutingOutcome", module = "switchyard.libsy", frozen)]
-struct PyRoutingOutcome {
+pub(crate) struct PyRoutingOutcome {
     selected_model_ids: Vec<String>,
     request: Py<PyAny>,
     fallback_request: Option<Py<PyAny>>,
@@ -988,7 +989,8 @@ impl PyAlgorithm {
         subagent_models: Option<HashMap<String, Vec<String>>>,
         headers: Option<HashMap<String, String>>,
     ) -> PyResult<PyRunStream> {
-        let request = request_from_python(request, headers)?;
+        let headers = headers.as_ref().map(header_map_from_python).transpose()?;
+        let request = request_from_python(request, headers.as_ref())?;
         let mut runtime_models = RuntimeModels::new(category_models_from_python(models)?);
         if let Some(subagent_models) = subagent_models {
             runtime_models =
@@ -1109,8 +1111,9 @@ impl PyConfiguredAlgorithm {
         required_labels: Option<Vec<String>>,
         task_id: Option<String>,
     ) -> PyResult<PyRunStream> {
-        let headers = headers.map(from_python).transpose()?;
-        let mut request = request_from_python(request, headers)?;
+        let headers: Option<HashMap<String, String>> = headers.map(from_python).transpose()?;
+        let headers = headers.as_ref().map(header_map_from_python).transpose()?;
+        let mut request = request_from_python(request, headers.as_ref())?;
         if let Some(task_id) = task_id {
             request.metadata.get_or_insert_default().task_id = Some(task_id);
         }
@@ -1149,48 +1152,49 @@ fn step_to_python(step: RustStep) -> PyResult<PyStep> {
                 call: Py::new(py, PyModelCall::new(py, *call)?)?,
             })
         }),
-        RustStep::Done(outcome) => {
-            let RoutingOutcome {
-                selected_model_ids,
-                request,
-                fallback_request,
-                candidate_requests,
-                response,
-                metadata,
-                state: _,
-            } = *outcome;
-            Python::attach(|py| {
-                Ok(PyStep::Done {
-                    outcome: Py::new(
-                        py,
-                        PyRoutingOutcome {
-                            metadata: metadata
-                                .map(|inner| Py::new(py, PyOutcomeMetadata { inner }))
-                                .transpose()?,
-                            selected_model_ids: selected_model_ids
-                                .iter()
-                                .map(ToString::to_string)
-                                .collect(),
-                            request: to_python(py, &request.llm_request)?,
-                            candidate_requests: to_python(
-                                py,
-                                &candidate_requests
-                                    .into_iter()
-                                    .map(|(id, request)| (id.to_string(), request.llm_request))
-                                    .collect::<std::collections::HashMap<_, _>>(),
-                            )?,
-                            fallback_request: fallback_request
-                                .map(|request| to_python(py, &request.llm_request))
-                                .transpose()?,
-                            response: response
-                                .map(|response| response_to_python(py, response.llm_response))
-                                .transpose()?,
-                        },
-                    )?,
-                })
+        RustStep::Done(outcome) => Python::attach(|py| {
+            Ok(PyStep::Done {
+                outcome: outcome_to_python(py, *outcome)?,
             })
-        }
+        }),
     }
+}
+
+pub(crate) fn outcome_to_python(
+    py: Python<'_>,
+    outcome: RoutingOutcome,
+) -> PyResult<Py<PyRoutingOutcome>> {
+    Py::new(
+        py,
+        PyRoutingOutcome {
+            metadata: outcome
+                .metadata
+                .map(|inner| Py::new(py, PyOutcomeMetadata { inner }))
+                .transpose()?,
+            selected_model_ids: outcome
+                .selected_model_ids
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            request: to_python(py, &outcome.request.llm_request)?,
+            candidate_requests: to_python(
+                py,
+                &outcome
+                    .candidate_requests
+                    .into_iter()
+                    .map(|(id, request)| (id.to_string(), request.llm_request))
+                    .collect::<std::collections::HashMap<_, _>>(),
+            )?,
+            fallback_request: outcome
+                .fallback_request
+                .map(|request| to_python(py, &request.llm_request))
+                .transpose()?,
+            response: outcome
+                .response
+                .map(|response| response_to_python(py, response.llm_response))
+                .transpose()?,
+        },
+    )
 }
 
 /// Construct the no-op reference algorithm.
