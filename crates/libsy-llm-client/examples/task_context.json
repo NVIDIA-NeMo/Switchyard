@@ -1,0 +1,8 @@
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": "Fix handling of quoted commas in the CSV parser and add a regression test."
+    }
+  ]
+}
