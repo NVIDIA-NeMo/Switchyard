@@ -294,7 +294,7 @@ impl Classifier for EscalationClassifier {
             "escalation classifier selected efficient tier"
         );
         let efficient_response = match driver
-            .call_model(request.clone(), vec![efficient.clone()])
+            .call_model_with_error_recovery(request.clone(), vec![efficient.clone()], true)
             .await
         {
             Ok(r) => r,
