@@ -172,6 +172,14 @@ impl LlmClientError {
         ]
         .iter()
         .any(|pattern| message.contains(pattern))
+            || (message.contains("image")
+                && message.contains("patches")
+                && message.contains("exceed")
+                && message.contains("limit"))
+            || (message.contains("mime type")
+                && (message.contains("unsupported")
+                    || message.contains("not supported")
+                    || message.contains("only image types are supported")))
     }
 }
 

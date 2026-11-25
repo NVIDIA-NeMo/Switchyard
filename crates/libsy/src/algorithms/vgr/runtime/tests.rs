@@ -390,6 +390,7 @@ async fn skipped_requests_leave_the_recovery_trial_available() -> Result<()> {
         let mut task = request(vec![Message::text(Role::User, "task")]);
         match skip {
             "image" => {
+                classifier.config.efficient_supports_attachments = false;
                 task.llm_request.messages[0].content = vec![ContentBlock::Image {
                     source: ImageSource::Url {
                         url: "https://example.test/image.png".into(),
@@ -1446,10 +1447,7 @@ async fn attachment_verifiers_receive_the_evidence_even_without_user_text() -> R
         let expects_typing = content
             .iter()
             .any(|block| matches!(block, ContentBlock::Text { text } if !text.trim().is_empty()));
-        let route = route(|config| {
-            config.efficient_supports_attachments = true;
-            config.task_typing = true;
-        })?;
+        let route = route(|config| config.task_typing = true)?;
         let evidence = image.clone();
         let checks = Arc::new(AtomicUsize::new(0));
         let seen = checks.clone();
@@ -1494,7 +1492,7 @@ async fn attachment_verifiers_receive_the_evidence_even_without_user_text() -> R
             filename: Some("invoice.pdf".into()),
         },
     };
-    let route = route(|_| {})?;
+    let route = route(|config| config.efficient_supports_attachments = false)?;
     let (selected, _) = test_drive_with_models(
         route,
         request(vec![Message::new(
@@ -1611,7 +1609,7 @@ async fn disabled_attachments_skip_all_media_and_prevent_efficient_stand_in() ->
             } else {
                 block.clone()
             };
-            let route = route(|_| {})?;
+            let route = route(|config| config.efficient_supports_attachments = false)?;
             let mut input = request(vec![Message::new(
                 Role::User,
                 vec![

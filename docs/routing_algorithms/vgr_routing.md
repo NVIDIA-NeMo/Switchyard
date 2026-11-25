@@ -212,10 +212,17 @@ Fallback is disabled by the kill switch, an open efficient circuit breaker, or a
 attachment request the efficient tier cannot serve. A failed efficient generation
 is not retried as a stand-in during the same request.
 
-By default the efficient tier does not serve requests that contain image, file,
+By default the efficient tier attempts requests that contain image, file,
 audio, or video attachments, including attachments in tool results. Set
-`efficient_supports_attachments = true` on the VGR route to let it attempt requests
-with attachments. This setting permits attempts; it does not guarantee that the
+`efficient_supports_attachments = false` on the VGR route to send attachments
+directly to the capable tier. To enable attachments in an existing configuration,
+remove that override or set `efficient_supports_attachments = true` in the
+Switchyard TOML configuration loaded by your integration (including Hermes).
+Reload or restart the integration after changing the configuration. The VGR
+serving mode still controls whether efficient answers can be served; `off` and
+`shadow` serve the capable tier.
+
+This setting permits attempts; it does not guarantee that the
 efficient model understands every attachment format. All configured judges must
 also support the attachment formats: typing, confidence, deliberation, and verdict
 calls receive the original attachments in conversation order alongside the judged
@@ -227,6 +234,12 @@ An efficient-tier HTTP 400 on an attachment request escalates even when the erro
 body does not identify a media problem. Explicit content-policy denials remain
 terminal. Generic HTTP 400 errors on text-only requests or from the capable tier
 keep their existing handling.
+
+In `active` mode, a capable-tier attachment rejection, including image patch limits
+or unsupported MIME types, can fall back to the efficient tier. This makes a new
+efficient call with the original request; the earlier unverified answer is not
+cached. The same kill switch, breaker, attachment setting, and failed-generation
+checks apply. Explicit content-policy denials remain terminal.
 
 ## Serving modes
 

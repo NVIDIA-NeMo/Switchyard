@@ -560,8 +560,8 @@ pub struct VgrRouteConfig {
     /// Holds escalations across later user turns.
     #[serde(default)]
     pub latch_escalation: bool,
-    /// Lets the efficient tier attempt requests that contain attachments.
-    #[serde(default)]
+    /// Lets the efficient tier attempt requests that contain attachments. Defaults to true.
+    #[serde(default = "default_true")]
     pub efficient_supports_attachments: bool,
 }
 

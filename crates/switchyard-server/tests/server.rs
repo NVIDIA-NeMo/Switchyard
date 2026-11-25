@@ -6746,10 +6746,14 @@ task_typing = false
 }
 
 #[tokio::test]
-async fn vgr_image_requests_stay_on_the_efficient_tier_when_configured() -> TestResult {
+async fn vgr_image_requests_default_to_efficient_and_allow_opt_out() -> TestResult {
     let upstream = MockUpstream::start().await?;
     for (configured, served) in [
-        ("", "model/vgr-capable"),
+        ("", "model/vgr-efficient"),
+        (
+            "efficient_supports_attachments = false",
+            "model/vgr-capable",
+        ),
         (
             "efficient_supports_attachments = true",
             "model/vgr-efficient",
@@ -6797,6 +6801,111 @@ bounded_efficient = false
             Some(&HeaderValue::from_str(served)?),
             "{configured}"
         );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_cloud_attachment_limits_fall_back_to_local() -> TestResult {
+    for (url, error) in [
+        (
+            "data:image/jpeg;base64,/9j/2Q==",
+            "The image you provided requires 35344 patches after processing, exceeding the limit of 30000.",
+        ),
+        (
+            "data:video/mp4;base64,AAAAIGZ0eXA=",
+            "Invalid MIME type. Only image types are supported. Got video/mp4.",
+        ),
+    ] {
+        let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let upstream = Router::new()
+            .route("/v1/chat/completions", post(move |State(calls): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<Value>| async move {
+                calls.lock().await.push(body.clone());
+                let model = body["model"].as_str().unwrap();
+                if model == "cloud" {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"error": {"message": error}}))).into_response();
+                }
+                let content = if model == "judge" { "no" } else { "Red" };
+                if body["stream"] == true {
+                    let chunks = [
+                        json!({"id": "chatcmpl-media", "object": "chat.completion.chunk", "model": model,
+                            "choices": [{"index": 0, "delta": {"role": "assistant", "content": content}, "finish_reason": null}]}).to_string(),
+                        json!({"id": "chatcmpl-media", "object": "chat.completion.chunk", "model": model,
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}).to_string(),
+                        "[DONE]".into(),
+                    ];
+                    return Sse::new(futures_util::stream::iter(chunks.into_iter().map(|chunk| {
+                        Ok::<Event, Infallible>(Event::default().data(chunk))
+                    }))).into_response();
+                }
+                Json(json!({
+                    "id": "chatcmpl-media", "object": "chat.completion", "model": model,
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}]
+                })).into_response()
+            }))
+            .with_state(calls.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let base_url = format!("http://{}/v1", listener.local_addr()?);
+        let task = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let upstream = MockUpstream {
+            base_url,
+            calls: calls.clone(),
+            task,
+        };
+        let app = build_switchyard_router(load_test_config(&format!(
+            r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{}"
+max_retries = 0
+[targets]
+efficient = {{ id = "local", llm_client = "primary" }}
+capable = {{ id = "cloud", llm_client = "primary" }}
+judge = {{ id = "judge", llm_client = "primary" }}
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+efficient_target = "efficient"
+capable_target = "capable"
+judge_target = "judge"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+bounded_efficient = false
+"#,
+            upstream.base_url
+        ))?);
+        for stream in [false, true] {
+            calls.lock().await.clear();
+            let response = send(
+                &app,
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({
+                    "model": "switchyard/vgr", "stream": stream,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": "What color is this attachment? One word."},
+                        {"type": "image_url", "image_url": {"url": url}}
+                    ]}]
+                })),
+            )
+            .await?;
+            assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+            assert!(response.text()?.contains("Red"), "{}", response.text()?);
+            let calls = calls.lock().await;
+            let models: Vec<_> = calls
+                .iter()
+                .map(|call| call["model"].as_str().unwrap())
+                .collect();
+            assert_eq!(models.first(), Some(&"local"));
+            assert!(models.contains(&"cloud"));
+            assert_eq!(models.last(), Some(&"local"));
+            assert_eq!(
+                calls.first().unwrap()["messages"],
+                calls.last().unwrap()["messages"]
+            );
+        }
     }
     Ok(())
 }

@@ -670,7 +670,7 @@ verification policy, tool turns, handoff behavior, and serving modes.
 | `compact_handoff` | No | `false` | Condense efficient-tier history at handoff. Requires `agentic_handoff = true`. Experimental and lossy. |
 | `efficient_turn_budget_seconds` | No | unset | Wall-clock budget for efficient work within one user turn, including tool execution. Must be finite and greater than zero. |
 | `latch_escalation` | No | `false` | Retain escalation across later user turns. In `shadow` mode, the hold ends at the next user turn. |
-| `efficient_supports_attachments` | No | `false` | Allow the efficient tier to attempt requests containing attachments. The model must support the input. |
+| `efficient_supports_attachments` | No | `true` | Allow the efficient tier to attempt requests containing attachments. The model must support the input. |
 
 Start with the [route configuration](../routing_algorithms/vgr_routing.md#configure-a-route)
 or the [complete local-server example](../../examples/vgr-local-servers.toml).

@@ -3052,6 +3052,21 @@ mod tests {
             ),
             (
                 StatusCode::BAD_REQUEST,
+                r#"{"error":{"message":"The image you provided requires 35344 patches after processing, exceeding the limit of 30000."}}"#,
+                true,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"message":"Invalid MIME type. Only image types are supported. Got video/mp4."}}"#,
+                true,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"code":"content_policy_violation","message":"The image requires 35344 patches, exceeding the limit of 30000."}}"#,
+                false,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
                 r#"{"error":{"code":"content_policy_violation","message":"invalid image"}}"#,
                 false,
             ),
