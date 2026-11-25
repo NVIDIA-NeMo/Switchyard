@@ -206,11 +206,10 @@ Coding without tool history can serve the efficient attempt with a clean readout
 0.6, or a readout of at least 0.2 plus capable-judge affirmation. Other final-answer
 branches can use a separate scored verdict after efficient deliberation.
 
-In `active` mode, an unavailable capable tier can fall back to an unverified efficient
-answer. That call receives the original request without the capable handoff note.
-Fallback is disabled by the kill switch, an open efficient circuit breaker, or an
-attachment request the efficient tier cannot serve. A failed efficient generation
-is not retried as a stand-in during the same request.
+Once VGR selects the capable tier, it does not fall back to an unverified efficient
+answer. If the capable tier is unavailable or rejects an attachment, its error is
+returned. An efficient answer that failed verification is not regenerated or
+served after that error. This applies to every serving mode and content type.
 
 By default the efficient tier attempts requests that contain image, file,
 audio, or video attachments, including attachments in tool results. Set
@@ -235,11 +234,9 @@ body does not identify a media problem. Explicit content-policy denials remain
 terminal. Generic HTTP 400 errors on text-only requests or from the capable tier
 keep their existing handling.
 
-In `active` mode, a capable-tier attachment rejection, including image patch limits
-or unsupported MIME types, can fall back to the efficient tier. This makes a new
-efficient call with the original request; the earlier unverified answer is not
-cached. The same kill switch, breaker, attachment setting, and failed-generation
-checks apply. Explicit content-policy denials remain terminal.
+Capable-tier attachment errors, including image patch limits and unsupported MIME
+types, are returned to the caller. The VGR decision log records the selected tier;
+it does not claim that a response was served before the model call succeeds.
 
 An unsupported-audio error, including an HTTP 500 from a local server without
 audio support, is an attachment failure. It does not retry or put the backend in

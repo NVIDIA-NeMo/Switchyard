@@ -1046,7 +1046,7 @@ async fn tool_work_from_an_earlier_user_turn_is_not_handed_off() -> Result<()> {
 }
 
 #[tokio::test]
-async fn a_capable_decision_falls_back_to_efficient_without_the_handoff_note() -> Result<()> {
+async fn a_capable_decision_does_not_offer_an_unverified_efficient_fallback() -> Result<()> {
     use crate::core::algorithm::Call;
     use crate::core::testing::serve_decision;
 
@@ -1098,19 +1098,8 @@ async fn a_capable_decision_falls_back_to_efficient_without_the_handoff_note() -
         )
         .await?;
         assert!(noted(&outcome.request));
-        if killed {
-            assert_eq!(outcome.selected_model_ids, vec![ModelId::new("capable")]);
-            assert!(outcome.fallback_request.is_none());
-        } else {
-            assert_eq!(
-                outcome.selected_model_ids,
-                vec![ModelId::new("capable"), ModelId::new("efficient")]
-            );
-            let fallback = outcome
-                .fallback_request
-                .expect("an efficient fallback request");
-            assert_eq!(fallback.llm_request.messages, task().llm_request.messages);
-        }
+        assert_eq!(outcome.selected_model_ids, vec![ModelId::new("capable")]);
+        assert!(outcome.fallback_request.is_none());
     }
     Ok(())
 }
@@ -1333,7 +1322,7 @@ fn only_a_paused_reply_to_a_reported_final_answer_releases_the_latch() {
 }
 
 #[tokio::test]
-async fn a_failed_capable_verifier_still_offers_the_efficient_answer() -> Result<()> {
+async fn a_failed_capable_verifier_does_not_offer_the_unverified_efficient_answer() -> Result<()> {
     use crate::core::algorithm::Call;
     use crate::core::testing::serve_decision;
 
@@ -1374,14 +1363,8 @@ async fn a_failed_capable_verifier_still_offers_the_efficient_answer() -> Result
         },
     )
     .await?;
-    assert_eq!(
-        outcome.selected_model_ids,
-        vec![ModelId::new("capable"), ModelId::new("efficient")]
-    );
-    let fallback = outcome
-        .fallback_request
-        .expect("an efficient fallback request");
-    assert_eq!(fallback.llm_request.messages, task().llm_request.messages);
+    assert_eq!(outcome.selected_model_ids, vec![ModelId::new("capable")]);
+    assert!(outcome.fallback_request.is_none());
     Ok(())
 }
 

@@ -352,15 +352,7 @@ async fn call_first_available<'a>(
             {
                 return Err(error);
             }
-            Err(error) => match if algorithm == "vgr"
-                && fallback_request.is_some()
-                && matches!(&error, LibsyError::ClientCall { source, .. }
-                    if source.is_attachment_rejection())
-            {
-                Some(RoutingFallbackReason::Unavailable)
-            } else {
-                fallback_reason(&error, fallback_request.is_none())
-            } {
+            Err(error) => match fallback_reason(&error, fallback_request.is_none()) {
                 Some(reason) => tracing::info!(
                     from = %target,
                     to = %models[index + 1],
@@ -3140,16 +3132,12 @@ mod tests {
                 None,
             )
             .await;
-            if succeeds {
+            if succeeds && fail_efficient {
                 let (selected, response) = result?;
                 assert_eq!(selected.as_str(), "capable");
                 assert_eq!(
                     response.served_model().map(ModelId::as_str),
-                    Some(if fail_efficient {
-                        "capable"
-                    } else {
-                        "efficient"
-                    })
+                    Some("capable")
                 );
                 assert_eq!(
                     completion_text(
@@ -3167,9 +3155,18 @@ mod tests {
                     .iter()
                     .filter(|m| m.as_str() == "efficient")
                     .count();
-                assert_eq!(local_calls, if fail_efficient { 1 } else { 2 });
+                assert_eq!(local_calls, 1);
             } else {
                 assert!(result.is_err(), "{fail_efficient}, {status}, {body}");
+                assert_eq!(
+                    client
+                        .calls
+                        .lock()
+                        .iter()
+                        .filter(|m| m.as_str() == "efficient")
+                        .count(),
+                    1
+                );
             }
         }
         Ok(())
@@ -3181,8 +3178,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn capable_media_rejections_allow_vgr_stand_in_without_hiding_other_bad_requests()
-    -> Result<()> {
+    async fn capable_media_rejections_do_not_serve_unverified_local_answers() -> Result<()> {
         check_vgr_media_rejections(false, true).await
     }
 
@@ -3277,18 +3273,19 @@ mod tests {
         );
         client.reject_efficient.store(false, Ordering::Relaxed);
         client.calls.lock().clear();
-        run(
+        let result = run(
             algorithm,
             ClientRouter::single(client.clone()),
             input,
             to_category_map(&["efficient", "capable"]),
             None,
         )
-        .await?;
+        .await;
+        assert!(result.is_err());
         let calls = client.calls.lock();
         assert_eq!(
             calls.iter().filter(|m| m.as_str() == "efficient").count(),
-            2
+            1
         );
         Ok(())
     }

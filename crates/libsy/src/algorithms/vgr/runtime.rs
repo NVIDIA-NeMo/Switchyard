@@ -204,7 +204,6 @@ impl Classifier for VgrClassifier {
                 buffered
             }
             Some(Err(error)) => {
-                driver.record_model_failure(efficient.clone());
                 if endpoint_failure(&error) {
                     trial.failure();
                 }
@@ -221,7 +220,6 @@ impl Classifier for VgrClassifier {
                 ));
             }
             None => {
-                driver.record_model_failure(efficient.clone());
                 trial.failure();
                 return Ok(self.escalate(
                     driver,
@@ -328,20 +326,6 @@ impl Classifier for VgrClassifier {
 }
 
 impl VgrClassifier {
-    /// Whether the efficient tier may answer `request` when the capable tier fails it.
-    ///
-    /// That answer is unverified, so it is offered only while efficient attempts are allowed.
-    pub(super) fn efficient_may_stand_in(&self, request: &Request) -> bool {
-        matches!(self.config.mode, ServingMode::Active { .. })
-            && !self
-                .config
-                .kill_switch
-                .as_ref()
-                .is_some_and(|switch| switch.is_engaged())
-            && !self.breaker.is_open()
-            && (self.config.efficient_supports_attachments || text::attachments(request).is_empty())
-    }
-
     fn escalate(
         &self,
         driver: &Driver,
@@ -704,11 +688,11 @@ fn handoff_note(unverified_final: Option<&str>) -> String {
     note
 }
 
-fn log(driver: &Driver, reason: &'static str, branch: Option<Branch>, served: Route) {
+fn log(driver: &Driver, reason: &'static str, branch: Option<Branch>, selected: Route) {
     driver.set_evidence(serde_json::json!({
         "source": "vgr",
         "reason_code": reason,
-        "verdict": if served == Route::Efficient { "efficient" } else { "capable" },
+        "verdict": if selected == Route::Efficient { "efficient" } else { "capable" },
         "branch": branch.map(|branch| format!("{branch:?}")),
         "policy_version": decide::POLICY_VERSION,
     }));
@@ -716,7 +700,7 @@ fn log(driver: &Driver, reason: &'static str, branch: Option<Branch>, served: Ro
         target: "libsy",
         reason,
         branch = ?branch,
-        served = ?served,
+        selected = ?selected,
         policy_version = decide::POLICY_VERSION,
         "vgr decision"
     );

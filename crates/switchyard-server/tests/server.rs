@@ -7014,8 +7014,12 @@ targets = ["capable"]
 }
 
 #[tokio::test]
-async fn vgr_cloud_attachment_limits_fall_back_to_local() -> TestResult {
+async fn vgr_rejected_local_answer_is_not_retried_after_cloud_attachment_rejection() -> TestResult {
     for (url, error) in [
+        (
+            "data:image/x-icon;base64,AAABAA==",
+            "Unsupported image format: image/x-icon",
+        ),
         (
             "data:image/jpeg;base64,/9j/2Q==",
             "The image you provided requires 35344 patches after processing, exceeding the limit of 30000.",
@@ -7033,7 +7037,7 @@ async fn vgr_cloud_attachment_limits_fall_back_to_local() -> TestResult {
                 if model == "cloud" {
                     return (StatusCode::BAD_REQUEST, Json(json!({"error": {"message": error}}))).into_response();
                 }
-                let content = if model == "judge" { "no" } else { "Red" };
+                let content = if model == "judge" { "no" } else { "Unknown" };
                 if body["stream"] == true {
                     let chunks = [
                         json!({"id": "chatcmpl-media", "object": "chat.completion.chunk", "model": model,
@@ -7099,20 +7103,27 @@ bounded_efficient = false
                 })),
             )
             .await?;
-            assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
-            assert!(response.text()?.contains("Red"), "{}", response.text()?);
+            assert_eq!(
+                response.status,
+                StatusCode::BAD_REQUEST,
+                "{}",
+                response.text()?
+            );
+            assert_eq!(response.json()?["error"]["message"], error);
+            assert!(
+                response
+                    .headers
+                    .get("x-model-router-selected-model")
+                    .is_none()
+            );
             let calls = calls.lock().await;
             let models: Vec<_> = calls
                 .iter()
                 .map(|call| call["model"].as_str().unwrap())
                 .collect();
             assert_eq!(models.first(), Some(&"local"));
-            assert!(models.contains(&"cloud"));
-            assert_eq!(models.last(), Some(&"local"));
-            assert_eq!(
-                calls.first().unwrap()["messages"],
-                calls.last().unwrap()["messages"]
-            );
+            assert_eq!(models.last(), Some(&"cloud"));
+            assert_eq!(models.iter().filter(|model| **model == "local").count(), 1);
         }
     }
     Ok(())

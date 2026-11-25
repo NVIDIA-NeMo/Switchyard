@@ -38,7 +38,6 @@ mod tests;
 /// A verification-gated route between an efficient and a capable tier.
 pub struct Vgr {
     route: FallThrough,
-    classifier: Arc<runtime::VgrClassifier>,
 }
 
 impl Vgr {
@@ -67,8 +66,8 @@ impl Vgr {
                 .with_processor(affinity.clone())
                 .with_classifier(Arc::new(runtime::Held(affinity, reason)));
         }
-        let route = route.with_classifier(classifier.clone());
-        Ok(Self { route, classifier })
+        let route = route.with_classifier(classifier);
+        Ok(Self { route })
     }
 }
 
@@ -79,28 +78,9 @@ impl Algorithm for Vgr {
     }
 
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome> {
-        // The handoff note is written for the capable tier, so an efficient stand-in gets the request
-        // as it arrived.
-        let arrived = self
-            .classifier
-            .efficient_may_stand_in(&request)
-            .then(|| request.clone());
-        let mut outcome = self.route.execute(driver.clone(), request).await?;
-        // Efficient answers are already buffered and have no fallback.
+        let mut outcome = self.route.execute(driver, request).await?;
+        // An efficient answer must pass verification before it can be served.
         outcome.selected_model_ids.truncate(1);
-        let config = &self.classifier.config;
-        if let Some(arrived) = arrived
-            && outcome.response.is_none()
-            && outcome.selected_model_ids.first() == Some(&config.targets.capable)
-            // A failed generation must not be retried after the capable tier also rejects it.
-            && !driver.model_failed(&config.targets.efficient)
-            && self.classifier.efficient_may_stand_in(&arrived)
-        {
-            outcome
-                .selected_model_ids
-                .push(config.targets.efficient.clone());
-            outcome.fallback_request = Some(arrived);
-        }
         Ok(outcome)
     }
 
