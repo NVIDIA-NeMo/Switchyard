@@ -671,6 +671,8 @@ pub struct StageSettingsConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StageProfileConfig {
+    pub capable_target: Option<String>,
+    pub efficient_target: Option<String>,
     pub classifier: Option<StageClassifierConfig>,
     pub picker: Option<PickerMode>,
     #[serde(flatten)]
@@ -1032,6 +1034,19 @@ impl AlgorithmSpec {
         names
     }
 
+    fn profile_targets(&self) -> impl Iterator<Item = &String> {
+        let profiles = match self {
+            Self::Composite {
+                efficient, capable, ..
+            } => [efficient.as_deref(), capable.as_deref()],
+            _ => [None, None],
+        };
+        profiles
+            .into_iter()
+            .flatten()
+            .flat_map(|p| p.capable_target.iter().chain(&p.efficient_target))
+    }
+
     /// Completion targets in algorithm order; judge-only targets are excluded.
     pub fn routing_target_names(&self) -> Vec<&str> {
         match self {
@@ -1088,6 +1103,7 @@ impl AlgorithmSpec {
                     stage.capable_target.as_str(),
                     stage.efficient_target.as_str(),
                 ];
+                names.extend(self.profile_targets().map(String::as_str));
                 if let Some(subagents) = subagents {
                     names.extend(subagents.routing_target_names());
                 }
@@ -1227,7 +1243,10 @@ impl AlgorithmSpec {
                 (Category::Efficient, vec![stage.efficient_target.clone()]),
                 (
                     Category::Any,
-                    vec![stage.capable_target.clone(), stage.efficient_target.clone()],
+                    [stage.capable_target.clone(), stage.efficient_target.clone()]
+                        .into_iter()
+                        .chain(self.profile_targets().cloned())
+                        .collect(),
                 ),
             ]),
             Self::Advisor {
@@ -1986,6 +2005,7 @@ fn build_algorithm(
                 &stage.capable_target,
                 &stage.efficient_target,
             )?;
+            let has_overrides = config.profile_targets().next().is_some();
             let defaults = StageProfileConfig::default();
             let profiles = [
                 (efficient, PickerMode::EfficientFirst),
@@ -1994,16 +2014,22 @@ fn build_algorithm(
             .map(|(profile, picker)| -> AlgorithmResult<_> {
                 let profile = profile.as_deref().unwrap_or(&defaults);
                 let mut config = stage.profile_config(profile, picker);
+                let [capable, efficient] = [
+                    (&profile.capable_target, &stage.capable_target),
+                    (&profile.efficient_target, &stage.efficient_target),
+                ]
+                .map(|(target, shared)| target.as_ref().unwrap_or(shared));
+                if has_overrides {
+                    config.tier_targets = Some([
+                        resolve_target_model_id(route_name, capable, targets)?,
+                        resolve_target_model_id(route_name, efficient, targets)?,
+                    ]);
+                }
                 config.llm_fallback = profile
                     .classifier
                     .as_ref()
                     .map(|classifier| {
-                        classifier.stage_fallback(
-                            route_name,
-                            &stage.capable_target,
-                            &stage.efficient_target,
-                            targets,
-                        )
+                        classifier.stage_fallback(route_name, capable, efficient, targets)
                     })
                     .transpose()?;
                 Ok(config)

@@ -18,6 +18,7 @@ async fn profile_judges_and_fallback_prompts() -> Result<(), Box<dyn std::error:
         let mut source = format!(
             r#"
 schema_version = 1
+llm_clients.alternate = {{ format = "openai_chat", base_url = "{0}/alternate/v1", max_retries = 0 }}
 [llm_clients.local]
 format = "openai_chat"
 base_url = "{}/v1"
@@ -26,6 +27,8 @@ max_retries = 0
 judge = {{ id = "judge", llm_client = "local" }}
 strong = {{ id = "strong", llm_client = "local" }}
 weak = {{ id = "weak", llm_client = "local" }}
+alternate_strong = {{ id = "strong", llm_client = "alternate" }}
+alternate_weak = {{ id = "weak", llm_client = "alternate" }}
 inner = {{ id = "inner", llm_client = "local" }}
 [routes.auto]
 id = "auto"
@@ -43,6 +46,11 @@ efficient_system_prompt = "EFFICIENT PROMPT"
 "#,
             server.uri()
         );
+        if profile == "capable" {
+            source.push_str(
+                "capable_target = 'alternate_strong'\nefficient_target = 'alternate_weak'\n",
+            );
+        }
         if inner_score.is_some() {
             source.push_str(&format!(
                 "\n[routes.auto.{profile}.classifier]\ntarget = 'inner'\nbase_threshold = 0.5\n"
@@ -62,7 +70,11 @@ efficient_system_prompt = "EFFICIENT PROMPT"
             ("weak", 503, "unavailable"),
             ("strong", 200, "answer"),
         ] {
-            Mock::given(method("POST")).and(path("/v1/chat/completions"))
+            let (endpoint, status) = match (profile, model) {
+                ("capable", "weak" | "strong") => ("/alternate/v1/chat/completions", 503),
+                _ => ("/v1/chat/completions", status),
+            };
+            Mock::given(method("POST")).and(path(endpoint))
             .and(body_partial_json(json!({"model": model})))
             .and(move |request: &wiremock::Request| {
                 let body: serde_json::Value = request.body_json().unwrap();
@@ -82,7 +94,7 @@ efficient_system_prompt = "EFFICIENT PROMPT"
                 _ => 1,
             }).mount(&server).await;
         }
-        runner
+        let result = runner
             .route("auto")
             .unwrap()
             .execute(
@@ -92,7 +104,13 @@ efficient_system_prompt = "EFFICIENT PROMPT"
                 },
                 None,
             )
-            .await?;
+            .await;
+        if profile == "capable" {
+            assert!(result.is_err());
+            assert_eq!(server.received_requests().await.unwrap().len(), 4);
+        } else {
+            result?;
+        }
         server.verify().await;
     }
     Ok(())

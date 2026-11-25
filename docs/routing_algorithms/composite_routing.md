@@ -74,7 +74,8 @@ on a standalone stage route.
 
 ### Independent stage profiles
 
-Add these tables beside `stage` to configure each profile over the shared target pair:
+Profiles inherit targets from `stage`. Override either target to use its configured client for that tier.
+Completion fallbacks stay within the selected profile's target pair.
 
 ```toml
 [routes.switchyard.efficient]
@@ -85,6 +86,8 @@ capable_system_prompt = "Resolve the difficult step."
 efficient_system_prompt = "Carry out the next concrete step."
 
 [routes.switchyard.capable]
+capable_target = "alternate_strong"
+efficient_target = "alternate_weak"
 picker = "capable_first"
 confidence_threshold = 0.2
 efficient_hold_turns = -1
@@ -96,7 +99,6 @@ Both profiles use the [stage tuning and prompt settings](stage_router_routing.md
 The judge's verdict selects `efficient` or `capable`. Their pickers default to
 efficient-first and capable-first respectively. Override `picker` to use either
 mode in either profile, including capable-first in both.
-Targets stay in `stage` and the profile selector stays in `classifier`.
 Each profile can also define its own `classifier` table, using the standalone
 stage classifier settings and target. It runs only when stage signals abstain.
 On model fallback, each candidate receives the active profile's prompt for its tier.
