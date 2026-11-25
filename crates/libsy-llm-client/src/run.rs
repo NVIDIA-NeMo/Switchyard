@@ -3046,6 +3046,21 @@ mod tests {
                 true,
             ),
             (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                r#"{"error":{"message":"audio input is not supported - check that the correct mmproj is loaded"}}"#,
+                true,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"message":"Audio input is not available"}}"#,
+                true,
+            ),
+            (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":{"code":"content_policy_violation","message":"audio input is not supported"}}"#,
+                false,
+            ),
+            (
                 StatusCode::BAD_REQUEST,
                 r#"{"error":{"message":"The image data you provided does not represent a valid image"}}"#,
                 true,

@@ -241,6 +241,12 @@ efficient call with the original request; the earlier unverified answer is not
 cached. The same kill switch, breaker, attachment setting, and failed-generation
 checks apply. Explicit content-policy denials remain terminal.
 
+An unsupported-audio error, including an HTTP 500 from a local server without
+audio support, is an attachment failure. It does not retry or put the backend in
+failure cooldown. VGR can try the capable tier; if that tier also rejects audio,
+its audio error is returned. A Local Only route returns the local audio error.
+Later text requests can still use the local model immediately on either route.
+
 ## Serving modes
 
 - `off` skips candidate generation and serves the capable tier. This is the default.

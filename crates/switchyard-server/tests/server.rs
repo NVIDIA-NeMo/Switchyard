@@ -6806,6 +6806,145 @@ bounded_efficient = false
 }
 
 #[tokio::test]
+async fn unsupported_audio_does_not_cool_down_local_for_auto_or_pinned_requests() -> TestResult {
+    let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let upstream = Router::new()
+        .route("/v1/chat/completions", post(|State(calls): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<Value>| async move {
+            calls.lock().await.push(body.clone());
+            let model = body["model"].as_str().unwrap();
+            if body["messages"].to_string().contains("input_audio") {
+                let (status, message) = if model == "local" {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "audio input is not supported - check that the correct mmproj is loaded")
+                } else {
+                    (StatusCode::BAD_REQUEST, "Audio input is not available")
+                };
+                return (status, Json(json!({"error": {"message": message}}))).into_response();
+            }
+            let content = if model == "judge" { "yes" } else { "Lima" };
+            Json(json!({
+                "id": "chatcmpl-audio", "object": "chat.completion", "model": model,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop",
+                    "logprobs": {"content": [{"token": "yes", "logprob": 0.9_f64.ln(), "top_logprobs": [
+                        {"token": "yes", "logprob": 0.9_f64.ln()}, {"token": "no", "logprob": 0.1_f64.ln()}
+                    ]}]}}]
+            })).into_response()
+        }))
+        .with_state(calls.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}/v1", listener.local_addr()?);
+    let task = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let upstream = MockUpstream {
+        base_url,
+        calls: calls.clone(),
+        task,
+    };
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.local]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 2
+failure_cooldown_ms = 60000
+[llm_clients.cloud]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 0
+[targets]
+efficient = {{ id = "local", llm_client = "local" }}
+capable = {{ id = "cloud", llm_client = "cloud" }}
+judge = {{ id = "judge", llm_client = "cloud" }}
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+efficient_target = "efficient"
+capable_target = "capable"
+judge_target = "judge"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+bounded_efficient = false
+[routes.pin-local]
+id = "switchyard/pin-local"
+type = "random"
+targets = ["efficient"]
+"#,
+        base_url = upstream.base_url
+    ))?);
+    for (route, status, message) in [
+        (
+            "switchyard/vgr",
+            StatusCode::BAD_REQUEST,
+            "Audio input is not available",
+        ),
+        (
+            "switchyard/pin-local",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "audio input is not supported",
+        ),
+    ] {
+        calls.lock().await.clear();
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": route,
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "Describe this attachment in one sentence."},
+                    {"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}}
+                ]}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, status, "{}", response.text()?);
+        assert!(
+            response.json()?["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(message)
+        );
+        let audio_calls = calls.lock().await.clone();
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": route,
+                "messages": [{"role": "user", "content": "Reply with just the word Lima."}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+        assert_eq!(
+            response.headers.get("x-model-router-selected-model"),
+            Some(&HeaderValue::from_static("local"))
+        );
+        assert_eq!(response.json()?["choices"][0]["message"]["content"], "Lima");
+        assert_eq!(
+            audio_calls
+                .iter()
+                .filter(|call| call["model"] == "local")
+                .count(),
+            1
+        );
+        let models: Vec<_> = audio_calls
+            .iter()
+            .map(|call| call["model"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            models,
+            if route == "switchyard/vgr" {
+                vec!["local", "cloud"]
+            } else {
+                vec!["local"]
+            }
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn vgr_cloud_attachment_limits_fall_back_to_local() -> TestResult {
     for (url, error) in [
         (
