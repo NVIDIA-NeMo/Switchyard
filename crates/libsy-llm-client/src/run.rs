@@ -1358,6 +1358,7 @@ mod tests {
         let mixed: DecisionRequest = serde_json::from_value(json!({
             "model": "judge", "input": [Message::text(Role::User, "A simple task")],
             "questions": {
+                "refused": {"instructions": "Is it safe?", "kind": {"type": "boolean", "data": {}}},
                 "boolean": {"instructions": "Is it simple?", "kind": {"type": "boolean", "data": {
                     "true_description": ["Simple"], "false_description": null
                 }}},
@@ -1372,6 +1373,7 @@ mod tests {
         let mut body = json!({
             "model": "jev-1.13.0", "usage": {"input_tokens": 42, "output_tokens": 3},
             "answers": {
+                "refused": {"type": "refusal"},
                 "boolean": {"type": "noul", "noul": 0.9},
                 "route": {"type": "choice", "choice": "efficient", "confidence": 0.7,
                     "probabilities": {"capable": 0.2, "efficient": 0.8}},
@@ -1397,6 +1399,7 @@ mod tests {
             .mount(&server)
             .await;
         let response = client.call(mixed.clone()).await?;
+        assert_eq!(response.answers["refused"].value, DecisionValue::Refusal);
         assert_eq!(response.model.as_deref(), Some("jev-1.13.0"));
         assert_eq!(response.id, None);
         assert_eq!(response.usage.input_tokens, Some(42));
@@ -1469,16 +1472,18 @@ mod tests {
 
         body["answers"].as_object_mut().unwrap().remove("boolean");
         body["answers"].as_object_mut().unwrap().remove("score");
+        body["answers"].as_object_mut().unwrap().remove("refused");
         let models = Arc::new(RuntimeModels::new(HashMap::from([
             (Category::Judge, vec!["judge".into()]),
             (Category::Capable, vec!["capable".into()]),
             (Category::Efficient, vec!["efficient".into()]),
             (Category::Any, vec!["efficient".into(), "capable".into()]),
         ])));
-        let algorithm = || -> Result<Arc<dyn Algorithm>> {
+        let algorithm = |fail_open| -> Result<Arc<dyn Algorithm>> {
             Ok(Arc::new(LlmTaskClassifier::new(
                 LlmClassifierConfig::Capability {
                     config: TaskClassifierConfig {
+                        fail_open,
                         judge: CapabilityJudgeConfig::Decision(DecisionJudgeConfig {
                             cutoff: Some(0.4),
                             ..DecisionJudgeConfig::default()
@@ -1488,23 +1493,50 @@ mod tests {
                 },
             )?))
         };
-        for (template, expected, is_success) in [
+        let route_response = |answer| {
+            let mut body = body.clone();
+            body["answers"]["route"] = answer;
+            ResponseTemplate::new(200).set_body_json(body)
+        };
+        for (template, expected, is_success, strict_error) in [
             (
                 ResponseTemplate::new(200).set_body_json(&body),
                 "efficient",
                 true,
+                None,
+            ),
+            (
+                route_response(json!({"type": "refusal"})),
+                "capable",
+                true,
+                Some("route question was refused"),
+            ),
+            (
+                route_response(json!({"type": "choice", "choice": "capable", "confidence": 0.9})),
+                "capable",
+                true,
+                Some("missing probability for capable"),
+            ),
+            (
+                route_response(
+                    json!({"type": "choice", "choice": "capable", "probabilities": {"efficient": 0.1}}),
+                ),
+                "capable",
+                true,
+                Some("missing probability for capable"),
             ),
             (
                 ResponseTemplate::new(503).set_body_string("unavailable"),
                 "capable",
                 false,
+                None,
             ),
         ] {
             server.reset().await;
             Mock::given(method("POST"))
                 .and(path("/v1/systemone"))
                 .respond_with(template)
-                .expect(2)
+                .expect(if strict_error.is_some() { 3 } else { 2 })
                 .mount(&server)
                 .await;
             let llm = Arc::new(CandidateClient {
@@ -1519,13 +1551,26 @@ mod tests {
                     client.clone() as Arc<dyn RoutedDecisionClient>,
                 )]),
             );
-            let outcome = decide(algorithm()?, clients.clone(), request(), models.clone()).await?;
+            if let Some(reason) = strict_error {
+                let result = decide(
+                    algorithm(false)?,
+                    clients.clone(),
+                    request(),
+                    models.clone(),
+                )
+                .await;
+                assert!(
+                    matches!(result, Err(LibsyError::InvalidDecision { message, .. }) if message == reason)
+                );
+            }
+            let outcome =
+                decide(algorithm(true)?, clients.clone(), request(), models.clone()).await?;
             assert_eq!(outcome.selected_model_id()?, expected);
             assert!(llm.calls.lock().is_empty());
             let events = Arc::new(Mutex::new(Vec::new()));
             let captured = events.clone();
             let (selected, _) = run(
-                algorithm()?,
+                algorithm(true)?,
                 clients,
                 request(),
                 models.clone(),

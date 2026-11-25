@@ -42,16 +42,20 @@ async fn scores_stay_within_each_requested_rubric() -> Result<(), Box<dyn std::e
             .collect();
         let request: DecisionRequest = serde_json::from_value(json!({
             "model": "judge", "input": "evaluate",
-            "questions": {"q": {"instructions": "Rate difficulty", "kind": {
-                "type": "score", "data": {"levels": levels}
-            }}}
+            "questions": {
+                "q": {"instructions": "Rate difficulty", "kind": {
+                    "type": "score", "data": {"levels": levels}
+                }},
+                "safe": {"instructions": "Is it safe?", "kind": {"type": "boolean", "data": {}}}
+            }
         }))?;
         server.reset().await;
         Mock::given(method("POST"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "model": "judge",
                 "answers": [{"name": "q", "type": "score", "score": score,
-                    "confidence": 0.73, "probabilities": probabilities}],
+                    "confidence": 0.73, "probabilities": probabilities},
+                    {"name": "safe", "type": "refusal"}],
                 "usage": {"input_tokens": 42, "output_tokens": 3, "total_tokens": 45,
                     "input_tokens_details": {"cached_tokens": 10, "cache_write_tokens": 2},
                     "output_tokens_details": {"reasoning_tokens": 1}}
@@ -62,6 +66,7 @@ async fn scores_stay_within_each_requested_rubric() -> Result<(), Box<dyn std::e
         let result = client.call(request).await;
         if valid {
             let response = result?;
+            assert_eq!(response.answers["safe"].value, DecisionValue::Refusal);
             assert_eq!(
                 response.answers["q"].value,
                 DecisionValue::Score {
