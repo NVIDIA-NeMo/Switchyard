@@ -112,9 +112,13 @@ impl SwitchyardRuntime {
     pub(crate) fn decode_request(
         &self,
         inbound: WireFormat,
-        request: RelayRequest,
+        mut request: RelayRequest,
         streaming: bool,
     ) -> Result<Request, String> {
+        // Same-format targets reuse this body, so it must carry the intercept's stream mode.
+        if let Some(body) = request.content.as_object_mut() {
+            body.insert("stream".into(), Json::Bool(streaming));
+        }
         let mut llm_request = translation::decode_request(&self.translation, inbound, &request)
             .map_err(|error| self.redactor.text(error))?;
         llm_request.stream = streaming;
@@ -1395,6 +1399,100 @@ seed = 17
             .expect("stream produced no response.completed event");
         assert_eq!(completed["response"]["output"][0]["name"], "search");
         assert_eq!(completed["response"]["output"][0]["namespace"], "mcp__docs");
+    }
+
+    #[tokio::test]
+    async fn stream_intercept_overrides_preserved_wire_flag() {
+        for flag in [None, Some(false), Some(true)] {
+            let server = MockServer::start().await;
+            let sse = concat!(
+                "data: {\"id\":\"test\",\"object\":\"chat.completion.chunk\",\"model\":\"target/model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}\n\n",
+                "data: {\"id\":\"test\",\"object\":\"chat.completion.chunk\",\"model\":\"target/model\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+                "data: [DONE]\n\n",
+            );
+            Mock::given(method("POST"))
+                .and(path("/v1/chat/completions"))
+                .and(body_partial_json(
+                    json!({"model": "target/model", "stream": true}),
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_raw(sse, "text/event-stream"))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let runtime = runtime_for_target("openai_chat", &format!("{}/v1", server.uri()));
+            let mut content = json!({
+                "model": "switchyard/default",
+                "messages": [{"role": "user", "content": "hello"}],
+            });
+            if let Some(flag) = flag {
+                content["stream"] = json!(flag);
+            }
+            let request = runtime
+                .decode_request(
+                    WireFormat::OpenAiChat,
+                    RelayRequest {
+                        headers: Map::new(),
+                        content,
+                    },
+                    true,
+                )
+                .unwrap();
+            let stream = runtime
+                .execute_stream(WireFormat::OpenAiChat, request, Arc::new(|_| {}))
+                .await
+                .result
+                .unwrap_or_else(|error| panic!("stream flag {flag:?}: {error}"));
+            let events = stream
+                .collect::<Vec<_>>()
+                .await
+                .into_iter()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            assert!(
+                events
+                    .iter()
+                    .any(|event| event["choices"][0]["delta"]["content"] == "hello")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn buffered_intercept_overrides_preserved_wire_flag() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .and(body_partial_json(
+                json!({"model": "target/model", "stream": false}),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "reply", "object": "chat.completion", "model": "target/model",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let runtime = runtime_for_target("openai_chat", &format!("{}/v1", server.uri()));
+        let request = runtime
+            .decode_request(
+                WireFormat::OpenAiChat,
+                RelayRequest {
+                    headers: Map::new(),
+                    content: json!({
+                        "model": "switchyard/default",
+                        "messages": [{"role": "user", "content": "hello"}],
+                        "stream": true,
+                    }),
+                },
+                false,
+            )
+            .unwrap();
+        let response = runtime
+            .execute_buffered(WireFormat::OpenAiChat, request)
+            .await
+            .result
+            .unwrap();
+        assert_eq!(response["choices"][0]["message"]["content"], "hello");
     }
 
     #[test]
