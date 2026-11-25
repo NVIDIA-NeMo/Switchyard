@@ -4,6 +4,20 @@ All notable changes to Switchyard are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- OpenAI Chat targets can set `reasoning_format` to `"openai"` or `"deepseek"`
+  to choose the field for earlier assistant reasoning. Without a setting,
+  rebuilt plaintext keeps each assistant turn's original field spelling. Rebuilds
+  omit plaintext when structured details provide the reasoning. Assistant turns
+  with both plaintext fields go upstream with only one.
+  Rust callers that use a `Message` struct literal must set the new
+  `chat_reasoning` field. `Message::new` defaults it to `None`. Existing
+  `DecisionTarget` struct literals must also set `reasoning_format: None` to
+  keep their previous behavior.
+
 ## [0.4.0]
 
 Switchyard 0.4.0 adds configurable routing profiles, application-controlled

@@ -244,9 +244,10 @@ const COMMON_ROUTE_KEYS: [&str; 6] = [
 const REQUEST_SETTINGS: [&str; 3] = ["omit_body_fields", "reasoning_effort", "extra_body"];
 
 /// TARGET_SETTINGS lists settings that a route takes on when it uses the target.
-const TARGET_SETTINGS: [&str; 4] = [
+const TARGET_SETTINGS: [&str; 5] = [
     "system_prompt",
     "reasoning_effort",
+    "reasoning_format",
     "extra_body",
     "omit_body_fields",
 ];
@@ -1337,6 +1338,36 @@ fn table_key(path: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reassigning_a_route_reuses_the_target_with_matching_reasoning_format() {
+        let config = ServerConfig::parse(
+            r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "https://example.test/v1"
+[targets]
+old = { id = "old-model", llm_client = "primary", reasoning_format = "deepseek" }
+openai = { id = "new-model", llm_client = "primary", reasoning_format = "openai" }
+deepseek = { id = "new-model", llm_client = "primary", reasoning_format = "deepseek" }
+[routes.main]
+id = "main"
+type = "passthrough"
+target = "old"
+"#,
+        )
+        .expect("config");
+        let choice = Choice {
+            client: "primary".into(),
+            model: "new-model".into(),
+        };
+        let edited = config
+            .edit("main", config.algorithm("main").unwrap(), &[choice])
+            .expect("edit");
+        let doc: DocumentMut = edited.text.parse().unwrap();
+        assert_eq!(doc["routes"]["main"]["target"].as_str(), Some("deepseek"));
+    }
 
     // `[routes.name]` headers leave `[routes]` implicit. Deleting the last route must still
     // write a `routes` table, or the server rejects the file with `missing field routes`.

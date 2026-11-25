@@ -267,6 +267,12 @@ fn build_multi_format_client(
   To replace either top-level field for a target, list it in `omit_body_fields` and
   supply its replacement in `extra_body`. Omission runs before defaults are merged.
   Target `reasoning_effort` overrides apply to OpenAI backends.
+- `ModelConfig::with_reasoning_format` sets the Chat field (`reasoning` or
+  `reasoning_content`) that earlier assistant reasoning is sent under. It requires an
+  OpenAI Chat backend. If both fields have text, the configured field wins.
+  Without a setting, rebuilt plaintext keeps the caller's spelling for each turn.
+  A rebuild can omit plaintext when structured details already provide the reasoning.
+  Plaintext reasoning from other formats uses `reasoning`.
 - `HttpBackendConfig::max_retries` controls additional attempts after retryable
   transport failures, timeouts, HTTP 408/429, and 5xx responses. Buffered body
   transport failures are retried; streaming body failures are not replayed after

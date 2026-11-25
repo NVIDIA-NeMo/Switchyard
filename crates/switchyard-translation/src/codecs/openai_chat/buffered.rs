@@ -22,9 +22,10 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
-    AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
-    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
-    SamplingParams, StopReason, Tool, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    AggLlmResponse, ChatReasoningAliases, ChatReasoningSource, ContentBlock, FileSource,
+    ImageSource, InstructionBlock, LlmRequest, MediaSource, Message, OutputParams,
+    ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams, StopReason, Tool,
+    ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -162,7 +163,11 @@ impl FormatCodec for OpenAiChatCodec {
                         .instructions
                         .push(InstructionBlock { role, content });
                 } else {
-                    request.messages.push(Message::new(role, content));
+                    let mut turn = Message::new(role, content);
+                    if role == Role::Assistant {
+                        turn.chat_reasoning = chat_reasoning_source(message, &turn.content);
+                    }
+                    request.messages.push(turn);
                 }
             }
         }
@@ -570,6 +575,32 @@ fn reasoning_details_from_blocks(content: &[ContentBlock]) -> Vec<Value> {
         .collect()
 }
 
+fn chat_reasoning_source(
+    object: &Map<String, Value>,
+    content: &[ContentBlock],
+) -> Option<ChatReasoningSource> {
+    let normalized @ ContentBlock::Reasoning { text, .. } = content.first()? else {
+        return None;
+    };
+    let reasoning = first_nonempty_string(object, &["reasoning"]);
+    let reasoning_content = first_nonempty_string(object, &["reasoning_content"]);
+    if [reasoning, reasoning_content]
+        .into_iter()
+        .flatten()
+        .any(|value| value != text)
+    {
+        Some(ChatReasoningSource::Aliases(Box::new(
+            ChatReasoningAliases {
+                normalized: normalized.clone(),
+                reasoning: reasoning.map(str::to_owned),
+                reasoning_content: reasoning_content.map(str::to_owned),
+            },
+        )))
+    } else {
+        reasoning_content.map(|_| ChatReasoningSource::ReasoningContent)
+    }
+}
+
 /// Decodes OpenAI role strings into normalized roles.
 ///
 /// Unknown role strings are rejected with [`TranslationError::InvalidValue`] so
@@ -876,6 +907,7 @@ pub(crate) fn encode_message_to_openai(
 
     Ok(vec![encode_message_without_tool_results_to_openai(
         message,
+        &message.content,
         diagnostics,
         policy,
     )?])
@@ -921,40 +953,21 @@ fn encode_message_with_tool_results_to_openai(
         }
     }
 
-    push_pending_openai_message(
-        &mut out,
-        message.role,
-        &mut pending_content,
-        diagnostics,
-        policy,
-    )?;
-    Ok(out)
-}
-
-// Flushes accumulated non-tool-result content as a normal OpenAI message.
-fn push_pending_openai_message(
-    out: &mut Vec<Value>,
-    role: Role,
-    pending_content: &mut Vec<ContentBlock>,
-    diagnostics: &mut Vec<TranslationDiagnostic>,
-    policy: &TranslationPolicy,
-) -> Result<()> {
-    if pending_content.is_empty() {
-        return Ok(());
+    if !pending_content.is_empty() {
+        out.push(encode_message_without_tool_results_to_openai(
+            message,
+            &pending_content,
+            diagnostics,
+            policy,
+        )?);
     }
-
-    let message = Message::new(role, std::mem::take(pending_content));
-    out.push(encode_message_without_tool_results_to_openai(
-        &message,
-        diagnostics,
-        policy,
-    )?);
-    Ok(())
+    Ok(out)
 }
 
 // Encodes a normalized message that has no tool-result blocks.
 fn encode_message_without_tool_results_to_openai(
     message: &Message,
+    content: &[ContentBlock],
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
 ) -> Result<Value> {
@@ -965,8 +978,7 @@ fn encode_message_without_tool_results_to_openai(
         Role::Tool => "tool",
         Role::User => "user",
     };
-    let tool_calls = message
-        .content
+    let tool_calls = content
         .iter()
         .filter_map(|block| match block {
             ContentBlock::ToolCall(call) => Some(json!({
@@ -980,8 +992,7 @@ fn encode_message_without_tool_results_to_openai(
             _ => None,
         })
         .collect::<Vec<_>>();
-    let content_blocks = message
-        .content
+    let content_blocks = content
         .iter()
         .filter(|block| {
             !matches!(
@@ -995,7 +1006,7 @@ fn encode_message_without_tool_results_to_openai(
         "role": role,
         "content": encode_openai_content(&content_blocks, message.role, diagnostics, policy)?,
     });
-    encode_openai_message_reasoning(&mut message_json, &message.content);
+    encode_openai_message_reasoning(&mut message_json, message, content);
     if !tool_calls.is_empty() {
         message_json["tool_calls"] = Value::Array(tool_calls);
         if message_json["content"] == Value::String(String::new()) {
@@ -1006,17 +1017,35 @@ fn encode_message_without_tool_results_to_openai(
 }
 
 // Adds either plaintext reasoning or structured details to an OpenAI Chat message.
-fn encode_openai_message_reasoning(message: &mut Value, content: &[ContentBlock]) {
+fn encode_openai_message_reasoning(
+    message: &mut Value,
+    source: &Message,
+    content: &[ContentBlock],
+) {
+    let uses_reasoning_content = match &source.chat_reasoning {
+        Some(ChatReasoningSource::ReasoningContent) => true,
+        Some(ChatReasoningSource::Aliases(aliases)) => aliases.reasoning_content.is_some(),
+        None => false,
+    };
+    let field = if source.role == Role::Assistant && uses_reasoning_content {
+        "reasoning_content"
+    } else {
+        "reasoning"
+    };
     let details = reasoning_details_from_blocks(content);
     if details.is_empty() {
-        encode_openai_message_plaintext_reasoning(message, content);
+        encode_openai_message_plaintext_reasoning(message, content, field);
     } else {
-        encode_openai_message_structured_reasoning(message, content, details);
+        encode_openai_message_structured_reasoning(message, content, details, field);
     }
 }
 
 // Adds reasoning blocks that have no structured provider representation.
-fn encode_openai_message_plaintext_reasoning(message: &mut Value, content: &[ContentBlock]) {
+fn encode_openai_message_plaintext_reasoning(
+    message: &mut Value,
+    content: &[ContentBlock],
+    field: &str,
+) {
     let reasoning = content
         .iter()
         .filter_map(|block| match block {
@@ -1030,7 +1059,7 @@ fn encode_openai_message_plaintext_reasoning(message: &mut Value, content: &[Con
         .collect::<Vec<_>>()
         .join("\n");
     if !reasoning.is_empty() {
-        message["reasoning"] = Value::String(reasoning);
+        message[field] = Value::String(reasoning);
     }
 }
 
@@ -1039,15 +1068,20 @@ fn encode_openai_message_structured_reasoning(
     message: &mut Value,
     content: &[ContentBlock],
     details: Vec<Value>,
+    field: &str,
 ) {
+    let has_detail_text = reasoning_text_from_details(&details).is_some();
     message["reasoning_details"] = Value::Array(details);
     let fallback = content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Reasoning { text, details, .. }
-                if !details.is_empty()
-                    && reasoning_text_from_details(details).as_deref() != Some(text.as_str())
-                    && !text.is_empty() =>
+            ContentBlock::Reasoning {
+                text,
+                signature,
+                details,
+            } if (!details.is_empty() || (!has_detail_text && signature.is_none()))
+                && reasoning_text_from_details(details).as_deref() != Some(text.as_str())
+                && !text.is_empty() =>
             {
                 Some(text.as_str())
             }
@@ -1056,7 +1090,7 @@ fn encode_openai_message_structured_reasoning(
         .collect::<Vec<_>>()
         .join("\n");
     if !fallback.is_empty() {
-        message["reasoning"] = Value::String(fallback);
+        message[field] = Value::String(fallback);
     }
 }
 

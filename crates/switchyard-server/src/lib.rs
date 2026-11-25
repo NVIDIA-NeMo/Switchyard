@@ -42,7 +42,7 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use switchyard_llm_client::observed_translation;
-use switchyard_llm_client::{AuxiliaryOperation, RunObservation, RunObserver};
+use switchyard_llm_client::{AuxiliaryOperation, ReasoningFormat, RunObservation, RunObserver};
 use switchyard_protocol::{LlmClientError, Metadata, ModelId, ProviderExtensions, Request, Usage};
 use switchyard_runner::{
     CallerAuthKind, DecisionTarget, ModelCapabilities, Route, RunOutput, Runner, RunnerError,
@@ -175,6 +175,8 @@ struct DecisionTargetResponse {
     extra_body: BTreeMap<String, Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_format: Option<ReasoningFormat>,
 }
 
 /// Non-secret client settings needed to call a selected model.
@@ -324,6 +326,7 @@ impl ServerState {
             },
             extra_body: target.extra_body,
             reasoning_effort: target.reasoning_effort,
+            reasoning_format: target.reasoning_format,
         };
         Some(DecisionResponse {
             selected: convert(description.selected),

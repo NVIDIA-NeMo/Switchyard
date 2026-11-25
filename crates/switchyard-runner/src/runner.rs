@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use libsy::RoutingOutcome;
 use serde_json::Value;
-use switchyard_llm_client::TranslatingLlmClient;
+use switchyard_llm_client::{ReasoningFormat, TranslatingLlmClient};
 use switchyard_protocol::{ModelId, WireFormat};
 
 use crate::config;
@@ -49,6 +49,8 @@ pub struct DecisionTarget {
     pub extra_body: BTreeMap<String, Value>,
     /// Effort the target forces, so a caller that dispatches the call itself can apply it.
     pub reasoning_effort: Option<String>,
+    /// Chat field this target expects for earlier assistant reasoning.
+    pub reasoning_format: Option<ReasoningFormat>,
 }
 
 pub(crate) struct ModelPropertiesProbe {
