@@ -1,1 +1,1 @@
-window.SIDEBAR_ITEMS = {"constant":["DEFAULT_RUBRIC_TOML"],"struct":["Rubric"]};
+window.SIDEBAR_ITEMS = {"constant":["DEFAULT_RUBRIC_TOML"],"enum":["TaskAssessment"],"struct":["Rubric"]};
