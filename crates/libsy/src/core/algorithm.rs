@@ -409,7 +409,6 @@ impl AnswerSummary {
 
 #[derive(Default)]
 struct RunEvidence {
-    failed_models: Vec<ModelId>,
     outcome: Option<Value>,
     judgments: Vec<crate::JudgeDecision>,
 }
@@ -470,15 +469,6 @@ impl Driver {
 
     pub(crate) fn set_state(&self, state: State) {
         *self.state.lock() = state;
-    }
-
-    /// Record a generation failure for this run, independently of session or backend health.
-    pub(crate) fn record_model_failure(&self, model: ModelId) {
-        self.evidence.lock().failed_models.push(model);
-    }
-
-    pub(crate) fn model_failed(&self, model: &ModelId) -> bool {
-        self.evidence.lock().failed_models.contains(model)
     }
 
     /// Replace the current run's evidence when a component makes the final decision.

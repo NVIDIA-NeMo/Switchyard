@@ -390,6 +390,7 @@ async fn skipped_requests_leave_the_recovery_trial_available() -> Result<()> {
         let mut task = request(vec![Message::text(Role::User, "task")]);
         match skip {
             "image" => {
+                classifier.config.efficient_supports_attachments = false;
                 task.llm_request.messages[0].content = vec![ContentBlock::Image {
                     source: ImageSource::Url {
                         url: "https://example.test/image.png".into(),
@@ -1045,7 +1046,7 @@ async fn tool_work_from_an_earlier_user_turn_is_not_handed_off() -> Result<()> {
 }
 
 #[tokio::test]
-async fn a_capable_decision_falls_back_to_efficient_without_the_handoff_note() -> Result<()> {
+async fn a_capable_decision_does_not_offer_an_unverified_efficient_fallback() -> Result<()> {
     use crate::core::algorithm::Call;
     use crate::core::testing::serve_decision;
 
@@ -1097,19 +1098,8 @@ async fn a_capable_decision_falls_back_to_efficient_without_the_handoff_note() -
         )
         .await?;
         assert!(noted(&outcome.request));
-        if killed {
-            assert_eq!(outcome.selected_model_ids, vec![ModelId::new("capable")]);
-            assert!(outcome.fallback_request.is_none());
-        } else {
-            assert_eq!(
-                outcome.selected_model_ids,
-                vec![ModelId::new("capable"), ModelId::new("efficient")]
-            );
-            let fallback = outcome
-                .fallback_request
-                .expect("an efficient fallback request");
-            assert_eq!(fallback.llm_request.messages, task().llm_request.messages);
-        }
+        assert_eq!(outcome.selected_model_ids, vec![ModelId::new("capable")]);
+        assert!(outcome.fallback_request.is_none());
     }
     Ok(())
 }
@@ -1332,7 +1322,7 @@ fn only_a_paused_reply_to_a_reported_final_answer_releases_the_latch() {
 }
 
 #[tokio::test]
-async fn a_failed_capable_verifier_still_offers_the_efficient_answer() -> Result<()> {
+async fn a_failed_capable_verifier_does_not_offer_the_unverified_efficient_answer() -> Result<()> {
     use crate::core::algorithm::Call;
     use crate::core::testing::serve_decision;
 
@@ -1373,14 +1363,8 @@ async fn a_failed_capable_verifier_still_offers_the_efficient_answer() -> Result
         },
     )
     .await?;
-    assert_eq!(
-        outcome.selected_model_ids,
-        vec![ModelId::new("capable"), ModelId::new("efficient")]
-    );
-    let fallback = outcome
-        .fallback_request
-        .expect("an efficient fallback request");
-    assert_eq!(fallback.llm_request.messages, task().llm_request.messages);
+    assert_eq!(outcome.selected_model_ids, vec![ModelId::new("capable")]);
+    assert!(outcome.fallback_request.is_none());
     Ok(())
 }
 
@@ -1446,10 +1430,7 @@ async fn attachment_verifiers_receive_the_evidence_even_without_user_text() -> R
         let expects_typing = content
             .iter()
             .any(|block| matches!(block, ContentBlock::Text { text } if !text.trim().is_empty()));
-        let route = route(|config| {
-            config.efficient_supports_attachments = true;
-            config.task_typing = true;
-        })?;
+        let route = route(|config| config.task_typing = true)?;
         let evidence = image.clone();
         let checks = Arc::new(AtomicUsize::new(0));
         let seen = checks.clone();
@@ -1494,7 +1475,7 @@ async fn attachment_verifiers_receive_the_evidence_even_without_user_text() -> R
             filename: Some("invoice.pdf".into()),
         },
     };
-    let route = route(|_| {})?;
+    let route = route(|config| config.efficient_supports_attachments = false)?;
     let (selected, _) = test_drive_with_models(
         route,
         request(vec![Message::new(
@@ -1611,7 +1592,7 @@ async fn disabled_attachments_skip_all_media_and_prevent_efficient_stand_in() ->
             } else {
                 block.clone()
             };
-            let route = route(|_| {})?;
+            let route = route(|config| config.efficient_supports_attachments = false)?;
             let mut input = request(vec![Message::new(
                 Role::User,
                 vec![

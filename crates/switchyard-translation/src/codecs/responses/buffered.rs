@@ -1612,18 +1612,13 @@ fn encode_responses_content(
             ContentBlock::Audio { source } => {
                 blocks.push(crate::codecs::openai_media::audio_part(source)?);
             }
-            ContentBlock::Video { source } => blocks.push(match source {
-                MediaSource::Raw(raw) => json!({"type": "input_text", "text": json_string(raw)}),
-                MediaSource::Url { url, media_type } => json!({
-                    "type": "input_video",
-                    "video_url": url,
-                    "media_type": media_type,
-                }),
-                MediaSource::Base64 { media_type, data } => json!({
-                    "type": "input_video",
-                    "video": {"media_type": media_type, "data": data},
-                }),
-            }),
+            ContentBlock::Video { .. } => {
+                return Err(TranslationError::InvalidValue {
+                    path: "input".into(),
+                    message: "OpenAI Responses does not support video attachments (video_url)"
+                        .into(),
+                });
+            }
             ContentBlock::File { source } => match responses_file_part(source) {
                 Some(part) => blocks.push(part),
                 None => {

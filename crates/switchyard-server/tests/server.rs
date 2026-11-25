@@ -6746,10 +6746,14 @@ task_typing = false
 }
 
 #[tokio::test]
-async fn vgr_image_requests_stay_on_the_efficient_tier_when_configured() -> TestResult {
+async fn vgr_image_requests_default_to_efficient_and_allow_opt_out() -> TestResult {
     let upstream = MockUpstream::start().await?;
     for (configured, served) in [
-        ("", "model/vgr-capable"),
+        ("", "model/vgr-efficient"),
+        (
+            "efficient_supports_attachments = false",
+            "model/vgr-capable",
+        ),
         (
             "efficient_supports_attachments = true",
             "model/vgr-efficient",
@@ -6797,6 +6801,330 @@ bounded_efficient = false
             Some(&HeaderValue::from_str(served)?),
             "{configured}"
         );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn unsupported_audio_does_not_cool_down_local_for_auto_or_pinned_requests() -> TestResult {
+    let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let upstream = Router::new()
+        .route("/v1/chat/completions", post(|State(calls): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<Value>| async move {
+            calls.lock().await.push(body.clone());
+            let model = body["model"].as_str().unwrap();
+            if body["messages"].to_string().contains("input_audio") {
+                let (status, message) = if model == "local" {
+                    (StatusCode::INTERNAL_SERVER_ERROR, "audio input is not supported - check that the correct mmproj is loaded")
+                } else {
+                    (StatusCode::BAD_REQUEST, "Audio input is not available")
+                };
+                return (status, Json(json!({"error": {"message": message}}))).into_response();
+            }
+            let content = if model == "judge" { "yes" } else { "Lima" };
+            Json(json!({
+                "id": "chatcmpl-audio", "object": "chat.completion", "model": model,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop",
+                    "logprobs": {"content": [{"token": "yes", "logprob": 0.9_f64.ln(), "top_logprobs": [
+                        {"token": "yes", "logprob": 0.9_f64.ln()}, {"token": "no", "logprob": 0.1_f64.ln()}
+                    ]}]}}]
+            })).into_response()
+        }))
+        .with_state(calls.clone());
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let base_url = format!("http://{}/v1", listener.local_addr()?);
+    let task = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let upstream = MockUpstream {
+        base_url,
+        calls: calls.clone(),
+        task,
+    };
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.local]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 2
+failure_cooldown_ms = 60000
+[llm_clients.cloud]
+format = "openai_chat"
+base_url = "{base_url}"
+max_retries = 0
+[targets]
+efficient = {{ id = "local", llm_client = "local" }}
+capable = {{ id = "cloud", llm_client = "cloud" }}
+judge = {{ id = "judge", llm_client = "cloud" }}
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+efficient_target = "efficient"
+capable_target = "capable"
+judge_target = "judge"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+bounded_efficient = false
+[routes.pin-local]
+id = "switchyard/pin-local"
+type = "random"
+targets = ["efficient"]
+"#,
+        base_url = upstream.base_url
+    ))?);
+    for (route, status, message) in [
+        (
+            "switchyard/vgr",
+            StatusCode::BAD_REQUEST,
+            "Audio input is not available",
+        ),
+        (
+            "switchyard/pin-local",
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "audio input is not supported",
+        ),
+    ] {
+        calls.lock().await.clear();
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": route,
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "Describe this attachment in one sentence."},
+                    {"type": "input_audio", "input_audio": {"data": "UklGRg==", "format": "wav"}}
+                ]}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, status, "{}", response.text()?);
+        assert!(
+            response.json()?["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(message)
+        );
+        let audio_calls = calls.lock().await.clone();
+        let response = send(
+            &app,
+            "POST",
+            "/v1/chat/completions",
+            Some(json!({
+                "model": route,
+                "messages": [{"role": "user", "content": "Reply with just the word Lima."}]
+            })),
+        )
+        .await?;
+        assert_eq!(response.status, StatusCode::OK, "{}", response.text()?);
+        assert_eq!(
+            response.headers.get("x-model-router-selected-model"),
+            Some(&HeaderValue::from_static("local"))
+        );
+        assert_eq!(response.json()?["choices"][0]["message"]["content"], "Lima");
+        assert_eq!(
+            audio_calls
+                .iter()
+                .filter(|call| call["model"] == "local")
+                .count(),
+            1
+        );
+        let models: Vec<_> = audio_calls
+            .iter()
+            .map(|call| call["model"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            models,
+            if route == "switchyard/vgr" {
+                vec!["local", "cloud"]
+            } else {
+                vec!["local"]
+            }
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn video_url_is_rejected_before_sending_to_responses_cloud() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.local]
+format = "openai_chat"
+base_url = "{base_url}"
+[llm_clients.cloud]
+format = "openai_responses"
+base_url = "{base_url}"
+[targets]
+efficient = {{ id = "model/vgr-efficient", llm_client = "local" }}
+capable = {{ id = "model/vgr-cloud", llm_client = "cloud" }}
+judge = {{ id = "model/vgr-reject", llm_client = "local" }}
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+efficient_target = "efficient"
+capable_target = "capable"
+judge_target = "judge"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+bounded_efficient = false
+[routes.pin-cloud]
+id = "switchyard/pin-cloud"
+type = "random"
+targets = ["capable"]
+"#,
+        base_url = upstream.base_url
+    ))?);
+    let video = json!({"type": "video_url", "video_url": {"url": "data:video/mp4;base64,PRIVATE_VIDEO_PAYLOAD"}});
+    for route in ["switchyard/pin-cloud", "switchyard/vgr"] {
+        for stream in [false, true] {
+            upstream.calls.lock().await.clear();
+            let response = send(&app, "POST", "/v1/chat/completions", Some(json!({
+                "model": route, "stream": stream,
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "Describe this attachment in one sentence."}, video.clone()
+                ]}]
+            }))).await?;
+            assert_eq!(
+                response.status,
+                StatusCode::BAD_REQUEST,
+                "{}",
+                response.text()?
+            );
+            assert!(
+                response.json()?["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("OpenAI Responses does not support video attachments")
+            );
+            assert!(!response.text()?.contains("PRIVATE_VIDEO_PAYLOAD"));
+            let calls = upstream.calls.lock().await;
+            assert!(calls.iter().all(|call| call["model"] != "model/vgr-cloud"));
+            if route == "switchyard/pin-cloud" {
+                assert!(calls.is_empty());
+            } else {
+                assert_eq!(calls[0]["model"], "model/vgr-efficient");
+                assert_eq!(calls[0]["messages"][0]["content"][1], video);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn vgr_rejected_local_answer_is_not_retried_after_cloud_attachment_rejection() -> TestResult {
+    for (url, error) in [
+        (
+            "data:image/x-icon;base64,AAABAA==",
+            "Unsupported image format: image/x-icon",
+        ),
+        (
+            "data:image/jpeg;base64,/9j/2Q==",
+            "The image you provided requires 35344 patches after processing, exceeding the limit of 30000.",
+        ),
+        (
+            "data:video/mp4;base64,AAAAIGZ0eXA=",
+            "Invalid MIME type. Only image types are supported. Got video/mp4.",
+        ),
+    ] {
+        let calls = Arc::new(Mutex::new(Vec::<Value>::new()));
+        let upstream = Router::new()
+            .route("/v1/chat/completions", post(move |State(calls): State<Arc<Mutex<Vec<Value>>>>, Json(body): Json<Value>| async move {
+                calls.lock().await.push(body.clone());
+                let model = body["model"].as_str().unwrap();
+                if model == "cloud" {
+                    return (StatusCode::BAD_REQUEST, Json(json!({"error": {"message": error}}))).into_response();
+                }
+                let content = if model == "judge" { "no" } else { "Unknown" };
+                if body["stream"] == true {
+                    let chunks = [
+                        json!({"id": "chatcmpl-media", "object": "chat.completion.chunk", "model": model,
+                            "choices": [{"index": 0, "delta": {"role": "assistant", "content": content}, "finish_reason": null}]}).to_string(),
+                        json!({"id": "chatcmpl-media", "object": "chat.completion.chunk", "model": model,
+                            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}).to_string(),
+                        "[DONE]".into(),
+                    ];
+                    return Sse::new(futures_util::stream::iter(chunks.into_iter().map(|chunk| {
+                        Ok::<Event, Infallible>(Event::default().data(chunk))
+                    }))).into_response();
+                }
+                Json(json!({
+                    "id": "chatcmpl-media", "object": "chat.completion", "model": model,
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": content}, "finish_reason": "stop"}]
+                })).into_response()
+            }))
+            .with_state(calls.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let base_url = format!("http://{}/v1", listener.local_addr()?);
+        let task = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+        let upstream = MockUpstream {
+            base_url,
+            calls: calls.clone(),
+            task,
+        };
+        let app = build_switchyard_router(load_test_config(&format!(
+            r#"
+schema_version = 1
+[llm_clients.primary]
+format = "openai_chat"
+base_url = "{}"
+max_retries = 0
+[targets]
+efficient = {{ id = "local", llm_client = "primary" }}
+capable = {{ id = "cloud", llm_client = "primary" }}
+judge = {{ id = "judge", llm_client = "primary" }}
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+efficient_target = "efficient"
+capable_target = "capable"
+judge_target = "judge"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+bounded_efficient = false
+"#,
+            upstream.base_url
+        ))?);
+        for stream in [false, true] {
+            calls.lock().await.clear();
+            let response = send(
+                &app,
+                "POST",
+                "/v1/chat/completions",
+                Some(json!({
+                    "model": "switchyard/vgr", "stream": stream,
+                    "messages": [{"role": "user", "content": [
+                        {"type": "text", "text": "What color is this attachment? One word."},
+                        {"type": "image_url", "image_url": {"url": url}}
+                    ]}]
+                })),
+            )
+            .await?;
+            assert_eq!(
+                response.status,
+                StatusCode::BAD_REQUEST,
+                "{}",
+                response.text()?
+            );
+            assert_eq!(response.json()?["error"]["message"], error);
+            assert!(
+                response
+                    .headers
+                    .get("x-model-router-selected-model")
+                    .is_none()
+            );
+            let calls = calls.lock().await;
+            let models: Vec<_> = calls
+                .iter()
+                .map(|call| call["model"].as_str().unwrap())
+                .collect();
+            assert_eq!(models.first(), Some(&"local"));
+            assert_eq!(models.last(), Some(&"cloud"));
+            assert_eq!(models.iter().filter(|model| **model == "local").count(), 1);
+        }
     }
     Ok(())
 }

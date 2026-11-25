@@ -162,6 +162,9 @@ impl LlmClientError {
             "unsupported content[].type",
             "image input is not supported",
             "does not support image input",
+            "audio input is not supported",
+            "does not support audio input",
+            "audio input is not available",
             "failed to load image or audio file",
             "cannot make get request",
             "failed to download file",
@@ -172,6 +175,14 @@ impl LlmClientError {
         ]
         .iter()
         .any(|pattern| message.contains(pattern))
+            || (message.contains("image")
+                && message.contains("patches")
+                && message.contains("exceed")
+                && message.contains("limit"))
+            || (message.contains("mime type")
+                && (message.contains("unsupported")
+                    || message.contains("not supported")
+                    || message.contains("only image types are supported")))
     }
 }
 
