@@ -1,0 +1,25 @@
+[project]
+name = "switchyard-mini-swe-forecast"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "mini-swe-agent==2.4.5",
+  "datasets",
+  "python-dotenv",
+  "pyyaml",
+  "numpy==2.5.4",
+  "scipy==1.18.1",
+  "scikit-learn==1.9.1",
+  "lightgbm==4.7.0",
+  "opentelemetry-sdk>=1.30,<2",
+  "opentelemetry-exporter-otlp-proto-http>=1.30,<2",
+]
+
+[tool.uv]
+package = false
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "ruff"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
