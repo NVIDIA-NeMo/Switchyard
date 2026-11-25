@@ -5,140 +5,205 @@
 instructions = "How does the latest user message change the active goal? Use the earlier conversation to interpret short replies such as 'go ahead'."
 kind.type = "choice"
 kind.data.options = [
-    { id = "first_goal" }, { id = "new_goal" }, { id = "continue" }, { id = "clarify" },
-    { id = "add_requirement" }, { id = "correct" }, { id = "reject" }, { id = "approve" },
-    { id = "pause" }, { id = "cancel" }, { id = "unclear" },
+    { id = "first_goal", description = "This message establishes the first objective in the supplied conversation." },
+    { id = "new_goal", description = "The user introduces a separate objective that could be completed independently of the previous one." },
+    { id = "continue", description = "The user asks for more work toward the same outcome under the existing requirements." },
+    { id = "clarify", description = "The user explains what an existing requirement meant or answers a question about it." },
+    { id = "add_requirement", description = "The goal still stands, but the user adds a condition or deliverable required for success." },
+    { id = "correct", description = "The user identifies a specific mistake and supplies or requests a correction." },
+    { id = "reject", description = "The user explicitly dismisses the result or approach as unacceptable." },
+    { id = "approve", description = "The user authorizes a particular proposed action or accepts a result presented for approval." },
+    { id = "pause", description = "The user wants work suspended, with the option to resume it." },
+    { id = "cancel", description = "The user withdraws the objective or instructs the agent to end that work." },
+    { id = "unclear", description = "The available history does not show how this message relates to the active objective." },
 ]
 
 [user.goal_reference]
 instructions = "What does the latest request primarily refer back to? Use only references supported by the history."
 kind.type = "choice"
 kind.data.options = [
-    { id = "prior_goal" }, { id = "plan" }, { id = "prior_answer" }, { id = "artifact" },
-    { id = "tool_result" }, { id = "multiple" }, { id = "none" }, { id = "unclear" },
+    { id = "prior_goal", description = "The request relies on an objective established earlier, such as 'keep going on that issue'." },
+    { id = "plan", description = "It refers to proposed steps or an option previously offered for approval." },
+    { id = "prior_answer", description = "It asks about or revises something the assistant previously said." },
+    { id = "artifact", description = "It points back to a previously identified file, patch, report, or other work product." },
+    { id = "tool_result", description = "Its meaning depends on a specific observation from a tool, such as the last test failure." },
+    { id = "multiple", description = "Two or more distinct earlier items are essential to understanding the reference." },
+    { id = "none", description = "The request stands on its own; all necessary references are introduced here." },
+    { id = "unclear", description = "The user refers back to something, but the supplied history does not identify it." },
 ]
 
 [user.task_family]
 instructions = "What kind of work primarily achieves the user's goal? Classify the intended outcome even if the last action used a different skill."
 kind.type = "choice"
 kind.data.options = [
-    { id = "implementation" }, { id = "debugging" }, { id = "review" }, { id = "research" },
-    { id = "analysis" }, { id = "writing" }, { id = "transformation" },
-    { id = "retrieval" }, { id = "operation" }, { id = "planning" }, { id = "other" },
-    { id = "unclear" },
+    { id = "implementation", description = "Build or refactor an artifact to meet specified requirements." },
+    { id = "debugging", description = "Find the cause of a concrete failure or restore expected behavior." },
+    { id = "review", description = "Assess an existing artifact against criteria and identify issues or improvements." },
+    { id = "research", description = "Gather and synthesize evidence from sources to answer an open question." },
+    { id = "analysis", description = "Derive an explanation or conclusion from data or evidence already supplied." },
+    { id = "writing", description = "Compose or revise prose where the text itself is the requested product." },
+    { id = "transformation", description = "Convert supplied material into a specified representation while preserving its meaning." },
+    { id = "retrieval", description = "Locate an identifiable fact or item and return it with little additional reasoning." },
+    { id = "operation", description = "Carry out an action in an environment, such as running a job or updating a record." },
+    { id = "planning", description = "Produce a sequence of actions or design an approach for later execution." },
+    { id = "other", description = "The primary work is identifiable and falls outside the listed categories." },
+    { id = "unclear", description = "There is too little information to identify the primary work." },
 ]
 
 [user.deliverable]
 instructions = "What primary result has the user asked to receive? A request to explain a fix differs from a request to make it."
 kind.type = "choice"
 kind.data.options = [
-    { id = "answer" }, { id = "plan" }, { id = "diagnosis" }, { id = "change" },
-    { id = "review" }, { id = "verified_artifact" }, { id = "external_action" },
-    { id = "other" }, { id = "unclear" },
+    { id = "answer", description = "A factual response or explanation would fulfill the request." },
+    { id = "plan", description = "The user wants proposed steps or a design before implementation." },
+    { id = "diagnosis", description = "The user wants to know what went wrong and why." },
+    { id = "change", description = "The user wants an artifact created or modified. Routine checks may accompany the change." },
+    { id = "review", description = "The user wants findings or feedback about an existing item." },
+    { id = "verified_artifact", description = "The requested handoff includes both an artifact and explicit evidence of its acceptance, such as a build with a test report." },
+    { id = "external_action", description = "Success is an action taking effect in an external system, such as publishing a release." },
+    { id = "other", description = "The requested result is identifiable but outside the listed deliverable types." },
+    { id = "unclear", description = "The message does not establish what result the user expects." },
 ]
 
 [user.acceptance_evidence]
-instructions = "What evidence would establish that the main requirement was met? Consider any explicit acceptance test."
+instructions = "What kind of evidence would demonstrate success for this request? Give priority to checks the user asks for. Count distinct kinds of evidence, not individual checks."
 kind.type = "choice"
 kind.data.options = [
-    { id = "executable_check" }, { id = "observed_state" }, { id = "source_evidence" },
-    { id = "user_judgment" }, { id = "multiple" }, { id = "unspecified" },
+    { id = "executable_check", description = "A test, linter, validator, or grader checks the result. Several such checks still count as one kind." },
+    { id = "observed_state", description = "Inspecting the resulting artifact or environment confirms the requested change took effect." },
+    { id = "source_evidence", description = "A source supports a claim in the deliverable, for example a citation in a research answer." },
+    { id = "user_judgment", description = "Success depends on the user's assessment or preference." },
+    { id = "multiple", description = "Success requires at least two of the evidence kinds above." },
+    { id = "unspecified", description = "The request gives too little information to identify a kind of evidence." },
 ]
 
 [user.precision]
 instructions = "How much deviation from the requested result is acceptable? Judge the requirement independently of task difficulty."
 kind.type = "score"
 kind.data.levels = [
-    "Rough ideas suffice",
-    "Main facts must be correct",
-    "Details must be exact",
-    "A strict invariant or exact result must hold",
+    "Exploratory ideas or broad directions suffice.",
+    "The main facts or behavior must be right; approximations in minor details are acceptable.",
+    "Specific details must match, though equivalent wording or representations are acceptable.",
+    "An exact value, machine-readable contract, or invariant must hold to pass.",
 ]
 
 [user.format_required]
 instructions = "Does the deliverable have an explicit format requirement, such as a schema, table, or file type?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "The user specifies an output structure, file type, schema, or presentation format the deliverable must follow."
+kind.data.false_description = "The user asks for an outcome and leaves the choice of representation or file format open."
 
 [user.visual_quality]
-instructions = "Is visual presentation a material acceptance criterion? Merely reading an image does not qualify."
-kind = { type = "boolean", data = {} }
+instructions = "Would the user reject an otherwise correct deliverable because of how it looks?"
+kind.type = "boolean"
+kind.data.true_description = "The appearance of the output matters, such as the layout of a page, the typography of a report, or the legibility of a chart."
+kind.data.false_description = "The task can succeed on behavior, content, or data format alone. Reading an image or applying a code formatter does not by itself make appearance a requirement."
 
 [user.ambiguity]
 instructions = "Which uncertainty would most change the work? Ignore details that can vary without changing the deliverable."
 kind.type = "choice"
 kind.data.options = [
-    { id = "goal" }, { id = "referenced_entity" }, { id = "constraint" }, { id = "method" },
-    { id = "tradeoff" }, { id = "none" }, { id = "unclear" },
+    { id = "goal", description = "Plausible interpretations lead to different outcomes or deliverables." },
+    { id = "referenced_entity", description = "The action is understood, but which file, person, record, or prior result it concerns is ambiguous." },
+    { id = "constraint", description = "The goal is clear, but a limit or acceptance condition has competing interpretations." },
+    { id = "method", description = "It is unclear which method is required, and that choice would materially change the work." },
+    { id = "tradeoff", description = "Two stated priorities conflict and the user's preferred compromise is unclear." },
+    { id = "none", description = "The available evidence is sufficient to choose the work; remaining details are routine or delegated." },
+    { id = "unclear", description = "The available context is too sparse to identify whether or where a material ambiguity lies." },
 ]
 
 [user.clarification_source]
 instructions = "Where could the most consequential missing fact be resolved with the least additional input?"
 kind.type = "choice"
 kind.data.options = [
-    { id = "history" }, { id = "available_tool" }, { id = "user_only" },
-    { id = "external_party" }, { id = "no_missing_fact" }, { id = "unclear" },
+    { id = "history", description = "A prior message, supplied artifact, or recorded observation already resolves the issue." },
+    { id = "available_tool", description = "A lookup or check the agent can perform would supply the missing fact." },
+    { id = "user_only", description = "The answer depends on the user's intent, preference, or private knowledge." },
+    { id = "external_party", description = "Someone other than the user must provide information unavailable through current tools." },
+    { id = "no_missing_fact", description = "The agent can proceed without resolving a material information gap." },
+    { id = "unclear", description = "A material fact is missing, but the trace does not identify a reliable source for it." },
 ]
 
 [user.repo_context]
 instructions = "Must the solution fit an existing repository's interfaces, behavior, or conventions?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "Correctness depends on a particular repository's interfaces, behavior, layout, or conventions."
+kind.data.false_description = "A self-contained answer or artifact can satisfy the request without consulting that repository."
 
 [user.current_sources]
 instructions = "Does correctness require fresh external evidence or consultation of a specific source?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "Success depends on up-to-date external facts or checking a particular source beyond the supplied evidence."
+kind.data.false_description = "The supplied materials and stable knowledge are sufficient; external verification is optional."
 
 [user.visual_input]
 instructions = "Does completion require interpreting an image, diagram, video, or rendered layout?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "Evidence needed to answer is encoded visually, such as a chart trend or a layout defect."
+kind.data.false_description = "The work can be done using text or structured data alone, even if an image is mentioned."
 
 [user.tool_execution]
 instructions = "Does satisfying the request require executing a tool or observing external state?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "The agent must inspect live state, run a check, or perform an external operation to fulfill the request."
+kind.data.false_description = "A response based on the supplied information suffices; describing how to run a tool does not require running it."
 
 [user.exact_computation]
 instructions = "Does completion require a calculation, query, or other exact transformation of data?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "A result must be derived by applying defined arithmetic, query, or transformation rules to specific data."
+kind.data.false_description = "The task calls for explanation, judgment, or implementation without having to compute a particular data result."
 
 [user.source_synthesis]
 instructions = "Does the deliverable require combining evidence from multiple sources?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "The deliverable must reconcile or combine evidence from distinct sources to support its conclusions."
+kind.data.false_description = "A single source suffices, or several files are touched solely to implement a change."
 
 [user.history_dependence]
 instructions = "How much earlier session state would a specialist need to take over? Consider prior decisions, artifacts and failures."
 kind.type = "score"
 kind.data.levels = [
-    "Current message is sufficient",
-    "One reference or constraint",
-    "A short handoff with selected evidence",
-    "Extensive session history",
+    "The latest user message contains all the information needed to begin.",
+    "One earlier fact, constraint, or reference would make the request self-contained.",
+    "A short handoff must preserve several decisions, observations, or artifacts.",
+    "Correct execution depends on extensive connected history that a short handoff would omit.",
 ]
 
 [user.scope]
 instructions = "What is the smallest scope that would cover the user's requirements?"
 kind.type = "choice"
 kind.data.options = [
-    { id = "standalone" }, { id = "localized" }, { id = "one_subsystem" },
-    { id = "cross_subsystem" }, { id = "unclear" },
+    { id = "standalone", description = "A self-contained answer or new artifact suffices without integrating with an existing system." },
+    { id = "localized", description = "The work fits in one existing implementation area with its directly associated checks." },
+    { id = "one_subsystem", description = "Several related areas must change together within one component or subsystem." },
+    { id = "cross_subsystem", description = "The work spans distinct components, interfaces, or services that must agree." },
+    { id = "unclear", description = "The request does not reveal enough about the affected system to estimate scope." },
 ]
 
 [user.approach]
 instructions = "How well specified is the path to completion?"
 kind.type = "choice"
 kind.data.options = [
-    { id = "known_procedure" }, { id = "bounded_adaptation" },
-    { id = "open_investigation" }, { id = "unclear" },
+    { id = "known_procedure", description = "The steps are supplied or follow a standard procedure with the needed inputs available." },
+    { id = "bounded_adaptation", description = "There is an established approach, but it must be adapted to the specific artifact or constraints." },
+    { id = "open_investigation", description = "The cause or solution is unresolved and alternatives must be investigated before selecting a method." },
+    { id = "unclear", description = "There is insufficient evidence about the task to distinguish a known path from investigation." },
 ]
 
 [user.dependencies]
 instructions = "How does the requested work divide across steps?"
 kind.type = "choice"
 kind.data.options = [
-    { id = "single_step" }, { id = "independent_parts" }, { id = "serial_dependencies" },
-    { id = "mixed" }, { id = "unclear" },
+    { id = "single_step", description = "One substantive action can produce the requested outcome." },
+    { id = "independent_parts", description = "Two or more substantive parts can proceed from the available inputs without waiting for each other." },
+    { id = "serial_dependencies", description = "Each substantive stage requires a result from an earlier stage." },
+    { id = "mixed", description = "Some substantive stages must run in order and at least two others can proceed independently." },
+    { id = "unclear", description = "The relationships among the necessary steps cannot be inferred from the request." },
 ]
 
 [user.expected_steps]
-instructions = "How many agent steps are likely to be needed for the whole task, including verification?"
+instructions = "Count one substantive agent decision and its associated action as one step. Include verification and final reporting; exclude individual operations inside a single tool call."
 kind.type = "score"
 kind.data.levels = ["One step", "Two to three steps", "Four to seven steps", "Eight or more steps"]
 
@@ -146,15 +211,15 @@ kind.data.levels = ["One step", "Two to three steps", "Four to seven steps", "Ei
 instructions = "How much reasoning is needed to reach and verify a solution with the supplied evidence?"
 kind.type = "score"
 kind.data.levels = [
-    "Direct lookup or operation",
-    "Routine procedure",
-    "Several related reasoning steps",
-    "Uncertain diagnosis or design",
-    "Novel or deeply coupled problem",
+    "One direct retrieval or operation with an evident result.",
+    "A familiar procedure with known inputs and checks.",
+    "Several connected inferences or adaptations are needed within a bounded task.",
+    "Competing diagnoses or designs must be tested against interacting requirements.",
+    "The solution requires novel reasoning or resolving deeply coupled uncertainties.",
 ]
 
 [user.visible_output]
-instructions = "Estimate the length of the requested visible answer or code. Exclude tool logs and hidden reasoning."
+instructions = "Estimate the total user-visible answer or authored code needed for the deliverable. Include code written to files; exclude copied inputs, tool logs, and hidden reasoning."
 kind.type = "score"
 kind.data.levels = [
     "Up to 128 tokens",
@@ -166,141 +231,204 @@ kind.data.levels = [
 
 [user.cost_priority]
 instructions = "Has the user expressed a cost constraint or preference that applies to this task?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "The user gives a spending or token budget, asks to minimize cost, or explicitly favors a cheaper option."
+kind.data.false_description = "The user gives no applicable cost preference. Calling an operation expensive in the background is insufficient."
 
 [user.latency_priority]
 instructions = "Has the user expressed a deadline, urgency, or preference for speed?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "The user asks for faster turnaround, gives a deadline, or prioritizes response time."
+kind.data.false_description = "No timing preference is expressed; the mere fact that the task takes time is insufficient."
 
 [user.quality_priority]
 instructions = "Has the user specified a quality floor or explicitly prioritized quality over cost or speed?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "The user sets an acceptance bar, such as passing specified checks or providing citations, or explicitly favors quality over speed or cost."
+kind.data.false_description = "Only the ordinary expectation of a correct answer is apparent; no particular quality bar or tradeoff is stated."
 
 [user.execution_constraints]
 instructions = "Has the user restricted which tools, providers, or actions may be used?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "The user requires or excludes a tool, provider, or action, such as limiting checks or forbidding publication."
+kind.data.false_description = "The execution method is left open. Restrictions imposed solely by the environment do not count as user instructions."
 
 [user.data_sensitivity]
 instructions = "Does the evidence contain material with stated or apparent sharing restrictions, such as credentials or private records?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "The supplied evidence contains confidential material, personal records, credentials, or an explicit restriction on sharing it."
+kind.data.false_description = "No sensitive material or sharing restriction is apparent. A reference to a credential type alone does not expose its value."
 
 [user.reversibility]
 instructions = "How easily could the most consequential requested action be reversed?"
 kind.type = "choice"
 kind.data.options = [
-    { id = "no_state_change" }, { id = "reversible" }, { id = "costly_to_reverse" },
-    { id = "irreversible" }, { id = "unclear" },
+    { id = "no_state_change", description = "The requested action is observational, such as explaining a result or inspecting a file." },
+    { id = "reversible", description = "The prior state can be restored directly with low effort and limited residual effects." },
+    { id = "costly_to_reverse", description = "Recovery is possible but requires substantial rework, coordination, or cleanup." },
+    { id = "irreversible", description = "A material effect cannot be undone, such as a disclosure to another party." },
+    { id = "unclear", description = "The effect of the action or the available recovery path is unknown." },
 ]
 
 [user.error_impact]
 instructions = "What is the likely consequence of a wrong result, given the stated use?"
 kind.type = "score"
 kind.data.levels = [
-    "Minor local correction",
-    "Bounded rework",
-    "Substantial downstream rework",
-    "Material external harm",
+    "An error can be corrected locally before it affects other work.",
+    "A mistake forces a bounded part of the task to be redone.",
+    "Other deliverables or dependent decisions would need substantial rework.",
+    "The stated use exposes people, data, finances, or operations to material external harm.",
 ]
 
 [agent.phase]
 instructions = "What kind of work best describes the latest agent action?"
 kind.type = "choice"
 kind.data.options = [
-    { id = "lookup" }, { id = "diagnosis" }, { id = "design" }, { id = "execution" },
-    { id = "verification" }, { id = "recovery" }, { id = "clarification" },
-    { id = "reporting" }, { id = "unclear" },
+    { id = "lookup", description = "The agent is retrieving an identified fact, artifact, or piece of context." },
+    { id = "diagnosis", description = "It is examining observations to distinguish causes of a failure or unexpected result." },
+    { id = "design", description = "It is comparing approaches or deciding how the work should be done." },
+    { id = "execution", description = "It is carrying out a chosen operation, such as editing an artifact." },
+    { id = "verification", description = "It is checking the current result against an acceptance condition." },
+    { id = "recovery", description = "It is restoring a usable state after a failed attempt or interruption." },
+    { id = "clarification", description = "It is seeking information or a decision from the user." },
+    { id = "reporting", description = "It is communicating findings, status, or a result to the user." },
+    { id = "unclear", description = "The latest action or its purpose is absent from the supplied evidence." },
 ]
 
 [agent.next_action]
 instructions = "What operation would advance the unmet user requirement next?"
 kind.type = "choice"
 kind.data.options = [
-    { id = "lookup" }, { id = "diagnose" }, { id = "design" }, { id = "execute" },
-    { id = "verify" }, { id = "recover" }, { id = "ask_user" }, { id = "report" },
-    { id = "wait" }, { id = "unclear" },
+    { id = "lookup", description = "Retrieve a specific missing fact or artifact with a known target." },
+    { id = "diagnose", description = "Investigate why an observation differs from what was expected." },
+    { id = "design", description = "Choose among plausible approaches before committing to one." },
+    { id = "execute", description = "Carry out a known operation whose prerequisites are satisfied." },
+    { id = "verify", description = "Run a relevant check on the current result to establish whether it meets the requirement." },
+    { id = "recover", description = "Restore a prerequisite or working state disrupted by the previous attempt." },
+    { id = "ask_user", description = "Request information, authorization, or a preference only the user can supply." },
+    { id = "report", description = "The evidence is sufficient to return the requested result or explain the outcome." },
+    { id = "wait", description = "Necessary work is already in flight or externally pending, and no useful independent action is available." },
+    { id = "unclear", description = "The available evidence does not establish which operation should come next." },
 ]
 
 [agent.action_specified]
 instructions = "Are the inputs and method for the next substantive operation already established?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "The next operation has a known target, inputs, and method; someone could carry it out without making a substantive design choice."
+kind.data.false_description = "A material input, target, or approach must still be determined, or there is no further substantive operation."
 
 [agent.progress]
 instructions = "What changed relative to the state before the last action? A failing reproduction can narrow a diagnosis."
 kind.type = "choice"
 kind.data.options = [
-    { id = "requirement_met" }, { id = "new_evidence" }, { id = "hypothesis_eliminated" },
-    { id = "regression" }, { id = "no_change" }, { id = "unclear" },
+    { id = "requirement_met", description = "Evidence now establishes a requested condition that was previously outstanding." },
+    { id = "new_evidence", description = "The action produced relevant information without yet satisfying a requirement or ruling out a specific cause." },
+    { id = "hypothesis_eliminated", description = "The observation rules out a previously plausible explanation or approach." },
+    { id = "regression", description = "Something previously working is now demonstrably broken, or previously valid work was lost." },
+    { id = "no_change", description = "The action left both the work and what is known about it materially unchanged." },
+    { id = "unclear", description = "The before-state, result, or link to the goal is insufficient for a comparison." },
 ]
 
 [agent.remaining_uncertainty]
 instructions = "Which unresolved question most limits the next step?"
 kind.type = "choice"
 kind.data.options = [
-    { id = "goal" }, { id = "cause" }, { id = "implementation" }, { id = "environment" },
-    { id = "verification" }, { id = "none" }, { id = "unclear" },
+    { id = "goal", description = "The intended outcome or acceptance condition is unresolved." },
+    { id = "cause", description = "The failure is known but its underlying explanation is unresolved." },
+    { id = "implementation", description = "The desired behavior is known but how to produce it is unresolved." },
+    { id = "environment", description = "A dependency, available resource, or external system state is unknown." },
+    { id = "verification", description = "A candidate result exists; the open question is whether it satisfies the requirements." },
+    { id = "none", description = "The next step has sufficient evidence and no material unresolved question." },
+    { id = "unclear", description = "The trace is too incomplete to identify the main uncertainty." },
 ]
 
 [agent.blocker]
 instructions = "What currently prevents substantive progress? Prefer an observed blocker to a hypothetical one."
 kind.type = "choice"
 kind.data.options = [
-    { id = "missing_input" }, { id = "permission" }, { id = "missing_artifact" },
-    { id = "unavailable_tool" }, { id = "external_service" }, { id = "capability" },
-    { id = "none" }, { id = "unclear" },
+    { id = "missing_input", description = "A required value, requirement, or decision has not been supplied." },
+    { id = "permission", description = "The next operation is feasible but access or authorization is missing." },
+    { id = "missing_artifact", description = "A necessary file, dataset, binary, or other concrete artifact is absent." },
+    { id = "unavailable_tool", description = "The required tool cannot be invoked in the current runtime." },
+    { id = "external_service", description = "The tool is available, but an upstream service or external job is preventing progress." },
+    { id = "capability", description = "The work exceeds the current agent's demonstrated ability with the available tools and inputs." },
+    { id = "none", description = "A feasible next action remains; an ordinary failure or uncertainty alone is not a blocker." },
+    { id = "unclear", description = "Progress appears blocked, but the evidence does not establish the reason." },
 ]
 
 [agent.unblock_source]
 instructions = "What would resolve the current blocker?"
 kind.type = "choice"
 kind.data.options = [
-    { id = "available_observation" }, { id = "revised_approach" }, { id = "user_input" },
-    { id = "permission_change" }, { id = "environment_recovery" }, { id = "no_blocker" },
-    { id = "unclear" },
+    { id = "available_observation", description = "An inspection, lookup, or check available now would supply the missing evidence." },
+    { id = "revised_approach", description = "A change in method can bypass the obstacle using the current resources." },
+    { id = "user_input", description = "The user must supply an intention, preference, or missing fact." },
+    { id = "permission_change", description = "An access grant or authorization would allow the known operation to proceed." },
+    { id = "environment_recovery", description = "A dependency, tool, or service must be restored or become available." },
+    { id = "no_blocker", description = "Substantive progress is already possible without an unblocking intervention." },
+    { id = "unclear", description = "There is an obstacle, but no supported remedy can be identified." },
 ]
 
 [agent.failure_pattern]
 instructions = "What do comparable observations say about the latest failure or recovery? Count an expected negative test as diagnostic evidence."
 kind.type = "choice"
 kind.data.options = [
-    { id = "expected_failure" }, { id = "first_unexpected_failure" },
-    { id = "repeated_unchanged_failure" }, { id = "revised_attempt_failed" },
-    { id = "confirmed_recovery" }, { id = "no_failure" }, { id = "unclear" },
+    { id = "expected_failure", description = "The observed failure was deliberate, such as reproducing a defect before applying a fix." },
+    { id = "first_unexpected_failure", description = "This is the first observed unintended failure for this check or condition." },
+    { id = "repeated_unchanged_failure", description = "The same failure persists without an intervening change to the proposed fix; rerunning a smaller test selection still qualifies." },
+    { id = "revised_attempt_failed", description = "A materially changed fix or method was tried, and a comparable attempt still failed." },
+    { id = "confirmed_recovery", description = "A check that previously failed now passes against the revised result." },
+    { id = "no_failure", description = "No relevant failure has been observed in the supplied work." },
+    { id = "unclear", description = "The observations do not establish the outcome, its intent, or whether the attempts are comparable." },
 ]
 
 [agent.verification]
-instructions = "What evidence supports the active acceptance criteria? Use checks relevant to the current artifact. Choose partial when only some criteria have evidence."
+instructions = "Assess the current result against all known acceptance criteria. A failing required check takes precedence over partial coverage."
 kind.type = "choice"
 kind.data.options = [
-    { id = "confirmed" }, { id = "contradicted" }, { id = "partially_checked" },
-    { id = "unchecked" }, { id = "criteria_unavailable" },
+    { id = "confirmed", description = "Relevant evidence supports every active acceptance criterion for the current result." },
+    { id = "contradicted", description = "At least one required condition is demonstrably false, even if other checks pass." },
+    { id = "partially_checked", description = "Evidence supports some criteria, others remain unchecked, and no observed check contradicts a requirement." },
+    { id = "unchecked", description = "The criteria are known, but no relevant check of the current result is shown." },
+    { id = "criteria_unavailable", description = "The trace does not establish the acceptance criteria well enough to assess coverage." },
 ]
 
 [agent.completion_claim]
 instructions = "How does the agent's latest completion claim compare with the available evidence? Distinguish an omitted check from a check that failed."
 kind.type = "choice"
 kind.data.options = [
-    { id = "no_claim" }, { id = "supported" }, { id = "contradicted" },
-    { id = "unverified" },
+    { id = "no_claim", description = "The agent has not claimed the active task is complete; plans and interim updates do not count." },
+    { id = "supported", description = "Relevant evidence supports the claims made about completion or verification." },
+    { id = "contradicted", description = "A recorded result or unmet explicit requirement directly conflicts with a completion claim." },
+    { id = "unverified", description = "The agent claimed completion, but evidence needed to confirm or contradict it is missing." },
 ]
 
 [agent.stopping_state]
 instructions = "What is the current stopping state? Treat a legitimate external dependency differently from abandoning feasible work."
 kind.type = "choice"
 kind.data.options = [
-    { id = "ready_to_report" }, { id = "work_remains" }, { id = "blocked" },
-    { id = "user_requested_stop" }, { id = "prematurely_abandoned" }, { id = "unclear" },
+    { id = "ready_to_report", description = "The requested work is complete to the required standard and only communicating the result remains." },
+    { id = "work_remains", description = "A requirement or check remains open and a feasible action can advance it." },
+    { id = "blocked", description = "Required work remains and an unavailable prerequisite prevents further progress." },
+    { id = "user_requested_stop", description = "The user explicitly asked the agent to pause or stop." },
+    { id = "prematurely_abandoned", description = "The agent stopped pursuing an unmet requirement despite a feasible way forward." },
+    { id = "unclear", description = "The trace does not establish whether the agent should finish, continue, or wait." },
 ]
 
 [agent.alignment]
 instructions = "How does the latest action relate to the current user instruction? Account for corrections and scope changes."
 kind.type = "choice"
 kind.data.options = [
-    { id = "aligned" }, { id = "ignored_correction" }, { id = "stale_assumption" },
-    { id = "out_of_scope" }, { id = "unrelated" }, { id = "unclear" },
+    { id = "aligned", description = "The action advances the current goal or a necessary prerequisite under the stated constraints." },
+    { id = "ignored_correction", description = "The action repeats something the user explicitly corrected or rejected." },
+    { id = "stale_assumption", description = "The action relies on an earlier premise superseded by later evidence." },
+    { id = "out_of_scope", description = "The action concerns the task but crosses an explicit limit or expands the requested work." },
+    { id = "unrelated", description = "The action pursues a different objective with no evident connection to the current goal." },
+    { id = "unclear", description = "The purpose of the action or the active instruction is missing." },
 ]
 
 [agent.remaining_calls]
-instructions = "Estimate how many additional model calls the active goal needs, including a final answer if still outstanding."
+instructions = "Count future model invocations needed from this boundary through the final answer. Count a final reply if it requires another invocation; exclude tool executions."
 kind.type = "score"
 kind.data.levels = [
     "Zero",
@@ -313,10 +441,15 @@ kind.data.levels = [
 [agent.remaining_difficulty]
 instructions = "How difficult is the remaining work given what has already been discovered, completed, and verified?"
 kind.type = "score"
-kind.data.levels = ["Only reporting remains", "Routine execution", "Several related reasoning steps", "Unresolved diagnosis or design"]
+kind.data.levels = [
+    "The requirements are satisfied; only communicating the outcome remains.",
+    "A known change or check can be carried out by following established steps.",
+    "Several unresolved but bounded inferences or adaptations are still needed.",
+    "The agent must still resolve competing causes, choose a design, or establish a new approach.",
+]
 
 [agent.next_output]
-instructions = "Estimate the length of the next agent response, including generated code or tool arguments. Exclude tool results and hidden reasoning."
+instructions = "Estimate tokens generated by the next agent call, including visible prose, code, and tool arguments. Exclude later calls, tool results, and hidden reasoning."
 kind.type = "score"
 kind.data.levels = ["Up to 128 tokens", "129 to 512 tokens", "513 to 2048 tokens", "2049 to 8192 tokens", "Over 8192 tokens"]
 
@@ -324,18 +457,27 @@ kind.data.levels = ["Up to 128 tokens", "129 to 512 tokens", "513 to 2048 tokens
 instructions = "What is the main anticipated wait before the agent can act again?"
 kind.type = "choice"
 kind.data.options = [
-    { id = "tool_result" }, { id = "external_service" }, { id = "user" }, { id = "none" },
-    { id = "unclear" },
+    { id = "tool_result", description = "An invoked tool is still running and its result is needed." },
+    { id = "external_service", description = "Progress depends on an external job, resource, or service after the tool has returned or before it can be called." },
+    { id = "user", description = "A reply, decision, or authorization from the user is pending." },
+    { id = "none", description = "The agent can take a useful next action immediately." },
+    { id = "unclear", description = "The trace does not show what, if anything, the agent is waiting for." },
 ]
 
 [agent.handoff_ready]
 instructions = "Is there a bounded next operation with known inputs, enough transferable context, and a cheap way to check its output?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "A concrete subtask can be delegated now with identified inputs, sufficient context, and a clear inexpensive acceptance check."
+kind.data.false_description = "The next work still needs investigation, nontransferable context, or a costly or undefined check."
 
 [agent.parallel_work]
 instructions = "Are there at least two remaining operations whose inputs are available and whose effects are independent?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "At least two concrete operations are ready now; neither consumes the other's result or changes state the other relies on."
+kind.data.false_description = "Only one operation is ready, or the remaining operations depend on each other's results or conflicting effects."
 
 [agent.error_propagation]
 instructions = "Could an error in the next step affect later work before a relevant check would detect it?"
-kind = { type = "boolean", data = {} }
+kind.type = "boolean"
+kind.data.true_description = "A later decision, write, or handoff could use a wrong result before an effective check catches it."
+kind.data.false_description = "A check catches the error before downstream use, or the next operation has no material downstream effect."
