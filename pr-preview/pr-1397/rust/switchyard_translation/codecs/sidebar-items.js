@@ -1,0 +1,1 @@
+window.SIDEBAR_ITEMS = {"mod":["anthropic","openai_chat","responses","stream"],"struct":["DecodedRequest","DecodedResponse","EncodedRequest","EncodedResponse"],"trait":["FormatCodec"]};
