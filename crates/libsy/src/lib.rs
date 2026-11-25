@@ -5,6 +5,7 @@
 #![doc = include_str!("../README.md")]
 
 mod core;
+pub mod task_modeling;
 pub use core::algorithm::{
     Algorithm, AnswerSummary, Call, CallDecision, CallModel, Driver, RoutingOutcome, RuntimeModels,
     Step, StepStream, drive,

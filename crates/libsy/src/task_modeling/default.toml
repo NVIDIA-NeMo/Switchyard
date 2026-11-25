@@ -1,0 +1,341 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[user.goal_change]
+instructions = "How does the latest user message change the active goal? Use the earlier conversation to interpret short replies such as 'go ahead'."
+kind.type = "choice"
+kind.data.options = [
+    { id = "first_goal" }, { id = "new_goal" }, { id = "continue" }, { id = "clarify" },
+    { id = "add_requirement" }, { id = "correct" }, { id = "reject" }, { id = "approve" },
+    { id = "pause" }, { id = "cancel" }, { id = "unclear" },
+]
+
+[user.goal_reference]
+instructions = "What does the latest request primarily refer back to? Use only references supported by the history."
+kind.type = "choice"
+kind.data.options = [
+    { id = "prior_goal" }, { id = "plan" }, { id = "prior_answer" }, { id = "artifact" },
+    { id = "tool_result" }, { id = "multiple" }, { id = "none" }, { id = "unclear" },
+]
+
+[user.task_family]
+instructions = "What kind of work primarily achieves the user's goal? Classify the intended outcome even if the last action used a different skill."
+kind.type = "choice"
+kind.data.options = [
+    { id = "implementation" }, { id = "debugging" }, { id = "review" }, { id = "research" },
+    { id = "analysis" }, { id = "writing" }, { id = "transformation" },
+    { id = "retrieval" }, { id = "operation" }, { id = "planning" }, { id = "other" },
+    { id = "unclear" },
+]
+
+[user.deliverable]
+instructions = "What primary result has the user asked to receive? A request to explain a fix differs from a request to make it."
+kind.type = "choice"
+kind.data.options = [
+    { id = "answer" }, { id = "plan" }, { id = "diagnosis" }, { id = "change" },
+    { id = "review" }, { id = "verified_artifact" }, { id = "external_action" },
+    { id = "other" }, { id = "unclear" },
+]
+
+[user.acceptance_evidence]
+instructions = "What evidence would establish that the main requirement was met? Consider any explicit acceptance test."
+kind.type = "choice"
+kind.data.options = [
+    { id = "executable_check" }, { id = "observed_state" }, { id = "source_evidence" },
+    { id = "user_judgment" }, { id = "multiple" }, { id = "unspecified" },
+]
+
+[user.precision]
+instructions = "How much deviation from the requested result is acceptable? Judge the requirement independently of task difficulty."
+kind.type = "score"
+kind.data.levels = [
+    "Rough ideas suffice",
+    "Main facts must be correct",
+    "Details must be exact",
+    "A strict invariant or exact result must hold",
+]
+
+[user.format_required]
+instructions = "Does the deliverable have an explicit format requirement, such as a schema, table, or file type?"
+kind = { type = "boolean", data = {} }
+
+[user.visual_quality]
+instructions = "Is visual presentation a material acceptance criterion? Merely reading an image does not qualify."
+kind = { type = "boolean", data = {} }
+
+[user.ambiguity]
+instructions = "Which uncertainty would most change the work? Ignore details that can vary without changing the deliverable."
+kind.type = "choice"
+kind.data.options = [
+    { id = "goal" }, { id = "referenced_entity" }, { id = "constraint" }, { id = "method" },
+    { id = "tradeoff" }, { id = "none" }, { id = "unclear" },
+]
+
+[user.clarification_source]
+instructions = "Where could the most consequential missing fact be resolved with the least additional input?"
+kind.type = "choice"
+kind.data.options = [
+    { id = "history" }, { id = "available_tool" }, { id = "user_only" },
+    { id = "external_party" }, { id = "no_missing_fact" }, { id = "unclear" },
+]
+
+[user.repo_context]
+instructions = "Must the solution fit an existing repository's interfaces, behavior, or conventions?"
+kind = { type = "boolean", data = {} }
+
+[user.current_sources]
+instructions = "Does correctness require fresh external evidence or consultation of a specific source?"
+kind = { type = "boolean", data = {} }
+
+[user.visual_input]
+instructions = "Does completion require interpreting an image, diagram, video, or rendered layout?"
+kind = { type = "boolean", data = {} }
+
+[user.tool_execution]
+instructions = "Does satisfying the request require executing a tool or observing external state?"
+kind = { type = "boolean", data = {} }
+
+[user.exact_computation]
+instructions = "Does completion require a calculation, query, or other exact transformation of data?"
+kind = { type = "boolean", data = {} }
+
+[user.source_synthesis]
+instructions = "Does the deliverable require combining evidence from multiple sources?"
+kind = { type = "boolean", data = {} }
+
+[user.history_dependence]
+instructions = "How much earlier session state would a specialist need to take over? Consider prior decisions, artifacts and failures."
+kind.type = "score"
+kind.data.levels = [
+    "Current message is sufficient",
+    "One reference or constraint",
+    "A short handoff with selected evidence",
+    "Extensive session history",
+]
+
+[user.scope]
+instructions = "What is the smallest scope that would cover the user's requirements?"
+kind.type = "choice"
+kind.data.options = [
+    { id = "standalone" }, { id = "localized" }, { id = "one_subsystem" },
+    { id = "cross_subsystem" }, { id = "unclear" },
+]
+
+[user.approach]
+instructions = "How well specified is the path to completion?"
+kind.type = "choice"
+kind.data.options = [
+    { id = "known_procedure" }, { id = "bounded_adaptation" },
+    { id = "open_investigation" }, { id = "unclear" },
+]
+
+[user.dependencies]
+instructions = "How does the requested work divide across steps?"
+kind.type = "choice"
+kind.data.options = [
+    { id = "single_step" }, { id = "independent_parts" }, { id = "serial_dependencies" },
+    { id = "mixed" }, { id = "unclear" },
+]
+
+[user.expected_steps]
+instructions = "How many agent steps are likely to be needed for the whole task, including verification?"
+kind.type = "score"
+kind.data.levels = ["One step", "Two to three steps", "Four to seven steps", "Eight or more steps"]
+
+[user.difficulty]
+instructions = "How much reasoning is needed to reach and verify a solution with the supplied evidence?"
+kind.type = "score"
+kind.data.levels = [
+    "Direct lookup or operation",
+    "Routine procedure",
+    "Several related reasoning steps",
+    "Uncertain diagnosis or design",
+    "Novel or deeply coupled problem",
+]
+
+[user.visible_output]
+instructions = "Estimate the length of the requested visible answer or code. Exclude tool logs and hidden reasoning."
+kind.type = "score"
+kind.data.levels = [
+    "Up to 128 tokens",
+    "129 to 512 tokens",
+    "513 to 2048 tokens",
+    "2049 to 8192 tokens",
+    "Over 8192 tokens",
+]
+
+[user.cost_priority]
+instructions = "Has the user expressed a cost constraint or preference that applies to this task?"
+kind = { type = "boolean", data = {} }
+
+[user.latency_priority]
+instructions = "Has the user expressed a deadline, urgency, or preference for speed?"
+kind = { type = "boolean", data = {} }
+
+[user.quality_priority]
+instructions = "Has the user specified a quality floor or explicitly prioritized quality over cost or speed?"
+kind = { type = "boolean", data = {} }
+
+[user.execution_constraints]
+instructions = "Has the user restricted which tools, providers, or actions may be used?"
+kind = { type = "boolean", data = {} }
+
+[user.data_sensitivity]
+instructions = "Does the evidence contain material with stated or apparent sharing restrictions, such as credentials or private records?"
+kind = { type = "boolean", data = {} }
+
+[user.reversibility]
+instructions = "How easily could the most consequential requested action be reversed?"
+kind.type = "choice"
+kind.data.options = [
+    { id = "no_state_change" }, { id = "reversible" }, { id = "costly_to_reverse" },
+    { id = "irreversible" }, { id = "unclear" },
+]
+
+[user.error_impact]
+instructions = "What is the likely consequence of a wrong result, given the stated use?"
+kind.type = "score"
+kind.data.levels = [
+    "Minor local correction",
+    "Bounded rework",
+    "Substantial downstream rework",
+    "Material external harm",
+]
+
+[agent.phase]
+instructions = "What kind of work best describes the latest agent action?"
+kind.type = "choice"
+kind.data.options = [
+    { id = "lookup" }, { id = "diagnosis" }, { id = "design" }, { id = "execution" },
+    { id = "verification" }, { id = "recovery" }, { id = "clarification" },
+    { id = "reporting" }, { id = "unclear" },
+]
+
+[agent.next_action]
+instructions = "What operation would advance the unmet user requirement next?"
+kind.type = "choice"
+kind.data.options = [
+    { id = "lookup" }, { id = "diagnose" }, { id = "design" }, { id = "execute" },
+    { id = "verify" }, { id = "recover" }, { id = "ask_user" }, { id = "report" },
+    { id = "wait" }, { id = "unclear" },
+]
+
+[agent.action_specified]
+instructions = "Are the inputs and method for the next substantive operation already established?"
+kind = { type = "boolean", data = {} }
+
+[agent.progress]
+instructions = "What changed relative to the state before the last action? A failing reproduction can narrow a diagnosis."
+kind.type = "choice"
+kind.data.options = [
+    { id = "requirement_met" }, { id = "new_evidence" }, { id = "hypothesis_eliminated" },
+    { id = "regression" }, { id = "no_change" }, { id = "unclear" },
+]
+
+[agent.remaining_uncertainty]
+instructions = "Which unresolved question most limits the next step?"
+kind.type = "choice"
+kind.data.options = [
+    { id = "goal" }, { id = "cause" }, { id = "implementation" }, { id = "environment" },
+    { id = "verification" }, { id = "none" }, { id = "unclear" },
+]
+
+[agent.blocker]
+instructions = "What currently prevents substantive progress? Prefer an observed blocker to a hypothetical one."
+kind.type = "choice"
+kind.data.options = [
+    { id = "missing_input" }, { id = "permission" }, { id = "missing_artifact" },
+    { id = "unavailable_tool" }, { id = "external_service" }, { id = "capability" },
+    { id = "none" }, { id = "unclear" },
+]
+
+[agent.unblock_source]
+instructions = "What would resolve the current blocker?"
+kind.type = "choice"
+kind.data.options = [
+    { id = "available_observation" }, { id = "revised_approach" }, { id = "user_input" },
+    { id = "permission_change" }, { id = "environment_recovery" }, { id = "no_blocker" },
+    { id = "unclear" },
+]
+
+[agent.failure_pattern]
+instructions = "What do comparable observations say about the latest failure or recovery? Count an expected negative test as diagnostic evidence."
+kind.type = "choice"
+kind.data.options = [
+    { id = "expected_failure" }, { id = "first_unexpected_failure" },
+    { id = "repeated_unchanged_failure" }, { id = "revised_attempt_failed" },
+    { id = "confirmed_recovery" }, { id = "no_failure" }, { id = "unclear" },
+]
+
+[agent.verification]
+instructions = "What evidence supports the active acceptance criteria? Use checks relevant to the current artifact. Choose partial when only some criteria have evidence."
+kind.type = "choice"
+kind.data.options = [
+    { id = "confirmed" }, { id = "contradicted" }, { id = "partially_checked" },
+    { id = "unchecked" }, { id = "criteria_unavailable" },
+]
+
+[agent.completion_claim]
+instructions = "How does the agent's latest completion claim compare with the available evidence? Distinguish an omitted check from a check that failed."
+kind.type = "choice"
+kind.data.options = [
+    { id = "no_claim" }, { id = "supported" }, { id = "contradicted" },
+    { id = "unverified" },
+]
+
+[agent.stopping_state]
+instructions = "What is the current stopping state? Treat a legitimate external dependency differently from abandoning feasible work."
+kind.type = "choice"
+kind.data.options = [
+    { id = "ready_to_report" }, { id = "work_remains" }, { id = "blocked" },
+    { id = "user_requested_stop" }, { id = "prematurely_abandoned" }, { id = "unclear" },
+]
+
+[agent.alignment]
+instructions = "How does the latest action relate to the current user instruction? Account for corrections and scope changes."
+kind.type = "choice"
+kind.data.options = [
+    { id = "aligned" }, { id = "ignored_correction" }, { id = "stale_assumption" },
+    { id = "out_of_scope" }, { id = "unrelated" }, { id = "unclear" },
+]
+
+[agent.remaining_calls]
+instructions = "Estimate how many additional model calls the active goal needs, including a final answer if still outstanding."
+kind.type = "score"
+kind.data.levels = [
+    "Zero",
+    "One",
+    "Two to three",
+    "Four to seven",
+    "Eight or more",
+]
+
+[agent.remaining_difficulty]
+instructions = "How difficult is the remaining work given what has already been discovered, completed, and verified?"
+kind.type = "score"
+kind.data.levels = ["Only reporting remains", "Routine execution", "Several related reasoning steps", "Unresolved diagnosis or design"]
+
+[agent.next_output]
+instructions = "Estimate the length of the next agent response, including generated code or tool arguments. Exclude tool results and hidden reasoning."
+kind.type = "score"
+kind.data.levels = ["Up to 128 tokens", "129 to 512 tokens", "513 to 2048 tokens", "2049 to 8192 tokens", "Over 8192 tokens"]
+
+[agent.wait_source]
+instructions = "What is the main anticipated wait before the agent can act again?"
+kind.type = "choice"
+kind.data.options = [
+    { id = "tool_result" }, { id = "external_service" }, { id = "user" }, { id = "none" },
+    { id = "unclear" },
+]
+
+[agent.handoff_ready]
+instructions = "Is there a bounded next operation with known inputs, enough transferable context, and a cheap way to check its output?"
+kind = { type = "boolean", data = {} }
+
+[agent.parallel_work]
+instructions = "Are there at least two remaining operations whose inputs are available and whose effects are independent?"
+kind = { type = "boolean", data = {} }
+
+[agent.error_propagation]
+instructions = "Could an error in the next step affect later work before a relevant check would detect it?"
+kind = { type = "boolean", data = {} }
