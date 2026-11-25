@@ -6945,6 +6945,75 @@ targets = ["efficient"]
 }
 
 #[tokio::test]
+async fn video_url_is_rejected_before_sending_to_responses_cloud() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let app = build_switchyard_router(load_test_config(&format!(
+        r#"
+schema_version = 1
+[llm_clients.local]
+format = "openai_chat"
+base_url = "{base_url}"
+[llm_clients.cloud]
+format = "openai_responses"
+base_url = "{base_url}"
+[targets]
+efficient = {{ id = "model/vgr-efficient", llm_client = "local" }}
+capable = {{ id = "model/vgr-cloud", llm_client = "cloud" }}
+judge = {{ id = "model/vgr-reject", llm_client = "local" }}
+[routes.vgr]
+id = "switchyard/vgr"
+type = "vgr"
+efficient_target = "efficient"
+capable_target = "capable"
+judge_target = "judge"
+mode = "active"
+active_approval = "prospective-validation-and-canary-approved"
+task_typing = false
+bounded_efficient = false
+[routes.pin-cloud]
+id = "switchyard/pin-cloud"
+type = "random"
+targets = ["capable"]
+"#,
+        base_url = upstream.base_url
+    ))?);
+    let video = json!({"type": "video_url", "video_url": {"url": "data:video/mp4;base64,PRIVATE_VIDEO_PAYLOAD"}});
+    for route in ["switchyard/pin-cloud", "switchyard/vgr"] {
+        for stream in [false, true] {
+            upstream.calls.lock().await.clear();
+            let response = send(&app, "POST", "/v1/chat/completions", Some(json!({
+                "model": route, "stream": stream,
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "Describe this attachment in one sentence."}, video.clone()
+                ]}]
+            }))).await?;
+            assert_eq!(
+                response.status,
+                StatusCode::BAD_REQUEST,
+                "{}",
+                response.text()?
+            );
+            assert!(
+                response.json()?["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("OpenAI Responses does not support video attachments")
+            );
+            assert!(!response.text()?.contains("PRIVATE_VIDEO_PAYLOAD"));
+            let calls = upstream.calls.lock().await;
+            assert!(calls.iter().all(|call| call["model"] != "model/vgr-cloud"));
+            if route == "switchyard/pin-cloud" {
+                assert!(calls.is_empty());
+            } else {
+                assert_eq!(calls[0]["model"], "model/vgr-efficient");
+                assert_eq!(calls[0]["messages"][0]["content"][1], video);
+            }
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn vgr_cloud_attachment_limits_fall_back_to_local() -> TestResult {
     for (url, error) in [
         (

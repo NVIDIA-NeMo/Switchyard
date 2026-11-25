@@ -638,6 +638,9 @@ pub(crate) fn decode_openai_content(
                             content.push(ContentBlock::Image { source });
                         }
                     }
+                    Some("video_url") => content.push(ContentBlock::Video {
+                        source: MediaSource::Raw(Value::Object(block.clone())),
+                    }),
                     Some("input_audio") => content.push(ContentBlock::Audio {
                         source: MediaSource::Raw(Value::Object(block.clone())),
                     }),
@@ -1175,6 +1178,11 @@ pub(crate) fn encode_openai_content(
             },
             ContentBlock::Audio { source } => {
                 blocks.push(crate::codecs::openai_media::audio_part(source)?);
+            }
+            ContentBlock::Video {
+                source: MediaSource::Raw(raw),
+            } if raw.get("type").and_then(Value::as_str) == Some("video_url") => {
+                blocks.push(raw.clone());
             }
             ContentBlock::Video { source } => {
                 push_lossy(

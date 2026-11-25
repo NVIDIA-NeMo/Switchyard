@@ -5284,3 +5284,38 @@ fn anthropic_pdf_titles_produce_openai_pdf_filenames() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn chat_video_url_is_rejected_by_responses_without_embedding_the_payload() -> TestResult {
+    let engine = TranslationEngine::default();
+    let url = "data:video/mp4;base64,PRIVATE_VIDEO_PAYLOAD";
+    let body = json!({
+        "model": "route",
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": "Describe this attachment in one sentence."},
+            {"type": "video_url", "video_url": {"url": url}}
+        ]}]
+    });
+    for policy in [TranslationPolicy::default(), normalized_policy()] {
+        let request = engine
+            .decode_request(WireFormat::OpenAiChat, &body, &policy)?
+            .request;
+        let result = engine.encode_request(WireFormat::OpenAiResponses, &request, &policy);
+        let error = match result {
+            Ok(_) => panic!("video must not be encoded as Responses text"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("does not support video attachments")
+        );
+        assert!(!error.to_string().contains("PRIVATE_VIDEO_PAYLOAD"));
+        let encoded = engine.encode_request(WireFormat::OpenAiChat, &request, &policy)?;
+        assert_eq!(
+            encoded.body["messages"][0]["content"],
+            body["messages"][0]["content"]
+        );
+    }
+    Ok(())
+}

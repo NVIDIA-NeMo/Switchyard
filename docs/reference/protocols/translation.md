@@ -92,3 +92,10 @@ Use <a href="../../../rust/switchyard_protocol/llm/struct.ProviderExtensions.htm
 diagnostics and the destination model's capabilities. For a custom format,
 <a href="../../../rust/switchyard_translation/codecs/trait.FormatCodec.html"><code>FormatCodec</code></a> and <a href="../../../rust/switchyard_translation/codecs/stream/trait.StreamCodec.html"><code>StreamCodec</code></a> define the codec contracts;
 <a href="../../../rust/switchyard_translation/engine/struct.TranslationEngine.html#method.with_registries"><code>TranslationEngine::with_registries</code></a> accepts explicit registries.
+
+Chat Completions `video_url` blocks are retained as video attachments when sent to
+a Chat Completions endpoint. Translation to OpenAI Responses rejects these blocks
+because that format has no supported video attachment mapping. Switchyard returns
+a clear request error before contacting the Responses endpoint. This also applies
+when VGR escalates a local attempt to a Responses cloud target. The video payload
+is not converted into text or included in the error message.

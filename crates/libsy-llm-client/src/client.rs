@@ -347,8 +347,17 @@ impl TranslatingLlmClient {
             return Err(LlmClientError::TemporarilyUnavailable);
         }
 
-        let mut body = observed_translation::encode_request(&llm_request, wire_format)
-            .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
+        let mut body =
+            observed_translation::encode_request(&llm_request, wire_format).map_err(|error| {
+                match error {
+                    switchyard_translation::TranslationError::InvalidValue { .. } => {
+                        LlmClientError::InvalidRequest {
+                            message: error.to_string(),
+                        }
+                    }
+                    _ => LlmClientError::RequestEncoding(error.to_string()),
+                }
+            })?;
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`. Set the provider model explicitly.
         let provider_model_id = self.provider_model(target_name);
