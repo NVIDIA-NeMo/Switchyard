@@ -2560,9 +2560,9 @@ values. Each answer separates its value from optional provider confidence.</p>
 </tr>
 <tr>
 <td><a href="../../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html#structfield.value"><code>DecisionAnswer.value: DecisionValue</code></a></td>
-<td>Typed estimate matching the question's kind.</td>
-<td><code>noul</code>, <code>choice</code>, or <code>score</code></td>
-<td><code>probability</code>, <code>choice</code>, or <code>score</code></td>
+<td>Typed estimate or refusal.</td>
+<td><code>noul</code>, <code>choice</code>, <code>score</code>, or <code>refusal</code></td>
+<td><code>predicate</code>, <code>choice</code>, <code>score</code>, or <code>refusal</code></td>
 </tr>
 <tr>
 <td><a href="../../../rust/switchyard_protocol/decision/struct.DecisionAnswer.html#structfield.provider_confidence"><code>DecisionAnswer.provider_confidence: Option&lt;ProviderConfidence&gt;</code></a></td>
@@ -2590,6 +2590,12 @@ values. Each answer separates its value from optional provider confidence.</p>
 </thead>
 <tbody>
 <tr>
+<td><a href="../../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Refusal"><code>DecisionValue::Refusal</code></a></td>
+<td>The provider declined this question. Sibling answers remain available.</td>
+<td><code>type: "refusal"</code></td>
+<td><code>type: "refusal"</code></td>
+</tr>
+<tr>
 <td><a href="../../../rust/switchyard_protocol/decision/enum.BooleanEstimate.html#variant.Value"><code>BooleanEstimate::Value(bool)</code></a></td>
 <td>A Boolean-only judgment with no implied certainty.</td>
 <td>The supplied adapter returns a probability instead</td>
@@ -2603,9 +2609,9 @@ values. Each answer separates its value from optional provider confidence.</p>
 </tr>
 <tr>
 <td><a href="../../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Choice"><code>DecisionValue::Choice</code></a> with <code>selected: String</code> and <a href="../../../rust/switchyard_protocol/decision/struct.Probability.html"><code>probabilities: Option&lt;BTreeMap&lt;String, Probability&gt;&gt;</code></a></td>
-<td>Select a declared ID. When supplied, the distribution covers every declared option.</td>
-<td><code>choice</code>; optional ID-keyed <code>probabilities</code></td>
-<td><code>choice</code>; <code>probabilities[]</code> with option <code>value</code> and <code>probability</code>, converted to a map</td>
+<td>Select a declared ID.</td>
+<td><code>choice</code>; optional <code>probabilities</code> keyed by option ID; some IDs may be absent</td>
+<td><code>choice</code>; <code>probabilities[]</code> with a <code>value</code> and <code>probability</code> for every option</td>
 </tr>
 <tr>
 <td><a href="../../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Score"><code>DecisionValue::Score</code></a> with <a href="../../../rust/switchyard_protocol/decision/struct.ScoreValue.html"><code>value: ScoreValue</code></a> and <a href="../../../rust/switchyard_protocol/decision/struct.Probability.html"><code>probabilities: Option&lt;Vec&lt;Probability&gt;&gt;</code></a></td>
@@ -2627,8 +2633,10 @@ kind; choice IDs identify valid selections; rubric order gives scores meaning.
 Both clients match responses against the request and perform format-specific
 checks. An unexpected ID, kind, or malformed supported response can produce
 <a href="../../../rust/switchyard_protocol/client/enum.LlmClientError.html#variant.ResponseTranslation"><code>LlmClientError::ResponseTranslation</code></a>.</p>
-<p>The OpenAI adapter treats a refusal as an error because <a href="../../../rust/switchyard_protocol/decision/enum.DecisionValue.html"><code>DecisionValue</code></a> has no
-refusal variant. Transport failures and upstream HTTP errors also surface through
+<p>If the route question was refused or its <code>apply_cutoff_to</code> probability is missing,
+the cutoff classifier uses its fallback when <code>fail_open</code> is enabled. Otherwise it
+returns an error identifying the refusal or the missing probability.</p>
+<p>Transport failures and upstream HTTP errors surface through
 <a href="../../../rust/switchyard_protocol/client/enum.LlmClientError.html"><code>LlmClientError</code></a>. A host converts its work result to <a href="../../../rust/switchyard_libsy/type.Result.html"><code>libsy::Result&lt;DecisionResponse&gt;</code></a>
 when replying through <a href="../../../rust/switchyard_libsy/struct.CallDecision.html#method.respond"><code>CallDecision::respond</code></a>.</p>
 <p>These clients do not retry automatically. Their constructors accept a timeout

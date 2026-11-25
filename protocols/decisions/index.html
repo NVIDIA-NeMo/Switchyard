@@ -2608,8 +2608,9 @@ strings. This retains their content, rather than making the two wire formats
 identical or providing an arbitrary JSON round-trip guarantee.</p>
 <p>Both adapters return probabilities for Boolean answers. A custom backend that
 returns only true or false can use <a href="../../rust/switchyard_protocol/decision/enum.BooleanEstimate.html#variant.Value"><code>BooleanEstimate::Value</code></a> without inventing
-certainty. Optional distributions remain <code>None</code> when absent. The OpenAI adapter
-reports refusals as errors because <a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html"><code>DecisionValue</code></a> has no refusal variant.</p>
+certainty. Optional distributions remain <code>None</code> when absent. Both adapters return
+<a href="../../rust/switchyard_protocol/decision/enum.DecisionValue.html#variant.Refusal"><code>DecisionValue::Refusal</code></a>
+for a question the provider declines to answer. Other answers remain available.</p>
 <h2 id="own-the-conversion">Own the conversion<a class="headerlink" href="#own-the-conversion" title="Permanent link">&para;</a></h2>
 <p>When handling <a href="../../rust/switchyard_libsy/enum.Step.html#variant.CallDecision"><code>Step::CallDecision</code></a>, use your existing client or a function to
 convert <a href="../../rust/switchyard_libsy/struct.CallDecision.html#structfield.request"><code>call.request</code></a> into the backend's format, send it, and convert the answer
@@ -2627,7 +2628,7 @@ See <a href="../../mechanics_of_libsy/#stepcalldecision">Mechanics of Libsy</a> 
 call-handling loop and cancellation behavior.</p>
 <h2 id="use-the-supplied-clients">Use the supplied clients<a class="headerlink" href="#use-the-supplied-clients" title="Permanent link">&para;</a></h2>
 <p>You can instead use the public <a href="../../rust/switchyard_llm_client/struct.SystemOneClient.html"><code>SystemOneClient</code></a> or <a href="../../rust/switchyard_llm_client/struct.OpenAiDecisionClient.html"><code>OpenAiDecisionClient</code></a> from
-<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/8a804662981d0d8aadfe847cf48322a86504862f/crates/libsy-llm-client/README.md"><code>switchyard-llm-client</code></a>. Use dependencies at
+<a href="https://github.com/NVIDIA-NeMo/Switchyard/blob/01e765827ff857ac8dc6a02f957d0591a724a426/crates/libsy-llm-client/README.md"><code>switchyard-llm-client</code></a>. Use dependencies at
 the same API revision as libsy and the protocol crate.</p>
 <p>This async excerpt sends the earlier <code>request</code> to System One. Set its <code>model</code> to
 an ID served by your endpoint. <code>SYSTEM_ONE_ENDPOINT</code> must include <code>/v1/systemone</code>.
