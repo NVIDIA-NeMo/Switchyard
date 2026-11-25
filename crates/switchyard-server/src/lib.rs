@@ -1407,12 +1407,19 @@ fn client_error(error: &LlmClientError) -> Response {
             "upstream_error",
             "upstream_configuration_error",
         ),
-        LlmClientError::ContextWindowExceeded { message, .. } => error_response(
-            StatusCode::BAD_REQUEST,
-            message,
-            "invalid_request_error",
-            "context_length_exceeded",
-        ),
+        LlmClientError::ContextWindowExceeded { message, .. } => {
+            let mut response = error_response(
+                StatusCode::BAD_REQUEST,
+                message,
+                "invalid_request_error",
+                "context_length_exceeded",
+            );
+            // The provider's message can quote request content; log only the error class.
+            response
+                .extensions_mut()
+                .insert(RequestLogError("context_length_exceeded".to_string()));
+            response
+        }
         LlmClientError::TemporarilyUnavailable => error_response(
             StatusCode::SERVICE_UNAVAILABLE,
             error.to_string(),
@@ -2365,6 +2372,37 @@ target = "judge"
                 .expect("ApiError extension");
             assert!(api_error.message.contains(LEAKED), "{}", api_error.message);
             assert_eq!(api_error.code, format!("invalid_request_{LEAKED}"));
+        }
+    }
+
+    // A context-window message can quote request content too, so the request log
+    // records only the error class while the client still sees the message.
+    #[test]
+    fn context_window_error_redacts_request_log_error() {
+        const LEAKED: &str = "SECRET-quoted-request-content";
+        let error = LlmClientError::ContextWindowExceeded {
+            model: ModelId::from("strong"),
+            message: format!("prompt too long: {LEAKED}"),
+        };
+        for wire_format in [
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+        ] {
+            let response = render_error_response(client_error(&error), wire_format);
+            let events = captured_events(|| request_log_context().emit(&response));
+            assert_eq!(events.len(), 1);
+            assert!(!events[0].message.contains(LEAKED), "{}", events[0].message);
+            assert!(
+                events[0].message.contains("context_length_exceeded"),
+                "{}",
+                events[0].message
+            );
+            let api_error = response
+                .extensions()
+                .get::<ApiError>()
+                .expect("ApiError extension");
+            assert!(api_error.message.contains(LEAKED), "{}", api_error.message);
         }
     }
 
