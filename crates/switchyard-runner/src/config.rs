@@ -164,6 +164,7 @@ pub(crate) struct RouteConfig {
     reasoning: Option<bool>,
     vision: Option<bool>,
     algorithm: AlgorithmSpec,
+    endpoint_affinity_seconds: u64,
     infra: Option<libsy::InfraPolicy>,
     eligibility: Option<TargetEligibilityConfig>,
 }
@@ -247,6 +248,7 @@ fn build_resolved_algorithm<'a>(
     algorithm: &AlgorithmSpec,
     targets: &LaneTargets<'_>,
     decisions: impl Iterator<Item = (&'a str, &'a ModelId)>,
+    endpoint_affinity_seconds: u64,
 ) -> RunnerResult<AlgorithmAndModels> {
     let model_ids = targets
         .iter()
@@ -254,7 +256,7 @@ fn build_resolved_algorithm<'a>(
         .chain(decisions.map(|(name, model)| (name.to_owned(), model.clone())))
         .collect();
     let (algorithm, models) = algorithm
-        .build_with_runtime_models(route_name, &model_ids)
+        .build_with_endpoint_affinity(route_name, &model_ids, endpoint_affinity_seconds)
         .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
     let provider_models = targets
         .values()
@@ -353,6 +355,8 @@ impl<'de> Deserialize<'de> for RouteConfig {
         let reasoning = take_optional(&mut table, "reasoning")?;
         let vision = take_optional(&mut table, "vision")?;
         let infra = take_optional(&mut table, "infra")?;
+        let endpoint_affinity_seconds =
+            take_optional(&mut table, "endpoint_affinity_seconds")?.unwrap_or(0);
         let eligibility = take_optional(&mut table, "eligibility")?;
         let algorithm = AlgorithmSpec::deserialize(toml::Value::Table(table))
             .map_err(serde::de::Error::custom)?;
@@ -363,6 +367,7 @@ impl<'de> Deserialize<'de> for RouteConfig {
             reasoning,
             vision,
             algorithm,
+            endpoint_affinity_seconds,
             infra,
             eligibility,
         })
@@ -563,8 +568,13 @@ impl DeploymentConfig {
             .resolve_decision_models(route_name, &algorithm, &overrides)?
             .into_iter()
             .map(|mapping| (mapping.target_name, mapping.model_id));
-        let (algorithm, models) =
-            build_resolved_algorithm(route_name, &algorithm, &targets, decisions)?;
+        let (algorithm, models) = build_resolved_algorithm(
+            route_name,
+            &algorithm,
+            &targets,
+            decisions,
+            self.routes[route_name].endpoint_affinity_seconds,
+        )?;
         Ok((algorithm, models.with_target_restriction()))
     }
 
@@ -744,6 +754,37 @@ impl DeploymentConfig {
             }
         }
         for (route_name, config) in &self.routes {
+            if config.endpoint_affinity_seconds > 0 {
+                let AlgorithmSpec::Random { targets, .. } = &config.algorithm else {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name}: endpoint affinity requires a random route"
+                    )));
+                };
+                let alternatives = config
+                    .eligibility
+                    .iter()
+                    .flat_map(|policy| policy.target_alternatives.values().flatten());
+                let mut settings = targets.iter().chain(alternatives).filter_map(|name| {
+                    let target = self.targets.get(name)?;
+                    let client = self.llm_clients.get(&target.llm_client)?;
+                    Some((
+                        &target.id,
+                        &target.system_prompt,
+                        &target.reasoning_effort,
+                        &target.extra_body,
+                        &target.omit_body_fields,
+                        client.format.wire_format(),
+                        client.responses_reasoning,
+                    ))
+                });
+                if let Some(first) = settings.next()
+                    && settings.any(|other| other != first)
+                {
+                    return Err(RunnerError::configuration(format!(
+                        "route {route_name}: endpoint affinity requires the same model, wire format and request settings for all targets"
+                    )));
+                }
+            }
             if let Some(eligibility) = &config.eligibility {
                 self.validate_eligibility(route_name, &config.algorithm, eligibility)?;
             }
@@ -782,7 +823,7 @@ impl DeploymentConfig {
             }
             let (algorithm, models) = config
                 .algorithm
-                .build_with_runtime_models(route_name, &targets)
+                .build_with_endpoint_affinity(route_name, &targets, config.endpoint_affinity_seconds)
                 .map_err(|error| RunnerError::configuration_source(error.to_string(), error))?;
             let models = models.with_provider_models(
                 config
@@ -1051,6 +1092,7 @@ impl DeploymentConfig {
                 route,
                 targets,
                 decisions.iter().map(|(name, target)| (*name, target.model)),
+                self.routes[route_name].endpoint_affinity_seconds,
             )?
         };
         let (route_clients, caller_auth) =

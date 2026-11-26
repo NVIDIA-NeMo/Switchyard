@@ -921,6 +921,15 @@ pub trait Algorithm: Send + Sync + 'static {
     /// [`run_stream`](Self::run_stream) runs this method and exposes its work to the host.
     async fn route(self: Arc<Self>, driver: Driver, request: Request) -> Result<RoutingOutcome>;
 
+    /// Run this callback when the target completes the request, including a successful fallback.
+    fn on_target_served(
+        &self,
+        _request: &Request,
+        _target: &ModelId,
+    ) -> Option<Box<dyn FnOnce() + Send>> {
+        None
+    }
+
     /// Whether the host should summarize served answers for [`Self::observe_answer`].
     fn tracks_answers(&self) -> bool {
         false

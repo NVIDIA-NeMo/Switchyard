@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Random routing as a stateless [`FallThrough`] composition.
+//! Weighted random routing with optional session affinity for interchangeable endpoints.
 //!
 //! [`RandomClassifier`] selects one target; [`FallThrough`] builds the candidate list.
 //! [`Random`] removes zero-weight targets from that list.
 
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
@@ -16,17 +18,19 @@ use rand::distr::{Distribution, weighted::WeightedIndex};
 use rand::rngs::StdRng;
 
 use crate::algorithms::fall_through::FallThrough;
-use crate::core::algorithm::{Algorithm, Driver};
+use crate::algorithms::util::affinity::evict_if_full;
+use crate::core::algorithm::{Algorithm, Driver, RoutingIdentity};
 use crate::core::classifier::{Classification, Classifier, Score};
 use crate::core::state::State;
 use crate::{LibsyError, Result};
-use switchyard_protocol::{Category, Request, Response};
+use switchyard_protocol::{Category, ModelId, Request, Response};
 
-/// Stateless weighted classifier used by random fall-through routing.
+/// Weighted classifier used by random fall-through routing.
 pub struct RandomClassifier {
     distribution: Option<WeightedIndex<f64>>,
     weights: Option<Vec<f64>>,
     rng: Mutex<StdRng>,
+    endpoint_affinity: Option<Arc<EndpointAffinity>>,
 }
 
 impl RandomClassifier {
@@ -67,7 +71,29 @@ impl RandomClassifier {
             distribution,
             weights,
             rng: Mutex::new(rng),
+            endpoint_affinity: None,
         })
+    }
+    fn preferred_endpoint(
+        &self,
+        request: &Request,
+        options: &[ModelId],
+        driver: &Driver,
+    ) -> Option<ModelId> {
+        let affinity = self.endpoint_affinity.as_ref()?;
+        let key = RoutingIdentity::from_request(request)?;
+        let served = affinity.served.lock();
+        let (target, when) = served.get(&key)?;
+        let index = options.iter().position(|candidate| candidate == target)?;
+        (when.elapsed() < affinity.ttl
+            && self
+                .weights
+                .as_ref()
+                .is_none_or(|weights| weights[index] > 0.0)
+            && options
+                .iter()
+                .all(|candidate| driver.provider_model(candidate) == driver.provider_model(target)))
+        .then(|| target.clone())
     }
 }
 
@@ -82,7 +108,7 @@ impl Classifier for RandomClassifier {
     async fn score(
         &self,
         _state: &mut State,
-        _request: &mut Request,
+        request: &mut Request,
         driver: &Driver,
     ) -> Result<(Classification, Option<Response>)> {
         // All the available models
@@ -98,15 +124,16 @@ impl Classifier for RandomClassifier {
                 options.len()
             )));
         }
-        let mut rng = self.rng.lock();
-        let index = if let Some(distribution) = self.distribution.as_ref() {
-            // The user gave us weights
-            distribution.sample(&mut *rng)
-        } else {
-            // No weights, assume equal probability
-            rng.random_range(..options.len())
-        };
-        let target = options[index].clone();
+        let target = self
+            .preferred_endpoint(request, options, driver)
+            .unwrap_or_else(|| {
+                let mut rng = self.rng.lock();
+                let index = match &self.distribution {
+                    Some(distribution) => distribution.sample(&mut *rng),
+                    None => rng.random_range(..options.len()),
+                };
+                options[index].clone()
+            });
         Ok((
             Classification::Scores(vec![Score {
                 confidence: 1.0,
@@ -124,10 +151,31 @@ pub struct Random {
     classifier: Arc<RandomClassifier>,
 }
 
+struct EndpointAffinity {
+    ttl: Duration,
+    served: Mutex<HashMap<RoutingIdentity, (ModelId, Instant)>>,
+}
+
 impl Random {
     /// Creates a random router. The models themselves will be passed at runtime.
     pub fn new(weights: Option<Vec<f64>>, seed: Option<u64>) -> Result<Self> {
-        let classifier = Arc::new(RandomClassifier::new(weights, seed)?);
+        Self::new_with_endpoint_affinity(weights, seed, Duration::ZERO)
+    }
+
+    /// Prefer the last successful endpoint in an interchangeable pool for one model.
+    pub fn new_with_endpoint_affinity(
+        weights: Option<Vec<f64>>,
+        seed: Option<u64>,
+        ttl: Duration,
+    ) -> Result<Self> {
+        let mut classifier = RandomClassifier::new(weights, seed)?;
+        classifier.endpoint_affinity = (!ttl.is_zero()).then(|| {
+            Arc::new(EndpointAffinity {
+                ttl,
+                served: Mutex::default(),
+            })
+        });
+        let classifier = Arc::new(classifier);
         let inner = FallThrough::new()
             .with_name("random")
             .with_classifier(classifier.clone());
@@ -158,6 +206,23 @@ impl Algorithm for Random {
             }
         }
         Ok(outcome)
+    }
+
+    fn on_target_served(
+        &self,
+        request: &Request,
+        target: &ModelId,
+    ) -> Option<Box<dyn FnOnce() + Send>> {
+        let affinity = Arc::clone(self.classifier.endpoint_affinity.as_ref()?);
+        let key = RoutingIdentity::from_request(request)?;
+        let target = target.clone();
+        Some(Box::new(move || {
+            let mut served = affinity.served.lock();
+            if !served.contains_key(&key) {
+                evict_if_full(&mut served);
+            }
+            served.insert(key, (target, Instant::now()));
+        }))
     }
 }
 
