@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use futures::{FutureExt, StreamExt};
 use parking_lot::Mutex;
@@ -17,7 +17,7 @@ use switchyard_protocol::{
     ProviderExtensions, Request, Response, WireFormat,
 };
 use switchyard_runner::AlgorithmSpec;
-use switchyard_translation::StreamTranslationState;
+use switchyard_translation::{StreamTranslationState, TranslationEngine};
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -160,6 +160,8 @@ struct Engine {
 pub struct SyRouter {
     engine: Arc<Engine>,
 }
+
+static STREAM_ENGINE: LazyLock<TranslationEngine> = LazyLock::new(TranslationEngine::default);
 
 /// Translation state for one streamed response.
 pub struct SyStream {
@@ -526,8 +528,8 @@ pub unsafe extern "C" fn sy_stream_translate(
         *out = std::ptr::null_mut();
         let stream = unsafe { stream.as_mut() }.ok_or("missing stream")?;
         let event: serde_json::Value = unsafe { parse_json_input(event_json) }?;
-        stream.ended |= switchyard_translation::is_terminal_stream_event(stream.source, &event)?;
-        let events = switchyard_translation::translate_stream_event(
+        stream.ended |= STREAM_ENGINE.is_terminal_stream_event(stream.source, &event)?;
+        let events = STREAM_ENGINE.translate_event(
             &mut stream.state,
             stream.source,
             stream.target,
@@ -556,7 +558,7 @@ pub unsafe extern "C" fn sy_stream_finish(
         if !stream.ended && !stream.state.errored {
             return Err(format!("{} stream ended before a terminal event", stream.source).into());
         }
-        let events = switchyard_translation::finish_stream(&mut stream.state, stream.target)?;
+        let events = STREAM_ENGINE.finish_stream(&mut stream.state, stream.target)?;
         *out = encode_json(&events)?.into_raw();
         Ok(())
     })

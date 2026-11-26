@@ -3923,3 +3923,35 @@ fn responses_custom_tool_calls_decode_from_the_finished_item() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn terminal_stream_events_follow_each_format() -> TestResult {
+    let engine = TranslationEngine::default();
+    for (format, terminal, other) in [
+        (
+            WireFormat::OpenAiChat,
+            json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+            json!({"choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": null}]}),
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({"type": "message_stop"}),
+            json!({"type": "content_block_delta"}),
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({"type": "response.completed", "response": {}}),
+            json!({"type": "response.output_text.delta", "delta": "hi"}),
+        ),
+    ] {
+        assert!(
+            engine.is_terminal_stream_event(format, &terminal)?,
+            "{format}"
+        );
+        assert!(
+            !engine.is_terminal_stream_event(format, &other)?,
+            "{format}"
+        );
+    }
+    Ok(())
+}
