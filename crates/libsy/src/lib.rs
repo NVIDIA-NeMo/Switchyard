@@ -20,6 +20,7 @@ pub use error::{DriverError, LibsyError, Result};
 mod algorithms;
 pub use algorithms::advisor_gate::{AdvisorGate, AdvisorGateConfig, GateTrigger};
 pub use algorithms::composite::{CompositeJudgeConfig, CompositeRouter};
+pub use algorithms::decision_select::{DecisionSelect, SelectionRule};
 pub use algorithms::infra::InfraPolicy;
 pub use algorithms::llm_class::{
     CapabilityJudgeConfig, CustomClassifierConfig, CustomClassifierPolicy, DEFAULT_UNMATCHED_STEPS,

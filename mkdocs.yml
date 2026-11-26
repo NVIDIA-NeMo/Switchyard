@@ -34,6 +34,7 @@ nav:
           - Task (LLM Classifier): routing_algorithms/llm_classifier_routing.md
           - Execution (Stage Router): routing_algorithms/stage_router_routing.md
           - Sub-Agent-Aware Routing: routing_algorithms/subagent_routing.md
+          - Transform a Chat Request into a Decision Call: routing_algorithms/decision_select.md
           - Random Routing: routing_algorithms/random_routing.md
           - Composite Routing: routing_algorithms/composite_routing.md
           - Escalation-Router Routing: routing_algorithms/escalation_router_routing.md

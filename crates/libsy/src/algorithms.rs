@@ -8,6 +8,7 @@
 
 pub mod advisor_gate;
 pub mod composite;
+pub mod decision_select;
 mod escalation;
 pub mod fall_through;
 pub mod infra;

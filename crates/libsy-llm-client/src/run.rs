@@ -264,8 +264,10 @@ fn emit_routing_observations(
     let mut answer_observed = false;
     for observation in observations.lock().drain(..) {
         observer(match observation {
-            RunObservation::LlmCall(call)
-                if !answer_observed && answered_model == Some(&call.selected_model) =>
+            RunObservation::LlmCall(call) | RunObservation::DecisionCall(call)
+                if !answer_observed
+                    && call.is_success
+                    && answered_model == Some(&call.selected_model) =>
             {
                 answer_observed = true;
                 RunObservation::AnswerCall(call)

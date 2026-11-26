@@ -1,0 +1,48 @@
+schema_version = 1
+
+[llm_clients.chat]
+format = "openai_chat"
+base_url = "http://127.0.0.1:8000/v1"
+api_key_env = "CHAT_API_KEY"
+
+[targets.writer]
+id = "chat-model"
+llm_client = "chat"
+
+[decision_clients.decisions]
+format = "system_one"
+timeout_ms = 30000
+endpoint = "http://127.0.0.1:8001/v1/systemone"
+api_key_env = "DECISION_API_KEY"
+
+[decision_targets.selector]
+id = "decision-model"
+decision_client = "decisions"
+
+[routes.agent]
+id = "appworld-agent"
+type = "decision_select"
+target = "writer"
+decision_target = "selector"
+
+[routes.agent.rule]
+enabled = true
+system_instruction = "You are an AI Assistant. Your task is to analyze a given complex user request and determine which available APIs would be useful to accomplish it autonomously on behalf of the user (supervisor)."
+catalog_prefix = "App-wise API Descriptions:\n"
+task_prefix = "# Task Instruction\n"
+task_suffix = "\n\n\nList all APIs that may be needed to complete this task. If you are unsure whether a certain API is useful, include it (prioritize high recall). However, do not include APIs that are clearly irrelevant or unrelated.\n\nOnly generate one API per line in the output. Each line should be in the format <app_name>.<api_name>. Example:\n\nspotify.login\nspotify.search_songs\n\nNow, list the APIs for the above task."
+question = "List all APIs that may be needed to complete this task."
+question_prefix = "required_apis_"
+stop_words = [
+    "a", "about", "after", "all", "also", "an", "and", "any", "are", "as", "at", "be",
+    "been", "before", "being", "by", "can", "could", "did", "do", "does", "done",
+    "down", "each", "etc", "every", "for", "from", "had", "has", "have", "he", "her",
+    "his", "how", "i", "if", "in", "into", "is", "it", "its", "just", "may", "me",
+    "might", "must", "my", "no", "not", "of", "on", "or", "our", "out", "over", "per",
+    "please", "s", "shall", "she", "should", "so", "some", "t", "than", "that", "the",
+    "their", "them", "then", "these", "they", "this", "those", "to", "up", "via", "vs",
+    "was", "we", "were", "what", "when", "where", "which", "who", "whom", "why", "will",
+    "with", "would", "you", "your",
+]
+shortlist = 100
+top_k = 20

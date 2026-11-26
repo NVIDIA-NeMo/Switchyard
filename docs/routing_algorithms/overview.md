@@ -43,6 +43,7 @@ quality, see [Examples](../tuning/examples.md).
 | [Advisor Gate](advisor_gate_routing.md) | `advisor` | One executor serves every turn. A stronger advisor reviews its plans and "done" claims. |
 | [Verification-Gated](vgr_routing.md) | `vgr` | An efficient model drafts. Verified answers stay on the efficient tier, and everything else goes to the capable model. |
 | [Prefill](prefill_routing.md) | `prefill_router` | A classifier you train on the prompt's hidden states picks the target. Experimental: Switchyard supplies no checkpoint, exporter, or encoder assets. |
+| [Transform a chat request into a decision call](decision_select.md) | `decision_select` | Answer questions such as “Which APIs do I need?” |
 | [Random](random_routing.md) | `random` | A fixed traffic split. |
 | [Fixed](#direct-model-routes) | `passthrough` | One target, no decision. |
 | [Sub-agent](subagent_routing.md) | `subagents` table | A separate policy for delegated sub-agent work on `passthrough`, `stage_router`, and `composite` routes. |
