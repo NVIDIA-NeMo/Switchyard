@@ -66,6 +66,8 @@ type streamHandle interface {
 
 var errStreamClosed = errors.New("Switchyard stream translator is closed")
 
+var errEmptyEvent = errors.New("Switchyard stream event is empty")
+
 // NewStreamTranslator starts translating a stream from the source format to the target format.
 func NewStreamTranslator(source, target string) (*StreamTranslator, error) {
 	input, err := json.Marshal(struct {
@@ -86,6 +88,10 @@ func NewStreamTranslator(source, target string) (*StreamTranslator, error) {
 func (stream *StreamTranslator) Translate(event json.RawMessage) ([]json.RawMessage, error) {
 	if stream.handle == nil {
 		return nil, errStreamClosed
+	}
+	// An empty event would drop the WASM call's event argument and fail the shared guest.
+	if len(event) == 0 {
+		return nil, errEmptyEvent
 	}
 	return streamEvents(stream.handle.translate(event))
 }

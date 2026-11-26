@@ -181,6 +181,9 @@ func TestStreamTranslator(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stream.Close()
+	if _, err := stream.Translate(nil); !errors.Is(err, errEmptyEvent) {
+		t.Fatalf("err=%v, want errEmptyEvent", err)
+	}
 	var events []json.RawMessage
 	for _, event := range []string{
 		`{"id":"1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hel"}}]}`,
