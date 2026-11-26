@@ -28,6 +28,8 @@ func translate(export string, input []byte) (json.RawMessage, error) {
 		failure = C.sy_encode_request(value, &output)
 	case "sy_decode_response":
 		failure = C.sy_decode_response(value, &output)
+	case "sy_encode_response":
+		failure = C.sy_encode_response(value, &output)
 	default:
 		panic("unknown Switchyard translation export " + export)
 	}

@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 
 use futures::Stream;
 use serde_json::Value;
-use switchyard_protocol::LlmClientError;
+use switchyard_protocol::{LlmClientError, ProviderExtensions};
 
 use crate::{
     AggLlmResponse, LlmRequest, LlmResponseStream, RawEventStream, Result, TranslationEngine,
@@ -41,6 +41,25 @@ pub fn decode_aggregated_response(body: &Value, wire_format: WireFormat) -> Resu
     Ok(DEFAULT_TRANSLATION_ENGINE
         .decode_response(wire_format, body, &DEFAULT_TRANSLATION_POLICY)?
         .response)
+}
+
+/// Encodes a buffered neutral aggregate into `wire_format`'s JSON response body.
+///
+/// `request_extensions` come from the decoded request. They restore details the
+/// provider did not see, such as Codex tool namespaces.
+pub fn encode_aggregated_response(
+    response: &AggLlmResponse,
+    wire_format: WireFormat,
+    request_extensions: &ProviderExtensions,
+) -> Result<Value> {
+    Ok(DEFAULT_TRANSLATION_ENGINE
+        .encode_response_with_extensions(
+            wire_format,
+            response,
+            request_extensions,
+            &DEFAULT_TRANSLATION_POLICY,
+        )?
+        .body)
 }
 
 /// Encodes a stream of IR chunks into a stream of target-format wire events.
@@ -105,7 +124,8 @@ mod tests {
     };
 
     use super::{
-        decode_aggregated_response, decode_request, decode_stream, encode_request, encode_stream,
+        decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
+        encode_request, encode_stream,
     };
     use crate::{LlmResponseStream, LlmStreamError, WireFormat};
 
@@ -150,7 +170,7 @@ mod tests {
     }
 
     #[test]
-    fn aggregated_response_decodes_from_openai_chat() -> Result<(), BoxError> {
+    fn aggregated_response_round_trips_from_openai_chat() -> Result<(), BoxError> {
         let body = json!({
             "id": "1",
             "model": "upstream",
@@ -163,6 +183,11 @@ mod tests {
         });
         let agg = decode_aggregated_response(&body, WireFormat::OpenAiChat)?;
         assert_eq!(completion_text(&agg), "Hi there");
+
+        let encoded =
+            encode_aggregated_response(&agg, WireFormat::AnthropicMessages, &Default::default())?;
+        assert_eq!(encoded["content"][0]["text"], "Hi there");
+        assert_eq!(encoded["stop_reason"], "end_turn");
         Ok(())
     }
 

@@ -439,6 +439,12 @@ fn translation_exports_return_owned_json() {
         }),
     );
     assert_eq!(response["outputs"][0]["content"][0]["text"], "hello");
+    let encoded = translated(
+        sy_encode_response,
+        json!({"format": "anthropic_messages", "response": response}),
+    );
+    assert_eq!(encoded["type"], "message");
+    assert_eq!(encoded["content"][0]["text"], "hello");
 }
 
 // Pending reads must yield the runtime worker, not consume blocking threads.

@@ -42,6 +42,7 @@ char *sy_run_respond(const SyRun *run, uint64_t call_id, const char *reply_json)
 char *sy_decode_request(const char *input_json, char **out_json);
 char *sy_encode_request(const char *input_json, char **out_json);
 char *sy_decode_response(const char *input_json, char **out_json);
+char *sy_encode_response(const char *input_json, char **out_json);
 
 // Signals cancellation without waiting for callbacks.
 void sy_run_cancel(const SyRun *run);

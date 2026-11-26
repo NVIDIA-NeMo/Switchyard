@@ -13,8 +13,8 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use switchyard_libsy::{Algorithm, Call, LibsyError, RuntimeModels, State, Step, StepStream};
 use switchyard_protocol::{
-    AggLlmResponse, Category, DecisionRequest, LlmRequest, LlmResponse, Metadata, ModelId, Request,
-    Response, WireFormat,
+    AggLlmResponse, Category, DecisionRequest, LlmRequest, LlmResponse, Metadata, ModelId,
+    ProviderExtensions, Request, Response, WireFormat,
 };
 use switchyard_runner::AlgorithmSpec;
 use tokio::runtime::Runtime;
@@ -89,6 +89,14 @@ struct EncodeInput {
     format: WireFormat,
     request: LlmRequest,
     model: ModelId,
+}
+
+#[derive(Deserialize)]
+struct EncodeResponseInput {
+    format: WireFormat,
+    response: AggLlmResponse,
+    #[serde(default)]
+    request_extensions: ProviderExtensions,
 }
 
 #[derive(Deserialize)]
@@ -437,6 +445,28 @@ pub unsafe extern "C" fn sy_decode_response(
         *out = encode_json(&switchyard_translation::decode_aggregated_response(
             &input.body,
             input.format,
+        )?)?
+        .into_raw();
+        Ok(())
+    })
+}
+
+/// Encodes a buffered normalized response for the client's wire format.
+/// # Safety
+/// JSON must be NUL-terminated and `out_json` writable. Free the output with `sy_string_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_encode_response(
+    input_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> *mut c_char {
+    ffi_call(|| {
+        let out = unsafe { out_json.as_mut() }.ok_or("missing response output")?;
+        *out = std::ptr::null_mut();
+        let input: EncodeResponseInput = unsafe { parse_json_input(input_json) }?;
+        *out = encode_json(&switchyard_translation::encode_aggregated_response(
+            &input.response,
+            input.format,
+            &input.request_extensions,
         )?)?
         .into_raw();
         Ok(())

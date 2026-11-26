@@ -162,6 +162,16 @@ func TestSelectionAndTranslation(t *testing.T) {
 	if err := json.Unmarshal(response, &decoded); err != nil || len(decoded.Outputs) != 1 || len(decoded.Outputs[0].Content) != 1 || decoded.Outputs[0].Content[0].Text != "hello" {
 		t.Fatalf("response=%s err=%v", response, err)
 	}
+	reply, err := EncodeResponse("anthropic_messages", response, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var message struct {
+		Content []struct{ Text string }
+	}
+	if err := json.Unmarshal(reply, &message); err != nil || len(message.Content) != 1 || message.Content[0].Text != "hello" {
+		t.Fatalf("reply=%s err=%v", reply, err)
+	}
 }
 
 // Both judge protocols use Go's client; missing clients and host failures remain errors.

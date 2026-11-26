@@ -32,6 +32,16 @@ func DecodeResponse(format string, body json.RawMessage) (json.RawMessage, error
 	}{format, body})
 }
 
+// EncodeResponse converts a buffered normalized response to the client's wire format.
+// requestExtensions is the decoded request's "extensions" field, or nil.
+func EncodeResponse(format string, response, requestExtensions json.RawMessage) (json.RawMessage, error) {
+	return translated("sy_encode_response", struct {
+		Format            string          `json:"format"`
+		Response          json.RawMessage `json:"response"`
+		RequestExtensions json.RawMessage `json:"request_extensions,omitempty"`
+	}{format, response, requestExtensions})
+}
+
 func translated(export string, input any) (json.RawMessage, error) {
 	data, err := json.Marshal(input)
 	if err != nil {

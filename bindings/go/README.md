@@ -95,9 +95,11 @@ when the host refuses the call, such as for a budget or authorization check.
 `Route` then stops and returns `err`, which keeps its Go error type.
 
 Requests and replies use Switchyard's protocol JSON. `DecodeRequest`,
-`EncodeRequest`, and `DecodeResponse` use the existing translation codecs for
-`openai_chat`, `openai_responses`, and `anthropic_messages`. Typed decision
-requests use the decision protocol directly.
+`EncodeRequest`, `DecodeResponse`, and `EncodeResponse` use the existing
+translation codecs for `openai_chat`, `openai_responses`, and
+`anthropic_messages`. Pass the decoded request's `extensions` to
+`EncodeResponse` to restore details such as Codex tool namespaces. Typed
+decision requests use the decision protocol directly.
 
 `Outcome` contains ordered targets, the prepared request, optional routing
 evidence, and an optional answer. When it has no answer, the host calls the
