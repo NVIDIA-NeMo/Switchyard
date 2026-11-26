@@ -45,7 +45,8 @@ char *sy_encode_request(const char *input_json, char **out_json);
 char *sy_decode_response(const char *input_json, char **out_json);
 char *sy_encode_response(const char *input_json, char **out_json);
 // Streamed response translation. Calls on one stream must not overlap.
-// Translate and finish write a JSON array of target events.
+// Translate and finish write a JSON array of target events. Finish fails when the
+// source ended before its final event and sent no error event.
 char *sy_stream_new(const char *input_json, SyStream **out);
 char *sy_stream_translate(SyStream *stream, const char *event_json, char **out_json);
 char *sy_stream_finish(SyStream *stream, char **out_json);

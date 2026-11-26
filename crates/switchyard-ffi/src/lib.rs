@@ -166,6 +166,8 @@ pub struct SyStream {
     source: WireFormat,
     target: WireFormat,
     state: StreamTranslationState,
+    /// Set once the source sent its final event.
+    ended: bool,
 }
 
 struct Reader {
@@ -503,6 +505,7 @@ pub unsafe extern "C" fn sy_stream_new(
             source: input.source,
             target: input.target,
             state: StreamTranslationState::new(input.source, input.target),
+            ended: false,
         }));
         Ok(())
     })
@@ -523,6 +526,7 @@ pub unsafe extern "C" fn sy_stream_translate(
         *out = std::ptr::null_mut();
         let stream = unsafe { stream.as_mut() }.ok_or("missing stream")?;
         let event: serde_json::Value = unsafe { parse_json_input(event_json) }?;
+        stream.ended |= switchyard_translation::is_terminal_stream_event(stream.source, &event)?;
         let events = switchyard_translation::translate_stream_event(
             &mut stream.state,
             stream.source,
@@ -535,6 +539,7 @@ pub unsafe extern "C" fn sy_stream_translate(
 }
 
 /// Writes the closing target events, as a JSON array, after the source stream ends.
+/// Fails when the source ended before its final event and sent no error event.
 /// # Safety
 /// `stream` must be live and not used concurrently, and `out_json` writable.
 /// Free the output with `sy_string_free`.
@@ -547,6 +552,10 @@ pub unsafe extern "C" fn sy_stream_finish(
         let out = unsafe { out_json.as_mut() }.ok_or("missing events output")?;
         *out = std::ptr::null_mut();
         let stream = unsafe { stream.as_mut() }.ok_or("missing stream")?;
+        // Closing a cut-off source normally would pass a partial answer off as complete.
+        if !stream.ended && !stream.state.errored {
+            return Err(format!("{} stream ended before a terminal event", stream.source).into());
+        }
         let events = switchyard_translation::finish_stream(&mut stream.state, stream.target)?;
         *out = encode_json(&events)?.into_raw();
         Ok(())

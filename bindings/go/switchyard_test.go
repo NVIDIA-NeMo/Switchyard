@@ -225,6 +225,18 @@ func TestStreamTranslator(t *testing.T) {
 	if _, err := NewStreamTranslator("unknown", "openai_chat"); err == nil {
 		t.Fatal("unknown format accepted")
 	}
+
+	cutOff, err := NewStreamTranslator("openai_chat", "anthropic_messages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cutOff.Close()
+	if _, err := cutOff.Translate(json.RawMessage(`{"choices":[{"index":0,"delta":{"content":"hel"}}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cutOff.Finish(); err == nil || !strings.Contains(err.Error(), "ended before a terminal event") {
+		t.Fatalf("cut-off stream finished with err=%v", err)
+	}
 }
 
 // Both judge protocols use Go's client; missing clients and host failures remain errors.

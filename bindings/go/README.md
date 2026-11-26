@@ -109,10 +109,13 @@ the final selected provider response separately.
 To stream that response in another format, create a `StreamTranslator` with
 `NewStreamTranslator(source, target)`. Pass the JSON data of each provider event
 to `Translate`, but skip OpenAI Chat's `[DONE]`. Call `Finish` when the provider
-stream ends, then `Close`. Write each returned event as SSE `data`. For
-`anthropic_messages` and `openai_responses`, use the event's `type` as the SSE
-event name. End an `openai_chat` stream with `data: [DONE]`. A translator holds
-state for one response, so do not share it between goroutines.
+stream ends, then `Close`. `Finish` returns an error when the provider stream
+ended before its final event, so the host can report a cut-off answer. For
+`openai_chat`, the final event is a chunk with a `finish_reason`. Write each
+returned event as SSE `data`. For `anthropic_messages` and `openai_responses`,
+use the event's `type` as the SSE event name. End an `openai_chat` stream with
+`data: [DONE]`. A translator holds state for one response, so do not share it
+between goroutines.
 
 ## Cancellation and ownership
 

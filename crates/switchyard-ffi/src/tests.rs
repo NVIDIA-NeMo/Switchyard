@@ -494,6 +494,40 @@ fn stream_translation_keeps_state_until_finish() {
     assert!(stream.is_null());
 }
 
+// Finish reports a cut-off source unless the source already sent an error event.
+#[test]
+fn stream_finish_reports_a_cut_off_source() {
+    let finish_after = |formats: &str, event: Value| {
+        let input = CString::new(formats).unwrap();
+        let mut stream = std::ptr::null_mut();
+        check(unsafe { sy_stream_new(input.as_ptr(), &mut stream) });
+        let event = CString::new(event.to_string()).unwrap();
+        json_output(|out| unsafe { sy_stream_translate(stream, event.as_ptr(), out) });
+        let mut output = std::ptr::null_mut();
+        let error = unsafe { sy_stream_finish(stream, &mut output) };
+        unsafe { sy_stream_free(stream) };
+        if error.is_null() {
+            unsafe { sy_string_free(output) };
+            None
+        } else {
+            Some(error_message(error))
+        }
+    };
+    let cut_off = finish_after(
+        r#"{"source":"openai_chat","target":"anthropic_messages"}"#,
+        json!({"choices": [{"index": 0, "delta": {"content": "hel"}, "finish_reason": null}]}),
+    );
+    assert_eq!(
+        cut_off.as_deref(),
+        Some("openai_chat stream ended before a terminal event")
+    );
+    let failed = finish_after(
+        r#"{"source":"anthropic_messages","target":"openai_chat"}"#,
+        json!({"type": "error", "error": {"type": "overloaded_error", "message": "busy"}}),
+    );
+    assert_eq!(failed, None);
+}
+
 // Pending reads must yield the runtime worker, not consume blocking threads.
 #[test]
 fn pending_reads_yield_runtime_worker() {

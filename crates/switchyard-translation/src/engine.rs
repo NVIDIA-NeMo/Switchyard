@@ -320,6 +320,17 @@ impl TranslationEngine {
             .collect())
     }
 
+    /// Returns whether `event` is the final event of a `source` stream.
+    ///
+    /// This is the check [`Self::decode_stream`] uses to tell a complete stream from a cut-off one.
+    pub fn is_terminal_stream_event(
+        &self,
+        source: impl Into<FormatId>,
+        event: &Value,
+    ) -> Result<bool> {
+        Ok(self.stream_registry.codec(source)?.is_terminal_event(event))
+    }
+
     /// Decodes one provider event while retaining its parsed source JSON value.
     ///
     /// Takes ownership of `event` so preservation does not deep-copy provider JSON

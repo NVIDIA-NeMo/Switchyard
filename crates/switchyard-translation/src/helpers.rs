@@ -74,6 +74,11 @@ pub fn translate_stream_event(
     DEFAULT_TRANSLATION_ENGINE.translate_event(state, source, target, event)
 }
 
+/// Returns whether `event` is the final event of a `source` stream.
+pub fn is_terminal_stream_event(source: WireFormat, event: &Value) -> Result<bool> {
+    DEFAULT_TRANSLATION_ENGINE.is_terminal_stream_event(source, event)
+}
+
 /// Returns the closing `target` events once the source stream has ended.
 pub fn finish_stream(state: &mut StreamTranslationState, target: WireFormat) -> Result<Vec<Value>> {
     DEFAULT_TRANSLATION_ENGINE.finish_stream(state, target)
@@ -142,7 +147,7 @@ mod tests {
 
     use super::{
         decode_aggregated_response, decode_request, decode_stream, encode_aggregated_response,
-        encode_request, encode_stream,
+        encode_request, encode_stream, is_terminal_stream_event,
     };
     use crate::{LlmResponseStream, LlmStreamError, WireFormat};
 
@@ -205,6 +210,31 @@ mod tests {
             encode_aggregated_response(&agg, WireFormat::AnthropicMessages, &Default::default())?;
         assert_eq!(encoded["content"][0]["text"], "Hi there");
         assert_eq!(encoded["stop_reason"], "end_turn");
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_stream_events_follow_each_format() -> Result<(), BoxError> {
+        for (format, terminal, other) in [
+            (
+                WireFormat::OpenAiChat,
+                json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+                json!({"choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": null}]}),
+            ),
+            (
+                WireFormat::AnthropicMessages,
+                json!({"type": "message_stop"}),
+                json!({"type": "content_block_delta"}),
+            ),
+            (
+                WireFormat::OpenAiResponses,
+                json!({"type": "response.completed", "response": {}}),
+                json!({"type": "response.output_text.delta", "delta": "hi"}),
+            ),
+        ] {
+            assert!(is_terminal_stream_event(format, &terminal)?, "{format}");
+            assert!(!is_terminal_stream_event(format, &other)?, "{format}");
+        }
         Ok(())
     }
 
