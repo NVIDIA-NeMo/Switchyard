@@ -63,12 +63,14 @@ func (stream *nativeStream) translate(event []byte) ([]byte, error) {
 	value := C.CString(string(event))
 	defer C.free(unsafe.Pointer(value))
 	var output *C.char
-	return nativeOutput(C.sy_stream_translate(stream.ptr, value, &output), output)
+	failure := C.sy_stream_translate(stream.ptr, value, &output)
+	return nativeOutput(failure, output)
 }
 
 func (stream *nativeStream) finish() ([]byte, error) {
 	var output *C.char
-	return nativeOutput(C.sy_stream_finish(stream.ptr, &output), output)
+	failure := C.sy_stream_finish(stream.ptr, &output)
+	return nativeOutput(failure, output)
 }
 
 func (stream *nativeStream) free() {
