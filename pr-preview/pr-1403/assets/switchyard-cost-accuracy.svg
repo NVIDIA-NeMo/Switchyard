@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1250 560" width="1250" height="560" role="img" aria-labelledby="title description">
+  <title id="title">Switchyard task completion versus cost</title>
+  <desc id="description">The original classification, stage, escalation, Opus 4.8, and GLM 5.2 points preserve the positions shown in the published comparison. Jev task routing is a separate exploratory recorded-run replay: 73 of 89 tasks completed (82.02%) at an estimated model cost of $92.12, including estimated Jev calls. The combined set includes 62 training tasks. On the reused 27-task test split, Jev solved 22 tasks versus 23 for its paired Opus baseline. The replay used a different evaluation setup and cost accounting from the other plotted runs; its adapted TOML profile needs a fresh evaluation.</desc>
+  <defs>
+    <linearGradient id="frontier" gradientUnits="userSpaceOnUse" x1="157" y1="24" x2="309" y2="176">
+      <stop offset="0" stop-color="#5f8f15"/>
+      <stop offset="0.2" stop-color="#92b75f"/>
+      <stop offset="0.45" stop-color="#c5df9d"/>
+      <stop offset="0.7" stop-color="#eaf2d8"/>
+      <stop offset="0.9" stop-color="#fbfdf7"/>
+      <stop offset="1" stop-color="#ffffff"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0 0 6 3 0 6 2 3Z" fill="#a6a6a6"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: Arial, Helvetica, sans-serif; fill: #000000; }
+    .label { font-size: 18.5px; font-weight: 700; }
+    .models { font-size: 14px; fill: #777777; }
+    .tick { font-size: 22px; }
+    .grid { stroke: #d9d9d9; stroke-width: 1; }
+    .route { fill: #76b900; }
+    .baseline { fill: #ffc000; }
+    .leader { fill: none; stroke: #a6a6a6; stroke-width: 1; stroke-dasharray: 2 2; marker-end: url(#arrow); }
+  </style>
+  <rect width="1250" height="560" fill="#ffffff"/>
+  <rect x="157" y="24" width="304" height="304" fill="url(#frontier)"/>
+
+  <text x="173" y="59" font-size="22" font-weight="700">Efficiency</text>
+  <text x="173" y="85" font-size="22" font-weight="700">Frontier</text>
+
+  <path d="M165.5 113.5H1082.5 M165.5 264.5H1082.5 M165.5 415.5H1082.5" class="grid"/>
+  <text x="145" y="119" text-anchor="end" class="tick">80</text>
+  <text x="145" y="270" text-anchor="end" class="tick">75</text>
+  <text x="145" y="421" text-anchor="end" class="tick">70</text>
+  <text x="165.5" y="448" text-anchor="middle" class="tick">$40</text>
+  <text x="471.2" y="448" text-anchor="middle" class="tick">$80</text>
+  <text x="776.8" y="448" text-anchor="middle" class="tick">$120</text>
+  <text x="1082.5" y="448" text-anchor="middle" class="tick">$160</text>
+  <text x="586" y="482" text-anchor="middle" font-size="18" font-weight="700">Cost To Task Completion ($)</text>
+  <text transform="translate(43 273) rotate(-90)" font-size="16" font-weight="700">% Tasks Completed</text>
+
+  <circle cx="691.5" cy="129.9" r="9" class="route"/>
+  <circle cx="697.5" cy="140.6" r="9" class="route"/>
+  <circle cx="795.3" cy="117.6" r="8.5" class="route"/>
+  <circle cx="404.4" cy="289.9" r="8" class="baseline"/>
+  <circle cx="996.3" cy="199" r="8" class="baseline"/>
+  <path d="M643 133.5H674" class="leader"/>
+  <path d="M672 167 688 151" class="leader"/>
+  <text x="415.5" y="123" class="label">LLM Classification Router</text>
+  <text x="454.4" y="142" class="models">Opus 4.8 and GLM 5.2</text>
+  <text x="494" y="187" class="label">Agent Stage Router</text>
+  <text x="520" y="206" class="models">Opus 4.8 and GLM 5.2</text>
+  <text x="823" y="110" class="label">Escalation Router</text>
+  <text x="807" y="129" class="models">Opus 4.8, GLM 5.2, Classifier</text>
+  <text x="404.4" y="318" text-anchor="middle" class="label">GLM 5.2 Only</text>
+  <text x="996.3" y="228" text-anchor="middle" class="label">Opus 4.8 Only</text>
+
+  <g id="jev-replay" data-total-cost="92.116074918" data-successes="73" data-tasks="89">
+    <circle cx="563.754" cy="52.421" r="9" class="route"/>
+    <text x="583" y="45" class="label">Jev Task Router (replay)</text>
+    <text x="583" y="64" class="models">Opus 4.8 and GLM 5.2</text>
+  </g>
+
+  <circle cx="370.4" cy="516.7" r="5.2" class="route"/>
+  <text x="379.2" y="522" font-size="18">NeMo Switchyard Routing Algorithm</text>
+  <circle cx="709.2" cy="516.7" r="5.2" class="baseline"/>
+  <text x="718" y="522" font-size="18">Single Model</text>
+</svg>
