@@ -110,6 +110,44 @@ async fn models_called(server: &MockServer) -> Vec<String> {
 }
 
 #[tokio::test]
+async fn session_prefers_the_eligible_endpoint_that_served_its_last_answer() {
+    let primary = MockServer::start().await;
+    let backup = MockServer::start().await;
+    let algorithm = r#"type = "random"
+targets = ["fast", "replica"]
+weights = [1000000000, 1]
+seed = 42
+endpoint_affinity_seconds = 300"#;
+    let replica = format!(
+        r#"
+[llm_clients.backup]
+format = "openai_chat"
+base_url = "{}/v1"
+[targets.replica]
+id = "cloud/fast"
+llm_client = "backup"
+"#,
+        backup.uri()
+    );
+    let runner = Runner::from_toml(&config(&primary.uri(), algorithm, &replica)).unwrap();
+    let route = runner.route("chat").unwrap();
+    respond(&primary, "cloud/fast", ResponseTemplate::new(503), 1).await;
+    respond(&backup, "cloud/fast", completion("cloud/fast", "warm"), 2).await;
+    let mut turn = request("task", None);
+    turn.metadata.get_or_insert_default().session_id = Some("conversation".into());
+    for _ in 0..2 {
+        let answer = route.execute(turn.clone(), None).await.unwrap();
+        assert_eq!(answer.response.served_model().unwrap(), "replica");
+    }
+    assert_eq!(models_called(&primary).await.len(), 1);
+    require_target_labels(&mut turn, ["public"]).unwrap();
+    for request in [request("anonymous", None), turn] {
+        let decision = route.decide(request).await.unwrap();
+        assert_eq!(decision.selected_model_id().unwrap(), "fast");
+    }
+}
+
+#[tokio::test]
 async fn configured_stage_keeps_answer_fallbacks_approved() {
     let server = MockServer::start().await;
     let runner = Runner::from_toml(&config(&server.uri(), STAGE, "")).expect("approved Stage");

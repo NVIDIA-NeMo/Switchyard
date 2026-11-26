@@ -1338,7 +1338,7 @@ impl AlgorithmSpec {
         route_name: &str,
         targets: &BTreeMap<String, ModelId>,
     ) -> AlgorithmResult<Arc<dyn Algorithm>> {
-        build_algorithm(route_name, self, targets)
+        build_algorithm(route_name, self, targets, 0)
     }
 
     /// Resolves target names to host model IDs and builds the algorithm and runtime groups.
@@ -1347,7 +1347,16 @@ impl AlgorithmSpec {
         route_name: &str,
         targets: &BTreeMap<String, ModelId>,
     ) -> AlgorithmResult<(Arc<dyn Algorithm>, RuntimeModels)> {
-        let algorithm = self.build(route_name, targets)?;
+        self.build_with_endpoint_affinity(route_name, targets, 0)
+    }
+
+    pub(crate) fn build_with_endpoint_affinity(
+        &self,
+        route_name: &str,
+        targets: &BTreeMap<String, ModelId>,
+        endpoint_affinity_seconds: u64,
+    ) -> AlgorithmResult<(Arc<dyn Algorithm>, RuntimeModels)> {
+        let algorithm = build_algorithm(route_name, self, targets, endpoint_affinity_seconds)?;
         let names = self.runtime_model_names(route_name)?;
         let mut models =
             RuntimeModels::new(resolve_runtime_models(route_name, names.parent, targets)?);
@@ -1835,6 +1844,7 @@ fn build_algorithm(
     route_name: &str,
     config: &AlgorithmSpec,
     targets: &BTreeMap<String, ModelId>,
+    endpoint_affinity_seconds: u64,
 ) -> AlgorithmResult<Arc<dyn Algorithm>> {
     match config {
         AlgorithmSpec::Noop { .. } => Ok(Arc::new(Noop {})),
@@ -1860,7 +1870,12 @@ fn build_algorithm(
                     "random route {route_name}: targets must be unique, {duplicate} is repeated"
                 )));
             }
-            let algorithm = Random::new(weights.clone(), *seed).map_err(|error| {
+            let algorithm = Random::new_with_endpoint_affinity(
+                weights.clone(),
+                *seed,
+                std::time::Duration::from_secs(endpoint_affinity_seconds),
+            )
+            .map_err(|error| {
                 AlgorithmConfigError::with_source(
                     format!("random route {route_name}: {error}"),
                     error,

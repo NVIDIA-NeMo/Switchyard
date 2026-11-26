@@ -328,6 +328,13 @@ Splits traffic across targets. See
 | `targets` | Yes | — | Target names to choose from. |
 | `weights` | No | equal | Finite, non-negative relative weights in `targets` order, with at least one positive value. Invalid weights are rejected at load time. |
 | `seed` | No | unset | Reproduces the selection sequence. |
+| `endpoint_affinity_seconds` | No | `0` | Prefer the endpoint that last served this session for this many seconds. Zero disables affinity. |
+
+Use endpoint affinity to split new sessions between interchangeable deployments of one model.
+Configure targets with the same model ID, wire format, and request settings, and choose endpoints
+whose prices are acceptable. A successful fallback becomes the preferred endpoint. Requests without
+a session ID use the normal weighted selection. Each running router keeps its own preferences.
+Switchyard records the serving target when it executes the request. A decision alone does not establish a preference.
 
 ### `plan_execute`
 

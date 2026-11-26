@@ -123,6 +123,38 @@ pub async fn run(
         observer(RunObservation::RoutingOverhead(overhead));
     }
     let mut response = result?;
+    if let Some(record) = response
+        .served_model()
+        .and_then(|target| algorithm.on_target_served(&outcome.request, target))
+    {
+        if let LlmResponse::Stream(stream) = response.llm_response {
+            let mut record = Some(record);
+            response.llm_response = LlmResponse::Stream(
+                stream
+                    .inspect(move |event| {
+                        let Ok(event) = event else {
+                            record = None;
+                            return;
+                        };
+                        for chunk in event.normalized() {
+                            match chunk {
+                                LlmResponseChunk::StreamError { .. }
+                                | LlmResponseChunk::DecodeError { .. } => record = None,
+                                LlmResponseChunk::MessageStop { .. } => {
+                                    if let Some(record) = record.take() {
+                                        record()
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    })
+                    .boxed(),
+            );
+        } else {
+            record();
+        }
+    }
     if algorithm.tracks_answers()
         && let Some(session) = session_id(&outcome.request)
     {
