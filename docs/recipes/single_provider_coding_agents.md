@@ -12,7 +12,7 @@ Choose one recipe. Each uses local port `4123`.
 
 ## Codex with OpenAI
 
-Sign in with `codex login`. Terra classifies, and Stage routes between Sol and Luna.
+Sign in with `codex login`. Luna classifies, and Stage routes between Sol and Luna.
 
 This recipe needs Codex classifier support added after v0.3.0. Install from a
 checkout of current `main`:
