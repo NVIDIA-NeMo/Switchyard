@@ -27,7 +27,7 @@ pub(super) fn visible_text(agg: &AggLlmResponse) -> Option<String> {
         .iter()
         .flat_map(|output| output.content.iter())
         .filter_map(|block| match block {
-            ContentBlock::Text { text } => Some(text.as_str()),
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect();

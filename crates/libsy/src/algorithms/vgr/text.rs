@@ -57,7 +57,7 @@ pub(super) fn content_text(content: &[ContentBlock]) -> (String, bool) {
     let mut unsupported = false;
     for block in content {
         match block {
-            ContentBlock::Text { text } | ContentBlock::Refusal { text } => parts.push(text),
+            ContentBlock::Text { text, .. } | ContentBlock::Refusal { text } => parts.push(text),
             ContentBlock::ToolCall(_)
             | ContentBlock::ToolResult(_)
             | ContentBlock::Reasoning { .. } => {}
@@ -146,7 +146,7 @@ pub(super) fn newest_prompt_is_blank(request: &Request) -> bool {
         .find(|message| message.role == Role::User)
         .is_none_or(|message| {
             message.content.iter().all(|block| match block {
-                ContentBlock::Text { text } => text.chars().all(|c| {
+                ContentBlock::Text { text, .. } => text.chars().all(|c| {
                     c.is_whitespace()
                         || matches!(c, '\u{200B}'..='\u{200D}' | '\u{2060}' | '\u{FEFF}')
                 }),
@@ -286,7 +286,7 @@ pub(super) fn tool_result_failed(result: &ToolResult) -> bool {
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text),
+            ContentBlock::Text { text, .. } | ContentBlock::Refusal { text } => Some(text),
             _ => None,
         })
         .map(String::as_str)

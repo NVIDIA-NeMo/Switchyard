@@ -70,6 +70,7 @@ mod tests {
                         vec![ContentBlock::ToolResult(ToolResult {
                             tool_call_id: "t1".to_string(),
                             content: vec![ContentBlock::Text {
+                                cache_control: None,
                                 text: "ok".to_string(),
                             }],
                             is_error: None,
@@ -90,6 +91,7 @@ mod tests {
                 role: Role::Assistant,
                 content: vec![
                     ContentBlock::Text {
+                        cache_control: None,
                         text: "running a tool".to_string(),
                     },
                     ContentBlock::ToolCall(ToolCall {

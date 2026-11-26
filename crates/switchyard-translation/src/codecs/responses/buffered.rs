@@ -90,9 +90,7 @@ impl FormatCodec for OpenAiResponsesCodec {
         {
             request.instructions.push(crate::llm::InstructionBlock {
                 role: Role::System,
-                content: vec![ContentBlock::Text {
-                    text: instructions.to_string(),
-                }],
+                content: vec![ContentBlock::text(instructions)],
             });
         }
         // With `previous_response_id`, the provider holds the earlier turns, so a tool output
@@ -199,7 +197,9 @@ impl FormatCodec for OpenAiResponsesCodec {
             .iter()
             .flat_map(|instruction| instruction.content.iter())
             .filter_map(|block| match block {
-                ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } | ContentBlock::Refusal { text } => {
+                    Some(text.as_str())
+                }
                 _ => None,
             })
             .collect::<Vec<_>>()
@@ -345,7 +345,7 @@ impl FormatCodec for OpenAiResponsesCodec {
                         .content
                         .iter()
                         .map(|block| match block {
-                            ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
+                            ContentBlock::Text { text, .. } | ContentBlock::Refusal { text } => {
                                 text.chars().count()
                             }
                             _ => 0,
@@ -381,9 +381,7 @@ impl FormatCodec for OpenAiResponsesCodec {
             ResponseOutput {
                 url_citations: Vec::new(),
                 role: Role::Assistant,
-                content: vec![ContentBlock::Text {
-                    text: String::new(),
-                }],
+                content: vec![ContentBlock::text("")],
                 // An incomplete response can have no output items.
                 stop_reason: stop_reason.or(Some(StopReason::EndTurn)),
             }
@@ -650,9 +648,9 @@ fn decode_responses_input(
                         // any other shape rides through as one text block.
                         let content = match item.get("output") {
                             Some(output @ Value::Array(_)) => decode_responses_content(output),
-                            output => vec![ContentBlock::Text {
-                                text: output.map(json_string).unwrap_or_default(),
-                            }],
+                            output => vec![ContentBlock::text(
+                                output.map(json_string).unwrap_or_default(),
+                            )],
                         };
                         // An output whose call is not in this body answers a call the provider
                         // holds behind `previous_response_id`; it stays a tool result so routing
@@ -917,7 +915,7 @@ fn decode_responses_reasoning_item(item: &Map<String, Value>) -> Vec<ContentBloc
 // Decodes Responses content arrays or strings into normalized content blocks.
 fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {
     match value {
-        Value::String(text) => vec![ContentBlock::Text { text: text.clone() }],
+        Value::String(text) => vec![ContentBlock::text(text)],
         Value::Array(blocks) => {
             let mut out = Vec::new();
             for block in blocks {
@@ -926,13 +924,12 @@ fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {
                 };
                 match block.get("type").and_then(Value::as_str) {
                     Some("input_text") | Some("output_text") | Some("text") => {
-                        out.push(ContentBlock::Text {
-                            text: block
+                        out.push(ContentBlock::text(
+                            block
                                 .get("text")
                                 .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
-                        });
+                                .unwrap_or_default(),
+                        ));
                     }
                     Some("refusal") => out.push(ContentBlock::Refusal {
                         text: block
@@ -970,18 +967,12 @@ fn decode_responses_content(value: &Value) -> Vec<ContentBlock> {
                 }
             }
             if out.is_empty() {
-                out.push(ContentBlock::Text {
-                    text: String::new(),
-                });
+                out.push(ContentBlock::text(""));
             }
             out
         }
-        Value::Null => vec![ContentBlock::Text {
-            text: String::new(),
-        }],
-        other => vec![ContentBlock::Text {
-            text: string_value(other).unwrap_or_default(),
-        }],
+        Value::Null => vec![ContentBlock::text("")],
+        other => vec![ContentBlock::text(string_value(other).unwrap_or_default())],
     }
 }
 
@@ -1594,7 +1585,9 @@ fn encode_responses_content(
     let mut blocks = Vec::new();
     for block in content {
         match block {
-            ContentBlock::Text { text } => blocks.push(json!({"type": "input_text", "text": text})),
+            ContentBlock::Text { text, .. } => {
+                blocks.push(json!({"type": "input_text", "text": text}))
+            }
             ContentBlock::Refusal { text } => {
                 blocks.push(json!({"type": "refusal", "refusal": text}));
             }
@@ -1929,7 +1922,7 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                 let mut text_offset = 0;
                 for block in &output.content {
                     match block {
-                        ContentBlock::Text { text } => {
+                        ContentBlock::Text { text, .. } => {
                             let text_end = text_offset + text.chars().count();
                             let annotations = output
                                 .url_citations

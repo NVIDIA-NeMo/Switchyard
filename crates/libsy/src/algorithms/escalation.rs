@@ -674,7 +674,7 @@ mod tests {
                     .first()
                     .and_then(|instruction| {
                         instruction.content.iter().find_map(|block| match block {
-                            ContentBlock::Text { text } => Some(text.clone()),
+                            ContentBlock::Text { text, .. } => Some(text.clone()),
                             _ => None,
                         })
                     });

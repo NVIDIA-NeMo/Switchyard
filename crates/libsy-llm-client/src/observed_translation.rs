@@ -15,7 +15,15 @@ static ENGINE: LazyLock<TranslationEngine> = LazyLock::new(TranslationEngine::de
 static POLICY: LazyLock<TranslationPolicy> = LazyLock::new(TranslationPolicy::default);
 
 pub fn encode_request(request: &LlmRequest, format: WireFormat) -> Result<Value> {
-    let encoded = ENGINE.encode_request(format, request, &POLICY)?;
+    encode_request_with_policy(request, format, &POLICY)
+}
+
+pub(crate) fn encode_request_with_policy(
+    request: &LlmRequest,
+    format: WireFormat,
+    policy: &TranslationPolicy,
+) -> Result<Value> {
+    let encoded = ENGINE.encode_request(format, request, policy)?;
     metrics::record_translation_diagnostics(&encoded.diagnostics, "request_encode", format);
     Ok(encoded.body)
 }

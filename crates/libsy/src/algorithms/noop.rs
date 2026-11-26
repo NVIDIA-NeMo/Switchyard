@@ -35,6 +35,7 @@ impl Algorithm for Noop {
                 url_citations: Vec::new(),
                 role: Role::Assistant,
                 content: vec![ContentBlock::Text {
+                    cache_control: None,
                     text: "OK".to_string(),
                 }],
                 stop_reason: Some(StopReason::EndTurn),

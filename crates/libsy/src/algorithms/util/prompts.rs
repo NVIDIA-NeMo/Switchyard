@@ -17,6 +17,7 @@ pub fn prepend_system_prompt(request: &mut LlmRequest, prompt: &str) {
         InstructionBlock {
             role: Role::System,
             content: vec![ContentBlock::Text {
+                cache_control: None,
                 text: prompt.to_string(),
             }],
         },

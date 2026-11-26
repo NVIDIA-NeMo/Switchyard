@@ -87,7 +87,7 @@ fn agentic_trajectory(request: &Request) -> Vec<String> {
     for message in messages {
         for block in &message.content {
             let event = match block {
-                ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
+                ContentBlock::Text { text, .. } | ContentBlock::Refusal { text } => {
                     match message.role {
                         Role::Assistant => Some(("assistant", text.clone())),
                         Role::Tool => Some(("tool result", text.clone())),

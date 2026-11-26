@@ -260,7 +260,7 @@ async fn a_typed_follow_up_answer_is_judged_on_the_answer_itself() -> Result<()>
                         .first()
                         .and_then(|block| block.content.first())
                         .and_then(|block| match block {
-                            ContentBlock::Text { text } => Some(text.clone()),
+                            ContentBlock::Text { text, .. } => Some(text.clone()),
                             _ => None,
                         })
                         .unwrap_or_default();
@@ -1143,7 +1143,7 @@ async fn default_verification_asks_capable_evidence_then_answer() -> Result<()> 
                                 .iter()
                                 .flat_map(|block| &block.content)
                                 .any(|block| {
-                                    matches!(block, ContentBlock::Text { text }
+                                    matches!(block, ContentBlock::Text { text, .. }
                                     if text.starts_with("You are a strict answer verifier"))
                                 });
                             seen.lock().push(is_answer);
@@ -1426,14 +1426,16 @@ async fn attachment_verifiers_receive_the_evidence_even_without_user_text() -> R
     for content in [
         vec![
             ContentBlock::Text {
+                cache_control: None,
                 text: "What is the total?".into(),
             },
             image.clone(),
         ],
         vec![image.clone()],
-        vec![ContentBlock::Text { text: "   ".into() }, image.clone()],
+        vec![ContentBlock::text("   "), image.clone()],
         vec![
             ContentBlock::Text {
+                cache_control: None,
                 text: "Read the screenshot".into(),
             },
             ContentBlock::ToolResult(ToolResult {
@@ -1443,9 +1445,9 @@ async fn attachment_verifiers_receive_the_evidence_even_without_user_text() -> R
             }),
         ],
     ] {
-        let expects_typing = content
-            .iter()
-            .any(|block| matches!(block, ContentBlock::Text { text } if !text.trim().is_empty()));
+        let expects_typing = content.iter().any(
+            |block| matches!(block, ContentBlock::Text { text, .. } if !text.trim().is_empty()),
+        );
         let route = route(|config| {
             config.efficient_supports_attachments = true;
             config.task_typing = true;
@@ -1501,6 +1503,7 @@ async fn attachment_verifiers_receive_the_evidence_even_without_user_text() -> R
             Role::User,
             vec![
                 ContentBlock::Text {
+                    cache_control: None,
                     text: "Read the PDF".into(),
                 },
                 pdf,
@@ -1539,6 +1542,7 @@ async fn every_verification_rung_receives_the_attachment() -> Result<()> {
             Role::User,
             vec![
                 ContentBlock::Text {
+                    cache_control: None,
                     text: "Read the invoice".into(),
                 },
                 image,
@@ -1616,6 +1620,7 @@ async fn disabled_attachments_skip_all_media_and_prevent_efficient_stand_in() ->
                 Role::User,
                 vec![
                     ContentBlock::Text {
+                        cache_control: None,
                         text: "Read the attachment".into(),
                     },
                     block,
@@ -1627,6 +1632,7 @@ async fn disabled_attachments_skip_all_media_and_prevent_efficient_stand_in() ->
                 .push(switchyard_protocol::InstructionBlock {
                     role: Role::System,
                     content: vec![ContentBlock::Text {
+                        cache_control: None,
                         text: "Read carefully".into(),
                     }],
                 });

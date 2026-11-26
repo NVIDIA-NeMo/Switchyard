@@ -1608,7 +1608,7 @@ mod tests {
             .iter()
             .flat_map(|instruction| &instruction.content)
             .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
                 _ => None,
             })
             .collect()
@@ -2204,6 +2204,7 @@ mod tests {
             vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "toolu_stream".to_string(),
                 content: vec![ContentBlock::Text {
+                    cache_control: None,
                     text: "ready".to_string(),
                 }],
                 is_error: None,
@@ -3136,6 +3137,7 @@ mod tests {
             });
             let mut input = request();
             let mut content = vec![ContentBlock::Text {
+                cache_control: None,
                 text: "What color?".into(),
             }];
             if has_attachment {

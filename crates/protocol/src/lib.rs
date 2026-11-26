@@ -50,6 +50,7 @@ pub fn text_response(model: Option<String>, completion: impl Into<String>) -> Ag
             url_citations: Vec::new(),
             role: Role::Assistant,
             content: vec![ContentBlock::Text {
+                cache_control: None,
                 text: completion.into(),
             }],
             stop_reason: None,
@@ -72,7 +73,7 @@ pub fn completion_text(response: &AggLlmResponse) -> String {
                 .content
                 .iter()
                 .filter_map(|block| match block {
-                    ContentBlock::Text { text } => Some(text.as_str()),
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
                     _ => None,
                 })
                 .collect::<String>()

@@ -34,7 +34,7 @@ pub(super) fn result(id: &str, text: &str) -> Message {
         Role::Tool,
         vec![ContentBlock::ToolResult(ToolResult {
             tool_call_id: id.into(),
-            content: vec![ContentBlock::Text { text: text.into() }],
+            content: vec![ContentBlock::text(text)],
             is_error: None,
         })],
     )
@@ -217,6 +217,7 @@ fn trajectory_labels_agree_with_tool_failure_counts() {
                 vec![ContentBlock::ToolResult(ToolResult {
                     tool_call_id: "c1".into(),
                     content: vec![ContentBlock::Text {
+                        cache_control: None,
                         text: output.into(),
                     }],
                     is_error,

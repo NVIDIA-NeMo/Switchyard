@@ -47,6 +47,8 @@ pub struct TargetCapabilities {
     pub supports_code_execution: Option<bool>,
     pub supports_safety_settings: Option<bool>,
     pub openai_compatible: Option<bool>,
+    /// The Chat endpoint accepts cache_control on text content parts.
+    pub supports_text_cache_control: Option<bool>,
 }
 
 /// End-to-end policy applied by request, response, and stream translation.

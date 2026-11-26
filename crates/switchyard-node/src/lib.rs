@@ -252,7 +252,7 @@ impl Run {
                     .next()
                     .and_then(|block| {
                         block.content.into_iter().find_map(|content| match content {
-                            ContentBlock::Text { text } => Some(text),
+                            ContentBlock::Text { text, .. } => Some(text),
                             _ => None,
                         })
                     });

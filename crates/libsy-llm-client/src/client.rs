@@ -20,7 +20,7 @@ use switchyard_protocol::{
     LlmRequest, LlmResponse, LlmResponseChunk, LlmResponseStream, LlmResponseStreamEvent, Metadata,
     ModelId, Request, Response, RoutedLlmClient,
 };
-use switchyard_translation::{TranslationError, WireFormat, decode_stream};
+use switchyard_translation::{TranslationError, TranslationPolicy, WireFormat, decode_stream};
 use tokio::time::Instant;
 use tracing::Instrument;
 
@@ -64,6 +64,7 @@ pub struct ModelConfig {
     default_backend: Backend,
     other_backends: Option<Vec<Backend>>,
     responses_reasoning: crate::ResponsesReasoningPolicy,
+    translation_policy: TranslationPolicy,
 }
 
 impl ModelConfig {
@@ -79,7 +80,17 @@ impl ModelConfig {
             default_backend,
             other_backends,
             responses_reasoning: crate::ResponsesReasoningPolicy::default(),
+            translation_policy: TranslationPolicy::default(),
         }
+    }
+
+    /// Sets whether this target's Chat backend accepts `cache_control` on text blocks.
+    #[must_use]
+    pub fn with_text_cache_control(mut self, supported: bool) -> Self {
+        self.translation_policy
+            .target_capabilities
+            .supports_text_cache_control = Some(supported);
+        self
     }
 
     /// Sets how Responses reasoning items are replayed to this target.
@@ -347,8 +358,13 @@ impl TranslatingLlmClient {
             return Err(LlmClientError::TemporarilyUnavailable);
         }
 
-        let mut body = observed_translation::encode_request(&llm_request, wire_format)
-            .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
+        let config = &self.configs_by_target[target_name];
+        let mut body = observed_translation::encode_request_with_policy(
+            &llm_request,
+            wire_format,
+            &config.translation_policy,
+        )
+        .map_err(|error| LlmClientError::RequestEncoding(error.to_string()))?;
         // `encode_request` round-trips a preserved same-format body verbatim,
         // which keeps the caller's original `model`. Set the provider model explicitly.
         let provider_model_id = self.provider_model(target_name);
@@ -370,10 +386,8 @@ impl TranslatingLlmClient {
                 .and_then(Value::as_str)
                 .unwrap_or(provider_model_id)
                 .to_owned();
-            self.configs_by_target
-                .get(target_name)
-                .map(|config| config.responses_reasoning)
-                .unwrap_or_default()
+            config
+                .responses_reasoning
                 .normalize(&mut body, backend.base_url(), &outbound_model_id);
         }
         // After the merge on purpose: the effort override must win over both the caller's

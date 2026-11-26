@@ -515,6 +515,7 @@ impl AdvisorGate {
                 instructions: vec![InstructionBlock {
                     role: Role::System,
                     content: vec![ContentBlock::Text {
+                        cache_control: None,
                         text: self.config.reviewer_system_prompt.clone(),
                     }],
                 }],

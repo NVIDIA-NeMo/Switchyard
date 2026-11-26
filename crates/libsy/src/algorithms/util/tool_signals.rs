@@ -1422,7 +1422,7 @@ fn command_text(value: &Value) -> Option<String> {
 /// Text carried by a content block, ignoring the non-textual kinds.
 fn text_of(block: &ContentBlock) -> Option<&str> {
     match block {
-        ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text.as_str()),
+        ContentBlock::Text { text, .. } | ContentBlock::Refusal { text } => Some(text.as_str()),
         _ => None,
     }
 }
@@ -1879,6 +1879,7 @@ mod tests {
             vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: String::new(),
                 content: vec![ContentBlock::Text {
+                    cache_control: None,
                     text: text.to_string(),
                 }],
                 is_error: None,
@@ -2199,6 +2200,7 @@ mod tests {
                 vec![ContentBlock::ToolResult(ToolResult {
                     tool_call_id: id.to_string(),
                     content: vec![ContentBlock::Text {
+                        cache_control: None,
                         text: text.to_string(),
                     }],
                     is_error: None,
@@ -2575,6 +2577,7 @@ mod tests {
                 Role::User,
                 vec![
                     result(vec![ContentBlock::Text {
+                        cache_control: None,
                         text: "ok".to_string(),
                     }]),
                     result(Vec::new()),

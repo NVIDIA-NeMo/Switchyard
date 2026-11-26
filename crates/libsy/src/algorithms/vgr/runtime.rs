@@ -467,7 +467,7 @@ impl VgrClassifier {
             .find(|message| message.role == switchyard_protocol::Role::User)
             .is_some_and(|message| {
                 message.content.iter().all(|block| match block {
-                    ContentBlock::Text { text } => text.trim().is_empty(),
+                    ContentBlock::Text { text, .. } => text.trim().is_empty(),
                     ContentBlock::Image { .. } => true,
                     _ => false,
                 })
@@ -625,6 +625,7 @@ impl VgrClassifier {
             let attachments = text::attachments(context.request);
             if !attachments.is_empty() {
                 message.content.push(ContentBlock::Text {
+                    cache_control: None,
                     text: "[request attachments, in conversation order]".into(),
                 });
                 message.content.extend(attachments.into_iter().cloned());

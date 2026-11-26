@@ -105,7 +105,7 @@ pub(super) fn collect_text(
 ) {
     for block in content {
         match block {
-            ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
+            ContentBlock::Text { text, .. } | ContentBlock::Refusal { text } => {
                 parts.push(without_duplicated_terminus_commands(text, tool_commands));
             }
             ContentBlock::ToolCall(call) => {
@@ -129,6 +129,7 @@ mod tests {
             Role::Assistant,
             vec![
                 ContentBlock::Text {
+                    cache_control: None,
                     text: "running it".to_string(),
                 },
                 ContentBlock::ToolCall(ToolCall {
@@ -147,6 +148,7 @@ mod tests {
             vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "call-1".to_string(),
                 content: vec![ContentBlock::Text {
+                    cache_control: None,
                     text: "no such file".to_string(),
                 }],
                 is_error: Some(true),
@@ -164,6 +166,7 @@ mod tests {
             Role::Assistant,
             vec![
                 ContentBlock::Text {
+                    cache_control: None,
                     text: format!(
                         "Before\n```json\n{}\n```\nAfter",
                         json!({
@@ -215,6 +218,7 @@ mod tests {
             Role::Assistant,
             vec![
                 ContentBlock::Text {
+                    cache_control: None,
                     text: format!(
                         "First {} second {} repeated {}",
                         batch(first_command),
@@ -251,14 +255,12 @@ mod tests {
             "commands": [{"keystrokes": command}],
         })
         .to_string();
-        let without_tool_call = Message::new(
-            Role::Assistant,
-            vec![ContentBlock::Text { text: text.clone() }],
-        );
+        let without_tool_call =
+            Message::new(Role::Assistant, vec![ContentBlock::text(text.clone())]);
         let mismatched_tool_call = Message::new(
             Role::Assistant,
             vec![
-                ContentBlock::Text { text },
+                ContentBlock::text(text),
                 ContentBlock::ToolCall(ToolCall {
                     id: "call-1".to_string(),
                     name: "bash_command".to_string(),
@@ -290,6 +292,7 @@ mod tests {
             Role::Assistant,
             vec![
                 ContentBlock::Text {
+                    cache_control: None,
                     text: json!({
                         "commands": [
                             {"keystrokes": first_command},
@@ -321,6 +324,7 @@ mod tests {
             Role::Assistant,
             vec![
                 ContentBlock::Text {
+                    cache_control: None,
                     text: json!({
                         "commands": [
                             {"keystrokes": command},

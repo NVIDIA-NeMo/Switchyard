@@ -623,6 +623,7 @@ mod tests {
         assert_eq!(
             built.llm_request.instructions[0].content.as_slice(),
             &[ContentBlock::Text {
+                cache_control: None,
                 text: PROMPT_TEMPLATE.to_string()
             }]
         );
@@ -744,7 +745,7 @@ mod tests {
             let built = judge.build_request(&State::default(), &request_at_turn(None, 1));
             let system_prompt = built.llm_request.instructions[0].content.iter().find_map(
                 |content| match content {
-                    ContentBlock::Text { text } => Some(text.as_str()),
+                    ContentBlock::Text { text, .. } => Some(text.as_str()),
                     _ => None,
                 },
             );

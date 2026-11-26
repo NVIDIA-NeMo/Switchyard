@@ -68,7 +68,7 @@ impl Message {
 
     /// Creates a text-only message for the given role.
     pub fn text(role: Role, text: impl Into<String>) -> Self {
-        Self::new(role, vec![ContentBlock::Text { text: text.into() }])
+        Self::new(role, vec![ContentBlock::text(text)])
     }
 
     /// Concatenates text-like content blocks when the message has any.
@@ -77,7 +77,7 @@ impl Message {
             .content
             .iter()
             .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
                 ContentBlock::Refusal { text } => Some(text.as_str()),
                 _ => None,
             })
@@ -98,6 +98,9 @@ pub enum ContentBlock {
     Text {
         /// Text value.
         text: String,
+        /// A caller-supplied cache breakpoint on this text block.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cache_control: Option<Box<Value>>,
     },
     /// Model reasoning or thinking content.
     Reasoning {
@@ -148,6 +151,16 @@ pub enum ContentBlock {
         /// Exact provider block.
         raw: Value,
     },
+}
+
+impl ContentBlock {
+    /// Creates a plain text block.
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text {
+            text: text.into(),
+            cache_control: None,
+        }
+    }
 }
 
 /// Image payload forms supported by the conversation model.

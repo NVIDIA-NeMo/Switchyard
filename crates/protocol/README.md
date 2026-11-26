@@ -34,6 +34,7 @@ let request = LlmRequest {
     messages: vec![Message::new(
         Role::User,
         vec![ContentBlock::Text {
+            cache_control: None,
             text: "Explain tail latency".into(),
         }],
     )],
@@ -62,6 +63,7 @@ let request = Request {
         instructions: vec![InstructionBlock {
             role: Role::System,
             content: vec![ContentBlock::Text {
+                cache_control: None,
                 text: "Answer with concise operational guidance.".into(),
             }],
         }],

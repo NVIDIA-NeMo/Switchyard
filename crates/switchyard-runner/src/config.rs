@@ -1097,6 +1097,13 @@ impl DeploymentConfig {
                     "llm client {name} responses_reasoning is only valid for openai_responses"
                 )));
             }
+            if client_config.supports_text_cache_control.is_some()
+                && !matches!(client_config.format, ClientFormat::OpenAiChat)
+            {
+                return Err(RunnerError::configuration(format!(
+                    "llm client {name} supports_text_cache_control is only valid for openai_chat"
+                )));
+            }
             let backend = build_backend(
                 name,
                 client_config,
@@ -1150,6 +1157,11 @@ impl DeploymentConfig {
                         target.reasoning_effort.clone(),
                     )?,
                     None,
+                )
+                .with_text_cache_control(
+                    client_config
+                        .supports_text_cache_control
+                        .unwrap_or_default(),
                 )
                 .with_responses_reasoning(client_config.responses_reasoning.unwrap_or_default())
                 .with_provider_model(target.id.clone()),
@@ -1522,6 +1534,7 @@ struct LlmClientConfig {
     /// Deadline in milliseconds for all attempts and the complete response. Unset is unbounded.
     timeout_ms: Option<u64>,
     responses_reasoning: Option<ResponsesReasoningPolicy>,
+    supports_text_cache_control: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -3593,6 +3606,23 @@ target = "azure"
             return Err(RunnerError::configuration("primary llm client is missing"));
         };
         assert_eq!(primary.max_retries, MAX_CONFIGURED_RETRIES);
+        Ok(())
+    }
+
+    #[test]
+    fn text_cache_control_is_specific_to_chat_clients() -> RunnerResult<()> {
+        let configured = |client: &str| {
+            let section = format!("[llm_clients.{client}]");
+            VALID_CONFIG.replace(
+                &section,
+                &format!("{section}\nsupports_text_cache_control = true"),
+            )
+        };
+        runner_from_toml(&configured("primary"))?;
+        assert!(
+            error_message(&configured("responses"))
+                .contains("supports_text_cache_control is only valid for openai_chat")
+        );
         Ok(())
     }
 

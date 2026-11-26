@@ -57,7 +57,7 @@ pub(crate) fn is_user_turn(message: &Message) -> bool {
 }
 
 fn is_environment_context(block: &ContentBlock) -> bool {
-    matches!(block, ContentBlock::Text { text } if text.trim()
+    matches!(block, ContentBlock::Text { text, .. } if text.trim()
         .strip_prefix("<environment_context>")
         .and_then(|context| context.split_once("</environment_context>"))
         .is_some_and(|(_, rest)| rest.trim().is_empty()))
@@ -364,6 +364,7 @@ mod tests {
         )));
         let mut mixed = Message::text(Role::User, context);
         mixed.content.push(ContentBlock::Text {
+            cache_control: None,
             text: "fix the parser".into(),
         });
         assert!(is_user_turn(&mixed));
@@ -681,6 +682,7 @@ mod tests {
             Role::User,
             vec![
                 ContentBlock::Text {
+                    cache_control: None,
                     text: "Implement the parser.".to_string(),
                 },
                 ContentBlock::Reasoning {
