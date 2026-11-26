@@ -30,7 +30,7 @@ use crate::metrics;
 use crate::observed_translation;
 
 // Caller headers safe to send when caller auth forwarding is disabled.
-const ALLOWED_METADATA_HEADERS: &[&str] = &["x-request-id"];
+const ALLOWED_METADATA_HEADERS: &[&str] = &["x-request-id", "x-session-id"];
 
 // Headers tied to the inbound connection, destination, or body. The HTTP client
 // must rebuild these for the upstream request, even when forwarding auth.
@@ -1020,15 +1020,13 @@ fn forward_metadata_headers(
     let mut forwarded = HeaderMap::with_capacity(headers.len());
     for (name, value) in headers {
         let is_allowed = if backend.is_forwarding_auth() {
-            !is_non_forwardable_header(name.as_str(), headers)
-                && !backend.is_provider_owned_header(name.as_str())
+            !backend.is_provider_owned_header(name.as_str())
         } else {
             is_allowed_metadata_header(name.as_str())
         };
-        if !is_allowed {
-            continue;
+        if is_allowed && !is_non_forwardable_header(name.as_str(), headers) {
+            forwarded.append(name, value.clone());
         }
-        forwarded.append(name, value.clone());
     }
     builder.headers(forwarded)
 }
@@ -3589,6 +3587,8 @@ mod tests {
 
         let mut headers = http::HeaderMap::new();
         headers.insert("x-request-id", http::HeaderValue::from_static("abc"));
+        let session_id = http::HeaderValue::from_static("conversation");
+        headers.insert("x-session-id", session_id.clone());
         headers.insert(
             "authorization",
             http::HeaderValue::from_static("Bearer client-key"),
@@ -3613,6 +3613,7 @@ mod tests {
             .await
             .ok_or("request recording should be enabled")?;
         let received = received.first().ok_or("expected one upstream request")?;
+        assert_eq!(received.headers.get("x-session-id"), Some(&session_id));
         assert!(!received.headers.contains_key("x-goog-api-key"));
         assert!(!received.headers.contains_key("x-custom-internal-secret"));
         Ok(())
@@ -4113,6 +4114,7 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(wiremock::matchers::header("x-request-id", "abc"))
+            .and(|req: &wiremock::Request| !req.headers.contains_key("x-session-id"))
             // A forwarded authorization must NOT override the backend's bearer key.
             .and(wiremock::matchers::header("authorization", "Bearer secret"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -4125,6 +4127,8 @@ mod tests {
 
         let mut headers = http::HeaderMap::new();
         headers.insert("x-request-id", http::HeaderValue::from_static("abc"));
+        headers.insert("x-session-id", http::HeaderValue::from_static("local"));
+        headers.insert("connection", http::HeaderValue::from_static("X-Session-Id"));
         headers.insert(
             "authorization",
             http::HeaderValue::from_static("Bearer client-key"),
