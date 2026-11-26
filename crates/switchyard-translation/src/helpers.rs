@@ -13,8 +13,8 @@ use serde_json::Value;
 use switchyard_protocol::{LlmClientError, ProviderExtensions};
 
 use crate::{
-    AggLlmResponse, LlmRequest, LlmResponseStream, RawEventStream, Result, TranslationEngine,
-    TranslationPolicy, WireFormat,
+    AggLlmResponse, LlmRequest, LlmResponseStream, RawEventStream, Result, StreamTranslationState,
+    TranslationEngine, TranslationPolicy, WireFormat,
 };
 
 static DEFAULT_TRANSLATION_POLICY: LazyLock<TranslationPolicy> =
@@ -60,6 +60,23 @@ pub fn encode_aggregated_response(
             &DEFAULT_TRANSLATION_POLICY,
         )?
         .body)
+}
+
+/// Translates one streamed `source` event into zero or more `target` events.
+///
+/// Use one `state` for the whole response, from its first event to [`finish_stream`].
+pub fn translate_stream_event(
+    state: &mut StreamTranslationState,
+    source: WireFormat,
+    target: WireFormat,
+    event: &Value,
+) -> Result<Vec<Value>> {
+    DEFAULT_TRANSLATION_ENGINE.translate_event(state, source, target, event)
+}
+
+/// Returns the closing `target` events once the source stream has ended.
+pub fn finish_stream(state: &mut StreamTranslationState, target: WireFormat) -> Result<Vec<Value>> {
+    DEFAULT_TRANSLATION_ENGINE.finish_stream(state, target)
 }
 
 /// Encodes a stream of IR chunks into a stream of target-format wire events.

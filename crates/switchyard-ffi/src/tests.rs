@@ -112,8 +112,12 @@ fn translated(
     input: Value,
 ) -> Value {
     let input = CString::new(input.to_string()).unwrap();
+    json_output(|output| unsafe { call(input.as_ptr(), output) })
+}
+
+fn json_output(call: impl FnOnce(*mut *mut c_char) -> *mut c_char) -> Value {
     let mut output = std::ptr::null_mut();
-    check(unsafe { call(input.as_ptr(), &mut output) });
+    check(call(&mut output));
     assert!(!output.is_null());
     let result = serde_json::from_slice(unsafe { CStr::from_ptr(output) }.to_bytes());
     unsafe { sy_string_free(output) };
@@ -445,6 +449,49 @@ fn translation_exports_return_owned_json() {
     );
     assert_eq!(encoded["type"], "message");
     assert_eq!(encoded["content"][0]["text"], "hello");
+}
+
+// A stream keeps its state across calls and closes the target stream on finish.
+#[test]
+fn stream_translation_keeps_state_until_finish() {
+    let input = CString::new(r#"{"source":"openai_chat","target":"anthropic_messages"}"#).unwrap();
+    let mut stream = std::ptr::null_mut();
+    check(unsafe { sy_stream_new(input.as_ptr(), &mut stream) });
+    let mut events = Vec::new();
+    for event in [
+        json!({"id": "1", "model": "m", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "hel"}}]}),
+        json!({"choices": [{"index": 0, "delta": {"content": "lo"}}]}),
+        json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
+    ] {
+        let event = CString::new(event.to_string()).unwrap();
+        events.push(json_output(|out| unsafe {
+            sy_stream_translate(stream, event.as_ptr(), out)
+        }));
+    }
+    events.push(json_output(|out| unsafe { sy_stream_finish(stream, out) }));
+    unsafe { sy_stream_free(stream) };
+
+    let events: Vec<_> = events
+        .iter()
+        .flat_map(|batch| batch.as_array().unwrap())
+        .collect();
+    let types: Vec<_> = events
+        .iter()
+        .filter_map(|event| event["type"].as_str())
+        .collect();
+    assert_eq!(types.first(), Some(&"message_start"));
+    assert_eq!(types.last(), Some(&"message_stop"));
+    let text: String = events
+        .iter()
+        .filter_map(|event| event["delta"]["text"].as_str())
+        .collect();
+    assert_eq!(text, "hello");
+
+    let input = CString::new(r#"{"source":"unknown","target":"openai_chat"}"#).unwrap();
+    assert!(
+        error_message(unsafe { sy_stream_new(input.as_ptr(), &mut stream) }).contains("unknown")
+    );
+    assert!(stream.is_null());
 }
 
 // Pending reads must yield the runtime worker, not consume blocking threads.

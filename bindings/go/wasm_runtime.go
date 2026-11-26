@@ -226,30 +226,45 @@ func (guest *guestModule) guestError(ptr uint32) error {
 	return &wasmGuestError{message: string(message)}
 }
 
-func (guest *guestModule) callJSON(ctx context.Context, export string, input []byte) ([]byte, error) {
-	inputPtr, inputLen, err := guest.cstring(ctx, input)
-	if err != nil {
-		return nil, err
+// callOut calls export(handles..., input, out) and returns the pointer written to out.
+// A nil input is left out of the arguments.
+func (guest *guestModule) callOut(ctx context.Context, export string, input []byte, handles ...uint64) (uint32, error) {
+	args := append([]uint64{}, handles...)
+	if input != nil {
+		inputPtr, inputLen, err := guest.cstring(ctx, input)
+		if err != nil {
+			return 0, err
+		}
+		defer guest.free(context.Background(), inputPtr, inputLen)
+		args = append(args, uint64(inputPtr))
 	}
-	defer guest.free(context.Background(), inputPtr, inputLen)
 	outPtr, err := guest.alloc(ctx, make([]byte, 4))
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	defer guest.free(context.Background(), outPtr, 4)
-	values, err := guest.call(ctx, export, uint64(inputPtr), uint64(outPtr))
+	values, err := guest.call(ctx, export, append(args, uint64(outPtr))...)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	if len(values) != 1 {
-		return nil, fmt.Errorf("Switchyard wasm %s returned %d values", export, len(values))
+		return 0, fmt.Errorf("Switchyard wasm %s returned %d values", export, len(values))
 	}
 	if err := guest.guestError(uint32(values[0])); err != nil {
-		return nil, err
+		return 0, err
 	}
-	outputPtr, ok := guest.module.Memory().ReadUint32Le(outPtr)
-	if !ok || outputPtr == 0 {
-		return nil, errors.New("Switchyard wasm returned no JSON output")
+	ptr, ok := guest.module.Memory().ReadUint32Le(outPtr)
+	if !ok || ptr == 0 {
+		return 0, fmt.Errorf("Switchyard wasm %s returned no output", export)
+	}
+	return ptr, nil
+}
+
+// callJSON calls export like callOut and returns the JSON string it wrote.
+func (guest *guestModule) callJSON(ctx context.Context, export string, input []byte, handles ...uint64) ([]byte, error) {
+	outputPtr, err := guest.callOut(ctx, export, input, handles...)
+	if err != nil {
+		return nil, err
 	}
 	output, err := guest.readCString(outputPtr)
 	if err != nil {
@@ -273,28 +288,43 @@ var defaultWasmTranslator struct {
 	value *wasmTranslator
 }
 
-func wasmTranslate(export string, input []byte) (json.RawMessage, error) {
+func sharedWasmTranslator() (*wasmTranslator, error) {
 	defaultWasmTranslator.once.Do(func() {
 		runtime, err := newWasmRuntime()
 		defaultWasmTranslator.value = &wasmTranslator{runtime: runtime, err: err}
 	})
 	translator := defaultWasmTranslator.value
-	if translator.err != nil {
-		return nil, translator.err
-	}
+	return translator, translator.err
+}
+
+// use runs fn on the shared guest, starting one if needed. A trap drops the guest.
+func (translator *wasmTranslator) use(fn func(*guestModule) error) error {
 	translator.mu.Lock()
 	defer translator.mu.Unlock()
 	if translator.guest == nil {
 		guest, err := translator.runtime.newModule(context.Background())
 		if err != nil {
-			return nil, err
+			return err
 		}
 		translator.guest = guest
 	}
-	output, err := translator.guest.callJSON(context.Background(), export, input)
+	err := fn(translator.guest)
 	if err != nil && (isWasmTrap(err) || translator.guest.module.IsClosed()) {
 		_ = translator.guest.module.Close(context.Background())
 		translator.guest = nil
 	}
+	return err
+}
+
+func wasmTranslate(export string, input []byte) (json.RawMessage, error) {
+	translator, err := sharedWasmTranslator()
+	if err != nil {
+		return nil, err
+	}
+	var output []byte
+	err = translator.use(func(guest *guestModule) (err error) {
+		output, err = guest.callJSON(context.Background(), export, input)
+		return err
+	})
 	return json.RawMessage(output), err
 }

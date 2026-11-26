@@ -17,6 +17,7 @@ use switchyard_protocol::{
     ProviderExtensions, Request, Response, WireFormat,
 };
 use switchyard_runner::AlgorithmSpec;
+use switchyard_translation::StreamTranslationState;
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -100,6 +101,12 @@ struct EncodeResponseInput {
 }
 
 #[derive(Deserialize)]
+struct StreamInput {
+    source: WireFormat,
+    target: WireFormat,
+}
+
+#[derive(Deserialize)]
 #[serde(untagged)]
 enum CallReply {
     Error {
@@ -152,6 +159,13 @@ struct Engine {
 /// Algorithm handle; routing runs retain its engine.
 pub struct SyRouter {
     engine: Arc<Engine>,
+}
+
+/// Translation state for one streamed response.
+pub struct SyStream {
+    source: WireFormat,
+    target: WireFormat,
+    state: StreamTranslationState,
 }
 
 struct Reader {
@@ -469,6 +483,72 @@ pub unsafe extern "C" fn sy_encode_response(
             &input.request_extensions,
         )?)?
         .into_raw();
+        Ok(())
+    })
+}
+
+/// Starts translating one streamed response from `{source, target}`.
+/// # Safety
+/// JSON must be NUL-terminated and `out` writable. Free the stream with `sy_stream_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_stream_new(
+    input_json: *const c_char,
+    out: *mut *mut SyStream,
+) -> *mut c_char {
+    ffi_call(|| {
+        let out = unsafe { out.as_mut() }.ok_or("missing stream output")?;
+        *out = std::ptr::null_mut();
+        let input: StreamInput = unsafe { parse_json_input(input_json) }?;
+        *out = Box::into_raw(Box::new(SyStream {
+            source: input.source,
+            target: input.target,
+            state: StreamTranslationState::new(input.source, input.target),
+        }));
+        Ok(())
+    })
+}
+
+/// Translates one source event into a JSON array of target events.
+/// # Safety
+/// `stream` must be live and not used concurrently. JSON must be NUL-terminated and
+/// `out_json` writable. Free the output with `sy_string_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_stream_translate(
+    stream: *mut SyStream,
+    event_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> *mut c_char {
+    ffi_call(|| {
+        let out = unsafe { out_json.as_mut() }.ok_or("missing events output")?;
+        *out = std::ptr::null_mut();
+        let stream = unsafe { stream.as_mut() }.ok_or("missing stream")?;
+        let event: serde_json::Value = unsafe { parse_json_input(event_json) }?;
+        let events = switchyard_translation::translate_stream_event(
+            &mut stream.state,
+            stream.source,
+            stream.target,
+            &event,
+        )?;
+        *out = encode_json(&events)?.into_raw();
+        Ok(())
+    })
+}
+
+/// Writes the closing target events, as a JSON array, after the source stream ends.
+/// # Safety
+/// `stream` must be live and not used concurrently, and `out_json` writable.
+/// Free the output with `sy_string_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_stream_finish(
+    stream: *mut SyStream,
+    out_json: *mut *mut c_char,
+) -> *mut c_char {
+    ffi_call(|| {
+        let out = unsafe { out_json.as_mut() }.ok_or("missing events output")?;
+        *out = std::ptr::null_mut();
+        let stream = unsafe { stream.as_mut() }.ok_or("missing stream")?;
+        let events = switchyard_translation::finish_stream(&mut stream.state, stream.target)?;
+        *out = encode_json(&events)?.into_raw();
         Ok(())
     })
 }
@@ -796,6 +876,16 @@ pub unsafe extern "C" fn sy_run_free(run: *mut SyRun) {
 pub unsafe extern "C" fn sy_router_free(router: *mut SyRouter) {
     if !router.is_null() {
         let _ = catch_unwind(AssertUnwindSafe(|| drop(unsafe { Box::from_raw(router) })));
+    }
+}
+
+/// Frees a stream once.
+/// # Safety
+/// Pass a stream from `sy_stream_new` once, with no other calls using it, or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_stream_free(stream: *mut SyStream) {
+    if !stream.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| drop(unsafe { Box::from_raw(stream) })));
     }
 }
 

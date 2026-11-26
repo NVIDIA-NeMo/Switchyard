@@ -117,59 +117,11 @@ func (backend *wasmBackend) newGeneration(ctx context.Context, config []byte) (*
 }
 
 func (generation *wasmGeneration) newRouter(ctx context.Context, config []byte) (uint32, error) {
-	inputPtr, inputLen, err := generation.guest.cstring(ctx, config)
-	if err != nil {
-		return 0, err
-	}
-	defer generation.guest.free(context.Background(), inputPtr, inputLen)
-	outPtr, err := generation.guest.alloc(ctx, make([]byte, 4))
-	if err != nil {
-		return 0, err
-	}
-	defer generation.guest.free(context.Background(), outPtr, 4)
-	values, err := generation.guest.call(ctx, "sy_router_new", uint64(inputPtr), uint64(outPtr))
-	if err != nil {
-		return 0, err
-	}
-	if len(values) != 1 {
-		return 0, errors.New("Switchyard wasm router creation returned an invalid result")
-	}
-	if err := generation.guest.guestError(uint32(values[0])); err != nil {
-		return 0, err
-	}
-	ptr, ok := generation.guest.module.Memory().ReadUint32Le(outPtr)
-	if !ok || ptr == 0 {
-		return 0, errors.New("Switchyard wasm returned no router handle")
-	}
-	return ptr, nil
+	return generation.guest.callOut(ctx, "sy_router_new", config)
 }
 
 func (generation *wasmGeneration) newRun(ctx context.Context, router uint32, input []byte) (uint32, error) {
-	inputPtr, inputLen, err := generation.guest.cstring(ctx, input)
-	if err != nil {
-		return 0, err
-	}
-	defer generation.guest.free(context.Background(), inputPtr, inputLen)
-	outPtr, err := generation.guest.alloc(ctx, make([]byte, 4))
-	if err != nil {
-		return 0, err
-	}
-	defer generation.guest.free(context.Background(), outPtr, 4)
-	values, err := generation.guest.call(ctx, "sy_run_new", uint64(router), uint64(inputPtr), uint64(outPtr))
-	if err != nil {
-		return 0, err
-	}
-	if len(values) != 1 {
-		return 0, errors.New("Switchyard wasm run creation returned an invalid result")
-	}
-	if err := generation.guest.guestError(uint32(values[0])); err != nil {
-		return 0, err
-	}
-	ptr, ok := generation.guest.module.Memory().ReadUint32Le(outPtr)
-	if !ok || ptr == 0 {
-		return 0, errors.New("Switchyard wasm returned no run handle")
-	}
-	return ptr, nil
+	return generation.guest.callOut(ctx, "sy_run_new", input, uint64(router))
 }
 
 func (generation *wasmGeneration) next(ctx context.Context, run uint32) ([]byte, error) {

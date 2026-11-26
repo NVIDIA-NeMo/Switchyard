@@ -174,6 +174,56 @@ func TestSelectionAndTranslation(t *testing.T) {
 	}
 }
 
+// A stream translator keeps state across events and closes the target stream on Finish.
+func TestStreamTranslator(t *testing.T) {
+	stream, err := NewStreamTranslator("openai_chat", "anthropic_messages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	var events []json.RawMessage
+	for _, event := range []string{
+		`{"id":"1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hel"}}]}`,
+		`{"choices":[{"index":0,"delta":{"content":"lo"}}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	} {
+		translated, err := stream.Translate(json.RawMessage(event))
+		if err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, translated...)
+	}
+	closing, err := stream.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	events = append(events, closing...)
+	var types []string
+	var text string
+	for _, raw := range events {
+		var event struct {
+			Type  string
+			Delta struct{ Text string }
+		}
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		types = append(types, event.Type)
+		text += event.Delta.Text
+	}
+	if len(types) < 2 || types[0] != "message_start" || types[len(types)-1] != "message_stop" || text != "hello" {
+		t.Fatalf("types=%v text=%q", types, text)
+	}
+	stream.Close()
+	stream.Close()
+	if _, err := stream.Translate(json.RawMessage(`{}`)); err == nil {
+		t.Fatal("closed stream translated")
+	}
+	if _, err := NewStreamTranslator("unknown", "openai_chat"); err == nil {
+		t.Fatal("unknown format accepted")
+	}
+}
+
 // Both judge protocols use Go's client; missing clients and host failures remain errors.
 func TestCompositeHostCalls(t *testing.T) {
 	for _, tc := range []struct {
