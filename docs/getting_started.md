@@ -114,6 +114,7 @@ request.llm_request.messages.extend([
             tool_call_id: "c1".into(),
             is_error: Some(true),
             content: vec![ContentBlock::Text {
+                cache_control: None,
                 text: "MemoryError: cannot allocate memory\nKilled".into(),
             }],
         })],

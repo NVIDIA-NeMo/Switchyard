@@ -12,7 +12,7 @@ pub fn normalize_compaction(request: &mut LlmRequest, headers: Option<&HeaderMap
         .is_some_and(|metadata| metadata["request_kind"] == "compaction");
     request.has_compaction |= request.messages.iter().any(|message| {
         message.content.iter().any(|block| match block {
-            ContentBlock::Text { text } => {
+            ContentBlock::Text { text, .. } => {
                 let text = text.to_lowercase();
                 text.contains("session is being continued")
                     || (message.role == Role::User && text.trim_start().starts_with(CODEX_SUMMARY))
@@ -37,7 +37,7 @@ fn is_environment_update(message: &Message) -> bool {
     message.role == Role::User
         && !message.content.is_empty()
         && message.content.iter().all(|block| {
-            matches!(block, ContentBlock::Text { text } if text.trim()
+            matches!(block, ContentBlock::Text { text, .. } if text.trim()
             .strip_prefix("<environment_context>")
             .and_then(|context| context.split_once("</environment_context>"))
             .is_some_and(|(_, rest)| rest.trim().is_empty()))
@@ -62,7 +62,7 @@ fn is_compaction_block(block: &ContentBlock) -> bool {
             raw.get("type").and_then(serde_json::Value::as_str),
             Some("compaction" | "context_compaction" | "compaction_trigger")
         ),
-        ContentBlock::Text { text } => {
+        ContentBlock::Text { text, .. } => {
             let text = text.trim().to_ascii_lowercase();
             text.starts_with(CODEX_SUMMARY)
                 || text.starts_with("this session is being continued from a previous conversation that ran out of context.")

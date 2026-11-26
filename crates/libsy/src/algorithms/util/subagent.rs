@@ -55,7 +55,7 @@ fn delegated_prompt_request(request: &Request) -> Option<Request> {
         .filter(|message| message.role == Role::User)
         .find_map(|message| {
             message.content.iter().rev().find_map(|block| match block {
-                ContentBlock::Text { text } if !text.trim().is_empty() => Some(text.clone()),
+                ContentBlock::Text { text, .. } if !text.trim().is_empty() => Some(text.clone()),
                 _ => None,
             })
         })?;

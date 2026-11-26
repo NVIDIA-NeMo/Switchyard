@@ -669,6 +669,7 @@ mod tests {
                     &mut passing.llm_request.messages[2].content[0]
                 {
                     result.content = vec![switchyard_protocol::ContentBlock::Text {
+                        cache_control: None,
                         text: "test result: ok. 1 passed; 0 failed".into(),
                     }];
                 }

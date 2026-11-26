@@ -373,6 +373,7 @@ impl FormatCodec for MinimalCustomCodec {
                     url_citations: Vec::new(),
                     role: Role::Assistant,
                     content: vec![switchyard_translation::ContentBlock::Text {
+                        cache_control: None,
                         text: body
                             .get("text")
                             .and_then(Value::as_str)
@@ -409,7 +410,7 @@ impl FormatCodec for MinimalCustomCodec {
                     .first_output()
                     .and_then(|output| {
                         output.content.iter().find_map(|block| match block {
-                            switchyard_translation::ContentBlock::Text { text } => {
+                            switchyard_translation::ContentBlock::Text { text, .. } => {
                                 Some(text.clone())
                             }
                             _ => None,

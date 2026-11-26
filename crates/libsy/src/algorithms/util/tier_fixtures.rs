@@ -107,6 +107,7 @@ pub(crate) fn turn_request(failed: bool) -> Request {
                     vec![ContentBlock::ToolResult(ToolResult {
                         tool_call_id: "call_1".to_string(),
                         content: vec![ContentBlock::Text {
+                            cache_control: None,
                             text: content.to_string(),
                         }],
                         is_error: Some(failed),

@@ -1291,6 +1291,7 @@ async fn stage_router_records_algorithm_owned_metrics() -> switchyard_libsy::Res
                     vec![ContentBlock::ToolResult(ToolResult {
                         tool_call_id: "call_1".to_string(),
                         content: vec![ContentBlock::Text {
+                            cache_control: None,
                             text: "fatal runtime error: out of memory".to_string(),
                         }],
                         is_error: Some(true),
@@ -1506,6 +1507,7 @@ async fn buffered_routing_closes_observation_before_replay() -> switchyard_libsy
             assert_eq!(
                 replay.outputs[0].content,
                 vec![ContentBlock::Text {
+                    cache_control: None,
                     text: "hello".into()
                 }]
             );

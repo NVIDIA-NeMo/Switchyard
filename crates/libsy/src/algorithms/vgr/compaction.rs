@@ -122,6 +122,7 @@ fn recorded(state: &State, request: &Request) -> Option<(usize, usize, String)> 
 fn rewrite(request: &mut Request, head: usize, cut: usize, summary: &str) {
     let messages = &mut request.llm_request.messages;
     messages[head - 1].content.push(ContentBlock::Text {
+        cache_control: None,
         text: summary.to_string(),
     });
     messages.drain(head..cut);
@@ -156,7 +157,7 @@ fn result_text(result: &ToolResult) -> String {
         .content
         .iter()
         .map(|part| match part {
-            ContentBlock::Text { text } => text.as_str(),
+            ContentBlock::Text { text, .. } => text.as_str(),
             _ => "[non-text content]",
         })
         .collect::<Vec<_>>()
@@ -170,10 +171,10 @@ fn digest(messages: &[Message]) -> String {
     for message in messages {
         for block in &message.content {
             match block {
-                ContentBlock::Text { text } if message.role == Role::Assistant => {
+                ContentBlock::Text { text, .. } if message.role == Role::Assistant => {
                     narration.push(text.as_str());
                 }
-                ContentBlock::Text { text } if message.role == Role::User => {
+                ContentBlock::Text { text, .. } if message.role == Role::User => {
                     user_text.push(clip_mid(text, RECENT_RESULT_BUDGET, 0.5));
                 }
                 ContentBlock::ToolCall(call) => steps.push(Step {
@@ -288,7 +289,7 @@ mod tests {
             Role::Tool,
             vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: id.into(),
-                content: vec![ContentBlock::Text { text: text.into() }],
+                content: vec![ContentBlock::text(text)],
                 is_error: None,
             })],
         )
@@ -462,6 +463,7 @@ mod tests {
                         ContentBlock::ToolResult(ToolResult {
                             tool_call_id: id.into(),
                             content: vec![ContentBlock::Text {
+                                cache_control: None,
                                 text: format!("output_{id}"),
                             }],
                             is_error: Some(id == "b"),

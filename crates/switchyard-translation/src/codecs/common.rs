@@ -3,7 +3,7 @@
 
 //! Provider-agnostic helpers shared by wire-format codecs.
 
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
 use crate::error::{Result, TranslationError};
 use crate::llm::{ANTHROPIC_REQUEST_KEY, ContentBlock, LlmRequest, Tool, ToolChoice};
@@ -100,16 +100,70 @@ pub(crate) fn is_known_role_name(name: &str) -> bool {
     )
 }
 
+pub(crate) fn decode_text_block(block: &Map<String, Value>) -> ContentBlock {
+    ContentBlock::Text {
+        text: block
+            .get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        cache_control: block
+            .get("cache_control")
+            .filter(|value| value.is_object())
+            .cloned()
+            .map(Box::new),
+    }
+}
+
+pub(crate) fn text_part(text: &str, cache_control: Option<&Value>) -> Value {
+    let mut part = json!({"type": "text", "text": text});
+    if let Some(marker) = cache_control {
+        part["cache_control"] = marker.clone();
+    }
+    part
+}
+
+fn text_and_cache_control(block: &ContentBlock) -> Option<(&str, Option<&Value>)> {
+    match block {
+        ContentBlock::Text {
+            text,
+            cache_control,
+        } => Some((text.as_str(), cache_control.as_deref())),
+        ContentBlock::Refusal { text } => Some((text.as_str(), None)),
+        ContentBlock::Unknown { raw, .. } => raw.as_str().map(|text| (text, None)),
+        _ => None,
+    }
+}
+
+// Keep the block array when joining its text would erase a cache boundary.
+pub(crate) fn encode_text_content<'a>(
+    blocks: impl Iterator<Item = &'a ContentBlock> + Clone,
+    separator: &str,
+    supports_cache_control: bool,
+) -> Value {
+    let parts = blocks.filter_map(text_and_cache_control);
+    if supports_cache_control && parts.clone().any(|(_, marker)| marker.is_some()) {
+        Value::Array(
+            parts
+                .map(|(text, marker)| text_part(text, marker))
+                .collect(),
+        )
+    } else {
+        Value::String(
+            parts
+                .map(|(text, _)| text)
+                .collect::<Vec<_>>()
+                .join(separator),
+        )
+    }
+}
+
 /// Extracts text-like blocks and joins them for text-only provider fields.
 pub(crate) fn text_from_blocks(content: &[ContentBlock], separator: &str) -> String {
     content
         .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text { text } => Some(text.as_str()),
-            ContentBlock::Refusal { text } => Some(text.as_str()),
-            ContentBlock::Unknown { raw, .. } => raw.as_str(),
-            _ => None,
-        })
+        .filter_map(text_and_cache_control)
+        .map(|(text, _)| text)
         .collect::<Vec<_>>()
         .join(separator)
 }

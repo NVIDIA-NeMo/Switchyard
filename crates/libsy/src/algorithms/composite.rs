@@ -535,6 +535,7 @@ mod tests {
                 assert_eq!(
                     outcome.request.llm_request.instructions[0].content,
                     vec![switchyard_protocol::ContentBlock::Text {
+                        cache_control: None,
                         text: prompt.into()
                     }]
                 );

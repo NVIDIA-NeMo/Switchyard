@@ -24,9 +24,7 @@ fn prepare_with_prompt(request: &mut LlmRequest, target: &str, prompt: &str) {
         0,
         InstructionBlock {
             role: Role::System,
-            content: vec![ContentBlock::Text {
-                text: prompt.to_string(),
-            }],
+            content: vec![ContentBlock::text(prompt)],
         },
     );
     request.preservation.requests.clear();
@@ -102,6 +100,44 @@ fn responses_assistant_phase_survives_reasoning_only_turn() -> TestResult {
 }
 
 #[test]
+fn text_cache_breakpoints_follow_the_target_format() -> TestResult {
+    let engine = TranslationEngine::default();
+    let prefix = json!({"type": "text", "text": "Reference material", "cache_control": {"type": "ephemeral", "ttl": "1h"}});
+    let suffix = json!({"type": "text", "text": "Current question"});
+    let body = json!({"messages": [
+        {"role": "system", "content": [prefix, suffix]},
+        {"role": "user", "content": [prefix]}
+    ]});
+    let output = engine.translate_request(
+        WireFormat::OpenAiChat,
+        WireFormat::AnthropicMessages,
+        &body,
+        &TranslationPolicy::default(),
+    )?;
+    assert_eq!(output.body["messages"][0]["content"], json!([prefix]));
+    assert_eq!(output.body["system"], json!([prefix, suffix]));
+
+    let to_chat = |policy: &TranslationPolicy| {
+        engine.translate_request(
+            WireFormat::AnthropicMessages,
+            WireFormat::OpenAiChat,
+            &output.body,
+            policy,
+        )
+    };
+    let mut policy = TranslationPolicy::default();
+    let chat = to_chat(&policy)?.body;
+    assert_eq!(
+        chat["messages"][0]["content"],
+        "Reference material\n\nCurrent question"
+    );
+    assert_eq!(chat["messages"][1]["content"], "Reference material");
+    policy.target_capabilities.supports_text_cache_control = Some(true);
+    assert_eq!(to_chat(&policy)?.body["messages"], body["messages"]);
+    Ok(())
+}
+
+#[test]
 fn normalized_chat_requests_forward_logprobs_with_top_logprobs() -> TestResult {
     let engine = TranslationEngine::default();
     for enabled in [true, false] {
@@ -171,9 +207,7 @@ fn anthropic_server_tools_survive_request_reconstruction() -> TestResult {
             function.description = Some("Updated edit description".into());
             request.instructions.push(InstructionBlock {
                 role: Role::System,
-                content: vec![ContentBlock::Text {
-                    text: "Plan first.".into(),
-                }],
+                content: vec![ContentBlock::text("Plan first.")],
             });
             request.preservation.requests.clear();
             let output = engine.encode_request(WireFormat::AnthropicMessages, &request, &policy)?;
@@ -251,9 +285,7 @@ fn openai_chat_rejects_mcp_history_before_text_only_returns() {
             messages: vec![Message::new(
                 role,
                 vec![
-                    ContentBlock::Text {
-                        text: "Keep this text".into(),
-                    },
+                    ContentBlock::text("Keep this text"),
                     ContentBlock::Mcp(McpContent::Listing {
                         server_name: "inventory".into(),
                         id: None,
@@ -1977,9 +2009,8 @@ fn responses_rebuild_preserves_inline_instructions() -> TestResult {
         "Top-level guidance.\n\nInitial system.\n\nInitial developer.\n\nLater system.\n\nLater developer.\n\nSeparate message."
     );
     assert_eq!(anthropic["messages"].as_array().map(Vec::len), Some(2));
-    request.messages.last_mut().ok_or("missing suffix")?.content = vec![ContentBlock::Text {
-        text: "Edited suffix.".into(),
-    }];
+    request.messages.last_mut().ok_or("missing suffix")?.content =
+        vec![ContentBlock::text("Edited suffix.")];
     let expected = json!({
         "model": "gpt-4",
         "instructions": "Top-level guidance.",
@@ -2063,9 +2094,8 @@ fn chat_rebuild_preserves_inline_instructions() -> TestResult {
     assert_eq!(anthropic["messages"].as_array().map(Vec::len), Some(2));
 
     // A suffix-only edit leaves earlier messages unchanged.
-    request.messages.last_mut().ok_or("missing suffix")?.content = vec![ContentBlock::Text {
-        text: "Edited suffix.".into(),
-    }];
+    request.messages.last_mut().ok_or("missing suffix")?.content =
+        vec![ContentBlock::text("Edited suffix.")];
     let mut expected = body.clone();
     expected["messages"][6]["content"] = json!("Edited suffix.");
     assert_eq!(
@@ -2087,9 +2117,7 @@ fn anthropic_reports_dropped_instruction_content() -> TestResult {
             detail: None,
         },
     };
-    let text = ContentBlock::Text {
-        text: "Match this layout.".into(),
-    };
+    let text = ContentBlock::text("Match this layout.");
     let mut top_level = LlmRequest {
         messages: vec![Message::text(Role::User, "Hi")],
         ..LlmRequest::default()

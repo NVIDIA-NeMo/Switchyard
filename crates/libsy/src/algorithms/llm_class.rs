@@ -216,7 +216,7 @@ impl TaskInput {
         for message in &mut messages {
             message.content.retain(|block| match block {
                 ContentBlock::Reasoning { .. } => false,
-                ContentBlock::Text { text } => !text.is_empty(),
+                ContentBlock::Text { text, .. } => !text.is_empty(),
                 _ => true,
             });
         }
@@ -1066,7 +1066,7 @@ mod tests {
                                 .first()
                                 .and_then(|instruction| {
                                     instruction.content.iter().find_map(|b| {
-                                        if let ContentBlock::Text { text } = b {
+                                        if let ContentBlock::Text { text, .. } = b {
                                             Some(text.clone())
                                         } else {
                                             None
@@ -1582,6 +1582,7 @@ mod tests {
                     details: vec![],
                 },
                 ContentBlock::Text {
+                    cache_control: None,
                     text: "visible progress".into(),
                 },
             ],
@@ -2184,6 +2185,7 @@ mod tests {
             vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: id.to_string(),
                 content: vec![ContentBlock::Text {
+                    cache_control: None,
                     text: "tool output".to_string(),
                 }],
                 is_error: None,
@@ -2201,6 +2203,7 @@ mod tests {
         result.role = Role::User;
         let mut mixed = result.clone();
         mixed.content.push(ContentBlock::Text {
+            cache_control: None,
             text: "latest follow-up".to_string(),
         });
         let input = TaskInput {
@@ -2356,6 +2359,7 @@ mod tests {
                         details: Vec::new(),
                     },
                     ContentBlock::Text {
+                        cache_control: None,
                         text: "visible answer".to_string(),
                     },
                 ],

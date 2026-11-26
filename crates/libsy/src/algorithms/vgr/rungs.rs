@@ -91,6 +91,7 @@ pub(super) fn build_request(
             instructions: vec![InstructionBlock {
                 role: Role::System,
                 content: vec![ContentBlock::Text {
+                    cache_control: None,
                     text: question.system_prompt(),
                 }],
             }],
@@ -145,7 +146,9 @@ pub(super) fn build_verdict_request(
         .into_iter()
         .flat_map(|output| &output.content)
         .filter_map(|block| match block {
-            ContentBlock::Reasoning { text, .. } | ContentBlock::Text { text } => Some(text.trim()),
+            ContentBlock::Reasoning { text, .. } | ContentBlock::Text { text, .. } => {
+                Some(text.trim())
+            }
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -249,7 +252,7 @@ fn proposed_line(proposed: &AggLlmResponse) -> String {
     {
         for block in &output.content {
             match block {
-                ContentBlock::Text { text } if !text.trim().is_empty() => {
+                ContentBlock::Text { text, .. } if !text.trim().is_empty() => {
                     fragments.push(redact(text));
                 }
                 ContentBlock::ToolCall(call) => fragments.push(format!(
@@ -350,7 +353,7 @@ fn assistant_text(output: &ResponseOutput) -> Option<String> {
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::Text { text } => Some(text.as_str()),
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>()
@@ -366,7 +369,7 @@ mod tests {
         AggLlmResponse {
             outputs: vec![ResponseOutput {
                 role: Role::Assistant,
-                content: vec![ContentBlock::Text { text: text.into() }],
+                content: vec![ContentBlock::text(text)],
                 url_citations: Vec::new(),
                 stop_reason,
             }],

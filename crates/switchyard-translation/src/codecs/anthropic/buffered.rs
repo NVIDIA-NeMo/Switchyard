@@ -8,8 +8,8 @@ use switchyard_protocol::MAX_IR_TEMPERATURE;
 
 use super::{DEFAULT_TEMPERATURE, MAX_TEMPERATURE};
 use crate::codecs::common::{
-    is_anthropic_request, is_known_role_name, provider_extensions, scale_temperature,
-    text_from_blocks,
+    decode_text_block, encode_text_content, is_anthropic_request, is_known_role_name,
+    provider_extensions, scale_temperature, text_part,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::structured_output::decode_openai_schema_enforcement;
@@ -227,7 +227,7 @@ impl FormatCodec for AnthropicMessagesCodec {
         if let Some(model) = &request.model {
             body.insert("model".to_string(), Value::String(model.clone()));
         }
-        let system_text = request
+        let system_blocks = request
             .instructions
             .iter()
             .flat_map(|instruction| instruction.content.iter())
@@ -238,14 +238,15 @@ impl FormatCodec for AnthropicMessagesCodec {
                     .filter(|message| matches!(message.role, Role::System | Role::Developer))
                     .flat_map(|message| message.content.iter()),
             )
-            .filter_map(|block| match block {
-                ContentBlock::Text { text } | ContentBlock::Refusal { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        if !system_text.is_empty() {
-            body.insert("system".to_string(), Value::String(system_text));
+            .filter(|block| {
+                matches!(
+                    block,
+                    ContentBlock::Text { .. } | ContentBlock::Refusal { .. }
+                )
+            });
+        let system = encode_text_content(system_blocks, "\n\n", true);
+        if system != "" {
+            body.insert("system".to_string(), system);
         }
         // Anthropic `system` is a text field, so other instruction content is dropped.
         let instructions = request
@@ -426,9 +427,7 @@ impl FormatCodec for AnthropicMessagesCodec {
             });
         }
         if content.is_empty() {
-            content.push(ContentBlock::Text {
-                text: String::new(),
-            });
+            content.push(ContentBlock::text(""));
         }
         let response = AggLlmResponse {
             id: body
@@ -678,9 +677,7 @@ fn strip_anthropic_unsupported_constraints(value: &mut Value) -> bool {
 // Decodes Anthropic's `system` field into instruction blocks.
 fn decode_anthropic_system(value: &Value) -> Result<Option<Vec<ContentBlock>>> {
     match value {
-        Value::String(text) if !text.is_empty() => {
-            Ok(Some(vec![ContentBlock::Text { text: text.clone() }]))
-        }
+        Value::String(text) if !text.is_empty() => Ok(Some(vec![ContentBlock::text(text)])),
         Value::String(_) | Value::Null => Ok(None),
         Value::Array(blocks) => {
             let mut content = Vec::new();
@@ -688,12 +685,7 @@ fn decode_anthropic_system(value: &Value) -> Result<Option<Vec<ContentBlock>>> {
                 if let Some(block) = block.as_object()
                     && block.get("type").and_then(Value::as_str) == Some("text")
                 {
-                    let text = block
-                        .get("text")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_string();
-                    content.push(ContentBlock::Text { text });
+                    content.push(decode_text_block(block));
                 }
             }
             Ok((!content.is_empty()).then_some(content))
@@ -714,10 +706,8 @@ fn decode_anthropic_content(
     policy: &TranslationPolicy,
 ) -> Result<Vec<ContentBlock>> {
     match value {
-        Value::String(text) => Ok(vec![ContentBlock::Text { text: text.clone() }]),
-        Value::Null => Ok(vec![ContentBlock::Text {
-            text: String::new(),
-        }]),
+        Value::String(text) => Ok(vec![ContentBlock::text(text)]),
+        Value::Null => Ok(vec![ContentBlock::text("")]),
         Value::Array(blocks) => {
             let mut content = Vec::new();
             for (index, block) in blocks.iter().enumerate() {
@@ -738,15 +728,13 @@ fn decode_anthropic_content(
                 )?);
             }
             if content.is_empty() {
-                content.push(ContentBlock::Text {
-                    text: String::new(),
-                });
+                content.push(ContentBlock::text(""));
             }
             Ok(content)
         }
-        other => Ok(vec![ContentBlock::Text {
-            text: string_value(other).unwrap_or_default(),
-        }]),
+        other => Ok(vec![ContentBlock::text(
+            string_value(other).unwrap_or_default(),
+        )]),
     }
 }
 
@@ -759,13 +747,7 @@ fn decode_anthropic_content_block(
     policy: &TranslationPolicy,
 ) -> Result<Vec<ContentBlock>> {
     Ok(match block.get("type").and_then(Value::as_str) {
-        Some("text") => vec![ContentBlock::Text {
-            text: block
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-        }],
+        Some("text") => vec![decode_text_block(block)],
         Some("thinking") => vec![ContentBlock::Reasoning {
             text: block
                 .get("thinking")
@@ -829,19 +811,13 @@ fn decode_anthropic_content_block(
 // Preserves supported Anthropic tool-result blocks in the neutral IR.
 fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
     match value {
-        Value::String(text) => vec![ContentBlock::Text { text: text.clone() }],
+        Value::String(text) => vec![ContentBlock::text(text)],
         Value::Array(blocks) => {
             let mut content = Vec::new();
             for block in blocks {
                 if let Some(block) = block.as_object() {
                     match block.get("type").and_then(Value::as_str) {
-                        Some("text") => content.push(ContentBlock::Text {
-                            text: block
-                                .get("text")
-                                .and_then(Value::as_str)
-                                .unwrap_or_default()
-                                .to_string(),
-                        }),
+                        Some("text") => content.push(decode_text_block(block)),
                         Some("image") => content.push(ContentBlock::Image {
                             source: ImageSource::Raw(Value::Object(block.clone())),
                         }),
@@ -857,12 +833,8 @@ fn decode_tool_result_content(value: &Value) -> Vec<ContentBlock> {
             }
             content
         }
-        Value::Null => vec![ContentBlock::Text {
-            text: String::new(),
-        }],
-        other => vec![ContentBlock::Text {
-            text: json_string(other),
-        }],
+        Value::Null => vec![ContentBlock::text("")],
+        other => vec![ContentBlock::text(json_string(other))],
     }
 }
 
@@ -942,22 +914,11 @@ fn encode_anthropic_message(
         Role::User | Role::Tool | Role::System | Role::Developer => "user",
     };
     let content = encode_anthropic_content_with_policy(&message.content, diagnostics, policy)?;
-    let simple_text = content.len() == 1
-        && content
-            .first()
-            .and_then(Value::as_object)
-            .and_then(|object| object.get("type"))
-            .and_then(Value::as_str)
-            == Some("text");
-    let content = if simple_text {
-        content
-            .first()
-            .and_then(Value::as_object)
-            .and_then(|object| object.get("text"))
-            .cloned()
-            .unwrap_or_else(|| Value::String(String::new()))
-    } else {
-        Value::Array(content)
+    let content = match content.as_slice() {
+        [block] if block["type"] == "text" && block.get("cache_control").is_none() => {
+            block["text"].clone()
+        }
+        _ => Value::Array(content),
     };
     Ok(json!({"role": role, "content": content}))
 }
@@ -1126,6 +1087,7 @@ fn encode_anthropic_content(content: &[ContentBlock]) -> Result<(Vec<Value>, Opt
 // Encodes response content, where synthetic reasoning may be shown to clients.
 fn encode_one_anthropic_response_block(block: &ContentBlock) -> Result<Vec<Value>> {
     match block {
+        ContentBlock::Text { text, .. } => Ok(vec![text_part(text, None)]),
         ContentBlock::Reasoning {
             text,
             signature: None,
@@ -1142,9 +1104,11 @@ fn encode_one_anthropic_response_block(block: &ContentBlock) -> Result<Vec<Value
 // Encodes a single normalized content block into Anthropic block JSON.
 fn encode_one_anthropic_block(block: &ContentBlock) -> Result<Vec<Value>> {
     Ok(match block {
-        ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
-            vec![json!({"type": "text", "text": text})]
-        }
+        ContentBlock::Text {
+            text,
+            cache_control,
+        } => vec![text_part(text, cache_control.as_deref())],
+        ContentBlock::Refusal { text } => vec![text_part(text, None)],
         ContentBlock::Reasoning {
             text,
             signature: Some(signature),
@@ -1168,7 +1132,7 @@ fn encode_one_anthropic_block(block: &ContentBlock) -> Result<Vec<Value>> {
                     ContentBlock::Text { .. } | ContentBlock::Refusal { .. }
                 )
             }) {
-                Value::String(text_from_blocks(&result.content, " "))
+                encode_text_content(result.content.iter(), " ", true)
             } else {
                 let mut content = Vec::new();
                 for block in &result.content {
