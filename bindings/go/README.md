@@ -107,9 +107,12 @@ selected target. Routing-produced responses are buffered; the host may stream
 the final selected provider response separately.
 
 To stream that response in another format, create a `StreamTranslator` with
-`NewStreamTranslator(source, target)`. Pass the JSON data of each provider event
-to `Translate`. When the provider sends the SSE `[DONE]` marker, call
-`DoneMarker` instead. Call `Finish` when the provider stream ends, then `Close`.
+`NewStreamTranslator(source, target, requestExtensions)`. As with
+`EncodeResponse`, pass the decoded request's `extensions`, or nil, so streamed
+tool calls keep details such as Codex tool namespaces and custom tools. Pass the
+JSON data of each provider event to `Translate`. When the provider sends the SSE
+`[DONE]` marker, call `DoneMarker` instead. Call `Finish` when the provider
+stream ends, then `Close`.
 `Finish` returns an error when the provider stream ended before its final event,
 so the host can report a cut-off answer. For `openai_chat`, the final event is a
 chunk with a `finish_reason`, or `[DONE]`; `openai_responses` also accepts
@@ -119,7 +122,7 @@ report, not the end of the stream:
 
 ```go
 defer resp.Body.Close()
-stream, err := switchyard.NewStreamTranslator("openai_chat", "anthropic_messages")
+stream, err := switchyard.NewStreamTranslator("openai_chat", "openai_responses", extensions)
 if err != nil {
     return err
 }

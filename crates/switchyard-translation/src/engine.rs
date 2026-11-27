@@ -3,7 +3,7 @@
 
 //! Registry-backed translation engine for buffered and streaming translation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -231,13 +231,16 @@ impl TranslationEngine {
     ) -> Result<TranslationOutput> {
         let mut output = self.encode_response(target, response, policy)?;
         if !request_extensions.fields.is_empty() {
-            crate::codex_namespaces::restore_qualified_tool_names(
-                &mut output.body,
-                &crate::codex_namespaces::qualified_tool_origins(request_extensions),
-            );
+            // Custom tools match the name the provider called, before namespaces are
+            // restored, so a namespaced function that shares a custom tool's bare name
+            // stays a function.
             crate::codex_custom_tools::restore_custom_tool_calls(
                 &mut output.body,
                 &crate::codex_custom_tools::custom_tool_names(request_extensions),
+            );
+            crate::codex_namespaces::restore_qualified_tool_names(
+                &mut output.body,
+                &crate::codex_namespaces::qualified_tool_origins(request_extensions),
             );
         }
         Ok(output)
@@ -419,9 +422,7 @@ impl TranslationEngine {
         served_model: Option<String>,
         request_extensions: &ProviderExtensions,
     ) -> std::result::Result<RawEventStream, LlmClientError> {
-        let origins = crate::codex_namespaces::qualified_tool_origins(request_extensions);
-        let custom_tools = crate::codex_custom_tools::custom_tool_names(request_extensions);
-        let mut custom_state = crate::codex_custom_tools::CustomToolCallStreamState::default();
+        let mut tools = StreamToolRestorer::new(request_extensions);
         let target_format: FormatId = target.into();
         let codec = self
             .stream_registry
@@ -455,25 +456,12 @@ impl TranslationEngine {
                         (encoded, Some(error))
                     }
                 };
-                for value in &mut encoded {
-                    if let Some(model) = served_model_for_events.as_deref() {
+                if let Some(model) = served_model_for_events.as_deref() {
+                    for value in &mut encoded {
                         codec.stamp_streamed_response_model(value, model);
                     }
-                    crate::codex_namespaces::restore_qualified_tool_names(value, &origins);
                 }
-                // Argument deltas for a freeform tool cannot be expressed on the wire; the
-                // rewritten completed item carries the input instead.
-                let mut encoded: Vec<Value> = encoded
-                    .into_iter()
-                    .filter_map(|mut value| {
-                        crate::codex_custom_tools::restore_custom_tool_calls_in_event(
-                            &mut value,
-                            &custom_tools,
-                            &mut custom_state,
-                        )
-                        .then_some(value)
-                    })
-                    .collect();
+                encoded.retain_mut(|value| tools.restore(value));
                 let terminal = encoded.pop();
                 for value in encoded {
                     yield value;
@@ -495,12 +483,7 @@ impl TranslationEngine {
                 if let Some(model) = served_model_for_events.as_deref() {
                     codec.stamp_streamed_response_model(&mut value, model);
                 }
-                crate::codex_namespaces::restore_qualified_tool_names(&mut value, &origins);
-                if crate::codex_custom_tools::restore_custom_tool_calls_in_event(
-                    &mut value,
-                    &custom_tools,
-                    &mut custom_state,
-                ) {
+                if tools.restore(&mut value) {
                     yield value;
                 }
             }
@@ -661,4 +644,41 @@ fn with_formats(
         .chain(encoded)
         .map(|diagnostic| diagnostic.with_formats(source.clone(), target.clone()))
         .collect()
+}
+
+/// Restores client tool details on encoded stream events, using the decoded request's
+/// extensions: Codex tool namespaces and OpenAI Responses custom tools.
+///
+/// Use one per streamed response, because it tracks custom tool calls across events.
+pub struct StreamToolRestorer {
+    origins: HashMap<String, (String, String)>,
+    custom_tools: HashSet<String>,
+    custom_calls: crate::codex_custom_tools::CustomToolCallStreamState,
+}
+
+impl StreamToolRestorer {
+    /// Reads the tool details recorded on a decoded request's extensions.
+    pub fn new(request_extensions: &ProviderExtensions) -> Self {
+        Self {
+            origins: crate::codex_namespaces::qualified_tool_origins(request_extensions),
+            custom_tools: crate::codex_custom_tools::custom_tool_names(request_extensions),
+            custom_calls: Default::default(),
+        }
+    }
+
+    /// Restores one encoded event in place. Returns false for an event to drop: argument
+    /// deltas of a custom tool call, which the wire format cannot express. The call's
+    /// completed item carries its input instead.
+    ///
+    /// Custom tools match the name the provider called, before namespaces are restored, as
+    /// in [`TranslationEngine::encode_response_with_extensions`].
+    pub fn restore(&mut self, event: &mut Value) -> bool {
+        let keep = crate::codex_custom_tools::restore_custom_tool_calls_in_event(
+            event,
+            &self.custom_tools,
+            &mut self.custom_calls,
+        );
+        crate::codex_namespaces::restore_qualified_tool_names(event, &self.origins);
+        keep
+    }
 }

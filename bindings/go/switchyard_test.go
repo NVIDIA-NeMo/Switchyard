@@ -4,11 +4,13 @@
 package switchyard
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"runtime"
 	"slices"
 	"strings"
@@ -176,7 +178,7 @@ func TestSelectionAndTranslation(t *testing.T) {
 
 // A stream translator keeps state across events and closes the target stream on Finish.
 func TestStreamTranslator(t *testing.T) {
-	stream, err := NewStreamTranslator("openai_chat", "anthropic_messages")
+	stream, err := NewStreamTranslator("openai_chat", "anthropic_messages", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,11 +224,11 @@ func TestStreamTranslator(t *testing.T) {
 	if _, err := stream.Translate(json.RawMessage(`{}`)); err == nil {
 		t.Fatal("closed stream translated")
 	}
-	if _, err := NewStreamTranslator("unknown", "openai_chat"); err == nil {
+	if _, err := NewStreamTranslator("unknown", "openai_chat", nil); err == nil {
 		t.Fatal("unknown format accepted")
 	}
 
-	cutOff, err := NewStreamTranslator("openai_chat", "anthropic_messages")
+	cutOff, err := NewStreamTranslator("openai_chat", "anthropic_messages", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +244,7 @@ func TestStreamTranslator(t *testing.T) {
 // A "[DONE]" marker completes a stream only when the source format treats it as final.
 func TestStreamTranslatorDoneMarker(t *testing.T) {
 	finish := func(source, target, event string, sawDone bool) ([]json.RawMessage, error) {
-		stream, err := NewStreamTranslator(source, target)
+		stream, err := NewStreamTranslator(source, target, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -277,9 +279,231 @@ func TestStreamTranslatorDoneMarker(t *testing.T) {
 	}
 }
 
+// toolExtensions decodes a Responses request with a top-level custom tool apply_patch and a
+// namespaced function workspace.apply_patch, and returns its extensions.
+func toolExtensions(t *testing.T) json.RawMessage {
+	t.Helper()
+	request, err := DecodeRequest("openai_responses", json.RawMessage(`{"model":"m","input":"hi","tools":[
+		{"type":"custom","name":"apply_patch","description":"Apply a patch"},
+		{"type":"namespace","name":"workspace","description":"Workspace tools","tools":[
+			{"type":"function","name":"apply_patch","description":"Apply a structured patch",
+			 "parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct{ Extensions json.RawMessage }
+	if err := json.Unmarshal(request, &decoded); err != nil || len(decoded.Extensions) == 0 {
+		t.Fatalf("decoded request has no extensions: %s (err=%v)", request, err)
+	}
+	return decoded.Extensions
+}
+
+// toolCallChunks stream an OpenAI Chat answer that calls both tools from toolExtensions, with
+// arguments split across deltas. toolCallsFinish ends it.
+var toolCallChunks = []string{
+	`{"id":"1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"apply_patch","arguments":""}}]}}]}`,
+	`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"input\":\"*** Begin"}}]}}]}`,
+	`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" Patch\"}"}}]}}]}`,
+	`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"workspace__apply_patch","arguments":"{\"cmd\":"}}]}}]}`,
+	`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\"ls\"}"}}]}}]}`,
+}
+
+const toolCallsFinish = `{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`
+
+// restoredTools are the client-facing item types for toolCallChunks, by tool.
+var restoredTools = map[string]string{"apply_patch": "custom_tool_call", "workspace.apply_patch": "function_call"}
+
+type toolItem struct{ Type, Name, Namespace, Input string }
+
+// tool names an item namespace.name, or by its bare name at the top level.
+func (item toolItem) tool() string {
+	if item.Namespace == "" {
+		return item.Name
+	}
+	return item.Namespace + "." + item.Name
+}
+
+// responsesStream summarizes the tool calls in a streamed OpenAI Responses answer.
+type responsesStream struct {
+	done      map[string]toolItem // output_item.done items, by tool
+	arguments map[string]int      // argument delta and done events, by tool
+	completed map[string]string   // response.completed item types, by tool
+}
+
+func readResponsesStream(t *testing.T, events []json.RawMessage) responsesStream {
+	t.Helper()
+	got := responsesStream{done: map[string]toolItem{}, arguments: map[string]int{}, completed: map[string]string{}}
+	tools := map[int]string{} // tool by output index
+	for _, raw := range events {
+		var event struct {
+			Type        string
+			OutputIndex int `json:"output_index"`
+			Item        toolItem
+			Response    struct{ Output []toolItem }
+		}
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		switch event.Type {
+		case "response.output_item.added":
+			tools[event.OutputIndex] = event.Item.tool()
+		case "response.output_item.done":
+			got.done[event.Item.tool()] = event.Item
+		case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+			got.arguments[tools[event.OutputIndex]]++
+		case "response.completed":
+			for _, output := range event.Response.Output {
+				got.completed[output.tool()] = output.Type
+			}
+		}
+	}
+	return got
+}
+
+// checkRestoredTools checks that a top-level custom tool came back as custom_tool_call with its
+// assembled input and no argument events, and the namespaced function as a function_call with
+// its namespace and argument events.
+func checkRestoredTools(t *testing.T, got responsesStream) {
+	t.Helper()
+	if patch := got.done["apply_patch"]; patch.Type != "custom_tool_call" || patch.Input != "*** Begin Patch" {
+		t.Errorf("custom tool item %+v, want custom_tool_call with the patch as input", patch)
+	}
+	if got.arguments["apply_patch"] != 0 {
+		t.Errorf("custom tool call streamed %d argument events, want none", got.arguments["apply_patch"])
+	}
+	if function := got.done["workspace.apply_patch"]; function.Type != "function_call" || got.arguments["workspace.apply_patch"] == 0 {
+		t.Errorf("namespaced function item %+v with %d argument events, want function_call with them",
+			function, got.arguments["workspace.apply_patch"])
+	}
+	if !maps.Equal(got.completed, restoredTools) {
+		t.Errorf("completed response items %v, want %v", got.completed, restoredTools)
+	}
+}
+
+// With the request's extensions, streamed and buffered answers keep a Responses client's
+// tool details: a top-level custom tool becomes custom_tool_call, and a namespaced function
+// with the same bare name stays a function_call in its namespace.
+func TestStreamTranslatorRestoresCustomTools(t *testing.T) {
+	extensions := toolExtensions(t)
+	translate := func(extensions json.RawMessage) responsesStream {
+		stream, err := NewStreamTranslator("openai_chat", "openai_responses", extensions)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stream.Close()
+		var events []json.RawMessage
+		for _, chunk := range append(slices.Clone(toolCallChunks), toolCallsFinish) {
+			translated, err := stream.Translate(json.RawMessage(chunk))
+			if err != nil {
+				t.Fatal(err)
+			}
+			events = append(events, translated...)
+		}
+		closing, err := stream.Finish()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return readResponsesStream(t, append(events, closing...))
+	}
+
+	checkRestoredTools(t, translate(extensions))
+	plain := translate(nil)
+	if want := map[string]string{"apply_patch": "function_call", "workspace__apply_patch": "function_call"}; !maps.Equal(plain.completed, want) {
+		t.Errorf("without extensions, completed response items %v, want %v", plain.completed, want)
+	}
+
+	// The buffered path restores the same answer the same way.
+	response, err := DecodeResponse("openai_chat", json.RawMessage(`{"id":"1","object":"chat.completion","model":"m","choices":[{"index":0,
+		"message":{"role":"assistant","content":null,"tool_calls":[
+			{"id":"call_1","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\"}"}},
+			{"id":"call_2","type":"function","function":{"name":"workspace__apply_patch","arguments":"{\"cmd\":\"ls\"}"}}]},
+		"finish_reason":"tool_calls"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := EncodeResponse("openai_responses", response, extensions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buffered struct{ Output []toolItem }
+	if err := json.Unmarshal(encoded, &buffered); err != nil {
+		t.Fatal(err)
+	}
+	bufferedTypes := map[string]string{}
+	for _, output := range buffered.Output {
+		bufferedTypes[output.tool()] = output.Type
+	}
+	if !maps.Equal(bufferedTypes, restoredTools) {
+		t.Errorf("buffered response items %v, want %v", bufferedTypes, restoredTools)
+	}
+}
+
+// The stream fixes work together through the README's SSE loop, on a provider stream shaped
+// like a real one (keep-alive, finish_reason, then [DONE]): the events keep the client's tool
+// details, a copy shares the [DONE] marker, and the stream is released once.
+func TestStreamTranslatorReadmeLoop(t *testing.T) {
+	stream, err := NewStreamTranslator("openai_chat", "openai_responses", toolExtensions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted := &countingStream{streamHandle: stream.state.handle}
+	stream.state.handle = counted
+	copied := *stream
+	defer stream.Close()
+
+	var body strings.Builder
+	body.WriteString(": keep-alive\n\n")
+	for _, chunk := range append(slices.Clone(toolCallChunks), toolCallsFinish) {
+		fmt.Fprintf(&body, "data: %s\n\n", chunk)
+	}
+	body.WriteString("data: [DONE]\n\n")
+
+	var events []json.RawMessage
+	send := func(batch []json.RawMessage) { events = append(events, batch...) }
+	// The README's loop. The copy records the marker; the original finishes.
+	scanner := bufio.NewScanner(strings.NewReader(body.String()))
+	scanner.Buffer(nil, 16<<20)
+	for scanner.Scan() {
+		data, ok := strings.CutPrefix(scanner.Text(), "data:")
+		if !ok {
+			continue
+		}
+		if data = strings.TrimSpace(data); data == "[DONE]" {
+			copied.DoneMarker()
+			break
+		}
+		translated, err := stream.Translate(json.RawMessage(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		send(translated)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !stream.state.sawDone {
+		t.Fatal("the original did not see the marker its copy recorded")
+	}
+	closing, err := stream.Finish()
+	if err != nil {
+		t.Fatalf("finish failed: %v", err)
+	}
+	send(closing)
+	checkRestoredTools(t, readResponsesStream(t, events))
+
+	copied.Close()
+	stream.Close()
+	if _, err := stream.Finish(); !errors.Is(err, errStreamClosed) {
+		t.Fatalf("finish after close: err=%v, want errStreamClosed", err)
+	}
+	if counted.frees != 1 {
+		t.Fatalf("stream released %d times, want 1", counted.frees)
+	}
+}
+
 // Value copies share one stream: closing either releases it once and closes both.
 func TestStreamTranslatorCopiesShareClose(t *testing.T) {
-	stream, err := NewStreamTranslator("openai_chat", "anthropic_messages")
+	stream, err := NewStreamTranslator("openai_chat", "anthropic_messages", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

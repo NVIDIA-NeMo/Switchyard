@@ -378,7 +378,7 @@ func TestWasmTranslatorIsReplacedAfterFailure(t *testing.T) {
 // A stream fails cleanly after a trap replaces its guest, and Close leaves the new guest alone.
 func TestWasmStreamIsLostAfterGuestFailure(t *testing.T) {
 	request := []byte(`{"format":"openai_chat","body":{"messages":[]}}`)
-	stream, err := NewStreamTranslator("openai_chat", "anthropic_messages")
+	stream, err := NewStreamTranslator("openai_chat", "anthropic_messages", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

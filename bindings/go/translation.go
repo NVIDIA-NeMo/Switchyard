@@ -75,11 +75,13 @@ var errStreamClosed = errors.New("Switchyard stream translator is closed")
 var errEmptyEvent = errors.New("Switchyard stream event is empty")
 
 // NewStreamTranslator starts translating a stream from the source format to the target format.
-func NewStreamTranslator(source, target string) (*StreamTranslator, error) {
+// requestExtensions is the decoded request's "extensions" field, or nil, as for EncodeResponse.
+func NewStreamTranslator(source, target string, requestExtensions json.RawMessage) (*StreamTranslator, error) {
 	input, err := json.Marshal(struct {
-		Source string `json:"source"`
-		Target string `json:"target"`
-	}{source, target})
+		Source            string          `json:"source"`
+		Target            string          `json:"target"`
+		RequestExtensions json.RawMessage `json:"request_extensions,omitempty"`
+	}{source, target, requestExtensions})
 	if err != nil {
 		return nil, err
 	}

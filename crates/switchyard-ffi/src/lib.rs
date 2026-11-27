@@ -17,7 +17,7 @@ use switchyard_protocol::{
     ProviderExtensions, Request, Response, WireFormat,
 };
 use switchyard_runner::AlgorithmSpec;
-use switchyard_translation::{StreamTranslationState, TranslationEngine};
+use switchyard_translation::{StreamToolRestorer, StreamTranslationState, TranslationEngine};
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -104,6 +104,8 @@ struct EncodeResponseInput {
 struct StreamInput {
     source: WireFormat,
     target: WireFormat,
+    #[serde(default)]
+    request_extensions: ProviderExtensions,
 }
 
 #[derive(Deserialize)]
@@ -168,6 +170,8 @@ pub struct SyStream {
     source: WireFormat,
     target: WireFormat,
     state: StreamTranslationState,
+    /// Restores the client's tool details from the request extensions.
+    tools: StreamToolRestorer,
     /// Set once the source sent its final event.
     ended: bool,
 }
@@ -491,7 +495,7 @@ pub unsafe extern "C" fn sy_encode_response(
     })
 }
 
-/// Starts translating one streamed response from `{source, target}`.
+/// Starts translating one streamed response from `{source, target, request_extensions?}`.
 /// # Safety
 /// JSON must be NUL-terminated and `out` writable. Free the stream with `sy_stream_free`.
 #[unsafe(no_mangle)]
@@ -507,6 +511,7 @@ pub unsafe extern "C" fn sy_stream_new(
             source: input.source,
             target: input.target,
             state: StreamTranslationState::new(input.source, input.target),
+            tools: StreamToolRestorer::new(&input.request_extensions),
             ended: false,
         }));
         Ok(())
@@ -529,12 +534,13 @@ pub unsafe extern "C" fn sy_stream_translate(
         let stream = unsafe { stream.as_mut() }.ok_or("missing stream")?;
         let event: serde_json::Value = unsafe { parse_json_input(event_json) }?;
         stream.ended |= STREAM_ENGINE.is_terminal_stream_event(stream.source, &event)?;
-        let events = STREAM_ENGINE.translate_event(
+        let mut events = STREAM_ENGINE.translate_event(
             &mut stream.state,
             stream.source,
             stream.target,
             &event,
         )?;
+        events.retain_mut(|event| stream.tools.restore(event));
         *out = encode_json(&events)?.into_raw();
         Ok(())
     })
@@ -569,7 +575,8 @@ pub unsafe extern "C" fn sy_stream_finish(
         if !ended && !stream.state.errored {
             return Err(format!("{} stream ended before a terminal event", stream.source).into());
         }
-        let events = STREAM_ENGINE.finish_stream(&mut stream.state, stream.target)?;
+        let mut events = STREAM_ENGINE.finish_stream(&mut stream.state, stream.target)?;
+        events.retain_mut(|event| stream.tools.restore(event));
         *out = encode_json(&events)?.into_raw();
         Ok(())
     })
