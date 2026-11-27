@@ -151,7 +151,7 @@ fn decode_anthropic_stream(
                     "model_context_window_exceeded" => "max_tokens",
                     reason => reason,
                 };
-                // Remember the provider stop reason: Anthropic delivers it here, on
+                // Remember the normalized stop reason: Anthropic delivers it here, on
                 // `message_delta`, while the terminal `message_stop` carries none of its own.
                 if stop_reason == "refusal" && state.stop_reason.as_deref() != Some("refusal") {
                     out.push(LlmResponseChunk::TextDelta {
