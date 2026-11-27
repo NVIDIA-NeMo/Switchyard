@@ -146,7 +146,12 @@ fn decode_anthropic_stream(
                 .and_then(|delta| delta.get("stop_reason"))
                 .and_then(Value::as_str)
             {
-                // Remember the provider stop reason: Anthropic delivers it here, on
+                // A context-window cutoff truncates the answer just like `max_tokens`.
+                let stop_reason = match stop_reason {
+                    "model_context_window_exceeded" => "max_tokens",
+                    reason => reason,
+                };
+                // Remember the normalized stop reason: Anthropic delivers it here, on
                 // `message_delta`, while the terminal `message_stop` carries none of its own.
                 if stop_reason == "refusal" && state.stop_reason.as_deref() != Some("refusal") {
                     out.push(LlmResponseChunk::TextDelta {

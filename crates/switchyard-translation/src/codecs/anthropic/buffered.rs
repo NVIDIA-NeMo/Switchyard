@@ -1439,7 +1439,7 @@ pub(super) fn decode_anthropic_refusal(details: Option<&Value>) -> String {
 // Maps Anthropic stop reasons to normalized stop reasons.
 fn map_anthropic_stop_reason(reason: Option<&str>) -> StopReason {
     match reason {
-        Some("max_tokens") => StopReason::MaxTokens,
+        Some("max_tokens" | "model_context_window_exceeded") => StopReason::MaxTokens,
         Some("tool_use") => StopReason::ToolUse,
         Some("refusal") => StopReason::ContentFilter,
         Some("end_turn") | None => StopReason::EndTurn,
