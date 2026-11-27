@@ -52,8 +52,13 @@ func translated(export string, input any) (json.RawMessage, error) {
 }
 
 // StreamTranslator converts one streamed provider response to the client's format.
-// Do not call its methods concurrently. Call Close when the stream ends.
+// Value copies share one stream, and its zero value is closed. Do not call its methods
+// concurrently, including through copies. Call Close when the stream ends.
 type StreamTranslator struct {
+	state *streamState
+}
+
+type streamState struct {
 	handle streamHandle
 }
 
@@ -81,35 +86,45 @@ func NewStreamTranslator(source, target string) (*StreamTranslator, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &StreamTranslator{handle: handle}, nil
+	return &StreamTranslator{state: &streamState{handle: handle}}, nil
 }
 
 // Translate converts the JSON data of one source event into zero or more target events.
 func (stream *StreamTranslator) Translate(event json.RawMessage) ([]json.RawMessage, error) {
-	if stream.handle == nil {
+	handle := stream.handle()
+	if handle == nil {
 		return nil, errStreamClosed
 	}
 	// An empty event would drop the WASM call's event argument and fail the shared guest.
 	if len(event) == 0 {
 		return nil, errEmptyEvent
 	}
-	return streamEvents(stream.handle.translate(event))
+	return streamEvents(handle.translate(event))
 }
 
 // Finish returns the target's closing events after the source stream ends.
 func (stream *StreamTranslator) Finish() ([]json.RawMessage, error) {
-	if stream.handle == nil {
+	handle := stream.handle()
+	if handle == nil {
 		return nil, errStreamClosed
 	}
-	return streamEvents(stream.handle.finish())
+	return streamEvents(handle.finish())
 }
 
-// Close releases the translator. Repeated calls are safe.
+// Close releases the translator. Repeated calls and value copies are safe.
 func (stream *StreamTranslator) Close() {
-	if stream.handle != nil {
-		stream.handle.free()
-		stream.handle = nil
+	if handle := stream.handle(); handle != nil {
+		stream.state.handle = nil
+		handle.free()
 	}
+}
+
+// handle returns the stream's backend state, or nil once it is closed.
+func (stream *StreamTranslator) handle() streamHandle {
+	if stream == nil || stream.state == nil {
+		return nil
+	}
+	return stream.state.handle
 }
 
 func streamEvents(data []byte, err error) ([]json.RawMessage, error) {

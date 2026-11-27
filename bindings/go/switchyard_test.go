@@ -239,6 +239,55 @@ func TestStreamTranslator(t *testing.T) {
 	}
 }
 
+// Value copies share one stream: closing either releases it once and closes both.
+func TestStreamTranslatorCopiesShareClose(t *testing.T) {
+	stream, err := NewStreamTranslator("openai_chat", "anthropic_messages")
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted := &countingStream{streamHandle: stream.state.handle}
+	stream.state.handle = counted
+	copied := *stream
+	stream.Close()
+	if _, err := copied.Translate(json.RawMessage(`{}`)); !errors.Is(err, errStreamClosed) {
+		t.Fatalf("copy translated after close: err=%v", err)
+	}
+	if _, err := copied.Finish(); !errors.Is(err, errStreamClosed) {
+		t.Fatalf("copy finished after close: err=%v", err)
+	}
+	copied.Close()
+	stream.Close()
+	if counted.frees != 1 {
+		t.Fatalf("stream released %d times, want 1", counted.frees)
+	}
+}
+
+// A zero or nil StreamTranslator is closed, and closing it is harmless.
+func TestUnopenedStreamTranslatorIsClosed(t *testing.T) {
+	var zero StreamTranslator
+	var missing *StreamTranslator
+	for _, closed := range []*StreamTranslator{&zero, missing} {
+		if _, err := closed.Translate(json.RawMessage(`{}`)); !errors.Is(err, errStreamClosed) {
+			t.Fatalf("err=%v, want errStreamClosed", err)
+		}
+		if _, err := closed.Finish(); !errors.Is(err, errStreamClosed) {
+			t.Fatalf("err=%v, want errStreamClosed", err)
+		}
+		closed.Close()
+	}
+}
+
+// countingStream counts releases of the backend stream it wraps.
+type countingStream struct {
+	streamHandle
+	frees int
+}
+
+func (stream *countingStream) free() {
+	stream.frees++
+	stream.streamHandle.free()
+}
+
 // Both judge protocols use Go's client; missing clients and host failures remain errors.
 func TestCompositeHostCalls(t *testing.T) {
 	for _, tc := range []struct {
