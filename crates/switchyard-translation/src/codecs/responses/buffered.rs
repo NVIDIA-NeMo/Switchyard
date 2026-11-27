@@ -6,11 +6,13 @@
 use std::collections::HashMap;
 
 use serde_json::{Map, Value, json};
+use switchyard_protocol::MAX_IR_TEMPERATURE;
 
+use super::MAX_TEMPERATURE;
 use crate::codecs::common::{
     collect_responses_reasoning_text, encrypted_reasoning_data, encrypted_reasoning_item_id,
     is_anthropic_request, is_known_role_name, provider_extensions, reasoning_text_from_blocks,
-    text_from_blocks,
+    scale_temperature, text_from_blocks,
 };
 use crate::codecs::openai_chat::{decode_file_source, decode_image_source};
 use crate::codecs::openai_media::{
@@ -24,9 +26,9 @@ use crate::diagnostic::TranslationDiagnostic;
 use crate::error::{Result, TranslationError};
 use crate::format::{FormatId, WireFormat};
 use crate::llm::{
-    AggLlmResponse, ContentBlock, FileSource, ImageSource, InstructionBlock, LlmRequest,
-    MediaSource, Message, OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role,
-    SamplingParams, StopReason, Tool, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
+    AggLlmResponse, ContentBlock, FileSource, ImageSource, LlmRequest, MediaSource, Message,
+    OutputParams, ProviderExtensions, ReasoningParams, ResponseOutput, Role, SamplingParams,
+    StopReason, Tool, ToolCall, ToolChoice, ToolDefinition, ToolResult, Usage,
 };
 use crate::policy::{DeterministicIdPolicy, TranslationPolicy};
 use crate::util::{
@@ -68,7 +70,10 @@ impl FormatCodec for OpenAiResponsesCodec {
                 raw: body.get("reasoning").cloned(),
             },
             sampling: SamplingParams {
-                temperature: body.get("temperature").and_then(Value::as_f64),
+                temperature: body
+                    .get("temperature")
+                    .and_then(Value::as_f64)
+                    .map(|value| scale_temperature(value, MAX_TEMPERATURE, MAX_IR_TEMPERATURE)),
                 top_p: body.get("top_p").and_then(Value::as_f64),
                 top_k: None,
             },
@@ -97,15 +102,13 @@ impl FormatCodec for OpenAiResponsesCodec {
             .and_then(Value::as_str)
             .is_some_and(|id| !id.is_empty());
         let mut custom_call_outputs = Vec::new();
-        let (messages, instructions) = decode_responses_input(
+        request.messages = decode_responses_input(
             body.get("input").unwrap_or(&Value::String(String::new())),
             stored_state,
             &mut custom_call_outputs,
             &mut diagnostics,
             policy,
         )?;
-        request.messages = messages;
-        request.instructions.extend(instructions);
         let mut tool_namespaces = Map::new();
         let mut custom_tools = Map::new();
         request.tools =
@@ -243,6 +246,7 @@ impl FormatCodec for OpenAiResponsesCodec {
             && let Some(choice) = encode_responses_tool_choice(
                 choice,
                 crate::codex_namespaces::tool_namespaces(&request.extensions),
+                crate::codex_custom_tools::custom_tools(&request.extensions),
             )
         {
             body.insert("tool_choice".to_string(), choice);
@@ -289,6 +293,7 @@ impl FormatCodec for OpenAiResponsesCodec {
             body.insert("reasoning".to_string(), Value::Object(reasoning));
         }
         if let Some(value) = request.sampling.temperature {
+            let value = scale_temperature(value, MAX_IR_TEMPERATURE, MAX_TEMPERATURE);
             body.insert("temperature".to_string(), json!(value));
         }
         if let Some(value) = request.sampling.top_p {
@@ -347,21 +352,23 @@ impl FormatCodec for OpenAiResponsesCodec {
                         })
                         .sum::<usize>();
                     content.extend(output.content);
-                    if output.stop_reason.is_some() {
+                    if output.stop_reason.is_some() && stop_reason != Some(StopReason::ToolUse) {
                         stop_reason = output.stop_reason;
                     }
                 }
             }
         }
-        // The truncation signal is on the response, not the output items.
-        if body.get("status").and_then(Value::as_str) == Some("incomplete")
-            && body
+        // The incomplete reason is on the response, not the output items.
+        if body.get("status").and_then(Value::as_str) == Some("incomplete") {
+            match body
                 .get("incomplete_details")
                 .and_then(|details| details.get("reason"))
                 .and_then(Value::as_str)
-                == Some("max_output_tokens")
-        {
-            stop_reason = Some(StopReason::MaxTokens);
+            {
+                Some("max_output_tokens") => stop_reason = Some(StopReason::MaxTokens),
+                Some("content_filter") => stop_reason = Some(StopReason::ContentFilter),
+                _ => {}
+            }
         }
         let outputs = vec![if has_output {
             ResponseOutput {
@@ -377,7 +384,8 @@ impl FormatCodec for OpenAiResponsesCodec {
                 content: vec![ContentBlock::Text {
                     text: String::new(),
                 }],
-                stop_reason: Some(StopReason::EndTurn),
+                // An incomplete response can have no output items.
+                stop_reason: stop_reason.or(Some(StopReason::EndTurn)),
             }
         }];
         let response = AggLlmResponse {
@@ -457,25 +465,18 @@ impl FormatCodec for OpenAiResponsesCodec {
     }
 }
 
-/// Decodes Responses `input` into ordered normalized messages and inline
-/// instruction blocks.
-///
-/// Inline `system` and `developer` message items are returned as instruction
-/// blocks rather than conversation turns. Classifying them here, before any
-/// reasoning or tool-call state-machine transitions, prevents an instruction
-/// item from flushing pending reasoning or disturbing tool-call grouping.
+/// Decodes Responses `input` into ordered normalized messages.
 fn decode_responses_input(
     value: &Value,
     stored_state: bool,
     custom_call_outputs: &mut Vec<String>,
     diagnostics: &mut Vec<TranslationDiagnostic>,
     policy: &TranslationPolicy,
-) -> Result<(Vec<Message>, Vec<InstructionBlock>)> {
+) -> Result<Vec<Message>> {
     match value {
-        Value::String(text) => Ok((vec![Message::text(Role::User, text)], Vec::new())),
+        Value::String(text) => Ok(vec![Message::text(Role::User, text)]),
         Value::Array(items) => {
             let mut messages = Vec::new();
-            let mut instructions = Vec::new();
             let mut pending_tool_calls = Vec::new();
             let mut pending_tool_outputs = Vec::new();
             let mut deferred_messages = Vec::new();
@@ -526,16 +527,18 @@ fn decode_responses_input(
                                     .to_string(),
                             });
                         }
-                        let content = decode_responses_content(content_value);
-                        // Inline system and developer input items are instructions, not
-                        // conversation turns. Classify them before any state-machine
-                        // transitions so they do not flush pending reasoning or disturb
-                        // tool-call grouping.
-                        if matches!(role, Role::System | Role::Developer) {
-                            instructions.push(InstructionBlock { role, content });
+                        let mut content = decode_responses_content(content_value);
+                        // Inline instructions wait behind an open tool block or pending
+                        // reasoning. They never split tool calls from their outputs, and
+                        // reasoning keeps its place before them.
+                        if matches!(role, Role::System | Role::Developer)
+                            && !(pending_tool_calls.is_empty()
+                                && pending_tool_outputs.is_empty()
+                                && pending_reasoning.is_empty())
+                        {
+                            deferred_messages.push(Message::new(role, content));
                             continue;
                         }
-                        let mut content = content;
                         // Reasoning that precedes an assistant message belongs to
                         // that turn; fold it in so it never surfaces as its own
                         // (empty-looking) assistant message downstream.
@@ -546,6 +549,10 @@ fn decode_responses_input(
                             let mut merged = std::mem::take(&mut pending_reasoning);
                             merged.append(&mut content);
                             content = merged;
+                            // Instructions held behind the reasoning came before this turn.
+                            if pending_tool_outputs.is_empty() {
+                                messages.append(&mut deferred_messages);
+                            }
                         }
                         if role != Role::Assistant {
                             flush_unattached_responses_reasoning(
@@ -562,7 +569,15 @@ fn decode_responses_input(
                             &mut pending_tool_outputs,
                             &mut deferred_messages,
                             &mut pending_reasoning,
-                            Message { role, content },
+                            Message {
+                                role,
+                                content,
+                                phase: if role == Role::Assistant {
+                                    item.get("phase").and_then(Value::as_str).map(str::to_owned)
+                                } else {
+                                    None
+                                },
+                            },
                         );
                     }
                     Some("reasoning") => {
@@ -622,7 +637,7 @@ fn decode_responses_input(
                         pending_tool_calls.push(ToolCall {
                             id,
                             name,
-                            arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                            arguments: decode_tool_arguments(item),
                         });
                     }
                     kind @ (Some("function_call_output") | Some("custom_tool_call_output")) => {
@@ -723,8 +738,8 @@ fn decode_responses_input(
                     // decoder and re-emitted in place by the request encoder.
                     Some("additional_tools") => {}
                     _ => {
-                        let message = Message {
-                            role: match item_type {
+                        let message = Message::new(
+                            match item_type {
                                 Some(
                                     "shell_call"
                                     | "apply_patch_call"
@@ -738,11 +753,11 @@ fn decode_responses_input(
                                 ) => Role::Tool,
                                 _ => Role::User,
                             },
-                            content: vec![ContentBlock::Unknown {
+                            vec![ContentBlock::Unknown {
                                 provider: WireFormat::OpenAiResponses.into(),
                                 raw: Value::Object(item.clone()),
                             }],
-                        };
+                        );
                         flush_unattached_responses_reasoning(
                             &mut messages,
                             &mut pending_tool_calls,
@@ -773,12 +788,10 @@ fn decode_responses_input(
             // Trailing reasoning with no assistant turn to join keeps the
             // historical standalone-message shape.
             if !pending_reasoning.is_empty() {
-                messages.push(Message {
-                    role: Role::Assistant,
-                    content: pending_reasoning,
-                });
+                messages.push(Message::new(Role::Assistant, pending_reasoning));
             }
-            Ok((messages, instructions))
+            messages.append(&mut deferred_messages);
+            Ok(messages)
         }
         _ => Err(TranslationError::InvalidType {
             path: "$.input".to_string(),
@@ -825,10 +838,7 @@ fn flush_unattached_responses_reasoning(
     if pending_reasoning.is_empty() || !pending_tool_calls.is_empty() {
         return;
     }
-    let message = Message {
-        role: Role::Assistant,
-        content: std::mem::take(pending_reasoning),
-    };
+    let message = Message::new(Role::Assistant, std::mem::take(pending_reasoning));
     push_responses_non_tool_message(
         messages,
         pending_tool_calls,
@@ -837,6 +847,8 @@ fn flush_unattached_responses_reasoning(
         pending_reasoning,
         message,
     );
+    // Instructions held behind the reasoning follow it.
+    messages.append(deferred_messages);
 }
 
 /// Flushes pending function calls and matching outputs while preserving adjacency.
@@ -856,17 +868,14 @@ fn flush_responses_tool_block(
                 .into_iter()
                 .map(ContentBlock::ToolCall),
         );
-        messages.push(Message {
-            role: Role::Assistant,
-            content,
-        });
+        messages.push(Message::new(Role::Assistant, content));
     }
 
     for output in std::mem::take(pending_tool_outputs) {
-        messages.push(Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult(output)],
-        });
+        messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult(output)],
+        ));
     }
 
     messages.append(deferred_messages);
@@ -1167,6 +1176,14 @@ fn decode_responses_tool_choice(value: &Value) -> Option<ToolChoice> {
         Value::String(text) if text == "auto" => Some(ToolChoice::Auto),
         Value::String(text) if text == "required" => Some(ToolChoice::Required),
         Value::String(text) if text == "none" => Some(ToolChoice::None),
+        Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("custom") => {
+            object
+                .get("name")
+                .and_then(Value::as_str)
+                .map(|name| ToolChoice::Tool {
+                    name: name.to_string(),
+                })
+        }
         Value::Object(object) if object.get("type").and_then(Value::as_str) == Some("function") => {
             // A forced tool has to name the same thing its definition does, or
             // the upstream rejects a choice naming a tool it was never offered.
@@ -1339,11 +1356,7 @@ fn encode_responses_input(
                     if !visible_content.is_empty() {
                         let content =
                             encode_responses_content(&visible_content, diagnostics, policy)?;
-                        encoded.push(json!({
-                            "type": "message",
-                            "role": role_to_responses(message.role),
-                            "content": content,
-                        }));
+                        encoded.push(encode_responses_message(message, content));
                         visible_content.clear();
                     }
                     encoded.push(item);
@@ -1353,11 +1366,7 @@ fn encode_responses_input(
             }
             if !visible_content.is_empty() {
                 let content = encode_responses_content(&visible_content, diagnostics, policy)?;
-                encoded.push(json!({
-                    "type": "message",
-                    "role": role_to_responses(message.role),
-                    "content": content,
-                }));
+                encoded.push(encode_responses_message(message, content));
             }
             continue;
         }
@@ -1382,17 +1391,29 @@ fn encode_responses_input(
                 omitted_reasoning = true;
             }
         }
-        if !visible_content.is_empty() || (!emitted_special && !omitted_reasoning) {
+        if !visible_content.is_empty()
+            || (!emitted_special && !omitted_reasoning)
+            || (message.role == Role::Assistant && message.phase.is_some())
+        {
             let content = encode_responses_content(&visible_content, diagnostics, policy)?;
-            encoded.push(json!({
-                "type": "message",
-                "role": role_to_responses(message.role),
-                "content": content,
-            }));
+            encoded.push(encode_responses_message(message, content));
         }
     }
     pair_tool_calls_with_outputs(&mut encoded);
     Ok(Value::Array(encoded))
+}
+
+// Responses defines `phase` only on assistant message items, so drop it elsewhere.
+fn encode_responses_message(message: &Message, content: Value) -> Value {
+    let mut item = json!({
+        "type": "message",
+        "role": role_to_responses(message.role),
+        "content": content,
+    });
+    if let (Role::Assistant, Some(phase)) = (message.role, &message.phase) {
+        item["phase"] = json!(phase);
+    }
+    item
 }
 
 // Moves each tool output directly behind the call it answers. A turn with
@@ -1745,11 +1766,15 @@ fn encode_responses_tools(
 fn encode_responses_tool_choice(
     choice: &ToolChoice,
     namespaces: Option<&Map<String, Value>>,
+    custom_tools: Option<&Map<String, Value>>,
 ) -> Option<Value> {
     match choice {
         ToolChoice::Auto => Some(Value::String("auto".to_string())),
         ToolChoice::Required => Some(Value::String("required".to_string())),
         ToolChoice::None => Some(Value::String("none".to_string())),
+        ToolChoice::Tool { name } if custom_tools.is_some_and(|tools| tools.contains_key(name)) => {
+            Some(json!({"type": "custom", "name": name}))
+        }
         ToolChoice::Tool { name } => {
             let split = namespaces.and_then(|namespaces| {
                 crate::codex_namespaces::split_qualified_name(namespaces, name)
@@ -1780,12 +1805,23 @@ fn decode_responses_output_item(
         return Ok(None);
     };
     match item.get("type").and_then(Value::as_str) {
-        Some("message") => Ok(Some(ResponseOutput {
-            url_citations: decode_responses_url_citations(item.get("content")),
-            role: role_from_responses(item.get("role").and_then(Value::as_str)),
-            content: decode_responses_content(item.get("content").unwrap_or(&Value::Null)),
-            stop_reason: Some(StopReason::EndTurn),
-        })),
+        Some("message") => {
+            let content = decode_responses_content(item.get("content").unwrap_or(&Value::Null));
+            let stop_reason = if content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::Refusal { .. }))
+            {
+                StopReason::ContentFilter
+            } else {
+                StopReason::EndTurn
+            };
+            Ok(Some(ResponseOutput {
+                url_citations: decode_responses_url_citations(item.get("content")),
+                role: role_from_responses(item.get("role").and_then(Value::as_str)),
+                content,
+                stop_reason: Some(stop_reason),
+            }))
+        }
         Some("function_call") => Ok(Some(ResponseOutput {
             url_citations: Vec::new(),
             role: Role::Assistant,
@@ -1800,7 +1836,7 @@ fn decode_responses_output_item(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
-                arguments: item.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                arguments: decode_tool_arguments(item),
             })],
             stop_reason: Some(StopReason::ToolUse),
         })),
@@ -1889,7 +1925,43 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                             if provider.as_str() == WireFormat::OpenAiResponses.as_str()
                                 && raw["type"].as_str().is_some_and(super::is_native_output))
                 });
-                let text = text_from_blocks(&output.content, "");
+                let mut content = Vec::new();
+                let mut text_offset = 0;
+                for block in &output.content {
+                    match block {
+                        ContentBlock::Text { text } => {
+                            let text_end = text_offset + text.chars().count();
+                            let annotations = output
+                                .url_citations
+                                .iter()
+                                .filter(|citation| {
+                                    citation.start_index >= text_offset
+                                        && citation.end_index <= text_end
+                                })
+                                .map(|citation| {
+                                    json!({
+                                        "type": "url_citation",
+                                        "start_index": citation.start_index - text_offset,
+                                        "end_index": citation.end_index - text_offset,
+                                        "url": citation.url,
+                                        "title": citation.title,
+                                    })
+                                })
+                                .collect::<Vec<_>>();
+                            content.push(json!({
+                                "type": "output_text",
+                                "text": text,
+                                "annotations": annotations,
+                            }));
+                            text_offset = text_end;
+                        }
+                        ContentBlock::Refusal { text } => {
+                            content.push(json!({"type": "refusal", "refusal": text}));
+                            text_offset += text.chars().count();
+                        }
+                        _ => {}
+                    }
+                }
                 let reasoning = reasoning_text_from_blocks(&output.content, "\n");
                 let status = if matches!(output.stop_reason, Some(StopReason::MaxTokens)) {
                     "incomplete"
@@ -1944,23 +2016,16 @@ fn encode_responses_output(outputs: &[ResponseOutput]) -> Value {
                     ));
                 }
 
-                if !text.is_empty() || (!has_output_items && reasoning.is_empty()) {
+                if content.is_empty() && !has_output_items && reasoning.is_empty() {
+                    content.push(json!({"type": "output_text", "text": "", "annotations": []}));
+                }
+                if !content.is_empty() {
                     items.push(json!({
                         "type": "message",
                         "id": "msg_switchyard",
                         "status": status,
                         "role": role_to_responses(output.role),
-                        "content": [{
-                            "type": "output_text",
-                            "text": text,
-                            "annotations": output.url_citations.iter().map(|citation| json!({
-                                "type": "url_citation",
-                                "start_index": citation.start_index,
-                                "end_index": citation.end_index,
-                                "url": citation.url,
-                                "title": citation.title,
-                            })).collect::<Vec<_>>(),
-                        }],
+                        "content": content,
                     }));
                 }
 
@@ -2009,6 +2074,17 @@ fn encode_responses_reasoning_output(
         item["encrypted_content"] = Value::String(encrypted.to_string());
     }
     item
+}
+
+fn decode_tool_arguments(item: &Map<String, Value>) -> Value {
+    item.get("arguments")
+        .map(|value| {
+            value
+                .as_str()
+                .and_then(|text| serde_json::from_str(text).ok())
+                .unwrap_or_else(|| value.clone())
+        })
+        .unwrap_or_else(|| json!({}))
 }
 
 // Serializes JSON with Python-like spacing to match legacy converter behavior.

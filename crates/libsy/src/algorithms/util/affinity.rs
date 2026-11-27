@@ -63,17 +63,23 @@ fn is_environment_context(block: &ContentBlock) -> bool {
         .is_some_and(|(_, rest)| rest.trim().is_empty()))
 }
 
-pub(crate) fn is_environment_update(message: &Message) -> bool {
+fn is_environment_update(message: &Message) -> bool {
     message.role == Role::User
         && !message.content.is_empty()
         && message.content.iter().all(is_environment_context)
+}
+
+/// Inline instructions and standalone Codex environment updates sit between turns.
+/// Turn detection skips them when it looks for the previous message.
+pub(crate) fn is_turn_context(message: &Message) -> bool {
+    matches!(message.role, Role::System | Role::Developer) || is_environment_update(message)
 }
 
 pub(crate) fn has_new_user_turn(messages: &[Message]) -> bool {
     messages
         .iter()
         .rev()
-        .find(|message| !is_environment_update(message))
+        .find(|message| !is_turn_context(message))
         .is_some_and(is_user_turn)
 }
 
@@ -370,6 +376,8 @@ mod tests {
                 has_new_user_turn(&[
                     Message::text(role, "follow-up"),
                     Message::text(Role::User, context),
+                    Message::text(Role::System, "System guidance"),
+                    Message::text(Role::Developer, "Developer guidance"),
                 ]),
                 expected
             );
@@ -669,9 +677,9 @@ mod tests {
             metadata: None,
         };
         let text_only = request(Message::text(Role::User, "Implement the parser."));
-        let text_with_reasoning = request(Message {
-            role: Role::User,
-            content: vec![
+        let text_with_reasoning = request(Message::new(
+            Role::User,
+            vec![
                 ContentBlock::Text {
                     text: "Implement the parser.".to_string(),
                 },
@@ -681,7 +689,7 @@ mod tests {
                     details: Vec::new(),
                 },
             ],
-        });
+        ));
 
         assert_eq!(
             first_user_message_hash(&text_only),
@@ -936,14 +944,14 @@ mod tests {
 
         // A tool continuation holds the assignment, so no judge call.
         let mut continued = opening.clone();
-        continued.llm_request.messages.push(Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult(ToolResult {
+        continued.llm_request.messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "call-1".to_string(),
                 content: Vec::new(),
                 is_error: None,
             })],
-        });
+        ));
         assert_eq!(
             scores(&router, &mut state, &mut continued)
                 .await?
@@ -982,14 +990,14 @@ mod tests {
 
         // The new turn's tool continuation is not held on the earlier turn's model.
         let mut continued = spoke.clone();
-        continued.llm_request.messages.push(Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult(ToolResult {
+        continued.llm_request.messages.push(Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "call-1".to_string(),
                 content: Vec::new(),
                 is_error: None,
             })],
-        });
+        ));
         assert!(
             scores(&router, &mut state, &mut continued)
                 .await?

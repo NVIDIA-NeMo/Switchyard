@@ -51,16 +51,23 @@ impl OpenAiDecisionClient {
 #[async_trait]
 impl RoutedDecisionClient for OpenAiDecisionClient {
     async fn call(&self, request: DecisionRequest) -> Result<DecisionResponse> {
-        let response = self
+        let builder = self
             .client
             .post(self.endpoint.clone())
             .bearer_auth(&self.api_key)
-            .json(&encode(&request)?)
-            .send()
-            .await
-            .inspect_err(|_| metrics::record_upstream_attempt(None))
-            .map_err(convert_reqwest_error)?;
+            .json(&encode(&request)?);
+        let mut response = async {
+            let request = builder.build()?;
+            if let Some(body) = request.body().and_then(reqwest::Body::as_bytes) {
+                crate::payload_capture::record("request", || String::from_utf8_lossy(body));
+            }
+            self.client.execute(request).await
+        }
+        .await
+        .inspect_err(|_| metrics::record_upstream_attempt(None))
+        .map_err(convert_reqwest_error)?;
         let status = response.status();
+        let headers = std::mem::take(response.headers_mut());
         let body = response
             .bytes()
             .await
@@ -71,8 +78,11 @@ impl RoutedDecisionClient for OpenAiDecisionClient {
             return Err(LlmClientError::UpstreamHttp {
                 status,
                 body: String::from_utf8_lossy(&body).replace(&self.api_key, "[REDACTED]"),
+                headers: Box::new(headers),
             });
         }
+        crate::payload_capture::record("response", || String::from_utf8_lossy(&body));
+        tracing::trace!(body = %String::from_utf8_lossy(&body), "OpenAI Decisions decision response");
         let response: WireResponse =
             serde_json::from_slice(&body).map_err(|source| LlmClientError::InvalidResponse {
                 source: Box::new(source),
@@ -126,7 +136,9 @@ impl RoutedDecisionClient for OpenAiDecisionClient {
                 ) => {
                     let mut probabilities = probabilities;
                     probabilities.sort_by_key(|p| p.value);
-                    if probabilities.len() != levels.len()
+                    if levels.is_empty()
+                        || !(0.0..=(levels.len() - 1) as f64).contains(&score.0)
+                        || probabilities.len() != levels.len()
                         || probabilities
                             .iter()
                             .enumerate()
@@ -141,12 +153,7 @@ impl RoutedDecisionClient for OpenAiDecisionClient {
                         ),
                     }
                 }
-                (_, WireValue::Refusal) => {
-                    return Err(LlmClientError::ResponseTranslation(format!(
-                        "OpenAI Decisions refused question {:?}",
-                        answer.name,
-                    )));
-                }
+                (_, WireValue::Refusal) => DecisionValue::Refusal,
                 _ => return Err(invalid()),
             };
             answers.insert(

@@ -191,7 +191,8 @@ pub(crate) struct EscalationVerdict {
     pub(crate) escalate: bool,
     pub(crate) category: EscalationCategory,
     pub(crate) new_evidence: bool,
-    pub(crate) reason: String,
+    #[serde(rename = "reason")]
+    _reason: String,
 }
 
 /// Builds the condensed trajectory presented to the escalation judge.
@@ -236,7 +237,8 @@ impl JudgePolicy for EscalationPolicy {
         if let Some(verdict) = verdict {
             tracing::debug!(
                 escalate = verdict.escalate,
-                reason = %verdict.reason,
+                category = verdict.category.label(),
+                new_evidence = verdict.new_evidence,
                 "escalation judge verdict"
             );
         }
@@ -516,6 +518,77 @@ mod tests {
             SerdeDecoder::new(),
             JudgeRuntimeConfig::new(max_output_tokens)?,
         ))
+    }
+
+    #[test]
+    fn verdict_logs_keep_bounded_fields_without_the_free_form_reason() -> Result<()> {
+        use crate::core::algorithm::RuntimeModels;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct LogCapture(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for LogCapture {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        const REASON: &str = "PRIVATE_SYNTHETIC_JUDGE_REASON";
+        let mut invalid =
+            serde_json::json!({"escalate": false, "category": "none", "new_evidence": false});
+        assert!(serde_json::from_value::<EscalationVerdict>(invalid.clone()).is_err());
+        invalid["reason"] = serde_json::json!(123);
+        assert!(serde_json::from_value::<EscalationVerdict>(invalid).is_err());
+        for phase in [
+            None,
+            Some(EvaluationPhase::Efficient),
+            Some(EvaluationPhase::Strong),
+        ] {
+            for escalate in [false, true] {
+                let capture = Arc::new(Mutex::new(Vec::<u8>::new()));
+                let writer = LogCapture(capture.clone());
+                let subscriber = tracing_subscriber::fmt()
+                    .without_time()
+                    .with_ansi(false)
+                    .with_max_level(tracing::Level::DEBUG)
+                    .with_writer(move || writer.clone())
+                    .finish();
+                let models = RuntimeModels::new(
+                    [
+                        (Category::Efficient, vec!["efficient".into()]),
+                        (Category::Capable, vec!["capable".into()]),
+                    ]
+                    .into(),
+                );
+                let (driver, _receiver) = Driver::new("escalation-log-probe", Arc::new(models));
+                let verdict = serde_json::from_value(serde_json::json!({
+                    "escalate": escalate, "category": "repetition",
+                    "new_evidence": true, "reason": REASON,
+                }))
+                .expect("valid synthetic verdict");
+                let classification = tracing::subscriber::with_default(subscriber, || {
+                    EscalationPolicy { phase }.to_classification(Some(&verdict), &driver)
+                })?;
+                let Classification::Scores(scores) = classification else {
+                    panic!("parsed verdict must yield scores");
+                };
+                assert_eq!(
+                    scores[0].target.as_str(),
+                    if escalate { "capable" } else { "efficient" }
+                );
+                let logs = String::from_utf8(capture.lock().unwrap().clone()).unwrap();
+                assert!(logs.contains("escalation judge verdict"), "{logs}");
+                assert!(!logs.contains(REASON), "{logs}");
+                assert!(!logs.contains("reason="), "{logs}");
+                assert!(logs.contains(&format!("escalate={escalate}")), "{logs}");
+                assert!(logs.contains("category=\"repetition\""), "{logs}");
+                assert!(logs.contains("new_evidence=true"), "{logs}");
+            }
+        }
+        Ok(())
     }
 
     #[test]

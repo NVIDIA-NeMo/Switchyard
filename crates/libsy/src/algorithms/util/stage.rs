@@ -529,9 +529,11 @@ pub struct StageClassifier {
     mode: PickerMode,
     confidence_threshold: f64,
     capable_first_threshold: f64,
+    compaction_override: bool,
     capable_hold_turns: i64,
     efficient_hold_turns: Option<i64>,
     pub(crate) reset_on_user_turn: bool,
+    pub(crate) tier_targets: Option<[switchyard_protocol::ModelId; 2]>,
     signals: ToolSignalProcessor,
     handoff_notes: Option<HandoffNoteConfig>,
 }
@@ -544,9 +546,11 @@ impl StageClassifier {
             mode,
             confidence_threshold,
             capable_first_threshold: 0.0,
+            compaction_override: true,
             capable_hold_turns: 2,
             efficient_hold_turns: None,
             reset_on_user_turn: false,
+            tier_targets: None,
             signals: ToolSignalProcessor::default(),
             handoff_notes: None,
         }
@@ -555,6 +559,12 @@ impl StageClassifier {
     /// Threshold used when an outer classifier selects capable-first.
     pub fn with_capable_first_threshold(mut self, threshold: f64) -> Self {
         self.capable_first_threshold = threshold;
+        self
+    }
+
+    /// Whether context compaction forces the capable tier. Enabled by default.
+    pub fn with_compaction_override(mut self, enabled: bool) -> Self {
+        self.compaction_override = enabled;
         self
     }
 
@@ -596,7 +606,7 @@ impl StageClassifier {
             return;
         };
         if let Some(note) = config.note_for(tier, source) {
-            prompts::append_note(request, note);
+            prompts::append_note(&mut request.llm_request, note);
         }
     }
 
@@ -649,6 +659,9 @@ impl StageClassifier {
 impl Processor for StageClassifier {
     async fn process(&self, state: &mut State, event: Event<'_>) -> Result<()> {
         if let Event::Request { request, driver } = event {
+            if let Some(pair) = &self.tier_targets {
+                driver.select_tier_targets(pair)?;
+            }
             if self.reset_on_user_turn && has_new_user_turn(&request.llm_request.messages) {
                 for key in [CAPABLE_HOLD_KEY, EFFICIENT_HOLD_KEY, PREVIOUS_TIER_KEY] {
                     state.extra.remove(&Self::agent_key(request, key));
@@ -750,11 +763,12 @@ impl Classifier for StageClassifier {
                 ));
             }
         }
-        let Some(signal) = state.tool_signals.clone() else {
+        let Some(mut signal) = state.tool_signals.clone() else {
             // No tool activity yet — nothing to score, so the signals have no
             // opinion, same as a below-threshold turn.
             return Ok((Self::abstain(), None));
         };
+        signal.compacted &= self.compaction_override;
         let (mode, threshold) = match fall_open_tier(state) {
             Some(Tier::Capable) => (PickerMode::CapableFirst, self.capable_first_threshold),
             Some(Tier::Efficient) => (PickerMode::EfficientFirst, self.confidence_threshold),

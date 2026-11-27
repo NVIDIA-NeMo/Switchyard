@@ -85,14 +85,15 @@ impl Algorithm for Vgr {
             .classifier
             .efficient_may_stand_in(&request)
             .then(|| request.clone());
-        let mut outcome = self.route.execute(driver, request).await?;
+        let mut outcome = self.route.execute(driver.clone(), request).await?;
         // Efficient answers are already buffered and have no fallback.
         outcome.selected_model_ids.truncate(1);
         let config = &self.classifier.config;
         if let Some(arrived) = arrived
             && outcome.response.is_none()
             && outcome.selected_model_ids.first() == Some(&config.targets.capable)
-            // The efficient tier may have failed while this request was routed.
+            // A failed generation must not be retried after the capable tier also rejects it.
+            && !driver.model_failed(&config.targets.efficient)
             && self.classifier.efficient_may_stand_in(&arrived)
         {
             outcome
@@ -150,13 +151,19 @@ struct Capabilities {
 }
 
 /// Derives capabilities from the router's own evidence, failing closed.
+///
+/// Media blocks fail closed unless `attachments_supported` sends them to the judge.
 fn derive_capabilities(
     request: &Request,
     attempt: &str,
     task_type: Option<TaskType>,
+    attachments_supported: bool,
 ) -> Capabilities {
     let (turns, unsupported) = text::turns(request);
-    if unsupported || text::user_task_text(&turns).trim().is_empty() || attempt.trim().is_empty() {
+    if (unsupported && !attachments_supported)
+        || text::user_task_text(&turns).trim().is_empty()
+        || attempt.trim().is_empty()
+    {
         return Capabilities::default();
     }
     let caps = |branch, transcript| Capabilities {

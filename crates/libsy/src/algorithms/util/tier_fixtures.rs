@@ -94,24 +94,24 @@ pub(crate) fn turn_request(failed: bool) -> Request {
             model: Some("auto".to_string()),
             messages: vec![
                 Message::text(Role::User, "fix the build"),
-                Message {
-                    role: Role::Assistant,
-                    content: vec![ContentBlock::ToolCall(ToolCall {
+                Message::new(
+                    Role::Assistant,
+                    vec![ContentBlock::ToolCall(ToolCall {
                         id: "call_1".to_string(),
                         name: "Bash".to_string(),
                         arguments: json!({"command": "cargo test"}),
                     })],
-                },
-                Message {
-                    role: Role::Tool,
-                    content: vec![ContentBlock::ToolResult(ToolResult {
+                ),
+                Message::new(
+                    Role::Tool,
+                    vec![ContentBlock::ToolResult(ToolResult {
                         tool_call_id: "call_1".to_string(),
                         content: vec![ContentBlock::Text {
                             text: content.to_string(),
                         }],
                         is_error: Some(failed),
                     })],
-                },
+                ),
             ],
             ..LlmRequest::default()
         },

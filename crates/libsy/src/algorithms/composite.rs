@@ -13,9 +13,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 
 use super::fall_through::FallThrough;
-use super::llm_class::{
-    CustomClassifierConfig, LlmClassifierConfig, LlmTaskClassifier, TaskClassifierConfig,
-};
+use super::llm_class::{CustomClassifierConfig, LlmTaskClassifier, TaskClassifierConfig};
 use super::stage::{StageRouterConfig, build_stage_route};
 use super::util::affinity::{ClassifyTrigger, evict_if_full, has_new_user_turn, retention_key};
 use super::util::stage::{PickerMode, Tier, fall_open_tier, set_fall_open};
@@ -127,36 +125,17 @@ pub enum CompositeJudgeConfig {
     Custom(CustomClassifierConfig),
 }
 
-/// A judge stacked over a stage router.
-pub struct CompositeRouterConfig {
-    /// Judge settings, including how often `classify_trigger` runs it.
-    pub judge: CompositeJudgeConfig,
-    /// Serves the turns, with the tier the judge picked as its fall-open default.
-    pub stage: StageRouterConfig,
-}
-
 /// Runs a stage router with a tier the judge picks.
 pub struct CompositeRouter {
     route: FallThrough,
 }
 
 impl CompositeRouter {
-    /// Stacks the judge over a stage router across the same tier pair.
-    ///
-    /// Errors on a configuration either algorithm rejects and on `every_request`.
-    ///
-    /// A stage router carrying its own judge is allowed, but that judge sits ahead
-    /// of the fall-open tier and so answers most of the turns this one set a tier for.
-    pub fn new(config: CompositeRouterConfig) -> Result<Self> {
-        let setter = Self::tier_setter(config.judge, config.stage.mode.default_tier())?;
-        let route = build_stage_route(config.stage, setter.trigger == ClassifyTrigger::UserTurn)?
-            .with_name(COMPOSITE)
-            .with_processor(Arc::new(setter));
-        Ok(Self { route })
-    }
-
     /// Builds two independent stage profiles selected by the judge.
-    pub fn new_with_profiles(
+    ///
+    /// The judge's efficient tier selects `profile_0` and its capable tier `profile_1`.
+    /// Errors on a configuration either algorithm rejects and on `every_request`.
+    pub fn new(
         judge: CompositeJudgeConfig,
         mut profile_0: StageRouterConfig,
         mut profile_1: StageRouterConfig,
@@ -166,7 +145,7 @@ impl CompositeRouter {
                 profile.efficient_hold_turns.get_or_insert(-1);
             }
         }
-        let setter = Self::tier_setter(judge, Tier::Efficient)?;
+        let setter = Self::tier_setter(judge)?;
         let reset_on_user_turn = setter.trigger == ClassifyTrigger::UserTurn;
         let profiles = StageProfiles([
             build_stage_route(profile_0, reset_on_user_turn)?,
@@ -179,7 +158,7 @@ impl CompositeRouter {
         Ok(Self { route })
     }
 
-    fn tier_setter(judge: CompositeJudgeConfig, default_tier: Tier) -> Result<TierSetter> {
+    fn tier_setter(judge: CompositeJudgeConfig) -> Result<TierSetter> {
         let (trigger, message_hash_fallback) = match &judge {
             CompositeJudgeConfig::Capability(judge) => {
                 (judge.classify_trigger, judge.message_hash_fallback)
@@ -196,13 +175,14 @@ impl CompositeRouter {
         let judge: Arc<dyn Classifier> = match judge {
             CompositeJudgeConfig::Capability(judge) => {
                 // Composite owns the trigger and retained verdict.
-                Arc::new(LlmTaskClassifier::new(LlmClassifierConfig::Capability {
-                    config: TaskClassifierConfig {
+                Arc::new(LlmTaskClassifier::build_capability(
+                    TaskClassifierConfig {
                         classify_trigger: ClassifyTrigger::EveryRequest,
                         message_hash_fallback: false,
                         ..judge
                     },
-                })?)
+                    true,
+                )?)
             }
             CompositeJudgeConfig::Custom(config) => {
                 LlmTaskClassifier::custom_classifier(&config, true)?
@@ -212,7 +192,7 @@ impl CompositeRouter {
             judge,
             trigger,
             message_hash_fallback,
-            default_tier,
+            default_tier: Tier::Efficient,
             tiers: Mutex::new(HashMap::new()),
         })
     }
@@ -316,9 +296,21 @@ mod tests {
         request
     }
 
+    /// Builds a router with an efficient-first and a capable-first profile.
+    fn router_with_judge(
+        judge: CompositeJudgeConfig,
+        efficient_hold_turns: Option<i64>,
+    ) -> Result<Arc<CompositeRouter>> {
+        let mut efficient = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
+        efficient.efficient_hold_turns = efficient_hold_turns;
+        let mut capable = StageRouterConfig::new(PickerMode::CapableFirst, 0.0);
+        capable.efficient_hold_turns = efficient_hold_turns;
+        Ok(Arc::new(CompositeRouter::new(judge, efficient, capable)?))
+    }
+
     fn hash_keyed_router() -> Result<Arc<CompositeRouter>> {
-        Ok(Arc::new(CompositeRouter::new(CompositeRouterConfig {
-            judge: CompositeJudgeConfig::Capability(TaskClassifierConfig {
+        router_with_judge(
+            CompositeJudgeConfig::Capability(TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
                     base_threshold: 0.5,
                     ..LlmCapabilityConfig::default()
@@ -327,12 +319,46 @@ mod tests {
                 message_hash_fallback: true,
                 ..Default::default()
             }),
-            stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
-        })?))
+            None,
+        )
     }
 
     fn router() -> Result<Arc<CompositeRouter>> {
         router_with_trigger(ClassifyTrigger::UserTurn)
+    }
+
+    #[tokio::test]
+    async fn decision_input_omits_inline_instructions() -> Result<()> {
+        let mut opening = turn_request(false);
+        opening.llm_request.messages.truncate(1);
+        for (classify_trigger, mut request) in [
+            (ClassifyTrigger::NewSession, opening),
+            (ClassifyTrigger::UserTurn, user_turn_request()),
+        ] {
+            let messages = &mut request.llm_request.messages;
+            let expected = serde_json::json!(messages);
+            messages.insert(0, Message::text(Role::Developer, "Permissions"));
+            messages.insert(0, Message::text(Role::System, "Instructions"));
+            let judge = CompositeJudgeConfig::Capability(TaskClassifierConfig {
+                judge: CapabilityJudgeConfig::Decision(Default::default()),
+                classify_trigger,
+                ..Default::default()
+            });
+            let router = router_with_judge(judge, None)?;
+            let models = Arc::new(runtime_models().into());
+            let outcome = crate::drive(router, request.clone(), models, |call| async {
+                let crate::Call::Decision(call) = call else {
+                    panic!("expected a decision")
+                };
+                assert_eq!(call.request.input, expected);
+                crate::core::testing::serve_decision(*call).await
+            })
+            .await?;
+            assert_eq!(outcome.metadata.unwrap().judgments.len(), 1);
+            let solver = outcome.request.llm_request.messages;
+            assert_eq!(solver, request.llm_request.messages);
+        }
+        Ok(())
     }
 
     #[tokio::test]
@@ -360,9 +386,7 @@ mod tests {
     async fn capable_first_defaults_to_pinning_efficient_after_a_switch() -> Result<()> {
         for capable_first in [false, true] {
             for turns in [None, Some(0), Some(1), Some(-1)] {
-                let mut stage = StageRouterConfig::new(PickerMode::EfficientFirst, 0.5);
-                stage.efficient_hold_turns = turns;
-                let router = router_with_stage(ClassifyTrigger::UserTurn, stage)?;
+                let router = router_with_hold(ClassifyTrigger::UserTurn, turns)?;
                 let recorder = Arc::new(Recorder::default());
                 *recorder.judge_p_solve.lock() = if capable_first { 0.0 } else { 1.0 };
                 let mut initial = turn_request(false);
@@ -417,18 +441,15 @@ mod tests {
     }
 
     fn router_with_trigger(classify_trigger: ClassifyTrigger) -> Result<Arc<CompositeRouter>> {
-        router_with_stage(
-            classify_trigger,
-            StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
-        )
+        router_with_hold(classify_trigger, None)
     }
 
-    fn router_with_stage(
+    fn router_with_hold(
         classify_trigger: ClassifyTrigger,
-        stage: StageRouterConfig,
+        efficient_hold_turns: Option<i64>,
     ) -> Result<Arc<CompositeRouter>> {
-        Ok(Arc::new(CompositeRouter::new(CompositeRouterConfig {
-            judge: CompositeJudgeConfig::Capability(TaskClassifierConfig {
+        router_with_judge(
+            CompositeJudgeConfig::Capability(TaskClassifierConfig {
                 judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
                     base_threshold: 0.5,
                     ..LlmCapabilityConfig::default()
@@ -436,8 +457,8 @@ mod tests {
                 classify_trigger,
                 ..Default::default()
             }),
-            stage,
-        })?))
+            efficient_hold_turns,
+        )
     }
 
     #[tokio::test]
@@ -461,7 +482,7 @@ mod tests {
                     config: Default::default(),
                 });
             }
-            let router = Arc::new(CompositeRouter::new_with_profiles(
+            let router = Arc::new(CompositeRouter::new(
                 CompositeJudgeConfig::Capability(TaskClassifierConfig {
                     judge: CapabilityJudgeConfig::Llm(LlmCapabilityConfig {
                         base_threshold: 0.5,
@@ -534,12 +555,9 @@ mod tests {
                 crate::CustomClassifierPolicy::target_selector("/decision/target"),
             )),
         ] {
-            let error = CompositeRouter::new(CompositeRouterConfig {
-                judge,
-                stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
-            })
-            .err()
-            .expect("every_request must be rejected for both classifier modes");
+            let error = router_with_judge(judge, None)
+                .err()
+                .expect("every_request must be rejected for both classifier modes");
             assert!(matches!(error, LibsyError::AlgorithmError { message }
                 if message == "composite: classify_trigger must be user_turn or new_session"));
         }
@@ -570,10 +588,11 @@ mod tests {
                         ..Default::default()
                     })
                 };
-                let router = Arc::new(CompositeRouter::new(CompositeRouterConfig {
+                let router = Arc::new(CompositeRouter::new(
                     judge,
-                    stage: StageRouterConfig::new(mode, 0.5),
-                })?);
+                    StageRouterConfig::new(mode, 0.5),
+                    StageRouterConfig::new(PickerMode::CapableFirst, 0.0),
+                )?);
                 let calls = Arc::new(Mutex::new(0));
                 let serve = {
                     let calls = calls.clone();
@@ -613,10 +632,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_custom_judge_sets_the_tier_and_retains_it_on_failure() -> Result<()> {
-        let router = Arc::new(CompositeRouter::new(CompositeRouterConfig {
-            judge: custom_judge(ClassifyTrigger::UserTurn),
-            stage: StageRouterConfig::new(PickerMode::EfficientFirst, 0.5),
-        })?);
+        let router = router_with_judge(custom_judge(ClassifyTrigger::UserTurn), None)?;
         let replies = Arc::new(Mutex::new(
             [
                 Some(r#"{"decision":{"target":"capable"}}"#),

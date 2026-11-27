@@ -4,12 +4,12 @@ Use the standalone server to try routing configurations with your own model pool
 
 ## Install the server
 
-You need Rust 1.96.1+, a native build toolchain, `curl`, and an OpenRouter API key. Install Rust using the [official instructions](https://rust-lang.org/tools/install/) and check [platform requirements](../../INSTALLATION.md#requirements). The v0.3.0 server is release-validated on Ubuntu 24.04, Linux x86_64.
+You need Rust 1.96.1+, a native build toolchain, `curl`, and an OpenRouter API key. Install Rust using the [official instructions](https://rust-lang.org/tools/install/) and check [platform requirements](../../INSTALLATION.md#requirements).
 
 Install the released server:
 
 ```bash
-cargo install --locked switchyard-server --version 0.3.0
+cargo install --locked switchyard-server --version 0.4.0
 switchyard-server --help
 ```
 
@@ -64,6 +64,11 @@ export OPENROUTER_API_KEY="your-openrouter-key"  # pragma: allowlist secret
 switchyard-server --config routes.toml --dry-run
 switchyard-server --config routes.toml --host 127.0.0.1 --port 4000
 ```
+
+The standalone binary binds to `127.0.0.1` by default. For remote clients,
+pass `--host 0.0.0.0` explicitly and secure access to the server. The provided
+Docker image and `dev-server/switchyard.service` set this option to preserve
+network access. A later `--host` argument overrides the image's default.
 
 The dry run prints `server OK: switchyard`. It checks configuration and credential lookup, not whether the provider accepts the key.
 
@@ -147,6 +152,24 @@ The decision counters show one `fall_open` choice and one `override`. Here, `fal
 For per-request records, restart with `--routing-log-file routing.jsonl`. Each record includes the selected model and token usage. Decision reasons are reported by the stats endpoint. These checks confirm routing behavior, not task quality or savings.
 
 With an unreleased build from main, `GET /v1/routing/session-stats?session_id=...` includes judge selections under `outcomes[].judgments`, with their targets, categories and available score evidence. Later Stage decisions leave these selections intact.
+
+## Forwarded response headers
+
+The server forwards these upstream response headers to the caller, on success and on
+upstream errors:
+
+- `baggage`, `traceparent`, `tracestate`
+- `openai-processing-ms`
+- `request-id`, `x-request-id`
+- `retry-after`, `retry-after-ms`, `x-should-retry`
+- `x-litellm-response-cost`
+- any header that starts with `anthropic-ratelimit-`, `x-ratelimit-`, or `x-upstream-`
+
+On an upstream error, the headers come from the last upstream attempt. Callers can use
+`retry-after` to decide how long to wait before they retry.
+
+Switchyard's own headers, such as `x-model-router-selected-model`, always win over an
+upstream header with the same name.
 
 ## Compare configurations
 

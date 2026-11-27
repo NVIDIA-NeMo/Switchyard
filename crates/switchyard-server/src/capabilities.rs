@@ -4,7 +4,7 @@
 //! Reject inputs that the selected route explicitly disables.
 
 use serde_json::Value;
-use switchyard_protocol::{ContentBlock, LlmRequest};
+use switchyard_protocol::{ContentBlock, LlmRequest, ToolChoice};
 use switchyard_runner::ModelCapabilities;
 
 /// Return the first explicitly disabled capability used by decoded or preserved input.
@@ -32,15 +32,22 @@ pub(crate) fn unsupported_capability(
     }
     if capabilities.tool_calling == Some(false)
         && (!request.tools.is_empty()
-            || request.tool_choice.is_some()
+            || request
+                .tool_choice
+                .as_ref()
+                .is_some_and(|choice| !matches!(choice, ToolChoice::None))
             || ["tools", "functions"].iter().any(|key| {
                 body.get(key)
                     .and_then(Value::as_array)
                     .is_some_and(|tools| !tools.is_empty())
             })
-            || ["tool_choice", "parallel_tool_calls", "function_call"]
-                .iter()
-                .any(|key| body.get(key).is_some_and(|value| !value.is_null())))
+            || body.get("tool_choice").is_some_and(is_tool_choice_enabled)
+            || body
+                .get("function_call")
+                .is_some_and(|value| !value.is_null() && value.as_str() != Some("none"))
+            || body
+                .get("parallel_tool_calls")
+                .is_some_and(|value| !value.is_null() && value.as_bool() != Some(false)))
     {
         return Some("tool_calling");
     }
@@ -59,6 +66,12 @@ pub(crate) fn unsupported_capability(
         )
         .find_map(|content| unsupported_content(capabilities, content))
         .or_else(|| unsupported_preserved_content(capabilities, body))
+}
+
+fn is_tool_choice_enabled(value: &Value) -> bool {
+    !value.is_null()
+        && value.as_str() != Some("none")
+        && value.get("type").and_then(Value::as_str) != Some("none")
 }
 
 // Some provider fields survive forwarding without becoming decoded content blocks.
@@ -179,9 +192,9 @@ mod tests {
         for body in [
             json!({"input": "hello", "tools": [{"type": "web_search"}]}),
             json!({"input": "hello", "functions": [{"name": "lookup", "parameters": {"type": "object"}}]}),
-            json!({"input": "hello", "tool_choice": "none"}),
+            json!({"input": "hello", "tool_choice": "auto"}),
             json!({"input": "hello", "tool_choice": {"type": "web_search"}}),
-            json!({"input": "hello", "parallel_tool_calls": false}),
+            json!({"input": "hello", "parallel_tool_calls": true}),
             json!({"input": [{"type": "additional_tools", "tools": []}]}),
             json!({"input": [{"type": "shell_call", "id": "shell_1", "call_id": "call_1", "action": {"commands": ["pwd"]}}]}),
             json!({"input": [{"type": "function_call_output", "call_id": "call_1", "output": "done"}]}),

@@ -92,6 +92,32 @@ optional policy, both allow normal routing. With
 labels accumulate within one request but are not retained across requests, even
 when they carry the same task ID.
 
+### Host-owned model calls
+
+Use the configured factory when the host makes every model call, including judges:
+
+```rust
+use switchyard_runner::{AlgorithmFactory, require_target_labels};
+
+let routes = AlgorithmFactory::from_toml(config)?.build_configured()?;
+let route = routes.get("switchyard/assistant")
+    .ok_or_else(|| anyhow::anyhow!("unknown route"))?;
+require_target_labels(&mut request, ["private", "customer_data"])?;
+let steps = route.run_stream(request, Default::default())?;
+```
+
+Requirements are checked before the algorithm starts. The stream uses the existing
+model-call, Decision-call and routing-outcome types. The host resolves configured
+LLM target names to its deployments and applies their prompts, provider settings,
+credentials and transport. Final answer attempts must stay within the returned
+approved candidates. Decision calls retain their provider model IDs.
+
+Build once and reuse the handles across turns. Each build has independent task
+requirements and algorithm-owned state. The second `run_stream` argument is the
+caller's per-run libsy state; it does not replace retained task requirements.
+No provider clients are built or credential values read. The original `build()`
+method still returns bare algorithms and rejects eligibility configurations.
+
 ## Task requirements
 
 Set `scope = "task"` to retain requirements across requests. Every request needs
@@ -104,9 +130,9 @@ both from then on. Missing or empty requirements do not remove retained labels.
 If the combined requirements cannot be served, the request fails and the labels
 remain retained.
 
-State is in memory and belongs to one route instance. There is no reset, expiry,
-replication, restart persistence or revocation. Overlapping in-flight requests
-keep the requirements under which they were admitted.
+State is in memory and belongs to one route or configured factory handle. There
+is no reset, expiry, replication, restart persistence or revocation. Overlapping
+in-flight requests keep the requirements under which they were admitted.
 
 ## Execution
 
@@ -117,7 +143,8 @@ flowchart TD
     P -->|"no valid setup"| E["Error: no provider call"]
     P --> R["Existing routing algorithm"]
     R --> G["libsy checks allowed model IDs"]
-    G --> C["LLM client executes approved calls and fallbacks"]
+    G -->|"Route execution"| C["LLM client executes approved calls and fallbacks"]
+    G -->|"Configured factory"| F["Host executes approved calls and fallbacks"]
 ```
 
 Runner owns label matching and reuses setups that resolve to the same configured
@@ -132,7 +159,7 @@ cleared and routing state is not evicted.
 Provider-held Responses continuation state and forwarded caller authentication
 are rejected on eligibility routes.
 
-An integration must enter through Runner; attaching metadata to an algorithm-only
-binding does not perform admission. This core adds no classifier, model runtime,
-new HTTP input or provider format. Existing execution signatures and Relay's C
-ABI stay unchanged.
+An integration must enter through a configured route or `build_configured()`;
+attaching metadata to a bare algorithm does not check requirements. This core
+adds no classifier, model runtime, new HTTP input or provider format. Existing
+execution signatures and Relay's C ABI stay unchanged.

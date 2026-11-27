@@ -409,6 +409,20 @@ async def test_noop_needs_no_client() -> None:
     assert response["outputs"][0]["content"] == [{"type": "text", "text": "OK"}]
 
 
+@pytest.mark.parametrize(("method", "base"), [("model_dump", object), ("to_dict", dict)])
+def test_conversion_getter_error_propagates(method: str, base: type) -> None:
+    error = RuntimeError("conversion getter failed")
+
+    def fail(self: Any) -> Any:
+        raise error
+
+    request_type = type("Request", (base,), {method: property(fail)})
+    request = request_type(request_body()) if base is dict else request_type()
+    with pytest.raises(RuntimeError) as caught:
+        algorithms.noop().run_stream(request, {"any": ["fixture"]})
+    assert caught.value is error
+
+
 @pytest.mark.parametrize(
     ("headers", "message"),
     [

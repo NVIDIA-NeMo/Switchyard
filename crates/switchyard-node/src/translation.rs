@@ -135,7 +135,6 @@ fn translation_error(cause: TranslationError) -> napi::Error {
         TranslationError::LossyConversion(message) | TranslationError::Other(message) => {
             json!({"message": message})
         }
-        TranslationError::UnknownField { path } => json!({"path": path}),
         TranslationError::InvalidValue { path, message } => {
             json!({"path": path, "message": message})
         }

@@ -7,7 +7,6 @@ mod capabilities;
 pub mod config;
 mod metrics;
 mod observability;
-mod observed_translation;
 mod redaction;
 mod response;
 mod routing_log;
@@ -42,6 +41,7 @@ use libsy::{LibsyError, RoutingOutcome};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use switchyard_llm_client::observed_translation;
 use switchyard_llm_client::{AuxiliaryOperation, RunObservation, RunObserver};
 use switchyard_protocol::{LlmClientError, Metadata, ModelId, ProviderExtensions, Request, Usage};
 use switchyard_runner::{
@@ -73,10 +73,14 @@ const FORWARDED_UPSTREAM_HEADERS: &[&str] = &[
     "openai-processing-ms",
     // Anthropic spells its correlation id without the `x-` prefix.
     "request-id",
+    // Callers use these to decide when to retry an upstream error.
+    "retry-after",
+    "retry-after-ms",
     "traceparent",
     "tracestate",
     "x-litellm-response-cost",
     "x-request-id",
+    "x-should-retry",
 ];
 const FORWARDED_UPSTREAM_HEADER_PREFIXES: &[&str] =
     &["anthropic-ratelimit-", "x-ratelimit-", "x-upstream-"];
@@ -90,6 +94,23 @@ fn should_forward_upstream_header(name: &HeaderName) -> bool {
             .iter()
             .any(|prefix| name.starts_with(prefix))
 }
+
+// Copies allowed upstream headers without replacing headers this server already set.
+fn forward_upstream_headers(target: &mut HeaderMap, upstream: &HeaderMap) {
+    let connection_headers = connection_header_names(upstream);
+    for name in upstream.keys() {
+        if !should_forward_upstream_header(name)
+            || target.contains_key(name)
+            || connection_headers.contains(name)
+        {
+            continue;
+        }
+        for value in upstream.get_all(name) {
+            target.append(name.clone(), value.clone());
+        }
+    }
+}
+
 /// Non-standard status used only in logs and metrics for a request whose
 /// downstream client disconnected before any response was written.
 const CLIENT_CLOSED_REQUEST: u16 = 499;
@@ -725,15 +746,18 @@ fn fallback_url(base_url: &str, path_and_query: &str) -> Result<reqwest::Url, St
     Ok(url)
 }
 
-fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
-    let connection_headers = headers
+fn connection_header_names(headers: &HeaderMap) -> Vec<HeaderName> {
+    headers
         .get_all(axum::http::header::CONNECTION)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(','))
         .filter_map(|name| HeaderName::from_bytes(name.trim().as_bytes()).ok())
-        .collect::<Vec<_>>();
-    for name in connection_headers {
+        .collect()
+}
+
+fn strip_hop_by_hop_headers(headers: &mut HeaderMap) {
+    for name in connection_header_names(headers) {
         headers.remove(name);
     }
     for name in [
@@ -1046,7 +1070,7 @@ fn resolve_route(
     if let Some(metadata) = body.get_mut("metadata").and_then(Value::as_object_mut) {
         metadata.remove(switchyard_translation::util::SWITCHYARD_METADATA_KEY);
     }
-    let mut llm_request = observed_translation::decode_request(wire_format, &body)
+    let mut llm_request = observed_translation::decode_request(&body, wire_format)
         .map_err(|error| invalid_body_error(StatusCode::BAD_REQUEST, error.to_string()))?;
     switchyard_translation::normalize_compaction(&mut llm_request, metadata.http_headers.as_ref());
     let requested_model = llm_request
@@ -1199,13 +1223,7 @@ async fn handle_llm_request(
     };
     // Forward upstream headers before Switchyard writes its own so any header
     // this server emits always overrides an upstream echo of the same name.
-    let response_headers = response.headers_mut();
-    for (name, value) in upstream_headers.iter() {
-        if !should_forward_upstream_header(name) {
-            continue;
-        }
-        response_headers.append(name.clone(), value.clone());
-    }
+    forward_upstream_headers(response.headers_mut(), &upstream_headers);
     if let Some(provider_model) = provider_model.as_ref() {
         attach_routing_headers(&mut response, provider_model);
     }
@@ -1401,7 +1419,11 @@ fn client_error(error: &LlmClientError) -> Response {
             "upstream_error",
             "temporarily_unavailable",
         ),
-        LlmClientError::UpstreamHttp { status, body } => upstream_error(*status, body),
+        LlmClientError::UpstreamHttp {
+            status,
+            body,
+            headers,
+        } => upstream_error(*status, body, headers),
         LlmClientError::Transport { source } | LlmClientError::InvalidResponse { source } => {
             error_response(
                 StatusCode::BAD_GATEWAY,
@@ -1428,7 +1450,7 @@ fn client_error(error: &LlmClientError) -> Response {
 }
 
 // Keep the provider's message and nonempty string code in our error JSON.
-fn upstream_error(status: StatusCode, body: &str) -> Response {
+fn upstream_error(status: StatusCode, body: &str, headers: &HeaderMap) -> Response {
     let parsed = serde_json::from_str::<Value>(body).unwrap_or_default();
     let error = &parsed["error"];
     let message = error["message"].as_str().unwrap_or(body);
@@ -1436,7 +1458,9 @@ fn upstream_error(status: StatusCode, body: &str) -> Response {
         .as_str()
         .filter(|code| !code.is_empty())
         .unwrap_or("upstream_error");
-    let mut response = error_response(status, message, "upstream_error", code);
+    let mut error = ApiError::new(status, message, "upstream_error", code);
+    error.upstream_headers = headers.clone();
+    let mut response = error.into_response(WireFormat::OpenAiChat);
     // Provider messages and codes can quote request content; log only fixed metadata.
     response
         .extensions_mut()
@@ -1451,6 +1475,8 @@ struct ApiError {
     message: String,
     error_type: &'static str,
     code: String,
+    // Unfiltered headers from an upstream HTTP error; the allowed ones are forwarded.
+    upstream_headers: HeaderMap,
 }
 
 impl ApiError {
@@ -1465,6 +1491,7 @@ impl ApiError {
             message: message.into(),
             error_type,
             code: code.into(),
+            upstream_headers: HeaderMap::new(),
         }
     }
 
@@ -1486,6 +1513,7 @@ impl ApiError {
             }),
         };
         let mut response = (self.status, Json(body)).into_response();
+        forward_upstream_headers(response.headers_mut(), &self.upstream_headers);
         response
             .extensions_mut()
             .insert(RequestLogError(self.message.clone()));
@@ -2315,6 +2343,7 @@ target = "judge"
             body: format!(
                 r#"{{"error":{{"message":"validation failed: {LEAKED}","code":"invalid_request_{LEAKED}"}}}}"#
             ),
+            headers: Box::default(),
         };
         for wire_format in [
             WireFormat::OpenAiChat,
@@ -2344,7 +2373,10 @@ target = "judge"
     fn upstream_header_forwarding_covers_litellm_cost() {
         for name in [
             "baggage",
+            "retry-after",
+            "retry-after-ms",
             "x-litellm-response-cost",
+            "x-should-retry",
             "x-ratelimit-remaining",
             "x-upstream-retry",
         ] {

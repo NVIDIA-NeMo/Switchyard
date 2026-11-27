@@ -9,7 +9,7 @@ fit the same route type.
 
 One pairing: a classifier selects the stage router's starting policy.
 By default, an efficient classification selects efficient-first with `efficient_first_threshold`
-(default `0.5`).
+(default `0.4`).
 A capable classification defaults to capable-first with `capable_first_threshold`
 (default `0.0`). Both thresholds are configurable from `0.0` to `1.0`.
 Tool signals can still change the tier
@@ -21,6 +21,11 @@ Under capable-first, `stage.efficient_hold_turns` defaults to `-1`: after switch
 to efficient, it stays there until the next user-turn reset or session reset. Efficient-first
 defaults to `0`. Set this field explicitly to override either default. `0`
 disables the hold, and a positive value holds that many subsequent requests.
+
+The capable-first profile adds a planning prompt and defaults to no capable hold.
+The efficient-first profile holds capable for two requests after escalation.
+Both profiles use three recent tool results. Explicit shared and profile settings
+override these defaults. Set `capable_system_prompt = ""` to disable the planning prompt.
 
 The classifier can use an LLM judge or a decision model. A decision
 model is configured through a decision client and target, separately from the
@@ -45,7 +50,7 @@ classify_trigger = "user_turn"
 [routes.switchyard.stage]
 capable_target = "strong"
 efficient_target = "weak"
-efficient_first_threshold = 0.5
+efficient_first_threshold = 0.4
 capable_first_threshold = 0.0
 
 [routes.switchyard.stage.tool_semantics]
@@ -69,7 +74,8 @@ on a standalone stage route.
 
 ### Independent stage profiles
 
-Add these tables beside `stage` to configure each profile over the shared target pair:
+Profiles inherit targets from `stage`. Override either target to use its configured client for that tier.
+Completion fallbacks stay within the selected profile's target pair.
 
 ```toml
 [routes.switchyard.efficient]
@@ -80,6 +86,8 @@ capable_system_prompt = "Resolve the difficult step."
 efficient_system_prompt = "Carry out the next concrete step."
 
 [routes.switchyard.capable]
+capable_target = "alternate_strong"
+efficient_target = "alternate_weak"
 picker = "capable_first"
 confidence_threshold = 0.2
 efficient_hold_turns = -1
@@ -91,7 +99,6 @@ Both profiles use the [stage tuning and prompt settings](stage_router_routing.md
 The judge's verdict selects `efficient` or `capable`. Their pickers default to
 efficient-first and capable-first respectively. Override `picker` to use either
 mode in either profile, including capable-first in both.
-Targets stay in `stage` and the profile selector stays in `classifier`.
 Each profile can also define its own `classifier` table, using the standalone
 stage classifier settings and target. It runs only when stage signals abstain.
 On model fallback, each candidate receives the active profile's prompt for its tier.
@@ -153,10 +160,11 @@ settings. Add a `[routes.switchyard.classifier.decision]` table to change them.
 See the [decision client reference](../reference/toml_schema.md#decision_clientsname)
 for OpenAI Decisions configuration.
 
-The judge receives the conversation messages and one choice question. The
-default choices are `capable` (start with the capable model) and `efficient`
+The judge receives the opening task, the recent conversation window, and one choice
+question. Composite excludes inline system and developer messages from this input.
+The default choices are `capable` (start with the capable model) and `efficient`
 (start with the efficient model). The classifier selects capable when
-`probabilities.capable` is above `cutoff`. The default cutoff is `0.6`.
+`probabilities.capable` is above `cutoff`. The Composite default cutoff is `0.92`.
 Calibrate the cutoff for your tasks and models. Omit LLM-only settings such as
 `base_threshold`, `threshold_step` and `prompt` when using a decision model.
 On judge failure, the default is to retain the last classified tier or use

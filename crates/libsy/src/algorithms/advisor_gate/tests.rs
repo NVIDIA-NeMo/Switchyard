@@ -654,30 +654,42 @@ async fn fail_closed_propagates_refunds_and_counts() {
         fail_open: false,
         ..AdvisorGateConfig::default()
     });
-    for _ in 0..3 {
-        let error = match test_drive(
+    let serve = failing_advisor(&script, "done");
+    // Preserve the host error policy instead of the fake client's forced recovery.
+    let run = || {
+        crate::drive(
             Arc::clone(&gate),
             task_request(),
-            failing_advisor(&script, "done"),
+            Arc::new(runtime_models().into()),
+            |call| async {
+                let call = match call {
+                    Call::Model(call) => *call,
+                    Call::Decision(call) => return serve_decision(*call).await,
+                };
+                let model = call.models[0].clone();
+                let response = serve
+                    .serve(model.clone(), call.request.clone())
+                    .await
+                    .map_err(|source| LibsyError::client_call(model, source));
+                call.respond(std::future::ready(response)).await
+            },
         )
-        .await
-        {
-            Err(error) => error,
-            Ok(_) => panic!("fail-closed surfaces the advisor error"),
-        };
+    };
+    for _ in 0..3 {
+        let error = run().await.err().expect("advisor failure");
         // Wrapped as an algorithm failure so the host renders a 5xx, not
         // the advisor's own (possibly context-window-shaped) client error.
         assert!(matches!(error, LibsyError::AlgorithmError { .. }));
         assert!(error.to_string().contains("advisor consult failed"));
+        assert!(!error.to_string().contains("advisor down"));
     }
     assert_eq!(script.advisor_consults(), 3);
     // The failure cap bounds fail-closed too: the scope stops consulting
     // and the executor turn flows again.
-    let (_, response) = test_drive(gate, task_request(), failing_advisor(&script, "recovered"))
-        .await
-        .expect("post-cap passthrough");
+    let outcome = run().await.expect("post-cap passthrough");
     assert_eq!(script.advisor_consults(), 3);
-    assert_eq!(completion_text(&agg_of(response).await), "recovered");
+    assert_eq!(outcome.selected_model_ids, vec![target(EXECUTOR)]);
+    assert!(outcome.response.is_none());
 }
 
 /// Collects everything the `fmt` subscriber renders, so assertions can run
@@ -718,6 +730,7 @@ async fn fail_open_logs_redact_the_upstream_error_body() {
                 Err(LlmClientError::UpstreamHttp {
                     status: http::StatusCode::INTERNAL_SERVER_ERROR,
                     body: format!("{MARKER}: validation failed"),
+                    headers: Box::default(),
                 })
             } else {
                 Ok(reply("done"))
@@ -958,16 +971,16 @@ async fn min_tool_results_defers_gate() {
     // Once the conversation carries a tool result, the gate fires.
     let with_result = request(vec![
         Message::text(Role::User, "build X"),
-        Message {
-            role: Role::User,
-            content: vec![ContentBlock::ToolResult(ToolResult {
+        Message::new(
+            Role::User,
+            vec![ContentBlock::ToolResult(ToolResult {
                 tool_call_id: "t1".to_string(),
                 content: vec![ContentBlock::Text {
                     text: "ok".to_string(),
                 }],
                 is_error: None,
             })],
-        },
+        ),
     ]);
     let serve = script.serve("APPROVE", |_| reply("done"));
     test_drive(gate, with_result, serve).await.expect("routes");
@@ -994,10 +1007,7 @@ async fn min_tool_results_counts_batched_result_blocks() {
     };
     let batched = request(vec![
         Message::text(Role::User, "build X"),
-        Message {
-            role: Role::User,
-            content: vec![tool_result("t1"), tool_result("t2")],
-        },
+        Message::new(Role::User, vec![tool_result("t1"), tool_result("t2")]),
     ]);
     let serve = script.serve("APPROVE", |_| reply("done"));
     test_drive(gate, batched, serve).await.expect("routes");

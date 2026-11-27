@@ -15,6 +15,9 @@ use serde_json::{Map, Value};
 
 use crate::format::FormatId;
 
+/// Maximum temperature on the shared IR's zero-based scale.
+pub const MAX_IR_TEMPERATURE: f64 = 2.0;
+
 /// Actor role normalized across provider APIs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, strum_macros::Display)]
 #[serde(rename_all = "snake_case")]
@@ -48,15 +51,24 @@ pub struct Message {
     pub role: Role,
     /// Ordered message content.
     pub content: Vec<ContentBlock>,
+    /// OpenAI Responses assistant message `phase`, such as `commentary` or `final_answer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase: Option<String>,
 }
 
 impl Message {
-    /// Creates a text-only message for the given role.
-    pub fn text(role: Role, text: impl Into<String>) -> Self {
+    /// Creates a message with no `phase`.
+    pub fn new(role: Role, content: Vec<ContentBlock>) -> Self {
         Self {
             role,
-            content: vec![ContentBlock::Text { text: text.into() }],
+            content,
+            phase: None,
         }
+    }
+
+    /// Creates a text-only message for the given role.
+    pub fn text(role: Role, text: impl Into<String>) -> Self {
+        Self::new(role, vec![ContentBlock::Text { text: text.into() }])
     }
 
     /// Concatenates text-like content blocks when the message has any.
@@ -448,7 +460,9 @@ pub enum ToolChoice {
 /// Provider sampling parameters with common cross-provider names.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SamplingParams {
-    /// Sampling temperature.
+    /// Sampling temperature on the `0.0..=MAX_IR_TEMPERATURE` scale.
+    /// Directly constructed requests use this scale; omission retains provider defaults.
+    /// See [`MAX_IR_TEMPERATURE`].
     pub temperature: Option<f64>,
     /// Nucleus-sampling probability mass.
     pub top_p: Option<f64>,
@@ -477,6 +491,12 @@ pub struct ReasoningParams {
     /// Provider reasoning controls without a normalized field.
     pub raw: Option<Value>,
 }
+
+/// Request extension key that marks a request decoded from an Anthropic Messages body.
+///
+/// Codecs skip this key when they copy unknown provider fields, so callers cannot set it.
+/// Prompt edits remove it from preserved Anthropic bodies for the same reason.
+pub const ANTHROPIC_REQUEST_KEY: &str = "switchyard_anthropic_request";
 
 /// Provider-specific fields that do not have first-class conversation fields.
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]

@@ -165,7 +165,13 @@ pub struct CallModel {
     pub algorithm: String,
     /// The request to serve; its `model` is stamped with the first candidate.
     pub request: Request,
-    /// Candidate models, tried in order until one answers. Never empty.
+    /// Candidate models in fallback order. Never empty.
+    ///
+    /// The host owns candidate execution and fallback. The native
+    /// `switchyard-llm-client` consumer calls only the first candidate during routing.
+    /// A failure stops its run unless [`Self::recover_errors`] is enabled, which
+    /// returns the error to the algorithm without trying later candidates.
+    /// Terminal completion fallback is handled separately.
     pub models: Vec<ModelId>,
     /// Return client errors to the algorithm so it can apply its fallback policy.
     pub recover_errors: bool,
@@ -403,6 +409,7 @@ impl AnswerSummary {
 
 #[derive(Default)]
 struct RunEvidence {
+    failed_models: Vec<ModelId>,
     outcome: Option<Value>,
     judgments: Vec<crate::JudgeDecision>,
 }
@@ -427,6 +434,7 @@ pub struct Driver {
     /// Which of those groups this driver reads.
     scope: Scope,
     judge: Option<ModelId>,
+    tier_targets: std::sync::OnceLock<[ModelId; 2]>,
 }
 
 impl Driver {
@@ -449,6 +457,7 @@ impl Driver {
                 state: Arc::new(Mutex::new(State::default())),
                 models,
                 scope: Scope::Parent,
+                tier_targets: Default::default(),
                 judge: None,
             },
             step_rx,
@@ -461,6 +470,15 @@ impl Driver {
 
     pub(crate) fn set_state(&self, state: State) {
         *self.state.lock() = state;
+    }
+
+    /// Record a generation failure for this run, independently of session or backend health.
+    pub(crate) fn record_model_failure(&self, model: ModelId) {
+        self.evidence.lock().failed_models.push(model);
+    }
+
+    pub(crate) fn model_failed(&self, model: &ModelId) -> bool {
+        self.evidence.lock().failed_models.contains(model)
     }
 
     /// Replace the current run's evidence when a component makes the final decision.
@@ -598,8 +616,25 @@ impl Driver {
         self.models.provider_model(target)
     }
 
+    /// Narrows stage selection and completion fallbacks for the rest of this request.
+    pub(crate) fn select_tier_targets(&self, targets: &[ModelId; 2]) -> Result<()> {
+        for target in targets {
+            ensure_model_is_target(self.models_for(&Category::Any), target)?;
+        }
+        self.tier_targets.get_or_init(|| targets.clone());
+        Ok(())
+    }
+
     /// The available models for this category, typically ordered best-first.
     pub fn models_for(&self, category: &Category) -> &[ModelId] {
+        if let Some(pair) = self.tier_targets.get() {
+            match category {
+                Category::Capable => return &pair[..1],
+                Category::Efficient => return &pair[1..],
+                Category::Any => return pair,
+                _ => {}
+            }
+        }
         if *category == Category::Judge
             && let Some(judge) = &self.judge
         {
@@ -637,6 +672,7 @@ impl Driver {
         }
         Ok(Self {
             scope: Scope::Subagent,
+            tier_targets: Default::default(),
             ..self.clone()
         })
     }

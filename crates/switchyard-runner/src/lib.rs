@@ -32,7 +32,7 @@ pub use algorithm::{
     VgrModeConfig, VgrRouteConfig,
 };
 #[cfg(not(target_os = "wasi"))]
-pub use algorithm_factory::AlgorithmFactory;
+pub use algorithm_factory::{AlgorithmFactory, ConfiguredAlgorithm};
 #[cfg(not(target_os = "wasi"))]
 pub use failure::{RouteErrorKind, RouteErrorPhase, RouteErrorSummary, stream_error_summary};
 // Re-exported because `Route::new` takes it, so a host wiring routes does not need a libsy dep.

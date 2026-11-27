@@ -53,7 +53,7 @@ route reaches no upstream. A file without a `[targets]` table is rejected with
 | `context_discovery` | No | unset | Set to `"llama_cpp"` to enable `/props` context discovery for VGR efficient targets. Disabled when unset. An explicit route `context_window` takes precedence. |
 | `api_key_env` | No | unset | Name of the environment variable holding the key. Omit to send no authentication. |
 | `forward_auth` | No | `false` | Forward the caller's provider credential and application headers. A route's forwarding clients must use one credential family unless they all use the same scheme, host, and port, such as one LLM gateway. |
-| `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. |
+| `extra_headers` | No | `{}` | Custom HTTP headers sent to the model server. Set credentials with `api_key_env` or `forward_auth`; the server rejects headers owned by the selected auth mode. Header names are case-insensitive. Configured values replace caller values for the same name. |
 | `responses_reasoning` | No | `"auto"` | Responses reasoning replay: `"auto"`, `"preserve_encrypted"`, `"preserve_plaintext"`, or `"drop"`. Only valid for `openai_responses`. |
 | `fallback_on_rate_limit` | No | `true` | Try another completion candidate after an upstream HTTP 429 exhausts retries. Set to `false` to return the 429 instead. |
 | `max_retries` | No | `2` | Retry budget, `0`–`10`. |
@@ -100,6 +100,9 @@ For shared credentials, HTTP 429 also triggers cooldown by default. During coold
 ordered fallback tries the next candidate. A terminal cooldown error returns HTTP
 503. Calls resume together after expiry. Auxiliary calls and errors after a stream
 is returned leave cooldown state unchanged.
+
+When retries are exhausted, Switchyard returns the upstream error with its
+`Retry-After`, `retry-after-ms`, and `x-should-retry` headers from the last attempt.
 
 With `fallback_on_rate_limit = false`, HTTP 429 does not start cooldown, so later
 requests can receive the upstream response too. Retry budgets and deadlines still
@@ -264,7 +267,7 @@ Every route takes the common keys below, plus the keys for its type.
 | `id` | Yes | — | Public model ID that callers send in requests. |
 | `type` | Yes | — | Routing algorithm for this route. |
 | `context_window` | No | unset | Positive token count that `GET /v1/models` advertises for this route as `data[].context_length`. Unset values appear as `null`. This does not enforce a request limit. |
-| `tool_calling` | No | unset | Tool-calling support advertised by `GET /v1/models`. When `false`, the server rejects tool definitions, tool controls, and tool history with HTTP 400 before dispatch. Unset values appear as `null`. Explicit `true` and unset values do not restrict requests. |
+| `tool_calling` | No | unset | Tool-calling support advertised by `GET /v1/models`. When `false`, the server rejects tool definitions, enabled tool controls, and tool history with HTTP 400 before dispatch. Text requests can explicitly disable tools with `tool_choice: "none"` or parallel calls with `parallel_tool_calls: false`. Unset values appear as `null`. Explicit `true` and unset values do not restrict requests. |
 | `reasoning` | No | unset | When `false`, the server rejects reasoning controls with HTTP 400 before dispatch. Explicit `true` and unset values do not restrict requests. The server does not include this declaration in `GET /v1/models`. |
 | `vision` | No | unset | Image-input support advertised in `GET /v1/models` under `data[].capabilities.vision`. When `false`, the server rejects images with HTTP 400 before dispatch, including images in tool results. Unset values appear as `null`. Explicit `true` and unset values do not restrict requests. Declare `true` only when every target the route can select accepts images. |
 
@@ -476,6 +479,7 @@ the signals work and for tuning.
 | `capable_system_prompt` | No | unset | System prompt prepended for capable requests. |
 | `efficient_system_prompt` | No | unset | System prompt prepended for efficient requests. |
 | `recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
+| `compaction_override` | No | `true` | Context compaction forces capable. Set `false` to use the other signals and picker normally. |
 | `capable_hold_turns` | No | `2` | Requests kept on capable after a switch. Signal-driven capable decisions also start finite holds. Active holds skip signal processing and classification; `0` disables; `-1` pins after a switch. |
 | `efficient_hold_turns` | No | `0` | Requests kept on efficient after a switch, even when errors appear. `0` disables; `-1` pins after a switch. |
 | `tool_semantics.observe` | No | `[]` | Exact ASCII case-insensitive domain tool names that count as read-only investigation. |
@@ -575,7 +579,7 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `classifier.threshold_step` | No | `0.0` | Finite, non-negative amount added once for uncertain or unmatched verdicts and twice for unsupported verdicts. `base_threshold + 2 * threshold_step` must be at most `1`. |
 | `classifier.classify_trigger` | Yes | — | `user_turn` re-picks the tier whenever the user speaks, `new_session` picks once and holds it. `every_request` is rejected here: a judge call per tool step is the cost this route exists to avoid. |
 | `classifier.decision` | No | defaults for a decision target | Decision model settings. A classifier target in `decision_targets` uses the defaults when this table is absent. It cannot be combined with the LLM judge keys (`base_threshold`, `threshold_step`, `prompt`, `response_format_type`, `max_output_tokens`). |
-| `classifier.decision.cutoff` | No | `0.6` | Select capable when the `apply_cutoff_to` probability is above this value. In `[0, 1]`. |
+| `classifier.decision.cutoff` | No | `0.92` | Select capable when the `apply_cutoff_to` probability is above this value. In `[0, 1]`. |
 | `classifier.decision.instructions` | No | built in | Replaces the default question text. Keep the meaning of the choices. |
 | `classifier.decision.choices` | No | `capable`, `efficient` | Array of `{ id, description }` tables sent as the choice options. IDs must be unique. |
 | `classifier.decision.apply_cutoff_to` | No | `capable` | Choice ID whose probability is compared with `cutoff`. |
@@ -585,13 +589,14 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `classifier.prompt` | No | packaged prompt | Replaces the classifier judge prompt. The verdict schema is unchanged. |
 | `classifier.response_format_type` | No | `json_schema` | Structured-output mode for the judge. Use `json_object` when the provider does not support JSON Schema. Switchyard adds the schema to the prompt and validates the verdict locally. |
 | `classifier.max_output_tokens` | No | `4096` | Maximum completion tokens for the judge verdict. Must be at least `1`. |
-| `classifier.judge_deadline_ms` | No | unset | Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry the judge is treated as unavailable and the route falls back to the capable tier. Must be at least `1`. Unset leaves the consultation unbounded. |
+| `classifier.judge_deadline_ms` | No | unset | Bounds the whole judge consultation in milliseconds, the model call and the response drain included. On expiry, error handling follows `classifier.fail_open`. Must be at least `1`. Unset leaves the consultation unbounded. |
 | `stage.capable_target` | Yes | — | Capable tier. |
 | `stage.efficient_target` | Yes | — | Efficient tier. |
-| `stage.efficient_first_threshold` | No | `0.5` | Signal confidence required after an Efficient classification. In `[0, 1]`. Also accepts `confidence_threshold`. |
+| `stage.efficient_first_threshold` | No | `0.4` | Signal confidence required after an Efficient classification. In `[0, 1]`. Also accepts `confidence_threshold`. |
 | `stage.capable_first_threshold` | No | `0.0` | Signal confidence required after a Capable classification. In `[0, 1]`. |
 | `stage.recent_turn_window` | No | `3` | Trailing tool results the signals are computed over. |
-| `stage.capable_hold_turns` | No | `2` | Same capable hold as `stage_router`: `0` disables; `-1` pins after a switch. |
+| `stage.compaction_override` | No | `true` | Same compaction override as `stage_router`. Can also be set per `efficient` or `capable` profile. |
+| `stage.capable_hold_turns` | No | CF: `0`, EF: `2` | Same capable hold as `stage_router`: `0` disables; `-1` pins after a switch. |
 | `stage.efficient_hold_turns` | No | CF: `-1`; EF: `0` | Defaults to pinning efficient after a switch when the classifier selected capable-first. Explicit `0` disables; positive values hold that many requests. |
 | `stage.tool_semantics.observe` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as observation. |
 | `stage.tool_semantics.mutate` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as mutation. |
@@ -599,6 +604,9 @@ confidence threshold. Tool signals still drive escalation and recovery. See
 | `stage.tool_semantics.new` | No | `[]` | Additional exact ASCII case-insensitive tool names that count as neutral forward activity. |
 | `stage.handoff_notes` | No | unset | Optional guidance appended to forwarded requests. Uses the same fields and behavior as [stage-router handoff notes](../routing_algorithms/stage_router_routing.md#optional-handoff-notes). |
 | `subagents` | No | unset | Nested policy used only for delegated sub-agent work. |
+
+The capable-first profile uses a planning prompt by default. Shared or profile
+`capable_system_prompt` overrides it. An empty string disables it.
 
 Optional `efficient` and `capable` tables provide independent stage
 settings and prompts. See [independent stage profiles](../routing_algorithms/composite_routing.md#independent-stage-profiles).
@@ -637,6 +645,35 @@ advisor's plan. See
 | `fail_open` | No | `true` | Lets the gated turn through when the advisor fails, instead of returning an error. |
 | `reviewer_system_prompt` | No | packaged prompt | Replaces the APPROVE/REDO reviewer prompt. |
 | `redo_feedback_prefix` | No | packaged prompt | Replaces the text put in front of a REDO plan fed back to the executor. |
+
+### `vgr`
+
+Generates an efficient candidate and verifies it before serving a final answer.
+See [Verification-Gated Routing](../routing_algorithms/vgr_routing.md) for the
+verification policy, tool turns, handoff behavior, and serving modes.
+
+| Key | Required | Default | Meaning |
+|---|:---:|---|---|
+| `efficient_target` | Yes | — | Target that generates the candidate. |
+| `capable_target` | Yes | — | Target used when the candidate is not accepted. Must resolve to a different model ID from `efficient_target`. |
+| `judge_target` | No | `efficient_target` | Target used for efficient-tier verification. |
+| `capable_judge_target` | No | unset | Optional target for capable-tier confirmation. |
+| `mode` | No | `off` | `off` serves capable directly; `shadow` evaluates but serves capable; `evaluate` serves the policy decision for evaluation; `active` serves it in production. |
+| `active_approval` | In `active` mode | unset | Must be `"prospective-validation-and-canary-approved"`. |
+| `deadline_seconds` | No | `30` | Time budget for the efficient attempt and verification. Must be finite and greater than zero. |
+| `bounded_efficient` | No | `true` | Enforce the decision deadline and efficient turn budget. |
+| `task_typing` | No | `true` | Use a judge call to select the task's verification path. |
+| `breaker_threshold` | No | `5` | Efficient endpoint failures needed to open the circuit breaker. Must be at least `1`. |
+| `breaker_cooldown_seconds` | No | `30` | Wait before retrying an open efficient circuit. Must be finite and greater than zero. |
+| `confirmed_recovery_min_clean_tail` | No | unset | Clean trailing tool results needed to accept a recovered run with capable-judge confirmation. |
+| `agentic_handoff` | No | `false` | Tell the capable tier when it inherits unverified tool-using work. |
+| `compact_handoff` | No | `false` | Condense efficient-tier history at handoff. Requires `agentic_handoff = true`. Experimental and lossy. |
+| `efficient_turn_budget_seconds` | No | unset | Wall-clock budget for efficient work within one user turn, including tool execution. Must be finite and greater than zero. |
+| `latch_escalation` | No | `false` | Retain escalation across later user turns. In `shadow` mode, the hold ends at the next user turn. |
+| `efficient_supports_attachments` | No | `false` | Allow the efficient tier to attempt requests containing attachments. The model must support the input. |
+
+Start with the [route configuration](../routing_algorithms/vgr_routing.md#configure-a-route)
+or the [complete local-server example](../../examples/vgr-local-servers.toml).
 
 ## Validation Errors
 

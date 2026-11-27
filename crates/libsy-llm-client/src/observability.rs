@@ -296,6 +296,11 @@ impl ClientStreamObserver {
                 let error_type = llm_client_error_type(error);
                 match error {
                     LlmClientError::Host { .. } => record_host_error(&self.span),
+                    LlmClientError::UpstreamHttp { status, .. } => record_client_error(
+                        &self.span,
+                        &error_type,
+                        &format_args!("upstream HTTP {}", status.as_u16()),
+                    ),
                     _ => record_client_error(&self.span, &error_type, error),
                 }
                 self.outcome = Outcome::Failed;
@@ -319,8 +324,8 @@ impl ClientStreamObserver {
                 record_client_error(&self.span, "response_translation", message);
                 self.outcome = Outcome::Failed;
             }
-            LlmResponseChunk::StreamError { message } => {
-                record_client_error(&self.span, "502", message);
+            LlmResponseChunk::StreamError { .. } => {
+                record_client_error(&self.span, "502", &"upstream HTTP 502");
                 self.outcome = Outcome::Failed;
             }
             _ => {}

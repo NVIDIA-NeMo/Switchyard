@@ -4,14 +4,32 @@ All notable changes to Switchyard are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0]
+
+Switchyard 0.4.0 adds configurable routing profiles, application-controlled
+target requirements, and new ways to evaluate and embed routing. Review the
+API and configuration changes below before upgrading from 0.3.0.
 
 ### Added
 
+- **Composite routing profiles** — configure separate Stage profiles for
+  efficient-first and capable-first routing. A classifier or decision model
+  selects the starting tier. The selected profile survives compaction. (#1176,
+  #1195, #1200)
+- **Target requirements** — applications can require target labels and retain
+  those requirements across turns of a task. The runner enforces matching
+  labels when selecting eligible targets. (#924, #926, #931, #1238)
+- **Library bindings** — Python exposes configured algorithm execution and
+  streaming translation. TypeScript adds configured execution and buffered
+  translation. Go adds native and WASM backends. (#1130, #1178, #1232,
+  #1234, #1235)
+- **Benchmark and tuning guides** — the public results link to the tested
+  DeepSWE Astra/Luna Plan/Execute profile and describe how to reproduce the
+  runs. (#1199, #1345, #1365, #1366)
 - **Host aborts** - The C ABI accepts an `abort` reply, and the Go binding adds
   `Abort(err)` to stop routing when the host refuses a model or decision call,
   even if the algorithm recovers from ordinary call failures.
-- **VGR routing (planned for 0.4.0)** — adds `type = "vgr"` deployment routes
+- **VGR routing** — adds `type = "vgr"` deployment routes
   and the `AlgorithmSpec::Vgr` variant. **Rust source-breaking change:** callers
   that match exhaustively on `AlgorithmSpec` must handle the new variant.
 - **Caller-owned routing state** - `Algorithm::run_stream` takes a `State` and
@@ -31,11 +49,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   **Host API change (source-breaking):** Rust uses `call.respond(work).await?`;
   Python uses `await call.respond(work)` and `await call.fail(error)`. Pass work
   before awaiting it. See the
-  [host integration guide](docs/getting_started.md#drive-the-algorithm).
+  [host integration guide](docs/reference/host_integration.md#serve-routing-time-calls).
   ([#948](https://github.com/NVIDIA-NeMo/Switchyard/pull/948))
 
 ### Changed
 
+- **Plan/Execute** now uses a Stage Router configuration. Migrate standalone
+  Plan/Execute configurations to a Stage profile. (#1204)
+- The standalone `switchyard-server` now binds to `127.0.0.1` by default.
+  Existing deployments that accept remote clients must add `--host 0.0.0.0`.
+  The provided Docker image and `dev-server/switchyard.service` set this explicitly.
+- **VGR escalates sooner after a tool error** - chat steps skip verification,
+  and steps typed as chat skip the efficient attempt (`chat_after_tool_error`).
+- **TypeScript composite stage profiles** - `CompositeRouter` options take
+  `stage.efficient_first` and `stage.capable_first` profiles in place of
+  `efficient_first_threshold`, `capable_first_threshold`, and
+  `efficient_hold_turns`. Each profile sets `threshold`, `recent_window`, holds,
+  and `capable_system_prompt`. `classifier.cutoff` sets the judge cutoff.
+  `Selection.systemPrompt` returns the routed prompt. Stage state keys gain a
+  `composite.profile_<n>.` prefix. State saved earlier keeps its tier and drops
+  its stage holds. The Pi example adds a planning prompt to capable-first turns.
+  **API and state change (breaking).**
 - **Simpler decision requests and routing question** — `DecisionRequest.context`
   is renamed to `input`. Decision judges send the conversation messages as
   `input`, with string instructions and a description for every choice. The
@@ -55,8 +89,38 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   that selects escalation mode through its `escalation` table carries capability
   keys that mode ignores.
 
+### Removed
+
+- **Unused public Rust APIs** - these items had no callers outside their own
+  tests. **Rust source-breaking change** for code that used them:
+  - `switchyard-translation`: `StreamTranslationEngine`, `ProviderProfile`,
+    `util::is_truthy_string`, `util::compact_text_blocks`,
+    `encode_aggregated_response` and
+    `encode_aggregated_response_with_extensions`.
+  - `switchyard-llm-client`: `Backend::is_anthropic`,
+    `TranslatingLlmClient::call_rewrite_model_raw` and `RawResponse`. Decode
+    the request, call `call_rewrite_model`, and encode the response instead.
+  - `switchyard-protocol`: `prompt_text`.
+  - `switchyard-libsy`: `CompositeRouterConfig` and the single-stage
+    `CompositeRouter::new`. `CompositeRouter::new_with_profiles` is renamed
+    to `CompositeRouter::new`.
+- **`switchyard-skill-distillation` crate** - it had no implementors or callers
+  in the repository.
+
 ### Fixed
 
+- Relay-managed routes preserve upstream HTTP error statuses. Upstream error
+  responses retain headers such as `Retry-After`. (#1316, #1323)
+- Translation preserves refusal details and streaming stop reasons. The Chat
+  request decoder rejects requests for more than one choice. (#1324, #1335,
+  #1350)
+- VGR falls back when a Chat tool call contains malformed arguments. (#1280)
+- **Windowed classifiers drop empty history turns** - with `recent_turn_window`
+  set, an assistant turn that holds only reasoning, as an OpenAI Chat message
+  with `reasoning_content` and no `content` decodes, is left out of the judge
+  request. Before, it reached the judge as an assistant message with empty text,
+  and an Anthropic Messages judge rejected the request with HTTP 400, which
+  failed the client request.
 - **Responses reasoning history reaches non-OpenAI targets** - the default
   `responses_reasoning` is now `"auto"`. Targets other than OpenAI keep plaintext
   reasoning `summary` and `content` in place, for any `store` value. Before, it

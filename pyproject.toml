@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "nemo-switchyard"
-version = "0.4.0a1"
+version = "0.4.0"
 description = "Typed, composable LLM routing with request/response translation and multi-backend orchestration"
 readme = "crates/switchyard-py/pypi.md"
 license = "Apache-2.0"
@@ -66,16 +66,6 @@ Documentation = "https://nvidia-nemo.github.io/Switchyard/"
 Repository = "https://github.com/NVIDIA-NeMo/Switchyard"
 Issues = "https://github.com/NVIDIA-NeMo/Switchyard/issues"
 
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["switchyard*"]
-
-[tool.setuptools.package-data]
-switchyard = [
-    "py.typed",
-]
-switchyard_rust = ["py.typed", "*.pyi"]
-
 [tool.maturin]
 manifest-path = "crates/switchyard-py/Cargo.toml"
 module-name = "switchyard_rust._switchyard_rust"
@@ -99,8 +89,6 @@ markers = [
     "integration: marks tests as integration tests (deselect with '-m \"not integration\"')",
     "perf: marks tests as performance benchmarks (deselect with '-m \"not perf\"')",
 ]
-# For integration/production tests, recommend using -x to stop on first failure:
-#   pytest tests/offline_production_tests/ -v -x
 addopts = "-x"  # Stop on first failure by default (use -o addopts= to override)
 
 [tool.mypy]

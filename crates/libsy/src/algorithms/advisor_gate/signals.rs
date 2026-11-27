@@ -65,16 +65,16 @@ mod tests {
                 messages: vec![
                     Message::text(Role::User, "build X"),
                     Message::text(Role::Assistant, "working"),
-                    Message {
-                        role: Role::User,
-                        content: vec![ContentBlock::ToolResult(ToolResult {
+                    Message::new(
+                        Role::User,
+                        vec![ContentBlock::ToolResult(ToolResult {
                             tool_call_id: "t1".to_string(),
                             content: vec![ContentBlock::Text {
                                 text: "ok".to_string(),
                             }],
                             is_error: None,
                         })],
-                    },
+                    ),
                 ],
                 ..LlmRequest::default()
             },

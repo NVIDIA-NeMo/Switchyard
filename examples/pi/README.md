@@ -4,11 +4,18 @@ This extension registers `switchyard/auto`. Pi calls a Decision classifier on
 user turns. Switchyard's composite algorithm uses that answer and recent tool
 activity to select a completion model. Thinking stays `medium`.
 
-The fixed policy selects the capable tier when the classifier's `capable`
-probability exceeds 0.6. Exactly 0.6 selects efficient. Stage routing then picks
-the model on every request, using the classifier's tier as its fallback. Its
-efficient-first and capable-first thresholds are 0.5 and 0.2. A tool failure can
-escalate to the capable model, with a two-request hold during recovery.
+The fixed policy selects a capable-first profile when the classifier's `capable`
+probability exceeds 0.6. Exactly 0.6 selects the efficient-first profile. Stage
+routing then picks the model on every request from the last three tool results.
+
+- Efficient-first uses a 0.4 threshold. A tool failure can escalate to the
+  capable model, with a two-request hold during recovery.
+- Capable-first starts on the capable model with a planning prompt. The prompt
+  asks the model to plan with read-only tools, then make the first edit. After the
+  switch to the efficient model, routing stays there until the next user turn.
+
+The extension adds the planning prompt ahead of Pi's system prompt on each
+request routed to the capable model in the capable-first profile.
 
 ## Configuration
 
@@ -71,7 +78,8 @@ classifier state is `{ "input": [...] }`, holding the routing messages.
 Pi stores routing state on the session branch. It follows forks and `/tree`, and
 survives compaction, resume, and extension reload. Tool continuations reuse the
 stored tier and capable hold while stage signals select the model. State is
-returned only when it changes.
+returned only when it changes. Sessions saved before stage profiles keep their
+tier and drop any stage hold.
 
 Retries reuse stored state. Retrying a user-turn request calls the classifier
 again. Direct requests, such as compaction summaries, start with fresh state;

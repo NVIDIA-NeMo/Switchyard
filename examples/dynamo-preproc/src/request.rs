@@ -109,7 +109,8 @@ mod tests {
         headers.insert("x-switchyard-session-id", "session-1".parse().unwrap());
         let request = decode(&raw, &headers).unwrap();
         let ir = request.llm_request;
-        assert_eq!(ir.instructions.len(), 2);
+        assert_eq!(ir.instructions.len(), 1);
+        assert_eq!(ir.messages[2].role, switchyard_protocol::Role::Developer);
         assert_eq!(ir.sampling.temperature, Some(0.2));
         assert_eq!(ir.output.max_output_tokens, Some(64));
         assert_eq!(ir.tool_choice, Some(ToolChoice::Required));
@@ -121,7 +122,7 @@ mod tests {
             panic!("missing tool call")
         };
         assert_eq!(call.arguments, json!({"command": "pytest"}));
-        for (index, flag) in [(1, true), (2, false)] {
+        for (index, flag) in [(1, true), (3, false)] {
             let ContentBlock::ToolResult(result) = &ir.messages[index].content[0] else {
                 panic!("missing tool result")
             };

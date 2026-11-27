@@ -24,7 +24,7 @@
 //! namespace against its default group: dropping a builtin group's namespace
 //! would look the call up in the wrong place.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use serde_json::{Map, Value};
 use switchyard_protocol::ProviderExtensions;
@@ -79,57 +79,20 @@ pub fn namespace_description<'a>(
     })
 }
 
-/// Reverse map from an upstream tool name to its Codex tool name and namespace.
-///
-/// The exact qualified name is always registered. A model often returns a near
-/// miss instead, so two fallback spellings are registered when neither can be
-/// confused with another tool:
-///
-/// * the qualified name without the `mcp__` prefix
-/// * the bare tool name, only when exactly one namespace claims it
+/// Maps exact qualified tool names to their Codex tool names and namespaces.
 pub fn qualified_tool_origins(
     extensions: &ProviderExtensions,
 ) -> HashMap<String, (String, String)> {
     let Some(namespaces) = tool_namespaces(extensions) else {
         return HashMap::new();
     };
-    let split: Vec<(String, String, String)> = namespaces
+    namespaces
         .keys()
         .filter_map(|qualified| {
             let (tool, namespace) = split_qualified_name(namespaces, qualified)?;
-            Some((qualified.clone(), tool.to_string(), namespace.to_string()))
+            Some((qualified.clone(), (tool.to_string(), namespace.to_string())))
         })
-        .collect();
-
-    // A bare name claimed by more than one namespace cannot be guessed, and a
-    // fallback must never shadow a name that is itself a real qualified tool.
-    let mut bare_claims: HashMap<&str, usize> = HashMap::new();
-    for (_, tool, _) in &split {
-        *bare_claims.entry(tool.as_str()).or_default() += 1;
-    }
-    let qualified_names: HashSet<&str> = split
-        .iter()
-        .map(|(qualified, _, _)| qualified.as_str())
-        .collect();
-
-    let mut origins = HashMap::new();
-    for (qualified, tool, namespace) in &split {
-        let origin = (tool.clone(), namespace.clone());
-        if let Some(stripped) = namespace.strip_prefix("mcp__") {
-            let spelling = qualified_tool_name(stripped, tool);
-            if !qualified_names.contains(spelling.as_str()) {
-                origins.entry(spelling).or_insert_with(|| origin.clone());
-            }
-        }
-        if bare_claims.get(tool.as_str()) == Some(&1) && !qualified_names.contains(tool.as_str()) {
-            origins
-                .entry(tool.clone())
-                .or_insert_with(|| origin.clone());
-        }
-        // The exact spelling always wins over a fallback.
-        origins.insert(qualified.clone(), origin);
-    }
-    origins
+        .collect()
 }
 
 /// Restore the Codex tool name and namespace on function calls and argument completions.
@@ -164,6 +127,103 @@ pub fn restore_qualified_tool_names(body: &mut Value, origins: &HashMap<String, 
             }
         }
         _ => {}
+    }
+}
+
+/// Flattens Codex namespaces in an outbound Responses body for an OpenAI-compatible provider.
+///
+/// The Responses encoder rebuilds `namespace` containers and `namespace` fields on
+/// calls for the client, and a replayed preserved body still holds them as sent.
+/// Providers accept only flat function tools, so this pass runs on every body sent
+/// to a Responses upstream. It names each child `<namespace>__<tool>`, moves the
+/// `namespace` field of `function_call` items and a `tool_choice` into the name,
+/// and gives each function tool a string `description`.
+pub fn flatten_codex_namespaces_for_provider(body: &mut Value) {
+    let Value::Object(object) = body else {
+        return;
+    };
+    if let Some(Value::Array(items)) = object.get_mut("input") {
+        for item in items.iter_mut().filter_map(Value::as_object_mut) {
+            if item.get("type").and_then(Value::as_str) == Some("function_call") {
+                move_namespace_into_name(item);
+            }
+        }
+    }
+    if let Some(Value::Array(tools)) = object.get_mut("tools") {
+        let mut flat = Vec::with_capacity(tools.len());
+        for tool in std::mem::take(tools) {
+            push_flat_tool(&mut flat, tool);
+        }
+        *tools = flat;
+    }
+    if let Some(Value::Object(choice)) = object.get_mut("tool_choice")
+        && choice.get("type").and_then(Value::as_str) == Some("function")
+    {
+        move_namespace_into_name(choice);
+    }
+}
+
+fn push_flat_tool(out: &mut Vec<Value>, tool: Value) {
+    let Value::Object(mut object) = tool else {
+        out.push(tool);
+        return;
+    };
+    if object.get("type").and_then(Value::as_str) == Some("namespace") {
+        let namespace = object
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let Some(Value::Array(children)) = object.remove("tools") else {
+            out.push(Value::Object(object));
+            return;
+        };
+        for child in children {
+            let Value::Object(mut child) = child else {
+                out.push(child);
+                continue;
+            };
+            if child.get("type").and_then(Value::as_str) == Some("function") {
+                qualify_name(&mut child, &namespace);
+                ensure_function_description(&mut child);
+            }
+            out.push(Value::Object(child));
+        }
+        return;
+    }
+    ensure_function_description(&mut object);
+    out.push(Value::Object(object));
+}
+
+fn move_namespace_into_name(object: &mut Map<String, Value>) {
+    if let Some(Value::String(namespace)) = object.remove("namespace") {
+        qualify_name(object, &namespace);
+    }
+}
+
+// Leaves a name that already carries the namespace prefix unchanged.
+fn qualify_name(object: &mut Map<String, Value>, namespace: &str) {
+    if namespace.is_empty() {
+        return;
+    }
+    let Some(name) = object.get("name").and_then(Value::as_str) else {
+        return;
+    };
+    if name
+        .strip_prefix(namespace)
+        .is_some_and(|rest| rest.starts_with(NAMESPACE_SEPARATOR))
+    {
+        return;
+    }
+    let qualified = qualified_tool_name(namespace, name);
+    object.insert("name".to_string(), Value::String(qualified));
+}
+
+fn ensure_function_description(object: &mut Map<String, Value>) {
+    if object.get("type").and_then(Value::as_str) == Some("function")
+        && !matches!(object.get("description"), Some(Value::String(_)))
+    {
+        object.insert("description".to_string(), Value::String(String::new()));
     }
 }
 
@@ -212,13 +272,16 @@ mod tests {
         );
     }
 
-    // A bare name claimed by two namespaces must not be guessed: a wrong guess
-    // dispatches the call to the wrong server.
     #[test]
-    fn leaves_an_ambiguous_bare_name_alone() {
-        let origins =
-            qualified_tool_origins(&extensions(&[("mcp__a", "search"), ("mcp__b", "search")]));
-        let mut response = json!({"output": [{"type": "function_call", "name": "search"}]});
+    fn leaves_unqualified_names_alone() {
+        let origins = qualified_tool_origins(&extensions(&[("mcp__docs", "search")]));
+        let mut response = json!([
+            {"output": [{"type": "function_call", "name": "search"}]},
+            {"type": "response.output_item.done", "item": {
+                "type": "function_call", "name": "docs__search"
+            }},
+            {"type": "response.function_call_arguments.done", "name": "docs__search"}
+        ]);
         let before = response.clone();
 
         restore_qualified_tool_names(&mut response, &origins);

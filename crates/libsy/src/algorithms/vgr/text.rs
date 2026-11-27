@@ -11,7 +11,7 @@ use regex::Regex;
 use serde_json::Value;
 use switchyard_protocol::{ContentBlock, InstructionBlock, Message, Request, Role, ToolResult};
 
-use crate::algorithms::util::affinity::{initiated_by_user, is_environment_update, is_user_turn};
+use crate::algorithms::util::affinity::{initiated_by_user, is_turn_context, is_user_turn};
 use crate::algorithms::util::tool_signals::classify_text;
 
 /// One flattened turn: instructions first, then messages.
@@ -61,10 +61,50 @@ pub(super) fn content_text(content: &[ContentBlock]) -> (String, bool) {
             ContentBlock::ToolCall(_)
             | ContentBlock::ToolResult(_)
             | ContentBlock::Reasoning { .. } => {}
+            ContentBlock::Image { .. } => {
+                parts.push("[image attachment]");
+                unsupported = true;
+            }
+            ContentBlock::File { .. } => {
+                parts.push("[file attachment]");
+                unsupported = true;
+            }
+            ContentBlock::Audio { .. } => {
+                parts.push("[audio attachment]");
+                unsupported = true;
+            }
+            ContentBlock::Video { .. } => {
+                parts.push("[video attachment]");
+                unsupported = true;
+            }
             _ => unsupported = true,
         }
     }
     (parts.join("\n"), unsupported)
+}
+
+/// Attachments in conversation order, including nested tool results.
+pub(super) fn attachments(request: &Request) -> Vec<&ContentBlock> {
+    fn collect<'a>(content: &'a [ContentBlock], blocks: &mut Vec<&'a ContentBlock>) {
+        for block in content {
+            match block {
+                ContentBlock::Image { .. }
+                | ContentBlock::File { .. }
+                | ContentBlock::Audio { .. }
+                | ContentBlock::Video { .. } => blocks.push(block),
+                ContentBlock::ToolResult(result) => collect(&result.content, blocks),
+                _ => {}
+            }
+        }
+    }
+    let mut blocks = Vec::new();
+    for instruction in &request.llm_request.instructions {
+        collect(&instruction.content, &mut blocks);
+    }
+    for message in &request.llm_request.messages {
+        collect(&message.content, &mut blocks);
+    }
+    blocks
 }
 
 pub(super) fn turns(request: &Request) -> (Vec<Turn>, bool) {
@@ -78,7 +118,7 @@ pub(super) fn turns(request: &Request) -> (Vec<Turn>, bool) {
     for InstructionBlock { role, content } in &request.llm_request.instructions {
         push(*role, content);
     }
-    for Message { role, content } in &request.llm_request.messages {
+    for Message { role, content, .. } in &request.llm_request.messages {
         push(*role, content);
     }
     (flattened, unsupported)
@@ -132,7 +172,7 @@ pub(super) fn starts_user_turn(messages: &[Message], index: usize) -> bool {
             previous
                 .iter()
                 .rev()
-                .find(|message| !is_environment_update(message))
+                .find(|message| !is_turn_context(message))
         }),
     ) else {
         return false;

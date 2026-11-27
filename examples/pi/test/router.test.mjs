@@ -42,8 +42,15 @@ function setup(t, answer = result()) {
     classify: t.mock.fn(async () => answer),
   };
   let definition;
-  extension({ registerVirtualModel: (value) => { definition = value; } });
-  return { definition, registry, path, route: (req) => definition.route(req, { modelRegistry: registry }) };
+  const handlers = {};
+  extension({
+    registerVirtualModel: (value) => { definition = value; },
+    on: (event, handler) => { handlers[event] = handler; },
+  });
+  return {
+    definition, registry, path, route: (req) => definition.route(req, { modelRegistry: registry }),
+    context: (messages) => handlers.context_with_system({ type: "context_with_system", messages }),
+  };
 }
 
 function tool(id, name, args, text, isError = false) {
@@ -89,7 +96,7 @@ test("cutoff equality selects efficient, then a tool failure holds capable for t
   messages.push(...tool("failed", "bash", { command: "pytest" }, "out of memory", true));
   selected = await route(request({ reason: "continuation", messages, state: selected.state }));
   assert.equal(selected.model.id, "gpt-6.1-sol");
-  assert.deepEqual(selected.state.capable_hold_turns, { count: 2 });
+  assert.deepEqual(selected.state["composite.profile_0.capable_hold_turns"], { count: 2 });
   for (let i = 0; i < 3; i++) messages.push(...tool(`write-${i}`, "write", { path: `file-${i}` }, "wrote file"));
   let state = selected.state;
   for (const expected of ["gpt-6.1-sol", "gpt-6.1-sol", "gpt-6-luna"]) {
@@ -98,6 +105,46 @@ test("cutoff equality selects efficient, then a tool failure holds capable for t
     assert.equal(selected.model.id, expected);
   }
   assert.equal(registry.classify.mock.callCount(), 1);
+});
+
+test("capable-first adds the planning prompt until the first edit hands off to efficient", async (t) => {
+  const { route, context } = setup(t);
+  const system = { role: "system", content: "rules", sections: { tools: "tool rules" }, timestamp: 1 };
+  const user = { role: "user", content: "task", timestamp: 2 };
+  assert.equal(await context([system, user]), undefined);
+
+  const messages = request().messages;
+  let selected = await route(request({ messages }));
+  assert.equal(selected.model.id, "gpt-6.1-sol");
+  const { messages: [prompted, ...rest] } = await context([system, user]);
+  assert.deepEqual(rest, [user]);
+  assert.deepEqual(prompted.sections, system.sections);
+  assert.equal(prompted.content.length, 2);
+  assert.match(prompted.content[0].text, /^You are in the planning phase\./);
+  assert.deepEqual(prompted.content[1], { type: "text", text: "rules" });
+  // The prompt applies to one request only.
+  assert.equal(await context([system, user]), undefined);
+
+  // Pi's structured prompt has empty content, which gains no empty text block.
+  await route(request({ messages }));
+  const structured = { ...system, content: "" };
+  const { messages: [only] } = await context([structured, user]);
+  assert.deepEqual(only.content.map((block) => block.text), [prompted.content[0].text]);
+  assert.deepEqual(only.sections, system.sections);
+
+  // A direct request leaves the pending prompt alone.
+  await route(request({ messages }));
+  await route(request({ reason: "direct", messages }));
+  assert.ok(await context([system, user]));
+
+  messages.push(...tool("edit", "write", { path: "parser.rs" }, "wrote file"));
+  const handoff = await route(request({ reason: "continuation", messages, state: selected.state }));
+  assert.equal(handoff.model.id, "gpt-6-luna");
+  assert.equal(await context([system, user]), undefined);
+  // A failure after the handoff stays on efficient.
+  messages.push(...tool("failed", "bash", { command: "pytest" }, "out of memory", true));
+  selected = await route(request({ reason: "continuation", messages, state: handoff.state ?? selected.state }));
+  assert.equal(selected.model.id, "gpt-6-luna");
 });
 
 test("classifier lookup, answer validation, failures, and cancellation", async (t) => {

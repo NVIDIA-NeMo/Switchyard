@@ -151,6 +151,8 @@ pub struct LlmFallback {
 
 /// How a stage router scores turns, and what it hands the model it picks.
 pub struct StageRouterConfig {
+    /// Optional capable and efficient targets for this stage profile.
+    pub tier_targets: Option<[switchyard_protocol::ModelId; 2]>,
     /// Tier a turn falls open to when the scorer is not confident.
     pub mode: PickerMode,
     /// How much corroboration a decisive pick needs, in `[0.0, 1.0]`.
@@ -162,6 +164,8 @@ pub struct StageRouterConfig {
     pub recent_window: Option<usize>,
     /// Exact tool-name semantics added to the built-in coding vocabulary.
     pub tool_semantics: ToolSemantics,
+    /// Escalate on context compaction. Enabled by default.
+    pub compaction_override: bool,
     /// Requests to keep on capable after an escalation. `0` disables the hold;
     /// `-1` pins after switching to this tier.
     pub capable_hold_turns: i64,
@@ -187,10 +191,12 @@ impl StageRouterConfig {
     pub fn new(mode: PickerMode, confidence_threshold: f64) -> Self {
         Self {
             mode,
+            tier_targets: None,
             confidence_threshold,
             capable_first_threshold: 0.0,
             recent_window: None,
             tool_semantics: ToolSemantics::default(),
+            compaction_override: true,
             capable_hold_turns: 2,
             efficient_hold_turns: None,
             handoff_notes: None,
@@ -285,8 +291,10 @@ pub(crate) fn build_stage_route(
 
     let mut classifier = StageClassifier::new(config.mode, config.confidence_threshold)
         .with_capable_first_threshold(config.capable_first_threshold)
+        .with_compaction_override(config.compaction_override)
         .with_capable_hold_turns(config.capable_hold_turns);
     classifier.reset_on_user_turn = reset_on_user_turn;
+    classifier.tier_targets = config.tier_targets;
     if let Some(turns) = config.efficient_hold_turns {
         classifier = classifier.with_efficient_hold_turns(turns);
     }
@@ -533,6 +541,38 @@ mod tests {
             call.name = "Write".to_string();
         }
         request
+    }
+
+    /// Disabling compaction escalation preserves normal signals in both pickers.
+    #[tokio::test]
+    async fn compaction_override_can_be_disabled() -> Result<()> {
+        for mode in [PickerMode::EfficientFirst, PickerMode::CapableFirst] {
+            for enabled in [true, false] {
+                let mut config = StageRouterConfig::new(mode, 0.5);
+                assert!(config.compaction_override);
+                config.compaction_override = enabled;
+                config.capable_hold_turns = 0;
+                let router = recording_router(config)?;
+                let recorder = Arc::new(Recorder::default());
+                for mut request in [production_request(), turn_request(true)] {
+                    request.llm_request.has_compaction = true;
+                    test_drive_with_models(
+                        router.clone(),
+                        request,
+                        runtime_models(),
+                        recorder.serve(),
+                    )
+                    .await?;
+                }
+                let actual: Vec<_> = recorder
+                    .routed()
+                    .into_iter()
+                    .map(|call| call.target)
+                    .collect();
+                assert_eq!(actual, [if enabled { "strong" } else { "weak" }, "strong"]);
+            }
+        }
+        Ok(())
     }
 
     #[tokio::test]

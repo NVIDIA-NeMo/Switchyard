@@ -9,6 +9,8 @@
 
 use serde_json::Value;
 
+pub(crate) const UTF8_BOM: char = '\u{FEFF}';
+
 /// Boxed, thread-safe error carried by a streamed item.
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 

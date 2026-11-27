@@ -14,19 +14,32 @@ export interface CompositeOptions {
   classifier: {
     classify_trigger: "user_turn" | "new_session";
     fail_open: boolean;
+    /** Selects capable-first when the `capable` probability is above this. Defaults to 0.6. */
+    cutoff?: number;
   };
-  stage: {
-    efficient_first_threshold: number;
-    capable_first_threshold: number;
-    /** Defaults to -1 for capable-first, otherwise 0. Set 0 to disable the hold. */
-    efficient_hold_turns?: number;
-  };
+  /** Stage profiles. The classifier's tier selects one for the turn. */
+  stage: { efficient_first: StageProfile; capable_first: StageProfile };
+}
+
+export interface StageProfile {
+  /** Confidence the tool signals need to switch tiers. */
+  threshold: number;
+  /** Trailing tool results scored. Defaults to 3. */
+  recent_window?: number;
+  /** Requests kept on capable after an escalation. Defaults to 2. Set 0 to disable, -1 to pin. */
+  capable_hold_turns?: number;
+  /** Defaults to -1 for capable-first, otherwise 0. Set 0 to disable the hold, -1 to pin. */
+  efficient_hold_turns?: number;
+  /** System prompt for requests routed to the capable model. */
+  capable_system_prompt?: string;
 }
 
 export interface Selection {
   model: string;
   /** Present only when the state changed. */
   state?: CompositeState;
+  /** Prepend this to the system prompt of the request sent to `model`. */
+  systemPrompt?: string;
 }
 
 /** Text and tool activity used for routing, in Switchyard's message format. */
@@ -78,7 +91,7 @@ export interface DecisionAnswer {
 
 type NativeStep =
   | { kind: "decision"; request: string }
-  | { kind: "done"; model: string; state: string | null };
+  | { kind: "done"; model: string; state: string | null; systemPrompt: string | null };
 
 interface NativeRun {
   next(response: string | null, error: string | null): Promise<NativeStep>;
@@ -158,9 +171,10 @@ export class CompositeRouter {
         const step = await Promise.race([run.next(response, failure), aborted]);
         if (signal?.aborted) throw abortError();
         if (step.kind === "done") {
-          return step.state === null
-            ? { model: step.model }
-            : { model: step.model, state: JSON.parse(step.state) };
+          const selection: Selection = { model: step.model };
+          if (step.state !== null) selection.state = JSON.parse(step.state);
+          if (step.systemPrompt !== null) selection.systemPrompt = step.systemPrompt;
+          return selection;
         }
         response = null;
         failure = null;
