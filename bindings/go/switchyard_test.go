@@ -239,6 +239,44 @@ func TestStreamTranslator(t *testing.T) {
 	}
 }
 
+// A "[DONE]" marker completes a stream only when the source format treats it as final.
+func TestStreamTranslatorDoneMarker(t *testing.T) {
+	finish := func(source, target, event string, sawDone bool) ([]json.RawMessage, error) {
+		stream, err := NewStreamTranslator(source, target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stream.Close()
+		if _, err := stream.Translate(json.RawMessage(event)); err != nil {
+			t.Fatal(err)
+		}
+		if sawDone {
+			stream.DoneMarker()
+		}
+		return stream.Finish()
+	}
+	chatText := `{"id":"1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hel"}}]}`
+
+	closing, err := finish("openai_chat", "anthropic_messages", chatText, true)
+	if err != nil {
+		t.Fatalf("stream ended by [DONE] failed: %v", err)
+	}
+	var last struct{ Type string }
+	if len(closing) == 0 || json.Unmarshal(closing[len(closing)-1], &last) != nil || last.Type != "message_stop" {
+		t.Fatalf("closing events %s, want them to end with message_stop", closing)
+	}
+	if _, err := finish("openai_chat", "anthropic_messages", chatText, false); err == nil ||
+		!strings.Contains(err.Error(), "openai_chat stream ended before a terminal event") {
+		t.Fatalf("stream that hit EOF without [DONE] finished with err=%v", err)
+	}
+
+	anthropicText := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hel"}}`
+	if _, err := finish("anthropic_messages", "openai_chat", anthropicText, true); err == nil ||
+		!strings.Contains(err.Error(), "anthropic_messages stream ended before a terminal event") {
+		t.Fatalf("Anthropic stream without message_stop finished after [DONE] with err=%v", err)
+	}
+}
+
 // Value copies share one stream: closing either releases it once and closes both.
 func TestStreamTranslatorCopiesShareClose(t *testing.T) {
 	stream, err := NewStreamTranslator("openai_chat", "anthropic_messages")
@@ -273,6 +311,7 @@ func TestUnopenedStreamTranslatorIsClosed(t *testing.T) {
 		if _, err := closed.Finish(); !errors.Is(err, errStreamClosed) {
 			t.Fatalf("err=%v, want errStreamClosed", err)
 		}
+		closed.DoneMarker()
 		closed.Close()
 	}
 }

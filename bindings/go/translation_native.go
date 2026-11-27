@@ -67,9 +67,13 @@ func (stream *nativeStream) translate(event []byte) ([]byte, error) {
 	return nativeOutput(failure, output)
 }
 
-func (stream *nativeStream) finish() ([]byte, error) {
+func (stream *nativeStream) finish(sawDone bool) ([]byte, error) {
+	var done C.uint32_t
+	if sawDone {
+		done = 1
+	}
 	var output *C.char
-	failure := C.sy_stream_finish(stream.ptr, &output)
+	failure := C.sy_stream_finish(stream.ptr, done, &output)
 	return nativeOutput(failure, output)
 }
 

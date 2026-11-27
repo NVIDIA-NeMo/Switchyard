@@ -468,7 +468,9 @@ fn stream_translation_keeps_state_until_finish() {
             sy_stream_translate(stream, event.as_ptr(), out)
         }));
     }
-    events.push(json_output(|out| unsafe { sy_stream_finish(stream, out) }));
+    events.push(json_output(|out| unsafe {
+        sy_stream_finish(stream, 0, out)
+    }));
     unsafe { sy_stream_free(stream) };
 
     let events: Vec<_> = events
@@ -494,17 +496,18 @@ fn stream_translation_keeps_state_until_finish() {
     assert!(stream.is_null());
 }
 
-// Finish reports a cut-off source unless the source already sent an error event.
+// Finish reports a cut-off source unless the source sent an error event or a `[DONE]`
+// marker its format accepts as final.
 #[test]
 fn stream_finish_reports_a_cut_off_source() {
-    let finish_after = |formats: &str, event: Value| {
+    let finish_after = |formats: &str, event: Value, saw_done: u32| {
         let input = CString::new(formats).unwrap();
         let mut stream = std::ptr::null_mut();
         check(unsafe { sy_stream_new(input.as_ptr(), &mut stream) });
         let event = CString::new(event.to_string()).unwrap();
         json_output(|out| unsafe { sy_stream_translate(stream, event.as_ptr(), out) });
         let mut output = std::ptr::null_mut();
-        let error = unsafe { sy_stream_finish(stream, &mut output) };
+        let error = unsafe { sy_stream_finish(stream, saw_done, &mut output) };
         unsafe { sy_stream_free(stream) };
         if error.is_null() {
             unsafe { sy_string_free(output) };
@@ -513,19 +516,36 @@ fn stream_finish_reports_a_cut_off_source() {
             Some(error_message(error))
         }
     };
-    let cut_off = finish_after(
-        r#"{"source":"openai_chat","target":"anthropic_messages"}"#,
-        json!({"choices": [{"index": 0, "delta": {"content": "hel"}, "finish_reason": null}]}),
-    );
+    let chat = r#"{"source":"openai_chat","target":"anthropic_messages"}"#;
+    let chat_text =
+        json!({"choices": [{"index": 0, "delta": {"content": "hel"}, "finish_reason": null}]});
     assert_eq!(
-        cut_off.as_deref(),
+        finish_after(chat, chat_text.clone(), 0).as_deref(),
         Some("openai_chat stream ended before a terminal event")
     );
+    assert_eq!(finish_after(chat, chat_text.clone(), 1), None);
+    assert_eq!(
+        finish_after(chat, chat_text, 2).as_deref(),
+        Some("saw_done must be 0 or 1")
+    );
+
+    let anthropic = r#"{"source":"anthropic_messages","target":"openai_chat"}"#;
     let failed = finish_after(
-        r#"{"source":"anthropic_messages","target":"openai_chat"}"#,
+        anthropic,
         json!({"type": "error", "error": {"type": "overloaded_error", "message": "busy"}}),
+        0,
     );
     assert_eq!(failed, None);
+    // Anthropic streams end with message_stop; a `[DONE]` marker does not complete them.
+    assert_eq!(
+        finish_after(
+            anthropic,
+            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "hel"}}),
+            1,
+        )
+        .as_deref(),
+        Some("anthropic_messages stream ended before a terminal event")
+    );
 }
 
 // Pending reads must yield the runtime worker, not consume blocking threads.

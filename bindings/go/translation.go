@@ -59,13 +59,14 @@ type StreamTranslator struct {
 }
 
 type streamState struct {
-	handle streamHandle
+	handle  streamHandle
+	sawDone bool
 }
 
 // streamHandle holds a backend's translation state for one stream.
 type streamHandle interface {
 	translate(event []byte) ([]byte, error)
-	finish() ([]byte, error)
+	finish(sawDone bool) ([]byte, error)
 	free()
 }
 
@@ -102,13 +103,23 @@ func (stream *StreamTranslator) Translate(event json.RawMessage) ([]json.RawMess
 	return streamEvents(handle.translate(event))
 }
 
-// Finish returns the target's closing events after the source stream ends.
+// DoneMarker records that the provider sent the SSE "[DONE]" marker. Call it instead of
+// passing the marker to Translate. Finish then accepts the stream as complete if the
+// source format treats the marker as final, as OpenAI Chat and Responses do.
+func (stream *StreamTranslator) DoneMarker() {
+	if stream.handle() != nil {
+		stream.state.sawDone = true
+	}
+}
+
+// Finish returns the target's closing events after the source stream ends. It fails
+// when the source stopped before its final event or an accepted "[DONE]" marker.
 func (stream *StreamTranslator) Finish() ([]json.RawMessage, error) {
 	handle := stream.handle()
 	if handle == nil {
 		return nil, errStreamClosed
 	}
-	return streamEvents(handle.finish())
+	return streamEvents(handle.finish(stream.state.sawDone))
 }
 
 // Close releases the translator. Repeated calls and value copies are safe.

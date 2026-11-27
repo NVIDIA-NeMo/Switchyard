@@ -541,6 +541,9 @@ pub unsafe extern "C" fn sy_stream_translate(
 }
 
 /// Writes the closing target events, as a JSON array, after the source stream ends.
+/// `saw_done` is 1 when the host read the SSE `[DONE]` marker, which ends the stream for
+/// formats whose codec treats it as final, and 0 otherwise. It is an integer, not `bool`,
+/// so no value a caller passes is undefined behavior; values other than 0 and 1 fail.
 /// Fails when the source ended before its final event and sent no error event.
 /// # Safety
 /// `stream` must be live and not used concurrently, and `out_json` writable.
@@ -548,14 +551,22 @@ pub unsafe extern "C" fn sy_stream_translate(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn sy_stream_finish(
     stream: *mut SyStream,
+    saw_done: u32,
     out_json: *mut *mut c_char,
 ) -> *mut c_char {
     ffi_call(|| {
         let out = unsafe { out_json.as_mut() }.ok_or("missing events output")?;
         *out = std::ptr::null_mut();
         let stream = unsafe { stream.as_mut() }.ok_or("missing stream")?;
+        let saw_done = match saw_done {
+            0 => false,
+            1 => true,
+            _ => return Err("saw_done must be 0 or 1".into()),
+        };
+        let ended =
+            stream.ended || (saw_done && STREAM_ENGINE.done_marker_is_terminal(stream.source)?);
         // Closing a cut-off source normally would pass a partial answer off as complete.
-        if !stream.ended && !stream.state.errored {
+        if !ended && !stream.state.errored {
             return Err(format!("{} stream ended before a terminal event", stream.source).into());
         }
         let events = STREAM_ENGINE.finish_stream(&mut stream.state, stream.target)?;

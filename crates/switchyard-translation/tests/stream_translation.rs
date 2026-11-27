@@ -3925,23 +3925,26 @@ fn responses_custom_tool_calls_decode_from_the_finished_item() -> TestResult {
 }
 
 #[test]
-fn terminal_stream_events_follow_each_format() -> TestResult {
+fn stream_end_rules_follow_each_format() -> TestResult {
     let engine = TranslationEngine::default();
-    for (format, terminal, other) in [
+    for (format, terminal, other, done_is_terminal) in [
         (
             WireFormat::OpenAiChat,
             json!({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),
             json!({"choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": null}]}),
+            true,
         ),
         (
             WireFormat::AnthropicMessages,
             json!({"type": "message_stop"}),
             json!({"type": "content_block_delta"}),
+            false,
         ),
         (
             WireFormat::OpenAiResponses,
             json!({"type": "response.completed", "response": {}}),
             json!({"type": "response.output_text.delta", "delta": "hi"}),
+            true,
         ),
     ] {
         assert!(
@@ -3950,6 +3953,11 @@ fn terminal_stream_events_follow_each_format() -> TestResult {
         );
         assert!(
             !engine.is_terminal_stream_event(format, &other)?,
+            "{format}"
+        );
+        assert_eq!(
+            engine.done_marker_is_terminal(format)?,
+            done_is_terminal,
             "{format}"
         );
     }

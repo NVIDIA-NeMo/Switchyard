@@ -331,6 +331,13 @@ impl TranslationEngine {
         Ok(self.stream_registry.codec(source)?.is_terminal_event(event))
     }
 
+    /// Returns whether the SSE `[DONE]` marker ends a `source` stream as complete.
+    ///
+    /// This is the marker rule [`Self::decode_stream`] applies.
+    pub fn done_marker_is_terminal(&self, source: impl Into<FormatId>) -> Result<bool> {
+        Ok(self.stream_registry.codec(source)?.sse_done_is_terminal())
+    }
+
     /// Decodes one provider event while retaining its parsed source JSON value.
     ///
     /// Takes ownership of `event` so preservation does not deep-copy provider JSON
