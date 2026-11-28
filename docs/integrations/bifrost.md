@@ -8,11 +8,12 @@ the provider. Bifrost owns credentials, retries, inference, and response streami
 
 ## Build
 
-Follow the [source build and test steps](../../examples/bifrost/README.md).
-This integration requires a Switchyard checkout and pins Bifrost core 1.13.0.
+Follow the [local host setup and test steps](../../examples/bifrost/README.md).
+They build Bifrost's current default branch and the plugin in one Go workspace,
+using Bifrost's local modules for both builds. No Bifrost revision is required.
 Build on the host's Linux or macOS platform with matching architecture, Go
-version, dependency versions, and build flags. Align `go.mod` with your host
-before building for another Bifrost version.
+compiler, dependencies, and build flags. Rebuild both artifacts after updating
+Bifrost; upstream plugin API changes may require adapter changes.
 
 ## Configure
 
