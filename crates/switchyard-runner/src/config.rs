@@ -15,8 +15,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 use switchyard_llm_client::{
-    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, ModelConfig,
-    OpenAiDecisionClient, ResponsesReasoningPolicy, SystemOneClient, TranslatingLlmClient,
+    AuxiliaryOperation, Backend, ClientRouter, DEFAULT_MAX_RETRIES, HttpBackendConfig, MediaConfig,
+    ModelConfig, OpenAiDecisionClient, ResponsesReasoningPolicy, SystemOneClient,
+    TranslatingLlmClient,
 };
 use switchyard_protocol::{
     LlmClientError, ModelId, RoutedDecisionClient, RoutedLlmClient, WireFormat,
@@ -1139,21 +1140,23 @@ impl DeploymentConfig {
                     )));
                 }
             }
-            model_configs.push(
-                ModelConfig::new(
-                    target_name.as_str(),
-                    build_backend(
-                        &target.llm_client,
-                        client_config,
-                        &target.extra_body,
-                        &target.omit_body_fields,
-                        target.reasoning_effort.clone(),
-                    )?,
-                    None,
-                )
-                .with_responses_reasoning(client_config.responses_reasoning.unwrap_or_default())
-                .with_provider_model(target.id.clone()),
-            );
+            let mut model_config = ModelConfig::new(
+                target_name.as_str(),
+                build_backend(
+                    &target.llm_client,
+                    client_config,
+                    &target.extra_body,
+                    &target.omit_body_fields,
+                    target.reasoning_effort.clone(),
+                )?,
+                None,
+            )
+            .with_responses_reasoning(client_config.responses_reasoning.unwrap_or_default())
+            .with_provider_model(target.id.clone());
+            if let Some(media) = &target.media {
+                model_config = model_config.with_media(media.clone());
+            }
+            model_configs.push(model_config);
         }
 
         let mut clients = BTreeMap::new();
@@ -1571,6 +1574,8 @@ struct TargetConfig {
     system_prompt: Option<String>,
     /// Reasoning effort forced on every request to this target, replacing the caller's value.
     reasoning_effort: Option<String>,
+    /// Media preparation for every outgoing call to this target.
+    media: Option<MediaConfig>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -2593,6 +2598,21 @@ task_typing = false
         Ok(())
     }
 
+    /// Reject an invalid image budget or a mode that never consumes it.
+    #[test]
+    fn rejects_invalid_judge_image_limits() {
+        let negative = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "base_threshold = 0.5\njudge_max_images = -1",
+        );
+        assert!(Runner::from_toml(&negative).is_err());
+        let escalation = VALID_CONFIG.replace(
+            "base_threshold = 0.5",
+            "mode = \"escalation\"\nescalation = { confirmations = 1 }\njudge_max_images = 1",
+        );
+        assert!(error_message(&escalation).contains("mode escalation cannot use judge_max_images"));
+    }
+
     fn with_subagent_llm_classifier(config: &str, route: &str, extra: &str) -> String {
         let mut configured = config.to_string();
         configured.push_str(&format!("\n[routes.{route}.subagents]\n"));
@@ -3069,6 +3089,25 @@ classify_trigger"#,
             error_message(&minimal)
         );
         Ok(())
+    }
+
+    #[test]
+    fn target_media_config_is_validated_per_target() {
+        let target = "[targets.strong]\nid = \"strong/model\"\nllm_client = \"responses\"";
+        let valid = VALID_CONFIG.replace(target, &format!("{target}\nmedia = {{ video = \"frames\", video_max_frames = 2, frame_max_edge = 384 }}"));
+        assert!(runner_from_toml(&valid).is_ok());
+        assert!(
+            error_message(&valid.replace("video_max_frames = 2", "video_max_frames = 0"))
+                .contains("invalid media limits")
+        );
+        assert!(
+            error_message(&valid.replace("video = \"frames\"", "video = \"video_url\""))
+                .contains("require an openai_chat")
+        );
+        let distinct = format!(
+            "{valid}\n[targets.duplicate]\nid = \"strong/model\"\nllm_client = \"responses\"\nmedia = {{ video = \"frames\", video_max_frames = 1 }}\n"
+        );
+        assert!(runner_from_toml(&distinct).is_ok());
     }
 
     #[test]

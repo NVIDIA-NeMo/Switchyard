@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use switchyard_translation::{
     ContentBlock, FormatId, ImageSource, InstructionBlock, LlmRequest, LossyConversionPolicy,
     Message, Role, TranslationEngine, TranslationError, TranslationPolicy, WireFormat,
-    prepare_request_for_target, sanitize_anthropic_tool_use_id,
+    decode_request, encode_request, prepare_request_for_target, sanitize_anthropic_tool_use_id,
 };
 
 use common::{REASONING_MODEL, normalized_policy, shell_tool_call};
@@ -5281,6 +5281,55 @@ fn anthropic_pdf_titles_produce_openai_pdf_filenames() -> TestResult {
                 .body;
             assert_eq!(native["messages"], body["messages"]);
         }
+    }
+    Ok(())
+}
+
+#[test]
+fn video_survives_judge_rebuild_and_cross_format_translation() -> TestResult {
+    for (format, part, url) in [
+        (
+            WireFormat::OpenAiChat,
+            json!({"type":"video_url","video_url":{"url":"https://example.com/clip.mp4"}}),
+            "https://example.com/clip.mp4",
+        ),
+        (
+            WireFormat::OpenAiChat,
+            json!({"type":"file","file":{"file_id":"https://example.com/opaque","format":"video/webm"}}),
+            "https://example.com/opaque",
+        ),
+        (
+            WireFormat::OpenAiResponses,
+            json!({"type":"input_video","video_url":"https://example.com/opaque","media_type":"video/webm"}),
+            "https://example.com/opaque",
+        ),
+        (
+            WireFormat::AnthropicMessages,
+            json!({"type":"video","source":{"type":"base64","media_type":"video/mp4","data":"AQID"}}),
+            "data:video/mp4;base64,AQID",
+        ),
+    ] {
+        let key = if format == WireFormat::OpenAiResponses {
+            "input"
+        } else {
+            "messages"
+        };
+        let body =
+            json!({"model":"video", "max_tokens":100, key:[{"role":"user","content":[part]}]});
+        let mut request = decode_request(format, &body)?;
+        assert!(matches!(
+            request.messages[0].content[0],
+            ContentBlock::Video { .. }
+        ));
+        // Judges rebuild requests from normalized content without the original wire body.
+        request.preservation = Default::default();
+        let chat = encode_request(&request, WireFormat::OpenAiChat)?;
+        let block = &chat["messages"][0]["content"][0];
+        assert_eq!(block["video_url"]["url"], url);
+        let request = decode_request(WireFormat::OpenAiChat, &chat)?;
+        let responses = encode_request(&request, WireFormat::OpenAiResponses)?;
+        let decoded = decode_request(WireFormat::OpenAiResponses, &responses)?;
+        assert_eq!(decoded.messages, request.messages);
     }
     Ok(())
 }
