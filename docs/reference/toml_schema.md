@@ -238,7 +238,7 @@ Decision clients serve typed judgments for routing classifiers.
 | `format` | Yes | `system_one`, `openai_decisions`, or `foundry_rank`. |
 | `endpoint` | Yes | Full API URL, including the endpoint path. |
 | `api_key_env` | `system_one`, `openai_decisions` | Environment variable holding a non-empty API key. |
-| `bearer_token_file` | `foundry_rank` | File containing a bearer token. Switchyard reads it on each Rank call; the operator acquires and rotates the token. |
+| `bearer_token_file` | `foundry_rank` | Path to a file containing a bearer token. |
 | `model_versions` | `foundry_rank` | Map from canonical model group names to the versions served by their configured targets. |
 | `timeout_ms` | Yes | Request and response deadline in milliseconds; must be at least `1`. |
 
@@ -260,30 +260,10 @@ Each `decision_targets` entry pairs a decision `id` with a `decision_client`.
 System One and OpenAI Decisions receive conversation messages, question
 instructions, and choice descriptions.
 
-Foundry Rank requires a standalone [direct route](../routing_algorithms/llm_classifier_routing.md#direct-selection)
-with one judge and no `recent_turn_window` or target
-eligibility settings. Name each choice group after a lowercase canonical
-model ID and give it one distinct execution target. Include every `models.any`
-target in those mappings. A returned version must match `model_versions` when
-Rank supplies one. The decision target `id` is a local identifier for this client.
-
-Configure the full HTTPS Rank URL, including any required API-version query.
-This client sends the preview header and the full native Chat Completions,
-Responses, or Messages request to Foundry. Only enable the route for requests
-you are allowed to send there. It requests strict parameter matching, disables
-Foundry affinity, and makes no Rank retries or outcome reports. Rank can check a
-pool of one or more models. As with other direct clients, `fail_open` defaults
-to `true`: a Rank error selects `default_target` without a compatibility check.
-Set `fail_open = false` to return the Rank error instead. Switchyard ranks every
-request by default; a retaining `classify_trigger` can reuse a choice without
-checking the new payload. If generation
-fails with an error that allows fallback, Switchyard tries the remaining
-targets in `models.any` order without calling Rank again. A fallback may be
-a model that Rank excluded for the request. A Responses
-request with a recorded state owner still goes to that owner. Rank evaluates
-the incoming request, before generation-specific translation or target overrides.
-For Messages, a 422 with `x-switchyard-error-code: no_supported_models` indicates
-that Rank found no compatible target without changing the JSON error format.
+For Anthropic Messages, when an upstream service returns HTTP 422 with
+`no_supported_models`, Switchyard exposes that code in the
+`x-switchyard-error-code` response header. The JSON error format is unchanged.
+The header does not identify which upstream service returned the error.
 
 ## `[routes.<name>]`
 

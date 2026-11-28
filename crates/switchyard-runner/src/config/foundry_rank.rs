@@ -78,15 +78,32 @@ impl DeploymentConfig {
             let [target] = targets.as_slice() else {
                 return Err(invalid("requires one execution target per model group"));
             };
-            // Different target aliases can still point to the same upstream deployment.
             let binding = self.targets.get(target).ok_or_else(|| {
                 RunnerError::configuration(format!(
                     "route {name} references unknown target {target}"
                 ))
             })?;
-            if !mapped_targets.insert(target.clone())
-                || !mapped_bindings.insert((&binding.llm_client, &binding.id))
-            {
+            if binding.omit_body_fields.contains("model") {
+                return Err(invalid(&format!(
+                    "execution target {target} cannot omit \"model\" from its request body"
+                )));
+            }
+            let client = self.llm_clients.get(&binding.llm_client).ok_or_else(|| {
+                RunnerError::configuration(format!(
+                    "target {target} references unknown llm client {}",
+                    binding.llm_client
+                ))
+            })?;
+            // Client aliases and retry settings do not identify a deployment.
+            let destination = (
+                client.base_url.as_str(),
+                client.format.wire_format(),
+                &binding.id,
+                &client.api_key_env,
+                client.forward_auth,
+                &client.extra_headers,
+            );
+            if !mapped_targets.insert(target.clone()) || !mapped_bindings.insert(destination) {
                 return Err(invalid(
                     "requires a distinct execution target per model group",
                 ));

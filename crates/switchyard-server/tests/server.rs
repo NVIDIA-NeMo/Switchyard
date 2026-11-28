@@ -1925,12 +1925,51 @@ async fn foundry_rank_rejects_invalid_mappings_and_transcript_window() -> TestRe
             config.replace("deployment/large", "deployment/mini"),
             "distinct execution target",
         ),
+        (
+            config.replace(
+                r#"mini = { id = "deployment/mini", llm_client = "mock" }"#,
+                r#"mini = { id = "deployment/mini", llm_client = "mock", omit_body_fields = ["model"], extra_body = { model = "deployment/large" } }"#,
+            ),
+            r#"execution target mini cannot omit "model" from its request body"#,
+        ),
     ] {
         let error = Runner::from_toml(&config)
             .err()
             .ok_or("invalid Rank route loaded")?;
         assert!(error.to_string().contains(message), "{error}");
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn foundry_rank_rejects_duplicate_deployments_across_client_aliases() -> TestResult {
+    let upstream = MockUpstream::start().await?;
+    let token = tempfile::NamedTempFile::new()?;
+    let config = foundry_rank_config(&upstream, token.path()).replace(
+        r#"large = { id = "deployment/large", llm_client = "mock" }"#,
+        r#"large = { id = "deployment/mini", llm_client = "alias" }"#,
+    );
+    let with_alias = |base_url: &str, settings: &str| {
+        format!(
+            "{config}\n[llm_clients.alias]\nformat = \"openai_chat\"\nbase_url = {base_url:?}\n{settings}"
+        )
+    };
+    let error = Runner::from_toml(&with_alias(&upstream.base_url, "max_retries = 0"))
+        .err()
+        .ok_or("duplicate deployment loaded under a different client name")?;
+    assert!(
+        error.to_string().contains("distinct execution target"),
+        "{error}"
+    );
+
+    Runner::from_toml(&with_alias(
+        &format!("{}/other-project", upstream.base_url),
+        "",
+    ))?;
+    Runner::from_toml(&with_alias(
+        &upstream.base_url,
+        r#"extra_headers = { "x-project-id" = "other-project" }"#,
+    ))?;
     Ok(())
 }
 
