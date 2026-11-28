@@ -46,6 +46,7 @@ Evaluate the complete agent, model pool, and routing configuration against your 
 | Gateway | Start here | Deployment and limits |
 | --- | --- | --- |
 | **Agent Router** | [Agent Router](https://github.com/tetratelabs/built-on-envoy/blob/main/extensions/switchyard/README.md) | Open-source and self-hosted. It provides an OpenAI-compatible API and runs on Envoy. |
+| **Bifrost** | [Build and configure the Go plugin](docs/integrations/bifrost.md) | Experimental and checkout-only. Uses the shared Go bindings for all routing algorithms except Prefill. Model-calling routes use the local Bifrost API. Requires a matching Bifrost Go build. |
 | **LiteLLM** | [Run the Switchyard routing-plugin example](examples/litellm/README.md#quick-start-with-the-local-proxy) | Experimental and checkout-only. The example pins LiteLLM 1.102.0 and supports Stage routing based on request history, plus Random routing. It cannot service intermediate model calls required by classifier or escalation algorithms. |
 | **NeMo Relay** | [Build and configure the native plugin](crates/switchyard-nemo-relay-plugin/README.md#build-from-source) | Requires Relay `>=0.10.1, <1.0.0`. The source-build path requires a Rust toolchain and Python 3. |
 | **OpenRouter** | [Use Switchyard through OpenRouter](https://openrouter.ai/docs/guides/routing/routers/switchyard-router) | Hosted by OpenRouter. Set `model` to `nvidia/switchyard` in API requests. |
@@ -55,7 +56,7 @@ is enabled, even for models outside its routes. Review the
 [upstream error compatibility note](docs/integrations/nemo_relay.md#upstream-error-compatibility)
 before enabling the plugin.
 
-LiteLLM and NeMo Relay run in your own deployment. Follow each gateway's guidance for credentials and service operation.
+Bifrost, LiteLLM, and NeMo Relay run in your own deployment. Follow each gateway's guidance for credentials and service operation.
 
 <a id="start-with-libsy"></a>
 

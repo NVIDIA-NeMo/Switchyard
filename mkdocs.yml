@@ -27,6 +27,7 @@ nav:
           - Decision Model-Related Protocols: protocols/decisions.md
       - Embed in Your Gateway or Harness: reference/host_integration.md
       - Gateways:
+          - Bifrost: integrations/bifrost.md
           - NeMo Relay: integrations/nemo_relay.md
   - Routing:
       - Algorithms:

@@ -96,8 +96,15 @@ when the host refuses the call, such as for a budget or authorization check.
 
 Requests and replies use Switchyard's protocol JSON. `DecodeRequest`,
 `EncodeRequest`, and `DecodeResponse` use the existing translation codecs for
-`openai_chat`, `openai_responses`, and `anthropic_messages`. Typed decision
-requests use the decision protocol directly.
+`openai_chat`, `openai_responses`, and `anthropic_messages`. `EncodeResponse` encodes completed answers as JSON or a buffered synthetic SSE
+stream according to the normalized request's `stream` flag. Streaming conversion
+preserves text, reasoning, and tool calls; use JSON for other content types.
+Typed decision requests use the decision protocol directly.
+
+`Input.Headers` uses the shared protocol parser for session, subagent, and
+compaction metadata. Explicit `Input.Metadata` takes precedence.
+`Input.MetadataScope` isolates session IDs and configured message-hash retention
+between host-defined callers or tenants. Leave it empty to keep unscoped behavior.
 
 `Outcome` contains ordered targets, the prepared request, optional routing
 evidence, and an optional answer. When it has no answer, the host calls the

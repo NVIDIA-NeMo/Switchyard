@@ -501,6 +501,7 @@ unsafe extern "C" fn complete_after_release(
 #[test]
 fn free_waits_for_cancelled_callback_to_return() {
     let engine = Arc::new(Engine {
+        hash_fallback: false,
         algorithm: Arc::new(switchyard_libsy::Noop {}),
         runtime: tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -695,6 +696,7 @@ fn panics_return_owned_errors() {
     let run = SyRun::new(
         Box::pin(futures::stream::poll_fn(|_| panic!("test panic"))),
         Arc::new(Engine {
+            hash_fallback: false,
             algorithm: Arc::new(switchyard_libsy::Noop {}),
             runtime: Runtime::new().unwrap(),
         }),

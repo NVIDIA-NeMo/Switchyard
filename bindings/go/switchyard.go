@@ -28,6 +28,8 @@ type routerState struct {
 
 // Input supplies a normalized request and the host-approved model groups for this run.
 type Input struct {
+	Headers        map[string]string   `json:"headers,omitempty"`
+	MetadataScope  string              `json:"metadata_scope,omitempty"`
 	Request        json.RawMessage     `json:"request"`
 	Models         map[string][]string `json:"models"`
 	SubagentModels map[string][]string `json:"subagent_models"`

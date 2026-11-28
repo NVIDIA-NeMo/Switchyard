@@ -2515,6 +2515,7 @@ name = "switchyard-ffi"
 version = "0.4.0"
 dependencies = [
  "futures",
+ "http",
  "parking_lot",
  "serde",
  "serde_json",
