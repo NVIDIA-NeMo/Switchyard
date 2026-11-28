@@ -434,3 +434,30 @@ func TestReplyAttributionAndMetadata(t *testing.T) {
 		}
 	}
 }
+
+// Completed answers use the same JSON and stream codecs as the native host.
+func TestEncodeCompletedResponse(t *testing.T) {
+	response := json.RawMessage(`{"id":"answer","model":"served","outputs":[{"role":"assistant","content":[{"type":"text","text":"Done"}],"stop_reason":"end_turn"}],"usage":{"input_tokens":4,"output_tokens":1,"total_tokens":5}}`)
+	for _, format := range []string{"openai_chat", "openai_responses", "anthropic_messages"} {
+		for _, stream := range []bool{false, true} {
+			request := json.RawMessage(fmt.Sprintf(`{"messages":[],"stream":%t}`, stream))
+			contentType, body, err := EncodeResponse(format, response, request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(body), "Done") {
+				t.Fatalf("answer lost: %s", body)
+			}
+			if stream {
+				if contentType != "text/event-stream" {
+					t.Fatal(contentType)
+				}
+				if format == "openai_chat" && !strings.HasSuffix(string(body), "data: [DONE]\n\n") {
+					t.Fatal("missing stream terminator")
+				}
+			} else if contentType != "application/json" || !json.Valid(body) {
+				t.Fatalf("invalid buffered answer: %s", body)
+			}
+		}
+	}
+}

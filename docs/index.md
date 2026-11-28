@@ -10,7 +10,7 @@ or embed libsy and keep your current model clients.
 | Goal | Start here | What you own |
 |---|---|---|
 | Use routing through an inference provider | [Switchyard on OpenRouter](https://openrouter.ai/docs/guides/routing/routers/switchyard-router) | Your API requests and provider account. Follow the provider's available algorithms and controls. |
-| Add routing to your gateway | [NeMo Relay](integrations/nemo_relay.md) or the experimental [LiteLLM integration](../examples/litellm/README.md) | Gateway deployment, credentials, and operation. Check each integration's limits. |
+| Add routing to your gateway | [NeMo Relay](integrations/nemo_relay.md), experimental [Bifrost integration](integrations/bifrost.md), or the experimental [LiteLLM integration](../examples/litellm/README.md) | Gateway deployment, credentials, and operation. Check each integration's limits. |
 | Embed routing in a gateway, harness, or application | [Rust quickstart](getting_started.md), then [Mechanics of Libsy](mechanics_of_libsy.md) | Model execution and application lifecycle. [Python bindings](reference/host_integration.md#python-bindings) use the same core. |
 
 ## Try With a Local Agent

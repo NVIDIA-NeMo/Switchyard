@@ -39,3 +39,24 @@ func translated(export string, input any) (json.RawMessage, error) {
 	}
 	return translate(export, data)
 }
+
+// EncodeResponse encodes a completed response, honoring the request's stream flag.
+// Streaming output is buffered until routing and model execution finish.
+func EncodeResponse(format string, response, request json.RawMessage) (contentType string, body []byte, err error) {
+	data, err := translated("sy_encode_response", struct {
+		Format   string          `json:"format"`
+		Response json.RawMessage `json:"response"`
+		Request  json.RawMessage `json:"request"`
+	}{format, response, request})
+	if err != nil {
+		return "", nil, err
+	}
+	var output struct {
+		ContentType string `json:"content_type"`
+		Body        string `json:"body"`
+	}
+	if err := json.Unmarshal(data, &output); err != nil {
+		return "", nil, err
+	}
+	return output.ContentType, []byte(output.Body), nil
+}

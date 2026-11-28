@@ -44,6 +44,16 @@ jobs:
           cc testdata/cshared.c -I "$RUNNER_TEMP" -L "$RUNNER_TEMP" \
             -Wl,-rpath,"$RUNNER_TEMP" -lswitchyard_smoke -o "$RUNNER_TEMP/shared-host"
           "$RUNNER_TEMP/shared-host"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: examples/bifrost/go.mod
+          cache: false
+      - name: Test and build Bifrost plugin
+        working-directory: examples/bifrost
+        run: |
+          go vet -tags switchyard_native ./...
+          go test -count=1 -race -tags switchyard_native ./...
+          go build -tags switchyard_native -buildmode=plugin -o ../../target/switchyard-bifrost.so .
 
   wasm:
     name: WASM

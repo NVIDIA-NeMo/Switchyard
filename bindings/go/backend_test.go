@@ -41,6 +41,61 @@ func TestMessageRetention(t *testing.T) {
 	}
 }
 
+func TestScopedSessionNamespaces(t *testing.T) {
+	algorithm := strings.Replace(composite, `"classify_trigger":"user_turn"`, `"classify_trigger":"new_session"`, 1)
+	router := newRouter(t, algorithm)
+	calls := 0
+	for _, tc := range []struct {
+		scope, session string
+		calls          int
+	}{
+		{"tenant", "session", 1},
+		{"", "6:tenant:session", 2},
+		{"tenant", "session", 2},
+		{"", "6:tenant:session", 2},
+		{"a:b", "c", 3},
+		{"a", "b:c", 4},
+	} {
+		request := input()
+		request.MetadataScope = tc.scope
+		request.Metadata = &RequestMetadata{SessionID: tc.session}
+		_, err := router.Route(context.Background(), request, func(context.Context, Work) (Reply, error) {
+			calls++
+			return Reply{Response: json.RawMessage(judgeAnswer)}, nil
+		})
+		if err != nil || calls != tc.calls {
+			t.Fatalf("scope=%q session=%q calls=%d want=%d err=%v", tc.scope, tc.session, calls, tc.calls, err)
+		}
+	}
+}
+
+func TestInitiatorHeaderRetention(t *testing.T) {
+	for _, explicit := range []bool{false, true} {
+		t.Run(fmt.Sprint(explicit), func(t *testing.T) {
+			router := newRouter(t, `{"type":"llm_classifier","mode":"capability","classifier_target":"judge","strong_target":"strong","weak_target":"weak","classify_trigger":"user_turn","base_threshold":0.5,"fail_open":false}`)
+			calls := 0
+			for index, initiator := range []string{"user", "agent", "user"} {
+				request := input()
+				request.Headers = map[string]string{"x-switchyard-session-id": "session", "x-initiator": initiator}
+				if explicit {
+					request.Metadata = &RequestMetadata{SessionID: "session"}
+				}
+				_, err := router.Route(context.Background(), request, func(context.Context, Work) (Reply, error) {
+					calls++
+					return Reply{Response: json.RawMessage(judgeAnswer)}, nil
+				})
+				want := 1
+				if index == 2 {
+					want = 2
+				}
+				if err != nil || calls != want {
+					t.Fatalf("initiator=%s calls=%d want=%d err=%v", initiator, calls, want, err)
+				}
+			}
+		})
+	}
+}
+
 // A routing deadline must expire while its host call is still pending.
 func TestRoutingDeadline(t *testing.T) {
 	router := newRouter(t, `{"type":"vgr","efficient_target":"weak","capable_target":"strong","mode":"evaluate","deadline_seconds":0.02,"task_typing":false}`)

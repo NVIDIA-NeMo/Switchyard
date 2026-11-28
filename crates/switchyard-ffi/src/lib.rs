@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString, c_char};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 
@@ -65,6 +66,8 @@ struct RunInput {
     models: ModelGroups,
     subagent_models: Option<ModelGroups>,
     metadata: Option<RequestMetadata>,
+    headers: Option<BTreeMap<String, String>>,
+    metadata_scope: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -89,6 +92,13 @@ struct EncodeInput {
     format: WireFormat,
     request: LlmRequest,
     model: ModelId,
+}
+
+#[derive(Deserialize)]
+struct EncodeResponseInput {
+    format: WireFormat,
+    response: AggLlmResponse,
+    request: LlmRequest,
 }
 
 #[derive(Deserialize)]
@@ -137,6 +147,7 @@ enum RunStep<'a> {
 }
 
 struct Engine {
+    hash_fallback: bool,
     algorithm: Arc<dyn Algorithm>,
     runtime: Runtime,
 }
@@ -443,6 +454,76 @@ pub unsafe extern "C" fn sy_decode_response(
     })
 }
 
+/// Encodes an aggregate as JSON or a complete buffered event stream.
+/// # Safety
+/// JSON must be NUL-terminated and `out_json` writable. Free the output with `sy_string_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_encode_response(
+    input_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> *mut c_char {
+    ffi_call(|| {
+        let out = unsafe { out_json.as_mut() }.ok_or("missing response output")?;
+        *out = std::ptr::null_mut();
+        let input: EncodeResponseInput = unsafe { parse_json_input(input_json) }?;
+        let engine = switchyard_translation::TranslationEngine::default();
+        let (content_type, body) = if input.request.stream {
+            let chunks = futures::executor::block_on(
+                engine
+                    .encode_stream_with_extensions(
+                        input.format,
+                        input.response.into_stream(),
+                        None,
+                        &input.request.extensions,
+                    )?
+                    .collect::<Vec<_>>(),
+            );
+            let include_usage = input
+                .request
+                .extensions
+                .fields
+                .get("stream_options")
+                .and_then(|options| options.get("include_usage"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            let mut body = String::new();
+            for chunk in chunks {
+                let chunk = chunk?;
+                if input.format == WireFormat::OpenAiChat
+                    && !include_usage
+                    && chunk
+                        .get("choices")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(Vec::is_empty)
+                {
+                    continue;
+                }
+                if input.format != WireFormat::OpenAiChat
+                    && let Some(kind) = chunk.get("type").and_then(serde_json::Value::as_str)
+                {
+                    body.push_str(&format!("event: {kind}\n"));
+                }
+                body.push_str(&format!("data: {}\n\n", serde_json::to_string(&chunk)?));
+            }
+            if input.format == WireFormat::OpenAiChat {
+                body.push_str("data: [DONE]\n\n");
+            }
+            ("text/event-stream", body)
+        } else {
+            let output = engine.encode_response_with_extensions(
+                input.format,
+                &input.response,
+                &input.request.extensions,
+                &Default::default(),
+            )?;
+            ("application/json", serde_json::to_string(&output.body)?)
+        };
+        *out = encode_json(&serde_json::json!({"content_type": content_type, "body": body}))?
+            .into_raw();
+        Ok(())
+    })
+}
+
 fn parse_model_groups(groups: ModelGroups) -> Result<HashMap<Category, Vec<ModelId>>> {
     groups
         .into_iter()
@@ -462,10 +543,19 @@ pub unsafe extern "C" fn sy_router_new(
         let out = unsafe { out.as_mut() }.ok_or("missing router output")?;
         *out = std::ptr::null_mut();
         let config: RouterConfig = unsafe { parse_json_input(config_json) }?;
+        let hash_fallback = match &config.algorithm {
+            AlgorithmSpec::LlmClassifier { config } => config.message_hash_fallback,
+            AlgorithmSpec::Composite { classifier, .. } => classifier.message_hash_fallback,
+            _ => false,
+        };
         let algorithm = config.algorithm.build("embedded", &config.targets)?;
         let runtime = new_runtime()?;
         *out = Box::into_raw(Box::new(SyRouter {
-            engine: Arc::new(Engine { algorithm, runtime }),
+            engine: Arc::new(Engine {
+                algorithm,
+                runtime,
+                hash_fallback,
+            }),
         }));
         Ok(())
     })
@@ -551,19 +641,65 @@ pub unsafe extern "C" fn sy_run_new(
         if let Some(subagent_models) = input.subagent_models {
             models = models.with_subagent(parse_model_groups(subagent_models)?);
         }
+        let headers = input
+            .headers
+            .map(|headers| {
+                headers
+                    .into_iter()
+                    .map(|(name, value)| {
+                        Ok((
+                            name.parse::<http::header::HeaderName>()?,
+                            value.parse::<http::HeaderValue>()?,
+                        ))
+                    })
+                    .collect::<Result<http::HeaderMap>>()
+            })
+            .transpose()?;
         let mut request = Request {
             llm_request: input.request,
-            metadata: input.metadata.map(|metadata| Metadata {
-                session_id: metadata.session_id,
-                agent_id: metadata.agent_id,
-                is_subagent: metadata.is_subagent,
-                is_delegated_work: metadata.is_delegated_work,
-                session_final: metadata.session_final,
-                ..Default::default()
-            }),
+            metadata: input
+                .metadata
+                .map(|metadata| Metadata {
+                    session_id: metadata.session_id,
+                    agent_id: metadata.agent_id,
+                    is_subagent: metadata.is_subagent,
+                    is_delegated_work: metadata.is_delegated_work,
+                    session_final: metadata.session_final,
+                    ..Default::default()
+                })
+                .or_else(|| headers.as_ref().map(Metadata::from_headers)),
             ..Default::default()
         };
-        switchyard_translation::normalize_compaction(&mut request.llm_request, None);
+        if let Some(metadata) = request.metadata.as_mut() {
+            metadata.http_headers = headers.clone();
+            metadata.session_id = metadata.session_id.take().filter(|id| !id.is_empty());
+        }
+        if let Some(scope) = input.metadata_scope {
+            let metadata = request.metadata.get_or_insert_default();
+            if metadata.session_id.is_none()
+                && router.engine.hash_fallback
+                && let Some(text) = request
+                    .llm_request
+                    .messages
+                    .iter()
+                    .find(|message| message.role == switchyard_protocol::Role::User)
+                    .and_then(|message| message.text_content(""))
+            {
+                let mut hash = DefaultHasher::new();
+                text.hash(&mut hash);
+                metadata.session_id = Some(format!("{:016x}", hash.finish()));
+            }
+            if let Some(id) = metadata.session_id.as_mut() {
+                *id = format!("{}:{scope}:{id}", scope.len());
+            }
+        } else if let Some(id) = request
+            .metadata
+            .as_mut()
+            .and_then(|metadata| metadata.session_id.as_mut())
+        {
+            *id = format!("unscoped:{id}");
+        }
+        switchyard_translation::normalize_compaction(&mut request.llm_request, headers.as_ref());
         let _entered = router.engine.runtime.enter();
         let stream = Arc::clone(&router.engine.algorithm).run_stream(
             request,

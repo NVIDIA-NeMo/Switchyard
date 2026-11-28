@@ -212,9 +212,10 @@ impl AggLlmResponse {
     /// downstream expects `LlmResponse::Stream` — for instance when `stream: true` was
     /// requested and the algorithm had to aggregate before it could return.
     ///
-    /// This conversion is lossy: only text, reasoning, and tool-call content has
-    /// a synthetic chunk representation. Refusals, tool results, media, files,
-    /// MCP activity, unknown blocks, response extensions, and preservation metadata are omitted.
+    /// This conversion is lossy: refusal text is emitted as text. Only text,
+    /// reasoning, and tool-call content has a synthetic chunk representation.
+    /// Tool results, media, files, MCP activity, unknown blocks, response extensions,
+    /// and preservation metadata are omitted.
     pub fn into_stream(self) -> LlmResponseStream {
         let mut chunks: Vec<LlmResponseChunk> = Vec::new();
         chunks.push(LlmResponseChunk::MessageStart {
@@ -225,7 +226,7 @@ impl AggLlmResponse {
         for (output_index, output) in self.outputs.into_iter().enumerate() {
             for block in output.content {
                 match block {
-                    ContentBlock::Text { text } => {
+                    ContentBlock::Text { text } | ContentBlock::Refusal { text } => {
                         chunks.push(LlmResponseChunk::TextDelta {
                             index: output_index,
                             text,
