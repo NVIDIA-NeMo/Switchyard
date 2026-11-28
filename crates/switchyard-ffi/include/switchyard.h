@@ -12,6 +12,7 @@ uint32_t sy_abi_version(void);
 
 typedef struct SyRouter SyRouter;
 typedef struct SyRun SyRun;
+typedef struct SyStream SyStream;
 typedef void (*SyNextCallback)(uintptr_t user_data, char *error, char *step_json);
 
 #if defined(__wasm32__)
@@ -42,6 +43,16 @@ char *sy_run_respond(const SyRun *run, uint64_t call_id, const char *reply_json)
 char *sy_decode_request(const char *input_json, char **out_json);
 char *sy_encode_request(const char *input_json, char **out_json);
 char *sy_decode_response(const char *input_json, char **out_json);
+char *sy_encode_response(const char *input_json, char **out_json);
+// Streamed response translation. Calls on one stream must not overlap.
+// Translate and finish write a JSON array of target events. saw_done is 1 when the host
+// read the SSE [DONE] marker, else 0; other values fail. Finish fails when the source
+// ended before its final event (or a [DONE] marker its format accepts as final) and sent
+// no error event.
+char *sy_stream_new(const char *input_json, SyStream **out);
+char *sy_stream_translate(SyStream *stream, const char *event_json, char **out_json);
+char *sy_stream_finish(SyStream *stream, uint32_t saw_done, char **out_json);
+void sy_stream_free(SyStream *stream);
 
 // Signals cancellation without waiting for callbacks.
 void sy_run_cancel(const SyRun *run);

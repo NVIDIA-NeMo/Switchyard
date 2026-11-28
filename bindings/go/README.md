@@ -95,14 +95,69 @@ when the host refuses the call, such as for a budget or authorization check.
 `Route` then stops and returns `err`, which keeps its Go error type.
 
 Requests and replies use Switchyard's protocol JSON. `DecodeRequest`,
-`EncodeRequest`, and `DecodeResponse` use the existing translation codecs for
-`openai_chat`, `openai_responses`, and `anthropic_messages`. Typed decision
-requests use the decision protocol directly.
+`EncodeRequest`, `DecodeResponse`, and `EncodeResponse` use the existing
+translation codecs for `openai_chat`, `openai_responses`, and
+`anthropic_messages`. Pass the decoded request's `extensions` to
+`EncodeResponse` to restore details such as Codex tool namespaces. Typed
+decision requests use the decision protocol directly.
 
 `Outcome` contains ordered targets, the prepared request, optional routing
 evidence, and an optional answer. When it has no answer, the host calls the
 selected target. Routing-produced responses are buffered; the host may stream
 the final selected provider response separately.
+
+To stream that response in another format, create a `StreamTranslator` with
+`NewStreamTranslator(source, target, requestExtensions)`. As with
+`EncodeResponse`, pass the decoded request's `extensions`, or nil, so streamed
+tool calls keep details such as Codex tool namespaces and custom tools. Pass the
+JSON data of each provider event to `Translate`. When the provider sends the SSE
+`[DONE]` marker, call `DoneMarker` instead. Call `Finish` when the provider
+stream ends, then `Close`.
+`Finish` returns an error when the provider stream ended before its final event,
+so the host can report a cut-off answer. For `openai_chat`, the final event is a
+chunk with a `finish_reason`, or `[DONE]`; `openai_responses` also accepts
+`[DONE]`, and `anthropic_messages` requires `message_stop`. Reaching the end of
+the body is not a `[DONE]` marker, and a failed read is the host's error to
+report, not the end of the stream:
+
+```go
+defer resp.Body.Close()
+stream, err := switchyard.NewStreamTranslator("openai_chat", "openai_responses", extensions)
+if err != nil {
+    return err
+}
+defer stream.Close()
+scanner := bufio.NewScanner(resp.Body) // one data line per event, as these providers send
+scanner.Buffer(nil, 16<<20)
+for scanner.Scan() {
+    data, ok := strings.CutPrefix(scanner.Text(), "data:")
+    if !ok {
+        continue // event names, comments, and blank lines
+    }
+    if data = strings.TrimSpace(data); data == "[DONE]" {
+        stream.DoneMarker()
+        break
+    }
+    events, err := stream.Translate(json.RawMessage(data))
+    if err != nil {
+        return err
+    }
+    send(events)
+}
+if err := scanner.Err(); err != nil {
+    return err
+}
+closing, err := stream.Finish() // fails if the provider stopped early
+if err != nil {
+    return err
+}
+send(closing)
+```
+
+Write each returned event as SSE `data`. For `anthropic_messages` and
+`openai_responses`, use the event's `type` as the SSE event name. End an
+`openai_chat` stream with `data: [DONE]`. A translator holds state for one
+response, so do not share it between goroutines.
 
 ## Cancellation and ownership
 

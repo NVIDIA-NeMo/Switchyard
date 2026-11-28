@@ -374,3 +374,32 @@ func TestWasmTranslatorIsReplacedAfterFailure(t *testing.T) {
 		t.Fatalf("translator was not replaced: %v", err)
 	}
 }
+
+// A stream fails cleanly after a trap replaces its guest, and Close leaves the new guest alone.
+func TestWasmStreamIsLostAfterGuestFailure(t *testing.T) {
+	request := []byte(`{"format":"openai_chat","body":{"messages":[]}}`)
+	stream, err := NewStreamTranslator("openai_chat", "anthropic_messages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	translator := defaultWasmTranslator.value
+	translator.mu.Lock()
+	err = translator.guest.module.Close(context.Background())
+	translator.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stream.Translate(json.RawMessage(`{"choices":[]}`)); err == nil {
+		t.Fatal("translation on a closed instance succeeded")
+	}
+	if _, err := wasmTranslate("sy_decode_request", request); err != nil {
+		t.Fatalf("translator was not replaced: %v", err)
+	}
+	if _, err := stream.Translate(json.RawMessage(`{"choices":[]}`)); !errors.Is(err, errStreamLost) {
+		t.Fatalf("err=%v, want errStreamLost", err)
+	}
+	stream.Close()
+	if _, err := wasmTranslate("sy_decode_request", request); err != nil {
+		t.Fatalf("Close disturbed the new guest: %v", err)
+	}
+}

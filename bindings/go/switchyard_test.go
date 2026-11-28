@@ -4,11 +4,13 @@
 package switchyard
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"runtime"
 	"slices"
 	"strings"
@@ -162,6 +164,391 @@ func TestSelectionAndTranslation(t *testing.T) {
 	if err := json.Unmarshal(response, &decoded); err != nil || len(decoded.Outputs) != 1 || len(decoded.Outputs[0].Content) != 1 || decoded.Outputs[0].Content[0].Text != "hello" {
 		t.Fatalf("response=%s err=%v", response, err)
 	}
+	reply, err := EncodeResponse("anthropic_messages", response, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var message struct {
+		Content []struct{ Text string }
+	}
+	if err := json.Unmarshal(reply, &message); err != nil || len(message.Content) != 1 || message.Content[0].Text != "hello" {
+		t.Fatalf("reply=%s err=%v", reply, err)
+	}
+}
+
+// A stream translator keeps state across events and closes the target stream on Finish.
+func TestStreamTranslator(t *testing.T) {
+	stream, err := NewStreamTranslator("openai_chat", "anthropic_messages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	if _, err := stream.Translate(nil); !errors.Is(err, errEmptyEvent) {
+		t.Fatalf("err=%v, want errEmptyEvent", err)
+	}
+	var events []json.RawMessage
+	for _, event := range []string{
+		`{"id":"1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hel"}}]}`,
+		`{"choices":[{"index":0,"delta":{"content":"lo"}}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}`,
+	} {
+		translated, err := stream.Translate(json.RawMessage(event))
+		if err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, translated...)
+	}
+	closing, err := stream.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	events = append(events, closing...)
+	var types []string
+	var text string
+	for _, raw := range events {
+		var event struct {
+			Type  string
+			Delta struct{ Text string }
+		}
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		types = append(types, event.Type)
+		text += event.Delta.Text
+	}
+	if len(types) < 2 || types[0] != "message_start" || types[len(types)-1] != "message_stop" || text != "hello" {
+		t.Fatalf("types=%v text=%q", types, text)
+	}
+	stream.Close()
+	stream.Close()
+	if _, err := stream.Translate(json.RawMessage(`{}`)); err == nil {
+		t.Fatal("closed stream translated")
+	}
+	if _, err := NewStreamTranslator("unknown", "openai_chat", nil); err == nil {
+		t.Fatal("unknown format accepted")
+	}
+
+	cutOff, err := NewStreamTranslator("openai_chat", "anthropic_messages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cutOff.Close()
+	if _, err := cutOff.Translate(json.RawMessage(`{"choices":[{"index":0,"delta":{"content":"hel"}}]}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cutOff.Finish(); err == nil || !strings.Contains(err.Error(), "ended before a terminal event") {
+		t.Fatalf("cut-off stream finished with err=%v", err)
+	}
+}
+
+// A "[DONE]" marker completes a stream only when the source format treats it as final.
+func TestStreamTranslatorDoneMarker(t *testing.T) {
+	finish := func(source, target, event string, sawDone bool) ([]json.RawMessage, error) {
+		stream, err := NewStreamTranslator(source, target, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stream.Close()
+		if _, err := stream.Translate(json.RawMessage(event)); err != nil {
+			t.Fatal(err)
+		}
+		if sawDone {
+			stream.DoneMarker()
+		}
+		return stream.Finish()
+	}
+	chatText := `{"id":"1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","content":"hel"}}]}`
+
+	closing, err := finish("openai_chat", "anthropic_messages", chatText, true)
+	if err != nil {
+		t.Fatalf("stream ended by [DONE] failed: %v", err)
+	}
+	var last struct{ Type string }
+	if len(closing) == 0 || json.Unmarshal(closing[len(closing)-1], &last) != nil || last.Type != "message_stop" {
+		t.Fatalf("closing events %s, want them to end with message_stop", closing)
+	}
+	if _, err := finish("openai_chat", "anthropic_messages", chatText, false); err == nil ||
+		!strings.Contains(err.Error(), "openai_chat stream ended before a terminal event") {
+		t.Fatalf("stream that hit EOF without [DONE] finished with err=%v", err)
+	}
+
+	anthropicText := `{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hel"}}`
+	if _, err := finish("anthropic_messages", "openai_chat", anthropicText, true); err == nil ||
+		!strings.Contains(err.Error(), "anthropic_messages stream ended before a terminal event") {
+		t.Fatalf("Anthropic stream without message_stop finished after [DONE] with err=%v", err)
+	}
+}
+
+// toolExtensions decodes a Responses request with a top-level custom tool apply_patch and a
+// namespaced function workspace.apply_patch, and returns its extensions.
+func toolExtensions(t *testing.T) json.RawMessage {
+	t.Helper()
+	request, err := DecodeRequest("openai_responses", json.RawMessage(`{"model":"m","input":"hi","tools":[
+		{"type":"custom","name":"apply_patch","description":"Apply a patch"},
+		{"type":"namespace","name":"workspace","description":"Workspace tools","tools":[
+			{"type":"function","name":"apply_patch","description":"Apply a structured patch",
+			 "parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}}]}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct{ Extensions json.RawMessage }
+	if err := json.Unmarshal(request, &decoded); err != nil || len(decoded.Extensions) == 0 {
+		t.Fatalf("decoded request has no extensions: %s (err=%v)", request, err)
+	}
+	return decoded.Extensions
+}
+
+// toolCallChunks stream an OpenAI Chat answer that calls both tools from toolExtensions, with
+// arguments split across deltas. toolCallsFinish ends it.
+var toolCallChunks = []string{
+	`{"id":"1","model":"m","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"apply_patch","arguments":""}}]}}]}`,
+	`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"input\":\"*** Begin"}}]}}]}`,
+	`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":" Patch\"}"}}]}}]}`,
+	`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"workspace__apply_patch","arguments":"{\"cmd\":"}}]}}]}`,
+	`{"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"\"ls\"}"}}]}}]}`,
+}
+
+const toolCallsFinish = `{"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}`
+
+// restoredTools are the client-facing item types for toolCallChunks, by tool.
+var restoredTools = map[string]string{"apply_patch": "custom_tool_call", "workspace.apply_patch": "function_call"}
+
+type toolItem struct{ Type, Name, Namespace, Input string }
+
+// tool names an item namespace.name, or by its bare name at the top level.
+func (item toolItem) tool() string {
+	if item.Namespace == "" {
+		return item.Name
+	}
+	return item.Namespace + "." + item.Name
+}
+
+// responsesStream summarizes the tool calls in a streamed OpenAI Responses answer.
+type responsesStream struct {
+	done      map[string]toolItem // output_item.done items, by tool
+	arguments map[string]int      // argument delta and done events, by tool
+	completed map[string]string   // response.completed item types, by tool
+}
+
+func readResponsesStream(t *testing.T, events []json.RawMessage) responsesStream {
+	t.Helper()
+	got := responsesStream{done: map[string]toolItem{}, arguments: map[string]int{}, completed: map[string]string{}}
+	tools := map[int]string{} // tool by output index
+	for _, raw := range events {
+		var event struct {
+			Type        string
+			OutputIndex int `json:"output_index"`
+			Item        toolItem
+			Response    struct{ Output []toolItem }
+		}
+		if err := json.Unmarshal(raw, &event); err != nil {
+			t.Fatal(err)
+		}
+		switch event.Type {
+		case "response.output_item.added":
+			tools[event.OutputIndex] = event.Item.tool()
+		case "response.output_item.done":
+			got.done[event.Item.tool()] = event.Item
+		case "response.function_call_arguments.delta", "response.function_call_arguments.done":
+			got.arguments[tools[event.OutputIndex]]++
+		case "response.completed":
+			for _, output := range event.Response.Output {
+				got.completed[output.tool()] = output.Type
+			}
+		}
+	}
+	return got
+}
+
+// checkRestoredTools checks that a top-level custom tool came back as custom_tool_call with its
+// assembled input and no argument events, and the namespaced function as a function_call with
+// its namespace and argument events.
+func checkRestoredTools(t *testing.T, got responsesStream) {
+	t.Helper()
+	if patch := got.done["apply_patch"]; patch.Type != "custom_tool_call" || patch.Input != "*** Begin Patch" {
+		t.Errorf("custom tool item %+v, want custom_tool_call with the patch as input", patch)
+	}
+	if got.arguments["apply_patch"] != 0 {
+		t.Errorf("custom tool call streamed %d argument events, want none", got.arguments["apply_patch"])
+	}
+	if function := got.done["workspace.apply_patch"]; function.Type != "function_call" || got.arguments["workspace.apply_patch"] == 0 {
+		t.Errorf("namespaced function item %+v with %d argument events, want function_call with them",
+			function, got.arguments["workspace.apply_patch"])
+	}
+	if !maps.Equal(got.completed, restoredTools) {
+		t.Errorf("completed response items %v, want %v", got.completed, restoredTools)
+	}
+}
+
+// With the request's extensions, streamed and buffered answers keep a Responses client's
+// tool details: a top-level custom tool becomes custom_tool_call, and a namespaced function
+// with the same bare name stays a function_call in its namespace.
+func TestStreamTranslatorRestoresCustomTools(t *testing.T) {
+	extensions := toolExtensions(t)
+	translate := func(extensions json.RawMessage) responsesStream {
+		stream, err := NewStreamTranslator("openai_chat", "openai_responses", extensions)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer stream.Close()
+		var events []json.RawMessage
+		for _, chunk := range append(slices.Clone(toolCallChunks), toolCallsFinish) {
+			translated, err := stream.Translate(json.RawMessage(chunk))
+			if err != nil {
+				t.Fatal(err)
+			}
+			events = append(events, translated...)
+		}
+		closing, err := stream.Finish()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return readResponsesStream(t, append(events, closing...))
+	}
+
+	checkRestoredTools(t, translate(extensions))
+	plain := translate(nil)
+	if want := map[string]string{"apply_patch": "function_call", "workspace__apply_patch": "function_call"}; !maps.Equal(plain.completed, want) {
+		t.Errorf("without extensions, completed response items %v, want %v", plain.completed, want)
+	}
+
+	// The buffered path restores the same answer the same way.
+	response, err := DecodeResponse("openai_chat", json.RawMessage(`{"id":"1","object":"chat.completion","model":"m","choices":[{"index":0,
+		"message":{"role":"assistant","content":null,"tool_calls":[
+			{"id":"call_1","type":"function","function":{"name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\"}"}},
+			{"id":"call_2","type":"function","function":{"name":"workspace__apply_patch","arguments":"{\"cmd\":\"ls\"}"}}]},
+		"finish_reason":"tool_calls"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := EncodeResponse("openai_responses", response, extensions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buffered struct{ Output []toolItem }
+	if err := json.Unmarshal(encoded, &buffered); err != nil {
+		t.Fatal(err)
+	}
+	bufferedTypes := map[string]string{}
+	for _, output := range buffered.Output {
+		bufferedTypes[output.tool()] = output.Type
+	}
+	if !maps.Equal(bufferedTypes, restoredTools) {
+		t.Errorf("buffered response items %v, want %v", bufferedTypes, restoredTools)
+	}
+}
+
+// The stream fixes work together through the README's SSE loop, on a provider stream shaped
+// like a real one (keep-alive, finish_reason, then [DONE]): the events keep the client's tool
+// details, a copy shares the [DONE] marker, and the stream is released once.
+func TestStreamTranslatorReadmeLoop(t *testing.T) {
+	stream, err := NewStreamTranslator("openai_chat", "openai_responses", toolExtensions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted := &countingStream{streamHandle: stream.state.handle}
+	stream.state.handle = counted
+	copied := *stream
+	defer stream.Close()
+
+	var body strings.Builder
+	body.WriteString(": keep-alive\n\n")
+	for _, chunk := range append(slices.Clone(toolCallChunks), toolCallsFinish) {
+		fmt.Fprintf(&body, "data: %s\n\n", chunk)
+	}
+	body.WriteString("data: [DONE]\n\n")
+
+	var events []json.RawMessage
+	send := func(batch []json.RawMessage) { events = append(events, batch...) }
+	// The README's loop. The copy records the marker; the original finishes.
+	scanner := bufio.NewScanner(strings.NewReader(body.String()))
+	scanner.Buffer(nil, 16<<20)
+	for scanner.Scan() {
+		data, ok := strings.CutPrefix(scanner.Text(), "data:")
+		if !ok {
+			continue
+		}
+		if data = strings.TrimSpace(data); data == "[DONE]" {
+			copied.DoneMarker()
+			break
+		}
+		translated, err := stream.Translate(json.RawMessage(data))
+		if err != nil {
+			t.Fatal(err)
+		}
+		send(translated)
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !stream.state.sawDone {
+		t.Fatal("the original did not see the marker its copy recorded")
+	}
+	closing, err := stream.Finish()
+	if err != nil {
+		t.Fatalf("finish failed: %v", err)
+	}
+	send(closing)
+	checkRestoredTools(t, readResponsesStream(t, events))
+
+	copied.Close()
+	stream.Close()
+	if _, err := stream.Finish(); !errors.Is(err, errStreamClosed) {
+		t.Fatalf("finish after close: err=%v, want errStreamClosed", err)
+	}
+	if counted.frees != 1 {
+		t.Fatalf("stream released %d times, want 1", counted.frees)
+	}
+}
+
+// Value copies share one stream: closing either releases it once and closes both.
+func TestStreamTranslatorCopiesShareClose(t *testing.T) {
+	stream, err := NewStreamTranslator("openai_chat", "anthropic_messages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted := &countingStream{streamHandle: stream.state.handle}
+	stream.state.handle = counted
+	copied := *stream
+	stream.Close()
+	if _, err := copied.Translate(json.RawMessage(`{}`)); !errors.Is(err, errStreamClosed) {
+		t.Fatalf("copy translated after close: err=%v", err)
+	}
+	if _, err := copied.Finish(); !errors.Is(err, errStreamClosed) {
+		t.Fatalf("copy finished after close: err=%v", err)
+	}
+	copied.Close()
+	stream.Close()
+	if counted.frees != 1 {
+		t.Fatalf("stream released %d times, want 1", counted.frees)
+	}
+}
+
+// A zero or nil StreamTranslator is closed, and closing it is harmless.
+func TestUnopenedStreamTranslatorIsClosed(t *testing.T) {
+	var zero StreamTranslator
+	var missing *StreamTranslator
+	for _, closed := range []*StreamTranslator{&zero, missing} {
+		if _, err := closed.Translate(json.RawMessage(`{}`)); !errors.Is(err, errStreamClosed) {
+			t.Fatalf("err=%v, want errStreamClosed", err)
+		}
+		if _, err := closed.Finish(); !errors.Is(err, errStreamClosed) {
+			t.Fatalf("err=%v, want errStreamClosed", err)
+		}
+		closed.DoneMarker()
+		closed.Close()
+	}
+}
+
+// countingStream counts releases of the backend stream it wraps.
+type countingStream struct {
+	streamHandle
+	frees int
+}
+
+func (stream *countingStream) free() {
+	stream.frees++
+	stream.streamHandle.free()
 }
 
 // Both judge protocols use Go's client; missing clients and host failures remain errors.

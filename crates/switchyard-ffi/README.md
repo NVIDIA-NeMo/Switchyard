@@ -14,6 +14,10 @@ NUL-terminated JSON strings. Ownership and concurrency rules are in
 | `sy_run_respond` | `{response, served_model?}` or `{error}` |
 | `sy_decode_request`, `sy_decode_response` | `{format, body}` |
 | `sy_encode_request` | `{format, request, model}` |
+| `sy_encode_response` | `{format, response, request_extensions?}` |
+| `sy_stream_new` | `{source, target, request_extensions?}` |
+| `sy_stream_translate` | one source stream event |
+| `sy_stream_finish` | `saw_done`: 1 if the host read the SSE `[DONE]` marker, else 0 |
 
 `request` and model responses use Switchyard's normalized protocol JSON.
 `models` and `subagent_models` map category names to ordered model-ID lists.

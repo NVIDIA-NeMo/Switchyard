@@ -6,17 +6,18 @@
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{CStr, CString, c_char};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use futures::{FutureExt, StreamExt};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use switchyard_libsy::{Algorithm, Call, LibsyError, RuntimeModels, State, Step, StepStream};
 use switchyard_protocol::{
-    AggLlmResponse, Category, DecisionRequest, LlmRequest, LlmResponse, Metadata, ModelId, Request,
-    Response, WireFormat,
+    AggLlmResponse, Category, DecisionRequest, LlmRequest, LlmResponse, Metadata, ModelId,
+    ProviderExtensions, Request, Response, WireFormat,
 };
 use switchyard_runner::AlgorithmSpec;
+use switchyard_translation::{StreamToolRestorer, StreamTranslationState, TranslationEngine};
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
@@ -92,6 +93,22 @@ struct EncodeInput {
 }
 
 #[derive(Deserialize)]
+struct EncodeResponseInput {
+    format: WireFormat,
+    response: AggLlmResponse,
+    #[serde(default)]
+    request_extensions: ProviderExtensions,
+}
+
+#[derive(Deserialize)]
+struct StreamInput {
+    source: WireFormat,
+    target: WireFormat,
+    #[serde(default)]
+    request_extensions: ProviderExtensions,
+}
+
+#[derive(Deserialize)]
 #[serde(untagged)]
 enum CallReply {
     Error {
@@ -144,6 +161,19 @@ struct Engine {
 /// Algorithm handle; routing runs retain its engine.
 pub struct SyRouter {
     engine: Arc<Engine>,
+}
+
+static STREAM_ENGINE: LazyLock<TranslationEngine> = LazyLock::new(TranslationEngine::default);
+
+/// Translation state for one streamed response.
+pub struct SyStream {
+    source: WireFormat,
+    target: WireFormat,
+    state: StreamTranslationState,
+    /// Restores the client's tool details from the request extensions.
+    tools: StreamToolRestorer,
+    /// Set once the source sent its final event.
+    ended: bool,
 }
 
 struct Reader {
@@ -439,6 +469,115 @@ pub unsafe extern "C" fn sy_decode_response(
             input.format,
         )?)?
         .into_raw();
+        Ok(())
+    })
+}
+
+/// Encodes a buffered normalized response for the client's wire format.
+/// # Safety
+/// JSON must be NUL-terminated and `out_json` writable. Free the output with `sy_string_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_encode_response(
+    input_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> *mut c_char {
+    ffi_call(|| {
+        let out = unsafe { out_json.as_mut() }.ok_or("missing response output")?;
+        *out = std::ptr::null_mut();
+        let input: EncodeResponseInput = unsafe { parse_json_input(input_json) }?;
+        *out = encode_json(&switchyard_translation::encode_aggregated_response(
+            &input.response,
+            input.format,
+            &input.request_extensions,
+        )?)?
+        .into_raw();
+        Ok(())
+    })
+}
+
+/// Starts translating one streamed response from `{source, target, request_extensions?}`.
+/// # Safety
+/// JSON must be NUL-terminated and `out` writable. Free the stream with `sy_stream_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_stream_new(
+    input_json: *const c_char,
+    out: *mut *mut SyStream,
+) -> *mut c_char {
+    ffi_call(|| {
+        let out = unsafe { out.as_mut() }.ok_or("missing stream output")?;
+        *out = std::ptr::null_mut();
+        let input: StreamInput = unsafe { parse_json_input(input_json) }?;
+        *out = Box::into_raw(Box::new(SyStream {
+            source: input.source,
+            target: input.target,
+            state: StreamTranslationState::new(input.source, input.target),
+            tools: StreamToolRestorer::new(&input.request_extensions),
+            ended: false,
+        }));
+        Ok(())
+    })
+}
+
+/// Translates one source event into a JSON array of target events.
+/// # Safety
+/// `stream` must be live and not used concurrently. JSON must be NUL-terminated and
+/// `out_json` writable. Free the output with `sy_string_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_stream_translate(
+    stream: *mut SyStream,
+    event_json: *const c_char,
+    out_json: *mut *mut c_char,
+) -> *mut c_char {
+    ffi_call(|| {
+        let out = unsafe { out_json.as_mut() }.ok_or("missing events output")?;
+        *out = std::ptr::null_mut();
+        let stream = unsafe { stream.as_mut() }.ok_or("missing stream")?;
+        let event: serde_json::Value = unsafe { parse_json_input(event_json) }?;
+        stream.ended |= STREAM_ENGINE.is_terminal_stream_event(stream.source, &event)?;
+        let mut events = STREAM_ENGINE.translate_event(
+            &mut stream.state,
+            stream.source,
+            stream.target,
+            &event,
+        )?;
+        events.retain_mut(|event| stream.tools.restore(event));
+        *out = encode_json(&events)?.into_raw();
+        Ok(())
+    })
+}
+
+/// Writes the closing target events, as a JSON array, after the source stream ends.
+/// `saw_done` is 1 when the host read the SSE `[DONE]` marker, which ends the stream for
+/// formats whose codec treats it as final, and 0 otherwise. It is an integer, not `bool`,
+/// so no value a caller passes is undefined behavior; values other than 0 and 1 fail.
+/// Fails when the source ended before its final event and sent no error event.
+/// # Safety
+/// `stream` must be live and not used concurrently, and `out_json` writable.
+/// Free the output with `sy_string_free`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_stream_finish(
+    stream: *mut SyStream,
+    saw_done: u32,
+    out_json: *mut *mut c_char,
+) -> *mut c_char {
+    ffi_call(|| {
+        let out = unsafe { out_json.as_mut() }.ok_or("missing events output")?;
+        *out = std::ptr::null_mut();
+        let stream = unsafe { stream.as_mut() }.ok_or("missing stream")?;
+        let saw_done = match saw_done {
+            0 => false,
+            1 => true,
+            _ => return Err("saw_done must be 0 or 1".into()),
+        };
+        let ended =
+            stream.ended || (saw_done && STREAM_ENGINE.done_marker_is_terminal(stream.source)?);
+        // Closing a cut-off source normally would pass a partial answer off as complete.
+        if !ended && !stream.state.errored {
+            return Err(format!("{} stream ended before a terminal event", stream.source).into());
+        }
+        let mut events = STREAM_ENGINE.finish_stream(&mut stream.state, stream.target)?;
+        events.retain_mut(|event| stream.tools.restore(event));
+        *out = encode_json(&events)?.into_raw();
         Ok(())
     })
 }
@@ -766,6 +905,16 @@ pub unsafe extern "C" fn sy_run_free(run: *mut SyRun) {
 pub unsafe extern "C" fn sy_router_free(router: *mut SyRouter) {
     if !router.is_null() {
         let _ = catch_unwind(AssertUnwindSafe(|| drop(unsafe { Box::from_raw(router) })));
+    }
+}
+
+/// Frees a stream once.
+/// # Safety
+/// Pass a stream from `sy_stream_new` once, with no other calls using it, or NULL.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn sy_stream_free(stream: *mut SyStream) {
+    if !stream.is_null() {
+        let _ = catch_unwind(AssertUnwindSafe(|| drop(unsafe { Box::from_raw(stream) })));
     }
 }
 
