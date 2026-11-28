@@ -140,7 +140,7 @@ func TestInvalidConfigAndRequest(t *testing.T) {
 		}
 	}
 	initialize(t, stage)
-	for _, body := range []string{`{`, `{"model":"switchyard","messages":[{"role":"alien","content":"bad"}]}`} {
+	for _, body := range []string{"", `{`, `{"model":"switchyard","messages":[{"role":"alien","content":"bad"}]}`} {
 		_, req, response, err := callHook(body, "/v1/chat/completions")
 		if err != nil || response == nil || response.StatusCode != 400 || string(req.Body) != body {
 			t.Fatal("request did not fail closed")
@@ -150,6 +150,11 @@ func TestInvalidConfigAndRequest(t *testing.T) {
 
 func TestBypassAndLifecycle(t *testing.T) {
 	initialize(t, stage)
+	ctx := schemas.NewBifrostContext(context.Background(), time.Time{})
+	absent := &schemas.HTTPRequest{Method: "POST", Path: "/v1/chat/completions"}
+	if response, err := HTTPTransportPreHook(ctx, absent); err != nil || response != nil || absent.Body != nil || ctx.Value(selectedModelKey) != nil {
+		t.Fatalf("absent body did not pass through: %v %v", response, err)
+	}
 	for _, tc := range []struct{ body, path string }{
 		{strings.Replace(request, "switchyard", "openai/direct", 1), "/v1/chat/completions"},
 		{request, "/v1/responses"},
@@ -494,11 +499,17 @@ func TestAdmissionFailureDoesNotFailOpen(t *testing.T) {
 }
 
 func TestCallbackRestrictions(t *testing.T) {
-	for _, url := range []string{"http://example.com", "http://192.168.1.1", "http://127.0.0.1@example.com", "http://127.0.0.1?key=x", "file:///tmp/test"} {
+	for _, url := range []string{"http://example.com", "http://192.168.1.1", "http://127.0.0.1@example.com", "http://127.0.0.1?key=x", "http://127.0.0.1?", "http://127.0.0.1#", "http://127.0.0.1/#", "file:///tmp/test"} {
 		if err := Init(map[string]any{"bifrost_url": url, "routes": map[string]json.RawMessage{"switchyard": config(stage)}}); err == nil {
 			Cleanup()
 			t.Fatalf("accepted callback URL %s", url)
 		}
+	}
+	for _, url := range []string{"http://127.0.0.1:8080", "https://[::1]:8080/prefix", "http://127.0.0.1/prefix%3F%23"} {
+		if err := Init(map[string]any{"bifrost_url": url, "routes": map[string]json.RawMessage{"switchyard": config(stage)}}); err != nil {
+			t.Fatalf("rejected callback URL %s: %v", url, err)
+		}
+		Cleanup()
 	}
 	if err := Init(map[string]any{"routes": map[string]json.RawMessage{"openai/capable": config(stage)}}); err == nil {
 		Cleanup()
@@ -537,15 +548,29 @@ func TestDecisionUnknownEvidence(t *testing.T) {
 				Answers map[string]struct {
 					Value struct {
 						Type string
-						Data struct{ Probabilities map[string]float64 }
+						Data struct {
+							Selected      string
+							Probabilities map[string]float64
+						}
 					}
 				}
 			}
 			if err := json.Unmarshal(reply.Response, &response); err != nil {
 				t.Fatal(err)
 			}
-			value := response.Answers["tier"].Value
-			if (strings.Contains(answer, "refusal") && value.Type != "refusal") || value.Data.Probabilities != nil {
+			entry, ok := response.Answers["tier"]
+			if !ok {
+				t.Fatalf("missing tier answer: %s", reply.Response)
+			}
+			value := entry.Value
+			want := "choice"
+			if strings.Contains(answer, "refusal") {
+				want = "refusal"
+			}
+			if value.Type != want || (want == "choice" && value.Data.Selected != "efficient") {
+				t.Fatalf("incorrect decision answer: %s", reply.Response)
+			}
+			if value.Data.Probabilities != nil {
 				t.Fatalf("invented decision evidence: %s", reply.Response)
 			}
 		})
@@ -562,8 +587,9 @@ func TestCallbackCancellation(t *testing.T) {
 		case <-release:
 		}
 	}))
-	t.Cleanup(func() { close(release); server.Close() })
+	t.Cleanup(server.Close)
 	initializeGateway(t, `{"type":"llm_classifier","mode":"capability",`+classifierPair+`,"base_threshold":0.5,"fail_open":false}`, server.URL)
+	t.Cleanup(func() { close(release) })
 	parent, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ctx := schemas.NewBifrostContext(parent, time.Time{})
@@ -608,7 +634,8 @@ func TestOrderedCallsStopOnAdmissionFailure(t *testing.T) {
 }
 
 func TestPreparedFallbackRequests(t *testing.T) {
-	models := make(chan string, 2)
+	var models []string
+	var modelsMu sync.Mutex
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Model    string
@@ -618,7 +645,9 @@ func TestPreparedFallbackRequests(t *testing.T) {
 			t.Error(err)
 			return
 		}
-		models <- body.Model
+		modelsMu.Lock()
+		models = append(models, body.Model)
+		modelsMu.Unlock()
 		prompt := "efficient prompt"
 		if body.Model == "openai/capable" {
 			prompt = "capable prompt"
@@ -637,12 +666,9 @@ func TestPreparedFallbackRequests(t *testing.T) {
 	spec := strings.TrimSuffix(stage, "}") + `,"efficient_system_prompt":"efficient prompt","capable_system_prompt":"capable prompt"}`
 	initializeGateway(t, spec, server.URL)
 	ctx, _, response, err := callHook(request, "/v1/chat/completions")
-	close(models)
-	var attempted []string
-	for model := range models {
-		attempted = append(attempted, model)
-	}
-	if err != nil || response == nil || response.StatusCode != 200 || ctx.Value(selectedModelKey) != "openai/capable" || strings.Join(attempted, ",") != "openai/efficient,openai/capable" {
-		t.Fatalf("fallback: response=%+v err=%v models=%v", response, err, attempted)
+	modelsMu.Lock()
+	defer modelsMu.Unlock()
+	if err != nil || response == nil || response.StatusCode != 200 || ctx.Value(selectedModelKey) != "openai/capable" || strings.Join(models, ",") != "openai/efficient,openai/capable" {
+		t.Fatalf("fallback: response=%+v err=%v models=%v", response, err, models)
 	}
 }

@@ -670,6 +670,10 @@ pub unsafe extern "C" fn sy_run_new(
                 .or_else(|| headers.as_ref().map(Metadata::from_headers)),
             ..Default::default()
         };
+        if let Some(metadata) = request.metadata.as_mut() {
+            metadata.http_headers = headers.clone();
+            metadata.session_id = metadata.session_id.take().filter(|id| !id.is_empty());
+        }
         if let Some(scope) = input.metadata_scope {
             let metadata = request.metadata.get_or_insert_default();
             if metadata.session_id.is_none()
@@ -688,6 +692,12 @@ pub unsafe extern "C" fn sy_run_new(
             if let Some(id) = metadata.session_id.as_mut() {
                 *id = format!("{}:{scope}:{id}", scope.len());
             }
+        } else if let Some(id) = request
+            .metadata
+            .as_mut()
+            .and_then(|metadata| metadata.session_id.as_mut())
+        {
+            *id = format!("unscoped:{id}");
         }
         switchyard_translation::normalize_compaction(&mut request.llm_request, headers.as_ref());
         let _entered = router.engine.runtime.enter();

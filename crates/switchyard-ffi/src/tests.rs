@@ -107,6 +107,46 @@ fn next(run: &SyRun) -> Value {
     received_step(&receiver)
 }
 
+#[test]
+fn empty_scoped_session_does_not_create_a_retained_identity() {
+    for fallback in [false, true] {
+        let mut router = router(json!({"type": "noop"}));
+        Arc::get_mut(&mut router.engine).unwrap().hash_fallback = fallback;
+        let mut ids = Vec::new();
+        for text in ["first task", "second task", "first task"] {
+            let run = run(
+                &router,
+                json!({
+                    "request": {"messages": [{"role": "user", "content": [{"type": "text", "text": text}]}]},
+                    "models": {}, "metadata": {"session_id": ""}, "metadata_scope": "tenant",
+                }),
+            );
+            let metadata = router.engine.runtime.block_on(async {
+                let mut reader = run.state.reader.lock().await;
+                let Step::Done(outcome) = reader
+                    .stream
+                    .as_mut()
+                    .unwrap()
+                    .next()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                else {
+                    panic!("expected a completed route");
+                };
+                outcome.request.metadata.unwrap()
+            });
+            ids.push(metadata.session_id);
+        }
+        if fallback {
+            assert_ne!(ids[0], ids[1]);
+            assert_eq!(ids[0], ids[2]);
+        } else {
+            assert_eq!(ids, [None, None, None]);
+        }
+    }
+}
+
 fn translated(
     call: unsafe extern "C" fn(*const c_char, *mut *mut c_char) -> *mut c_char,
     input: Value,
@@ -118,6 +158,29 @@ fn translated(
     let result = serde_json::from_slice(unsafe { CStr::from_ptr(output) }.to_bytes());
     unsafe { sy_string_free(output) };
     result.unwrap()
+}
+
+#[test]
+fn refusal_only_stream_keeps_its_message() {
+    for format in ["openai_chat", "openai_responses", "anthropic_messages"] {
+        let encoded = translated(
+            sy_encode_response,
+            json!({
+                "format": format,
+                "request": {"stream": true},
+                "response": {"outputs": [{
+                    "role": "assistant",
+                    "content": [{"type": "refusal", "text": "Cannot comply."}],
+                    "stop_reason": "end_turn",
+                }]},
+            }),
+        );
+        assert_eq!(encoded["content_type"], "text/event-stream");
+        assert!(
+            encoded["body"].as_str().unwrap().contains("Cannot comply."),
+            "{format}: {encoded}"
+        );
+    }
 }
 
 fn advisor_router() -> Box<SyRouter> {

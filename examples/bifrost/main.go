@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -60,7 +61,7 @@ func Init(config any) error {
 	}
 	if cfg.BifrostURL != "" {
 		endpoint, err := url.Parse(cfg.BifrostURL)
-		if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || (net.ParseIP(endpoint.Hostname()) == nil || !net.ParseIP(endpoint.Hostname()).IsLoopback()) || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+		if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || (net.ParseIP(endpoint.Hostname()) == nil || !net.ParseIP(endpoint.Hostname()).IsLoopback()) || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.ForceQuery || strings.Contains(cfg.BifrostURL, "#") {
 			return errors.New("bifrost_url must use a loopback IP and have no credentials, query, or fragment")
 		}
 	}
@@ -119,6 +120,9 @@ func HTTPTransportPreHook(ctx *schemas.BifrostContext, req *schemas.HTTPRequest)
 	switch req.Path {
 	case "/v1/chat/completions", "/openai/v1/chat/completions", "/openai/chat/completions":
 	default:
+		return nil, nil
+	}
+	if req.Body == nil {
 		return nil, nil
 	}
 	var input struct {
@@ -221,15 +225,16 @@ func (r *route) execute(ctx context.Context, req *schemas.HTTPRequest) (json.Raw
 	if err != nil {
 		return nil, "", nil, err
 	}
+	original := &schemas.HTTPRequest{Headers: maps.Clone(req.Headers)}
 	scope := sha256.New()
 	for _, name := range authHeaders {
-		scope.Write([]byte(name + ":" + req.CaseInsensitiveHeaderLookup(name) + "\n"))
+		scope.Write([]byte(name + ":" + original.CaseInsensitiveHeaderLookup(name) + "\n"))
 	}
 	outcome, err := r.router.Route(ctx, switchyard.Input{
 		Request: request, Models: r.models, SubagentModels: r.subagentModels,
-		Headers: req.Headers, MetadataScope: fmt.Sprintf("%x", scope.Sum(nil)),
+		Headers: original.Headers, MetadataScope: fmt.Sprintf("%x", scope.Sum(nil)),
 	}, func(ctx context.Context, work switchyard.Work) (switchyard.Reply, error) {
-		return r.call(ctx, req, work)
+		return r.call(ctx, original, work)
 	})
 	if err != nil {
 		return nil, "", nil, err
@@ -263,7 +268,7 @@ func (r *route) execute(ctx context.Context, req *schemas.HTTPRequest) (json.Raw
 				prepared = candidate
 			}
 			var reply switchyard.Reply
-			reply, err = r.call(ctx, req, switchyard.Work{Type: "call_model", Models: []string{target}, Request: prepared})
+			reply, err = r.call(ctx, original, switchyard.Work{Type: "call_model", Models: []string{target}, Request: prepared})
 			if err != nil {
 				if ctx.Err() != nil || admissionError(err) {
 					break
