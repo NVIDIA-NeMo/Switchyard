@@ -1514,6 +1514,15 @@ impl ApiError {
         };
         let mut response = (self.status, Json(body)).into_response();
         forward_upstream_headers(response.headers_mut(), &self.upstream_headers);
+        if wire_format == WireFormat::AnthropicMessages
+            && self.status == StatusCode::UNPROCESSABLE_ENTITY
+            && self.code == "no_supported_models"
+        {
+            response.headers_mut().insert(
+                "x-switchyard-error-code",
+                HeaderValue::from_static("no_supported_models"),
+            );
+        }
         response
             .extensions_mut()
             .insert(RequestLogError(self.message.clone()));

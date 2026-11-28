@@ -743,7 +743,7 @@ impl LlmTaskClassifier {
             LlmClassifierConfig::Direct {
                 default_target,
                 config,
-            } => Self::build_direct(default_target, config),
+            } => Self::build_direct(default_target, config, false),
         }
     }
 
@@ -800,7 +800,11 @@ impl LlmTaskClassifier {
         )
     }
 
-    fn build_direct(default_target: Category, config: DirectClassifierConfig) -> Result<Self> {
+    fn build_direct(
+        default_target: Category,
+        config: DirectClassifierConfig,
+        needs_native_input: bool,
+    ) -> Result<Self> {
         if !config.options.contains(&default_target) {
             return Err(LibsyError::AlgorithmError {
                 message: "direct default_target must be one of the options".into(),
@@ -811,7 +815,23 @@ impl LlmTaskClassifier {
             classify_trigger: config.classify_trigger,
             message_hash_fallback: config.message_hash_fallback,
         };
-        Self::from_classifier(Arc::new(DirectClassifier::new(config)?), route)
+        Self::from_classifier(
+            Arc::new(DirectClassifier::new(config, needs_native_input)?),
+            route,
+        )
+    }
+
+    /// Builds a direct route that supplies the original request instead of a transcript.
+    pub fn new_direct_with_native_input(
+        default_target: Category,
+        config: DirectClassifierConfig,
+    ) -> Result<Self> {
+        if config.recent_turn_window.is_some() {
+            return Err(LibsyError::AlgorithmError {
+                message: "direct mode with native input does not use recent_turn_window".into(),
+            });
+        }
+        Self::build_direct(default_target, config, true)
     }
 
     /// The judge face alone, for composite's own trigger and retained tier.

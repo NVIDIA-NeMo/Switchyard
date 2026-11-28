@@ -32,8 +32,8 @@ use switchyard_libsy::{
 };
 use switchyard_protocol::{
     AggLlmResponse, LlmClientError, LlmResponse, LlmResponseChunk, LlmResponseStream, Message,
-    ModelId, Request, Response, ResponseAccumulator, RoutedDecisionClient, RoutedLlmClient,
-    RoutingFallbackReason, Usage, WireFormat,
+    ModelId, NativeDecisionInput, Request, Response, ResponseAccumulator, RoutedDecisionClient,
+    RoutedLlmClient, RoutingFallbackReason, Usage, WireFormat,
 };
 use switchyard_translation::prepare_request_for_target;
 
@@ -69,9 +69,14 @@ pub async fn run(
     let outcome = match clients.stored_state_owner(&request) {
         Some(owner) => Ok(continue_on(owner, &algorithm_name, request)),
         None => {
-            drive(Arc::clone(&algorithm), request, models, {
-                let routing_observations = routing_observations.clone();
-                move |call| serve(routing_clients.clone(), call, routing_observations.clone())
+            let native = routing_clients.native_decision_input(&request);
+            drive(Arc::clone(&algorithm), request, models, |call| {
+                serve(
+                    routing_clients.clone(),
+                    call,
+                    routing_observations.clone(),
+                    native.as_ref(),
+                )
             })
             .await
         }
@@ -205,8 +210,9 @@ pub async fn decide(
     let mut outcome = match clients.stored_state_owner(&request) {
         Some(owner) => continue_on(owner, algorithm.name(), request),
         None => {
-            drive(algorithm, request, models, move |call| {
-                serve(routing_clients.clone(), call, None)
+            let native = routing_clients.native_decision_input(&request);
+            drive(algorithm, request, models, |call| {
+                serve(routing_clients.clone(), call, None, native.as_ref())
             })
             .await?
         }
@@ -229,13 +235,14 @@ async fn serve_decision(
     clients: &ClientRouter,
     call: CallDecision,
     observations: &Option<Arc<Mutex<Vec<RunObservation>>>>,
+    native: Option<&NativeDecisionInput>,
 ) -> Result<()> {
     let client = clients.route_decision(&call.model);
     let model = call.model.clone();
     let request = call.request.clone();
     call.respond(async {
         let started = Instant::now();
-        let result = async { client?.call(request).await }.await;
+        let result = async { client?.call_with_native_input(request, native).await }.await;
         tracing::Span::current().record("outcome", if result.is_ok() { "ok" } else { "error" });
         if let Some(observations) = observations {
             observations
@@ -283,10 +290,13 @@ async fn serve(
     clients: ClientRouter,
     call: Call,
     observations: Option<Arc<Mutex<Vec<RunObservation>>>>,
+    native: Option<&NativeDecisionInput>,
 ) -> Result<()> {
     let call = match call {
         Call::Model(call) => *call,
-        Call::Decision(call) => return serve_decision(&clients, *call, &observations).await,
+        Call::Decision(call) => {
+            return serve_decision(&clients, *call, &observations, native).await;
+        }
     };
     let observe = |observation| {
         if let Some(observations) = &observations {
@@ -896,6 +906,33 @@ impl ClientRouter {
             .ok_or_else(|| LlmClientError::Configuration {
                 message: format!("no decision client is configured for model {model:?}"),
             })
+    }
+
+    fn native_decision_input(&self, request: &Request) -> Option<NativeDecisionInput> {
+        if !self
+            .inner
+            .decision_clients
+            .values()
+            .any(|client| client.needs_native_input())
+        {
+            return None;
+        }
+        let preserved = &request.llm_request.preservation.requests;
+        // Translation hops can carry multiple preserved bodies. Do not guess which one to rank.
+        let (source, payload) = preserved
+            .first_key_value()
+            .filter(|_| preserved.len() == 1)?;
+        let format = [
+            WireFormat::OpenAiChat,
+            WireFormat::OpenAiResponses,
+            WireFormat::AnthropicMessages,
+        ]
+        .into_iter()
+        .find(|format| format.as_str() == source.as_str())?;
+        Some(NativeDecisionInput {
+            format,
+            payload: payload.clone(),
+        })
     }
 
     /// Return the recorded model for the requested response or conversation ID.

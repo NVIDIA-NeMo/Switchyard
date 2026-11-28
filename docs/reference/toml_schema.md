@@ -235,9 +235,11 @@ Decision clients serve typed judgments for routing classifiers.
 
 | Key | Required | Meaning |
 |---|:---:|---|
-| `format` | Yes | `system_one` or `openai_decisions`. |
+| `format` | Yes | `system_one`, `openai_decisions`, or `foundry_rank`. |
 | `endpoint` | Yes | Full API URL, including the endpoint path. |
-| `api_key_env` | Yes | Environment variable holding a non-empty API key. |
+| `api_key_env` | `system_one`, `openai_decisions` | Environment variable holding a non-empty API key. |
+| `bearer_token_file` | `foundry_rank` | Path to a file containing a bearer token. |
+| `model_versions` | `foundry_rank` | Map from canonical model group names to the versions served by their configured targets. |
 | `timeout_ms` | Yes | Request and response deadline in milliseconds; must be at least `1`. |
 
 For [OpenAI Decisions](https://developers.openai.com/api/docs/guides/decisions):
@@ -254,9 +256,14 @@ id = "gpt-6-luna"
 decision_client = "decisions"
 ```
 
-Each `decision_targets` entry pairs an upstream model `id` with a `decision_client`.
-Both formats receive the conversation messages, the question instructions, and
-the choice descriptions.
+Each `decision_targets` entry pairs a decision `id` with a `decision_client`.
+System One and OpenAI Decisions receive conversation messages, question
+instructions, and choice descriptions.
+
+For Anthropic Messages, when an upstream service returns HTTP 422 with
+`no_supported_models`, Switchyard exposes that code in the
+`x-switchyard-error-code` response header. The JSON error format is unchanged.
+The header does not identify which upstream service returned the error.
 
 ## `[routes.<name>]`
 
