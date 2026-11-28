@@ -129,7 +129,7 @@ fn dry_run_rejects_unsendable_configured_headers() -> TestResult {
 }
 
 #[test]
-fn request_body_limit_accepts_positive_bytes_and_rejects_invalid_values() -> TestResult {
+fn request_body_limit_cli_validation() -> TestResult {
     let directory = tempfile::tempdir()?;
     let config = directory.path().join("routes.toml");
     let deployment = r#"

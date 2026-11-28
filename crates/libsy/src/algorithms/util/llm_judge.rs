@@ -29,6 +29,7 @@ use switchyard_protocol::{LlmClientError, Request, Response};
 
 /// Builds the classifier-specific message view presented to a structured judge.
 pub(crate) trait ClassifierInput: Send + Sync {
+    // Input limits must fail before judge execution so fail-open cannot bypass them.
     fn validate_request(&self, _request: &Request) -> Result<()> {
         Ok(())
     }

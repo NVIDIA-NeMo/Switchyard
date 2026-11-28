@@ -38,7 +38,7 @@ video processing belongs in the target's media settings.
 | `frame_max_edge` | 640 | Maximum frame edge (1–4096 pixels); preserve aspect ratio and never upscale. |
 | `max_input_bytes` | 33554432 | Maximum downloaded or decoded inline bytes per locally processed source (1 byte–256 MiB). |
 | `max_output_bytes` | 33554432 | Maximum combined prepared image bytes before base64 encoding (1 byte–256 MiB). |
-| `timeout_ms` | 30000 | Preparation deadline, including downloads, queueing, and decoding (1–300000 ms). |
+| `timeout_ms` | 30000 | Maximum wait for preparation (1–300000 ms), including downloads and decoder queueing. An active decode may finish after the timeout. |
 
 Image limits cover all selected messages and nested tool results. A positive
 `max_images` reserves `video_max_frames` images per video before downloading it,
@@ -67,26 +67,17 @@ extend sampling. Uniform sampling can miss brief events.
 
 ## Sources and limits
 
-Local processing accepts public HTTP(S) URLs and base64 data URIs. Use inline
-data for local files. Local paths, private network URLs, and provider-managed
-file IDs cannot be fetched. Downloads validate DNS and redirects and receive no
-inference credentials or environment proxy settings.
-
-Still images support PNG, JPEG, and WebP. Resizing applies EXIF orientation and
-outputs JPEG, or PNG for transparency. Images already within the requested size
-stay encoded as supplied when no orientation change is needed. Other provider
-fields, including image detail and cache hints, are retained.
-
-Each target reuses its own fetcher. At most 64 sources are processed per call,
-and two decoding jobs run at once per client. Decoded image allocations and each
-video frame's RGB buffer are limited to 128 MiB; selected video frames together
-are also limited to 128 MiB after resizing. A timeout stops the caller's wait.
-An active native decoder keeps its worker slot until it finishes.
-
-`max_input_bytes` and `max_output_bytes` apply to locally processed media.
-The server separately limits the entire incoming JSON body to 32 MiB, including
-base64 overhead. Raise it with `--max-request-body-bytes`; see the
-[CLI reference](../../docs/cli_reference.md).
+- Use public HTTP(S) URLs or base64 data URIs. Local paths, private addresses,
+  and provider-managed file IDs cannot be fetched. Downloads validate DNS and
+  redirects and receive no inference credentials or environment proxy settings.
+- Still images support PNG, JPEG, and WebP. Resizing applies EXIF orientation,
+  preserves transparency, and retains provider fields such as image detail.
+- Local processing accepts at most 64 sources per call and applies the configured
+  byte limits. A timeout stops waiting; active decoding retains its worker slot
+  until it finishes and can delay later requests.
+- The server separately limits the JSON body to 32 MiB, including base64 overhead.
+  Raise this with `--max-request-body-bytes`; see the
+  [CLI reference](../../docs/cli_reference.md).
 
 ## Runtime requirements
 

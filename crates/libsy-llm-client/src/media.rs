@@ -53,7 +53,8 @@ pub struct MediaConfig {
     pub max_input_bytes: usize,
     /// Maximum combined bytes of locally prepared images before base64 encoding.
     pub max_output_bytes: usize,
-    /// Deadline for all preparation, including downloads, queueing, and decoding.
+    /// Maximum wait for preparation, including downloads and decoder queueing.
+    /// An active decode retains its worker slot until it finishes, even after timeout.
     pub timeout_ms: u64,
 }
 
@@ -103,7 +104,7 @@ impl MediaConfig {
 /// Media failures contain no input URLs, credentials, or encoded media.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum MediaError {
-    /// The complete preparation deadline expired.
+    /// The preparation wait timed out.
     #[error("media preparation timed out")]
     Timeout,
     /// Invalid media, endpoint settings, or resource limit.
@@ -251,6 +252,7 @@ impl MediaProcessor {
     }
 }
 
+// Remaining media sources and prepared output bytes shared across one call.
 struct Budget {
     blocks: usize,
     bytes: usize,
@@ -330,6 +332,8 @@ fn is_video(item: &Value) -> bool {
             .is_some_and(|mime| mime.starts_with("video/")))
 }
 
+// Accept video blocks emitted by the Chat, Responses, and Anthropic codecs,
+// plus the Gemini-on-Hub file form exposed by VideoMode::File.
 fn video_source(item: &Value) -> Option<(String, String)> {
     if item["type"] == "video" {
         return source_url(&item["source"], "video/mp4");
@@ -387,6 +391,7 @@ fn text_part(format: WireFormat, text: &str) -> Value {
     json!({"type": if format == WireFormat::OpenAiResponses { "input_text" } else { "text" }, "text":text})
 }
 
+// Preparation runs after request translation, so frames use the target's wire format.
 fn image_part(format: WireFormat, url: &str) -> Value {
     match format {
         WireFormat::OpenAiChat => json!({"type":"image_url","image_url":{"url":url}}),
@@ -564,6 +569,16 @@ mod tests {
                 "https://example.com/opaque.mov",
                 "video/webm",
             ),
+            (
+                json!({"type":"input_video","video":{"media_type":"video/webm","data":"AQID"}}),
+                "data:video/webm;base64,AQID",
+                "video/webm",
+            ),
+            (
+                json!({"type":"video","source":{"type":"base64","media_type":"video/webm","data":"AQID"}}),
+                "data:video/webm;base64,AQID",
+                "video/webm",
+            ),
         ] {
             let original = json!({"messages":[{"role":"user","content":[block]}]});
             for video in [VideoMode::Passthrough, VideoMode::VideoUrl, VideoMode::File] {
@@ -631,28 +646,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn preparation_deadline_includes_worker_queueing() {
+    async fn preparation_timeout_recovers_after_slots_are_released() {
         let slots = Arc::new(Semaphore::new(2));
         let busy_target = MediaProcessor::new(MediaConfig::default(), slots.clone()).unwrap();
-        let _permits = busy_target
+        let permits = busy_target
             .slots
             .clone()
             .acquire_many_owned(2)
             .await
             .unwrap();
-        let waiting_target = MediaProcessor::new(
+        let mut waiting_target = MediaProcessor::new(
             MediaConfig {
                 image_max_edge: Some(20),
                 timeout_ms: 5,
                 ..Default::default()
             },
-            slots,
+            slots.clone(),
         )
         .unwrap();
         let mut body = json!({"input":[{"role":"user","content":[image_part(WireFormat::OpenAiResponses, &still_image())]}]});
+        let mut original = body.clone();
         let result = waiting_target
             .prepare(&mut body, WireFormat::OpenAiResponses)
             .await;
         assert!(matches!(result, Err(MediaError::Timeout)));
+        assert_eq!(slots.available_permits(), 0);
+        drop(permits);
+        // A timed-out waiter must not consume a slot needed by the next request.
+        waiting_target.config.timeout_ms = 5_000;
+        waiting_target
+            .prepare(&mut original, WireFormat::OpenAiResponses)
+            .await
+            .unwrap();
+        assert_eq!(slots.available_permits(), 2);
     }
 }
